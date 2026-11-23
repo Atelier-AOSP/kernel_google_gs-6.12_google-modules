@@ -1,3 +1,0 @@
-# SPDX-License-Identifier: GPL-2.0
-
-obj-$(CONFIG_GOOGLE_GENPD_TEST_CONSUMER) += genpd-test-consumer.o

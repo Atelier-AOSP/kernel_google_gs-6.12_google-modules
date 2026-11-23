@@ -1,5 +1,10 @@
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 filegroup(
     name = "edgetpu.kconfig",
     srcs = [
@@ -79,22 +84,15 @@ ddk_module(
         "edgetpu-vii-packet.c",
         "mobile-soc-destiny.c",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/gxp:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/iif",
         "//private/google-modules/iif:iif_headers",
-        "//private/google-modules/soc/gs:gs_soc_module",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/gs/drivers/soc/google/gsa:gsa_ko",
         "//private/google-modules/soc/gs/drivers/soc/google/pixel_trim",
         "//private/google-modules/soc/gs/drivers/soc/google/pixel_trim:pixel_trim_headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
-        "//private/google-modules/soc/rdo:rdo_soc_module",
         "//private/google-modules/soc/rdo/mem-qos:google-mem-qos",
     ],
 )

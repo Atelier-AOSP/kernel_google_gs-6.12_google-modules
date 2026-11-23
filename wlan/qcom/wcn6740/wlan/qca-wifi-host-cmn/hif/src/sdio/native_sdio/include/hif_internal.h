@@ -326,7 +326,7 @@ struct _HIF_SCATTER_REQ {
 	enum HIF_SCATTER_METHOD   scatter_method;
 	void                 *hif_private[4]; /* HIF private area */
 	u_int8_t             *scatter_bounce_buffer; /* bounce buffers */
-	struct _HIF_SCATTER_ITEM    scatter_list[1]; /* start of scatter list */
+	QDF_FLEX_ARRAY(struct _HIF_SCATTER_ITEM, scatter_list); /* start of scatter list */
 };
 
 typedef struct _HIF_SCATTER_REQ * (*HIF_ALLOCATE_SCATTER_REQUEST)(

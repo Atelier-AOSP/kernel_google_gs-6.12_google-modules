@@ -2639,11 +2639,10 @@ bcm_find_vendor_ie(const  void *tlvs, uint tlvs_len, const char *voui, uint8 *ty
 		ie_len = ie->len;
 		if ((ie->id == DOT11_MNG_VS_ID) &&
 		    (ie_len >= (DOT11_OUI_LEN + type_len)) &&
-		    !bcmp(ie->data, voui, DOT11_OUI_LEN))
-		{
+		    !memcmp(ie->data, voui, DOT11_OUI_LEN)) {
 			/* compare optional type */
 			if (type_len == 0 ||
-			    !bcmp(&ie->data[DOT11_OUI_LEN], type, type_len)) {
+			    !memcmp(((const char *)ie->data) + DOT11_OUI_LEN, type, type_len)) {
 
 				COV_TAINTED_DATA_ARG(ie);
 

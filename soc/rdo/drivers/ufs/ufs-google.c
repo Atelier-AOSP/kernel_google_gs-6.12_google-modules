@@ -5,24 +5,32 @@
 
 #include <linux/cleanup.h>
 #include <linux/delay.h>
+#include <linux/dma-mapping.h>
 #include <linux/mutex.h>
-#include <linux/sched/clock.h>
 #include <linux/platform_device.h>
-#include <linux/reboot.h>
-#include <host/ufshcd-pltfrm.h>
-#ifndef HAVE_UFSHCD_RPM_GET_SYNC
-#include <core/ufshcd-priv.h>
-#endif
+#include <scsi/scsi_cmnd.h>
+#include <trace/hooks/ufshcd.h>
+#include <ufs/ufshcd.h>
+
 #include <ip-idle-notifier/google_ip_idle_notifier.h>
-#include <mailbox/protocols/mba/cpm/common/pmic/pmic_service.h>
+
+#ifndef HAVE_UFSHCD_RPM_GET_SYNC
+#include <drivers/ufs/core/ufshcd-priv.h>
+#endif
+#include <drivers/ufs/host/ufshcd-pltfrm.h>
+
+#include "ufs-google-dbg.h"
+#include "ufs-google-platform.h"
+#include "ufs-google-priv.h"
 #include "ufs-google.h"
+#include "ufs-pixel-crypto.h"
 #if IS_ENABLED(CONFIG_UFS_PIXEL_FEATURES)
 #include "ufs-pixel.h"
 #endif
-#include "ufs-google-dbg.h"
-#include "ufs-google-platform.h"
-#include "ufs-pixel-crypto.h"
-#include "ufs-google-priv.h"
+
+#define CREATE_TRACE_POINTS
+#include "ufs-google-trace.h"
+#undef CREATE_TRACE_POINTS
 
 #define MCQ_CFG_n(r, i)		((r) + MCQ_QCFG_SIZE * (i))
 #define MCQ_OPR_OFFSET_n(p, i)	\
@@ -34,20 +42,27 @@
 #define PHY_STATUS_DELAY_US 190000
 #define UIC_COMMAND_POLL_TIMEOUT_US 4000000
 #define UIC_COMMAND_DELAY_US 10
+#define CPORT_CONNECTION_TIMEOUT_US 50000
+#define CPORT_CONNECTION_DELAY_US 100
 
 #define RESETB_DELAY_MIN_US 200
 #define RESETB_DELAY_MAX_US 300
 #define PWR_EN_DELAY_MIN_US 1500
 #define PWR_EN_DELAY_MAX_US 2000
-#define PWR_RESET_DELAY_MIN_US 2500
+#define PWR_RESET_DELAY_MIN_US 8000
+#define PD_RESET_DELAY_US (10 * 1000)
 #define REFCLK_DELAY_MIN_US 300
 #define REFCLK_DELAY_MAX_US 310
+#define GPIO_LSS_DELAY_MIN_US 100
+#define GPIO_LSS_DELAY_MAX_US 110
 #define LOW_POWER_DELAY_MS 4
 #define UFS_SLEEP_DELAY_MS 1000
 
 #define PSM_STATUS_VALID_STATE_MASK 0x1F
 #define PSM_STATUS_VALID_STATE_ON 0x10
 #define PSM_STATUS_VALID_STATE_PG 0x11
+#define PSM_STATUS_VALID_STATE_PREP 0x12
+#define PSM_STATUS_VALID_STATE_OFF 0x13
 #define PSM_POLL_DELAY_US 10
 #define PSM_POLL_TIMEOUT_US 10000
 #define SW_H8_ENTRY_ATTEMPTS 5
@@ -55,7 +70,7 @@
 #define MAX_UFS_HOSTS 2
 static struct ufs_google_host *ufs_host_backup[MAX_UFS_HOSTS];
 static atomic_t ufs_host_index;
-static const char *const ufs_event_type_str[] = {
+static char *ufs_event_type_str[] = {
 	/* enum ufs_event_type */
 	[UFS_EVT_PA_ERR] = "UFS_EVT_PA_ERR",
 	[UFS_EVT_DL_ERR] = "UFS_EVT_DL_ERR",
@@ -73,19 +88,8 @@ static const char *const ufs_event_type_str[] = {
 	[UFS_EVT_HOST_RESET] = "UFS_EVT_HOST_RESET",
 	[UFS_EVT_ABORT] = "UFS_EVT_ABORT",
 };
-
-#define ufs_pr_emerg(fmt, ...) pr_emerg("ufs-kp: " fmt, ##__VA_ARGS__)
-
-static inline u32 ufs_top_csr_readl(struct ufs_google_host *host, u32 reg)
-{
-	return readl(host->ufs_top_mmio + reg);
-}
-
-static inline void ufs_top_csr_writel(struct ufs_google_host *host, u32 val,
-				      u32 reg)
-{
-	writel(val, host->ufs_top_mmio + reg);
-}
+#define GEVENT_HBA_ERROR "UFS_EVT_HBA_ERROR"
+#define GEVENT_SCSI_TIMEOUT "UFS_EVT_SCSI_TIMEOUT"
 
 static inline void ufs_auto_hibern8_update(struct ufs_hba *hba, bool on)
 {
@@ -95,71 +99,54 @@ static inline void ufs_auto_hibern8_update(struct ufs_hba *hba, bool on)
 	ufshcd_writel(hba, on ? hba->ahit : 0, REG_AUTO_HIBERNATE_IDLE_TIMER);
 }
 
-static inline bool ufs_google_has_error(struct ufs_hba *hba)
-{
-	return hba->ufshcd_state != UFSHCD_STATE_OPERATIONAL ||
-	       hba->dev->power.runtime_error ||
-	       hba->ufs_device_wlun->sdev_gendev.power.runtime_error;
-}
-
 /*
- * Use ufs_dev_err() only for fatal errors since the error message
- * will be used as kernel panic signature.
- * Consider using dev_warn() if message indicate a non-fatal event
- *
- * No locking is implemented, therefore panic signature accuracy
- * cannot be guaranteed.
+ * ufs_clk_switch - Generic helper to enable/disable a clock.
+ * @host: The UFS Google host structure.
+ * @clk: The clock resource to operate on (e.g., host->deep_h8_clk).
+ * @enable: True to enable the clock, false to disable.
+ * @cap: The specific GCAP_RSC_... capability flag required for this clock.
  */
-__printf(2, 3) static void ufs_dev_err(struct ufs_hba *hba, const char *fmt,
-				       ...)
+static inline void ufs_clk_switch(struct ufs_google_host *host, struct clk *clk,
+				  bool enable, u64 cap)
 {
-	struct ufs_google_host *host = ufshcd_get_variant(hba);
-	struct va_format vaf;
-	va_list args;
+	if (!(host->caps & cap))
+		return;
 
-	va_start(args, fmt);
-	vaf.fmt = fmt;
-	vaf.va = &args;
-	dev_err(hba->dev, "%pV", &vaf);
-	va_end(args);
+	if (enable) {
+		int ret = clk_prepare_enable(clk);
 
-	if (host && !host->sig_err_str[0]) {
-		host->sig_err_tstamp = local_clock();
-		va_start(args, fmt);
-		vsnprintf(host->sig_err_str, sizeof(host->sig_err_str), fmt,
-			  args);
-		va_end(args);
-
-		/* trim redundant newline (\n) */
-		strim(host->sig_err_str);
+		if (ret)
+			dev_err(host->hba->dev,
+				"failed to enable clk (cap mask: 0x%llx), ret=%d",
+				cap, ret);
+	} else {
+		clk_disable_unprepare(clk);
 	}
 }
 
-/* UFS core API wrapper with error logging */
-static inline int ufshcd_dme_set_logged(struct ufs_hba *hba, u32 attr, u32 val)
+static void ufs_google_mark_device_off(struct ufs_google_host *host)
 {
-	int ret = ufshcd_dme_set(hba, attr, val);
-
-	if (ret)
-		ufs_dev_err(hba, "dme set failed attr=0x%x val=0x%x ret=%d\n",
-			    UIC_GET_ATTR_ID(attr), val, ret);
-
-	return ret;
+	host->device_off_time = ktime_get_boottime();
 }
 
-static void ufs_dev_clear_err(struct ufs_hba *hba)
+static void ufs_google_wait_device_ready(struct ufs_google_host *host)
 {
-	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	s64 power_reset_deficit;
 
-	if (!host->sig_err_str[0] || ufs_google_has_error(hba))
-		return;
+	/*
+	 * We need to wait at least PWR_RESET_DELAY_MIN_US between turning
+	 * the device power off to turning the power back on. For the
+	 * calculation use the time point at which turning the power on is
+	 * safe (host->device_off_time + PWR_RESET_DELAY_MIN_US) and subtract
+	 * current time from it, if the value is positive - that is how long
+	 * we need to wait.
+	 */
+	power_reset_deficit = ktime_to_us(ktime_add_us(host->device_off_time,
+						       PWR_RESET_DELAY_MIN_US) -
+					  ktime_get_boottime());
 
-	strscpy(host->saved_err_str, host->sig_err_str,
-		sizeof(host->saved_err_str));
-	host->saved_err_tstamp = host->sig_err_tstamp;
-
-	memset(host->sig_err_str, 0, sizeof(host->sig_err_str));
-	host->sig_err_tstamp = 0;
+	if (power_reset_deficit > 0)
+		usleep_range(power_reset_deficit, power_reset_deficit + 100);
 }
 
 #if IS_ENABLED(CONFIG_UFS_PIXEL_FEATURES)
@@ -244,33 +231,34 @@ static int ufs_google_set_pwr_mode(struct ufs_hba *hba,
 
 	if (pwr_mode->gear_rx != pwr_mode->gear_tx ||
 	    pwr_mode->gear_rx > UFS_HS_G5) {
-		ufs_dev_err(hba, "unsupported gears rx=%u tx=%u\n",
-			    pwr_mode->gear_rx, pwr_mode->gear_tx);
+		dev_err(hba->dev, "unsupported gears rx=%u tx=%u\n",
+			pwr_mode->gear_rx, pwr_mode->gear_tx);
 		return -EINVAL;
 	}
 
 	if (pwr_mode->lane_rx != pwr_mode->lane_tx ||
 	    pwr_mode->lane_rx > UFS_LANE_2) {
-		ufs_dev_err(hba, "unsupported lanes rx=%u tx=%u\n",
-			    pwr_mode->lane_rx, pwr_mode->lane_tx);
+		dev_err(hba->dev, "unsupported lanes rx=%u tx=%u\n",
+			pwr_mode->lane_rx, pwr_mode->lane_tx);
 		return -EINVAL;
 	}
 
 	/*
-	 * We do not support PWM gear, and ufshcd_get_pwr_dev_param() only
+	 * We do not support PWM gear, and ufshcd_negotiate_pwr_params() only
 	 * considers FAST_MODE for hs support. Make only FAST and UNCHANGED
 	 * valid.
 	 */
 	if (pwr_mode->pwr_rx != pwr_mode->pwr_tx ||
 	    (pwr_mode->pwr_rx != FAST_MODE && pwr_mode->pwr_rx != UNCHANGED)) {
-		ufs_dev_err(hba, "unsupported power mode rx=%u tx=%u\n",
-			    pwr_mode->pwr_rx, pwr_mode->pwr_tx);
+		dev_err(hba->dev, "unsupported power mode rx=%u tx=%u\n",
+			pwr_mode->pwr_rx, pwr_mode->pwr_tx);
 		return -EINVAL;
 	}
 
 	/* We only support HS Rate B, as we do not have Rate A calibration */
 	if (pwr_mode->hs_rate != PA_HS_MODE_B) {
-		ufs_dev_err(hba, "unsupported hs rate=%u\n", pwr_mode->hs_rate);
+		dev_err(hba->dev, "unsupported hs rate=%u\n",
+			pwr_mode->hs_rate);
 		return -EINVAL;
 	}
 
@@ -287,12 +275,259 @@ static void ufs_google_get_pwr_mode(struct ufs_hba *hba,
 	memcpy(pwr_mode, &host->google_pwr_mode, sizeof(*pwr_mode));
 }
 
+#if IS_ENABLED(CONFIG_UFS_PIXEL_READ_BOOST)
+static bool ufs_google_get_read_boost(struct ufs_hba *hba)
+{
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+
+	return host->read_boost.current_mode;
+}
+
+static void ufs_google_devfreq_scale_down(struct ufs_hba *hba)
+{
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	int ret;
+	u32 i;
+
+	for (i = 0; i < host->read_boost.devfreq_count; i++) {
+		struct ufs_devfreq *ufs_df = host->read_boost.devfreqs + i;
+
+		ret = dev_pm_qos_update_request(
+			&ufs_df->qos_req_min,
+			PM_QOS_MIN_FREQUENCY_DEFAULT_VALUE);
+		if (ret < 0) {
+			dev_err(hba->dev,
+				"failed to update %s devfreq to min default value (%d)\n",
+				ufs_df->name, ret);
+		}
+
+		ret = dev_pm_qos_update_request(
+			&ufs_df->qos_req_max,
+			PM_QOS_MAX_FREQUENCY_DEFAULT_VALUE);
+		if (ret < 0) {
+			dev_err(hba->dev,
+				"failed to update %s devfreq to max default value (%d)\n",
+				ufs_df->name, ret);
+		}
+	}
+}
+
+static int ufs_google_devfreq_scale_up(struct ufs_hba *hba)
+{
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	int ret;
+	u32 i;
+
+	for (i = 0; i < host->read_boost.devfreq_count; i++) {
+		struct ufs_devfreq *ufs_df = host->read_boost.devfreqs + i;
+
+		ret = dev_pm_qos_update_request(&ufs_df->qos_req_min,
+						ufs_df->max_freq);
+		if (ret < 0) {
+			dev_err(hba->dev,
+				"failed to update %s min devfreq to %u KHZ (%d)\n",
+				ufs_df->name, ufs_df->max_freq, ret);
+			ufs_google_devfreq_scale_down(hba);
+			break;
+		}
+
+		ret = dev_pm_qos_update_request(&ufs_df->qos_req_max,
+						ufs_df->max_freq);
+		if (ret < 0) {
+			dev_err(hba->dev,
+				"failed to update %s max devfreq to %u KHZ (%d)\n",
+				ufs_df->name, ufs_df->max_freq, ret);
+			ufs_google_devfreq_scale_down(hba);
+			break;
+		}
+	}
+
+	return ret;
+}
+
+static int ufs_google_set_read_boost(struct ufs_hba *hba, bool enabled)
+{
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	int ret = 0;
+
+	trace_ufs_google_read_boost(PERFETTO_EVENT_SLICE_OPEN, enabled, 0);
+
+	if (enabled == host->read_boost.current_mode)
+		goto out;
+
+	if (enabled) {
+		ret = ufshcd_rpm_get_sync(hba);
+		if (ret < 0) {
+			dev_err(hba->dev, "read_boost: rpm_get failed (%d)\n",
+				ret);
+			goto out;
+		}
+		ufshcd_hold(hba);
+		ufs_auto_hibern8_update(hba, false);
+		ret = ufs_google_devfreq_scale_up(hba);
+		if (ret < 0) {
+			ufs_auto_hibern8_update(hba, true);
+			ufshcd_release(hba);
+			ufshcd_rpm_put_sync(hba);
+		}
+	} else {
+		ufs_google_devfreq_scale_down(hba);
+		ufs_auto_hibern8_update(hba, true);
+		ufshcd_release(hba);
+		ufshcd_rpm_put_sync(hba);
+	}
+
+	if (ret >= 0)
+		host->read_boost.current_mode = enabled;
+
+out:
+	trace_ufs_google_read_boost(PERFETTO_EVENT_SLICE_END, enabled, ret);
+
+	return ret;
+}
+
+static int ufs_google_setup_devfreq(struct ufs_google_host *host, u32 index)
+{
+	struct ufs_devfreq *ufs_df = host->read_boost.devfreqs + index;
+	struct ufs_hba *hba = host->hba;
+	int ret;
+
+	ret = of_property_read_string_index(hba->dev->of_node,
+					    "read-boost-devfreq-names", index,
+					    &ufs_df->name);
+	if (ret < 0) {
+		dev_err(hba->dev,
+			"failed to read 'read-boost-devfreq-names' at index %d (%d)\n",
+			index, ret);
+		return ret;
+	}
+
+	ret = of_property_read_u32_index(hba->dev->of_node,
+					 "read-boost-devfreq-maxfreqs", index,
+					 &ufs_df->max_freq);
+	if (ret < 0) {
+		dev_err(hba->dev,
+			"failed to read 'read-boost-devfreq-maxfreqs' at index %d (%d)\n",
+			index, ret);
+		return ret;
+	}
+
+	ufs_df->df = gs_perf_domain_find_devfreq(ufs_df->name,
+						 GS_RECOMMENDED_DEVFREQ);
+	if (IS_ERR_OR_NULL(ufs_df->df)) {
+		ret = PTR_ERR(ufs_df->df);
+		dev_err(hba->dev, "failed to find %s devfreq (%d)\n",
+			ufs_df->name, ret);
+		return ret;
+	}
+
+	ret = google_pm_qos_add_devfreq_request(
+		ufs_df->df, &ufs_df->qos_req_min, DEV_PM_QOS_MIN_FREQUENCY,
+		PM_QOS_MIN_FREQUENCY_DEFAULT_VALUE);
+	if (ret) {
+		dev_err(hba->dev, "failed to add %s devfreq min request (%d)\n",
+			ufs_df->name, ret);
+		return ret;
+	}
+
+	ret = google_pm_qos_add_devfreq_request(
+		ufs_df->df, &ufs_df->qos_req_max, DEV_PM_QOS_MAX_FREQUENCY,
+		PM_QOS_MAX_FREQUENCY_DEFAULT_VALUE);
+	if (ret)
+		dev_err(hba->dev, "failed to add %s devfreq max request (%d)\n",
+			ufs_df->name, ret);
+
+	return ret;
+}
+
+static int ufs_google_setup_devfreqs(struct ufs_google_host *host)
+{
+	struct ufs_hba *hba = host->hba;
+	int count, max_freq_count, ret;
+	u32 i;
+
+	count = of_property_count_strings(hba->dev->of_node,
+					  "read-boost-devfreq-names");
+	if (count <= 0) {
+		dev_info(hba->dev, "no devfreqs found\n");
+		return 0;
+	}
+
+	max_freq_count =
+		of_property_count_elems_of_size(hba->dev->of_node,
+						"read-boost-devfreq-maxfreqs",
+						sizeof(u32));
+	if (max_freq_count != count) {
+		dev_err(hba->dev,
+			"mismatch count of devfreq names (%d) and frequencies (%d)\n",
+			count, max_freq_count);
+		return -EINVAL;
+	}
+
+	host->read_boost.devfreqs = devm_kcalloc(hba->dev, count,
+						 sizeof(struct ufs_devfreq),
+						 GFP_KERNEL);
+	if (!host->read_boost.devfreqs)
+		return -ENOMEM;
+
+	for (i = 0; i < count; i++) {
+		ret = ufs_google_setup_devfreq(host, i);
+		if (ret)
+			break;
+
+		dev_info(hba->dev, "added devfreq %s (max@%u)\n",
+			 host->read_boost.devfreqs[i].name,
+			 host->read_boost.devfreqs[i].max_freq);
+
+		host->read_boost.devfreq_count++;
+	}
+
+	return ret;
+}
+
+static void ufs_google_devfreq_cleanup(struct ufs_google_host *host, u32 index)
+{
+	struct ufs_devfreq *ufs_df = host->read_boost.devfreqs + index;
+	int ret;
+
+	if (dev_pm_qos_request_active(&ufs_df->qos_req_min)) {
+		ret = google_pm_qos_remove_devfreq_request(ufs_df->df,
+							   &ufs_df->qos_req_min);
+		if (ret)
+			dev_err(host->hba->dev,
+				"failed to remove %s devfreq min (%d)\n",
+				ufs_df->name, ret);
+	}
+
+	if (dev_pm_qos_request_active(&ufs_df->qos_req_max)) {
+		ret = google_pm_qos_remove_devfreq_request(ufs_df->df,
+							   &ufs_df->qos_req_max);
+		if (ret)
+			dev_err(host->hba->dev,
+				"failed to remove %s devfreq max (%d)\n",
+				ufs_df->name, ret);
+	}
+}
+
+static void ufs_google_readboost_cleanup(struct ufs_google_host *host)
+{
+	u32 i;
+
+	for (i = 0; i < host->read_boost.devfreq_count; i++)
+		ufs_google_devfreq_cleanup(host, i);
+}
+#endif /* CONFIG_UFS_PIXEL_READ_BOOST */
+
 static const struct pixel_ops pixel_ops = {
 	.crypto_init = pixel_crypto_init,
 	.set_pwr_mode = ufs_google_set_pwr_mode,
 	.get_pwr_mode = ufs_google_get_pwr_mode,
 	.get_phy_version = ufs_google_get_phy_version,
 	.get_phy_release_date = ufs_google_get_phy_release_date,
+#if IS_ENABLED(CONFIG_UFS_PIXEL_READ_BOOST)
+	.get_read_boost = ufs_google_get_read_boost,
+	.set_read_boost = ufs_google_set_read_boost,
+#endif
 };
 #endif
 
@@ -300,36 +535,40 @@ static int ufs_google_phy_setup_vreg(struct ufs_hba *hba, bool on);
 static int ufs_google_pd_notifier(struct notifier_block *nb,
 				  unsigned long action, void *data);
 static void ufs_google_sleep_handler(struct work_struct *work);
+static int ufs_google_psm_wait_for_state(struct ufs_google_host *host,
+					 void __iomem *status_reg_mmio,
+					 u32 target_state, const char *id);
 
-/* Kernel Panic Dump */
-static void ufs_google_kp_dump(struct ufs_hba *hba)
+/**
+ * ufs_google_set_acg - Enable or disable REF_CLK Auto Clock Gating (ACG)
+ * @hba: host controller instance
+ * @on: true to enable ACG, false to disable
+ *
+ * This function enables or disables the auto clock gating for both
+ * gpio_ref_clk and mphy_ref_clk.
+ *
+ * Returns 0 on success, or a negative error code on failure.
+ */
+static int ufs_google_set_acg(struct ufs_hba *hba, bool on)
 {
-	struct ufs_google_host *host;
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	int ret;
 
-	if (!hba) {
-		ufs_pr_emerg("invalid hba\n");
-		return;
+	ret = goog_cpm_clk_toggle_auto_gate(host->gpio_refclk, on);
+	if (ret) {
+		dev_err(hba->dev, "%s gpio_refclk ACG failed (%d)",
+			on ? "enable" : "disable", ret);
+		return ret;
 	}
 
-	host = ufshcd_get_variant(hba);
-	if (!host) {
-		ufs_pr_emerg("invalid host\n");
-		return;
+	ret = goog_cpm_clk_toggle_auto_gate(host->mphy_refclk, on);
+	if (ret) {
+		dev_err(hba->dev, "%s mphy_refclk ACG failed (%d)",
+			on ? "enable" : "disable", ret);
+		return ret;
 	}
 
-	if (host->sig_err_str[0]) {
-		ufs_pr_emerg("UFS UNRECOVERABLE ERROR: %s @ %llu\n",
-			     host->sig_err_str, host->sig_err_tstamp);
-		if (host->saved_err_str[0])
-			ufs_pr_emerg("saved error: %s @ %llu\n",
-				     host->saved_err_str,
-				     host->saved_err_tstamp);
-	} else if (host->saved_err_str[0]) {
-		ufs_pr_emerg("UFS ERROR HANDLER SUCCESS: %s @ %llu\n",
-			     host->saved_err_str, host->saved_err_tstamp);
-	} else {
-		ufs_pr_emerg("NO UFS ERRORS\n");
-	}
+	return 0;
 }
 
 static int ufs_google_toggle_vreg(struct ufs_hba *hba, struct ufs_vreg *vreg,
@@ -342,8 +581,8 @@ static int ufs_google_toggle_vreg(struct ufs_hba *hba, struct ufs_vreg *vreg,
 
 	ret = on ? regulator_enable(vreg->reg) : regulator_disable(vreg->reg);
 	if (ret) {
-		ufs_dev_err(hba, "vreg %s toggle %s failed (%d)", vreg->name,
-			    on ? "on" : "off", ret);
+		dev_err(hba->dev, "vreg %s toogle %s failed (%d)", vreg->name,
+			on ? "on" : "off", ret);
 		return ret;
 	}
 
@@ -361,23 +600,18 @@ static int ufs_google_init_vreg(struct ufs_hba *hba)
 
 	host = ufshcd_get_variant(hba);
 
-	ret = ufshcd_populate_vreg(hba->dev, "vdd0p75", &host->vdd0p75);
-	if (ret) {
-		ufs_dev_err(hba, "failed to populate vdd0p75 (%d)\n", ret);
+	ret = ufshcd_populate_vreg(hba->dev, "vdd0p75", &host->vdd0p75, false);
+	if (ret)
 		return ret;
-	}
 
-	ret = ufshcd_populate_vreg(hba->dev, "vdd1p2", &host->vdd1p2);
-	if (ret) {
-		ufs_dev_err(hba, "failed to populate vdd1p2 (%d)\n", ret);
+	ret = ufshcd_populate_vreg(hba->dev, "vdd1p2", &host->vdd1p2, false);
+	if (ret)
 		return ret;
-	}
 
 	reg = devm_regulator_get(dev, "vdd0p75");
 	if (IS_ERR(reg)) {
 		ret = PTR_ERR(reg);
-		ufs_dev_err(hba, "Failed to get 0.75V PHY regulator(%d)\n",
-			    ret);
+		dev_err(dev, "Failed to get 0.75V PHY regulator(%d)\n", ret);
 		return ret;
 	}
 	host->vdd0p75->reg = reg;
@@ -385,66 +619,13 @@ static int ufs_google_init_vreg(struct ufs_hba *hba)
 	reg = devm_regulator_get(dev, "vdd1p2");
 	if (IS_ERR(reg)) {
 		ret = PTR_ERR(reg);
-		ufs_dev_err(hba, "Failed to get 1.2V PHY regulator(%d)\n", ret);
+		dev_err(dev, "Failed to get 1.2V PHY regulator(%d)\n", ret);
 		return ret;
 	}
 	host->vdd1p2->reg = reg;
 
 	return 0;
 }
-
-#if IS_ENABLED(CONFIG_GOOGLE_MBA_CPM_INTERFACE)
-#define SEQ_BUCK11S_8_ADDR 0x1857
-enum IRQ_TYPE {
-	CORE_MAIN_PMIC,
-	CORE_SUB_PMIC,
-	IF_PMIC,
-};
-
-static int ufs_google_init_cpm(struct ufs_hba *hba)
-{
-	struct ufs_google_host *host;
-	struct mailbox_data req_data;
-	int pmic = CORE_SUB_PMIC;
-	int ret;
-
-	host = ufshcd_get_variant(hba);
-
-	if (!of_property_read_bool(hba->dev->of_node, "google,cpm-override"))
-		return 0;
-
-	ret = of_property_read_u32(hba->dev->of_node, "mba-pmic-dest-channel",
-				   &host->pmic_ch);
-	if (ret < 0) {
-		ufs_dev_err(hba, "%s: failed to read mba-pmic-dest-channel",
-			    __func__);
-		return ret;
-	}
-
-	ret = da9188_mfd_mbox_request(hba->dev, &host->mbox);
-	if (ret) {
-		ufs_dev_err(hba, "%s: request pmic mbox client failed (%d)",
-			    __func__, ret);
-		return ret;
-	}
-
-	req_data.data[0] = pmic;
-	req_data.data[1] = 0;
-
-	ret = da9188_mfd_mbox_send_req_blocking(hba->dev, &host->mbox,
-						host->pmic_ch,
-						MB_PMIC_TARGET_REGISTER,
-						MB_REG_CMD_SET_PMIC_REG_SINGLE,
-						SEQ_BUCK11S_8_ADDR, req_data);
-	if (ret) {
-		ufs_dev_err(hba, "%s: send mbox req failed (%d)", __func__,
-			    ret);
-		return ret;
-	}
-
-	return 0;
-}
-#endif
 
 static int ufs_google_attach_power_domains(struct ufs_google_host *host)
 {
@@ -498,6 +679,9 @@ static void ufs_google_detach_power_domains(struct ufs_google_host *host)
 
 	pm_runtime_disable(host->ufs_prep_pd);
 	dev_pm_domain_detach(host->ufs_prep_pd, true);
+
+	pm_runtime_disable(host->cpu_top_cl);
+	dev_pm_domain_detach(host->cpu_top_cl, true);
 }
 
 static void ufs_google_init_caps(struct ufs_hba *hba)
@@ -517,7 +701,13 @@ static void ufs_google_init_caps(struct ufs_hba *hba)
 		{ "google,enable-phy-calibration", GCAP_PHY_CAL },
 		{ "google,enable-local-rpm", GCAP_LOCAL_RPM },
 		{ "google,enable-local-swh8", GCAP_LOCAL_SWH8 },
-		{ "google,block-c4", GCAP_BLOCK_C4 },
+		{ "google,decouple-ufs-en", GCAP_DECOUPLE_UFS_EN },
+		{ "google,enable-hs-lss", GCAP_HS_LSS },
+		{ "google,enable-refclk-acg", GCAP_REF_CLK_ACG },
+		{ "google,skip-cport-setup", GCAP_SKIP_CPORT_SETUP },
+		{ "google,mphy-pmc-war", GCAP_MPHY_PMC_WAR },
+		{ "google,rext-internal", GCAP_REXT_INTERNAL },
+		{ "google,limit-reset-to-eh", GCAP_LIMIT_RESET_TO_EH },
 	};
 
 	for (i = 0; i < ARRAY_SIZE(dts_caps); i++) {
@@ -533,34 +723,56 @@ static void ufs_google_devm_cleanup(void *data)
 
 	mutex_destroy(&host->indirect_reg_mutex);
 	mutex_destroy(&host->ufs_pm_lock);
+
+#if IS_ENABLED(CONFIG_UFS_PIXEL_READ_BOOST)
+	ufs_google_readboost_cleanup(host);
+#endif
+}
+
+static void ufs_google_vh_ufs_check_int_errors_handler(void *data,
+						       struct ufs_hba *hba,
+						       bool queue_eh_work)
+{
+	trace_ufs_google_event(PERFETTO_EVENT_INSTANT, GEVENT_HBA_ERROR,
+			       hba->errors);
+}
+
+static void ufs_google_vh_ufs_eh_timed_out_handler(void *data,
+						   struct ufs_hba *hba,
+						   struct scsi_cmnd *scmd)
+{
+	/* Trace SCSI command timeout with OP code */
+	trace_ufs_google_event(PERFETTO_EVENT_INSTANT, GEVENT_SCSI_TIMEOUT,
+			       scmd->cmnd[0]);
+}
+
+static int ufs_google_register_vh_handlers(struct ufs_google_host *host)
+{
+	int ret = 0;
+
+	UFS_GOOG_REGISTER_VH_HANDLER(ufs_check_int_errors);
+	UFS_GOOG_REGISTER_VH_HANDLER(ufs_eh_timed_out);
+
+	return ret;
 }
 
 static int ufs_google_set_device_on(struct ufs_google_host *host)
 {
 	struct ufs_hba *hba = host->hba;
-	s64 power_reset_deficit;
 	int err = 0;
 
-	/*
-	 * We need to wait at least PWR_RESET_DELAY_MIN_US between turning
-	 * the device power off to turning the power back on. For the
-	 * calculation use the time point at which turning the power on is
-	 * safe (host->device_off_time + PWR_RESET_DELAY_MIN_US) and subtract
-	 * current time from it, if the value is positive - that is how long
-	 * we need to wait.
-	 */
-	power_reset_deficit = ktime_to_us(ktime_add_us(host->device_off_time,
-						       PWR_RESET_DELAY_MIN_US) -
-					  ktime_get_boottime());
-	if (power_reset_deficit > 0)
-		usleep_range(power_reset_deficit, power_reset_deficit + 100);
+	if (host->device_on)
+		return 0;
+
+	if (!(host->caps & GCAP_DECOUPLE_UFS_EN))
+		ufs_google_wait_device_ready(host);
 
 	/* reconfigure pin as refclk */
 	if (host->caps & GCAP_RSC_REF_CLK_PINCTRL) {
 		err = pinctrl_select_state(host->pinctrl,
 					   host->refclk_on_state);
 		if (err < 0) {
-			ufs_dev_err(hba, "pin select state fail, %d\n", err);
+			dev_err(hba->dev, "pin select state fail, %d\n", err);
 			return err;
 		}
 	}
@@ -574,15 +786,21 @@ static int ufs_google_set_device_on(struct ufs_google_host *host)
 		gpiod_set_value(host->pwr_en, 1);
 	usleep_range(PWR_EN_DELAY_MIN_US, PWR_EN_DELAY_MAX_US);
 
+	/* 2h. config HS/LS LSS */
+	if (ufs_use_hs_lss(host)) {
+		gpiod_set_value(host->gpio_lss, 1);
+		usleep_range(GPIO_LSS_DELAY_MIN_US, GPIO_LSS_DELAY_MAX_US);
+	}
+
 	/* 2h. drive refclk */
-	if (host->caps & GCAP_RSC_REF_CLK)
-		clk_prepare_enable(host->refclk);
+	ufs_clk_switch(host, host->gpio_refclk, true, GCAP_RSC_GPIO_REF_CLK);
 	usleep_range(REFCLK_DELAY_MIN_US, REFCLK_DELAY_MAX_US);
 
 	/* 2h. reset = 1 */
 	if (host->caps & GCAP_RSC_RSTN_GPIO)
 		gpiod_set_value(host->resetb, 1);
 
+	host->device_on = true;
 	return 0;
 }
 
@@ -591,10 +809,15 @@ static int ufs_google_set_device_off(struct ufs_google_host *host)
 	struct ufs_hba *hba = host->hba;
 	int err = 0;
 
-	if (host->caps & GCAP_RSC_REF_CLK)
-		clk_disable_unprepare(host->refclk);
+	if (!host->device_on)
+		return 0;
 
+	if (host->caps & GCAP_RSC_GPIO_REF_CLK)
+		clk_disable_unprepare(host->gpio_refclk);
 	usleep_range(10, 12);
+
+	if (ufs_use_hs_lss(host))
+		gpiod_set_value(host->gpio_lss, 0);
 
 	if (host->caps & GCAP_RSC_RSTN_GPIO)
 		gpiod_set_value(host->resetb, 0);
@@ -603,29 +826,31 @@ static int ufs_google_set_device_off(struct ufs_google_host *host)
 	if (host->caps & GCAP_RSC_UFS_EN_GPIO)
 		gpiod_set_value(host->pwr_en, 0);
 
-	host->device_off_time = ktime_get_boottime();
+	if (!(host->caps & GCAP_DECOUPLE_UFS_EN))
+		ufs_google_mark_device_off(host);
 
 	if (host->caps & GCAP_RSC_REF_CLK_PINCTRL) {
 		err = pinctrl_select_state(host->pinctrl,
 					   host->refclk_off_state);
 		if (err < 0) {
-			ufs_dev_err(hba, "pin select state fail, %d\n", err);
+			dev_err(hba->dev, "pin select state fail, %d\n", err);
 			return err;
 		}
 	}
 
+	host->device_on = false;
 	return 0;
 }
 
-static int ufs_google_restart_handler(struct notifier_block *nb,
-				      unsigned long mode, void *cmd)
+static void ufs_google_init_rext(struct ufs_google_host *host)
 {
-	struct ufs_google_host *host =
-		container_of(nb, struct ufs_google_host, restart_nb);
+	struct ufs_hba *hba = host->hba;
 
-	ufs_google_kp_dump(host->hba);
+	if (!(host->caps & GCAP_REXT_INTERNAL))
+		return;
 
-	return 0;
+	of_property_read_u32(hba->dev->of_node, "google,rext-val", &host->rext_val);
+	dev_info(hba->dev, "UFS REXT Internal mode active. Trim: %d\n", host->rext_val);
 }
 
 static int ufs_google_init(struct ufs_hba *hba)
@@ -649,26 +874,11 @@ static int ufs_google_init(struct ufs_hba *hba)
 	host->hba = hba;
 	ufshcd_set_variant(hba, host);
 
-	/* a number higher than google_cdd_restart_handler() priority */
-	host->restart_nb.priority = 140;
-	host->restart_nb.notifier_call = ufs_google_restart_handler;
-	register_restart_handler(&host->restart_nb);
-
-#if IS_ENABLED(CONFIG_GOOGLE_MBA_CPM_INTERFACE)
-	err = ufs_google_init_cpm(hba);
-	if (err) {
-		// Non-fatal
-		dev_warn(hba->dev, "%s: failed to init ufs cpm, error code: %d",
-			 __func__, err);
-	}
-#endif
-
 	host->ufs_top_mmio = devm_platform_ioremap_resource_byname(pdev, "ufs_top");
 	if (IS_ERR(host->ufs_top_mmio)) {
 		err = PTR_ERR(host->ufs_top_mmio);
-		ufs_dev_err(hba,
-			    "%s: failed to init ufs_top mmio, error code: %d\n",
-			    __func__, err);
+		dev_err(dev, "%s: failed to init ufs_top mmio, error code: %d\n",
+			__func__, err);
 		goto out_unset;
 	}
 
@@ -676,9 +886,9 @@ static int ufs_google_init(struct ufs_hba *hba)
 		devm_platform_ioremap_resource_byname(pdev, "ufs_phy_sram");
 	if (IS_ERR(host->ufs_phy_sram_mmio)) {
 		err = PTR_ERR(host->ufs_phy_sram_mmio);
-		ufs_dev_err(hba,
-			    "%s: failed to init ufs_phy_sram mmio, error code: %d\n",
-			    __func__, err);
+		dev_err(dev,
+			"%s: failed to init ufs_phy_sram mmio, error code: %d\n",
+			__func__, err);
 		goto out_unset;
 	}
 
@@ -686,9 +896,9 @@ static int ufs_google_init(struct ufs_hba *hba)
 		devm_platform_ioremap_resource_byname(pdev, "ufs_ss");
 	if (IS_ERR(host->ufs_ss_mmio)) {
 		err = PTR_ERR(host->ufs_ss_mmio);
-		dev_warn(hba->dev,
-			 "%s: failed to init ufs_ss mmio, error code: %d. skip\n",
-			 __func__, err);
+		dev_err(dev,
+			"%s: failed to init ufs_ss mmio, error code: %d. skip\n",
+			__func__, err);
 		host->ufs_ss_mmio = NULL;
 	}
 
@@ -696,9 +906,9 @@ static int ufs_google_init(struct ufs_hba *hba)
 		devm_platform_ioremap_resource_byname(pdev, "psm_status_hsios");
 	if (IS_ERR(host->hsios_psm_status_mmio)) {
 		err = PTR_ERR(host->hsios_psm_status_mmio);
-		dev_warn(hba->dev,
-			 "%s: failed to init psm_status_hsios_mmio, error code: %d. skip\n",
-			 __func__, err);
+		dev_err(dev,
+			"%s: failed to init psm_status_hsios_mmio, error code: %d. skip\n",
+			__func__, err);
 		host->hsios_psm_status_mmio = NULL;
 	}
 
@@ -707,9 +917,9 @@ static int ufs_google_init(struct ufs_hba *hba)
 						      "psm_status_ufs_hc");
 	if (IS_ERR(host->ufs_hc_psm_status_mmio)) {
 		err = PTR_ERR(host->ufs_hc_psm_status_mmio);
-		dev_warn(hba->dev,
-			 "%s: failed to init ufs_hc_psm_status_mmio, error code: %d. skip\n",
-			 __func__, err);
+		dev_err(dev,
+			"%s: failed to init ufs_hc_psm_status_mmio, error code: %d. skip\n",
+			__func__, err);
 		host->ufs_hc_psm_status_mmio = NULL;
 	}
 
@@ -718,15 +928,15 @@ static int ufs_google_init(struct ufs_hba *hba)
 						      "psm_status_ufs_phy");
 	if (IS_ERR(host->ufs_phy_psm_status_mmio)) {
 		err = PTR_ERR(host->ufs_phy_psm_status_mmio);
-		dev_warn(hba->dev,
-			 "%s: failed to init ufs_phy_psm_status_mmio, error code: %d. skip\n",
-			 __func__, err);
+		dev_err(dev,
+			"%s: failed to init ufs_phy_psm_status_mmio, error code: %d. skip\n",
+			__func__, err);
 		host->ufs_phy_psm_status_mmio = NULL;
 	}
 
 	err = ufs_google_init_vreg(hba);
 	if (err) {
-		ufs_dev_err(hba, "vreg init failed, error code: %d", err);
+		dev_err(dev, "vreg init failed, error code: %d", err);
 		goto out_unset;
 	}
 
@@ -739,16 +949,16 @@ static int ufs_google_init(struct ufs_hba *hba)
 	/* config pin as refclk */
 	host->pinctrl = devm_pinctrl_get(&pdev->dev);
 	if (IS_ERR(host->pinctrl)) {
-		ufs_dev_err(hba, "refclk pinctrl get fail.");
+		dev_err(dev, "refclk pinctrl get fail.");
 		goto out_unset;
 	}
 	host->refclk_on_state = pinctrl_lookup_state(host->pinctrl, "refclk_on");
 	if (IS_ERR(host->refclk_on_state))
-		dev_warn(hba->dev, "refclk pinctrl get on state fail. skip.");
+		dev_err(dev, "refclk pinctrl get on state fail. skip.");
 
 	host->refclk_off_state = pinctrl_lookup_state(host->pinctrl, "refclk_off");
 	if (IS_ERR(host->refclk_off_state))
-		dev_warn(hba->dev, "refclk pinctrl get off state fail. skip.");
+		dev_err(dev, "refclk pinctrl get off state fail. skip.");
 
 	if (!IS_ERR(host->refclk_on_state) && !IS_ERR(host->refclk_off_state))
 		host->caps |= GCAP_RSC_REF_CLK_PINCTRL;
@@ -767,8 +977,7 @@ static int ufs_google_init(struct ufs_hba *hba)
 	err = of_property_read_u32(pdev->dev.of_node, "ip-idle-index",
 				   &host->ip_idle_index);
 	if (err)
-		dev_warn(hba->dev,
-			 "failed to acquire ip-idle-index value. skip\n");
+		dev_err(dev, "failed to acquire ip-idle-index value. skip\n");
 	else
 		host->caps |= GCAP_RSC_IP_IDLE;
 
@@ -777,14 +986,13 @@ static int ufs_google_init(struct ufs_hba *hba)
 							     sizeof(u32));
 	if (host->phy_cal_size < 0) {
 		err = host->phy_cal_size;
-		ufs_dev_err(hba, "failed to obtain phy cal size (%d)\n", err);
+		dev_err(dev, "failed to obtain phy cal size (%d)\n", err);
 		goto out_unset;
 	}
 
-	host->phy_cal_data =
-		devm_kzalloc(dev,
-			     sizeof(*host->phy_cal_data) * host->phy_cal_size,
-			     GFP_KERNEL);
+	host->phy_cal_data = devm_kcalloc(dev, host->phy_cal_size,
+					  sizeof(*host->phy_cal_data),
+					  GFP_KERNEL);
 	if (!host->phy_cal_data) {
 		err = -ENOMEM;
 		goto out_unset;
@@ -794,64 +1002,126 @@ static int ufs_google_init(struct ufs_hba *hba)
 					 (uint32_t *)host->phy_cal_data,
 					 host->phy_cal_size);
 	if (err) {
-		ufs_dev_err(hba, "failed to read 'phy-cal-data' array (%d)\n",
-			    err);
+		dev_err(dev, "failed to read 'phy-cal-data' array (%d)\n", err);
 		goto out_unset;
 	}
 
-	host->pwr_en = devm_gpiod_get_optional(dev, "power", GPIOD_OUT_HIGH);
-	if (IS_ERR(host->pwr_en)) {
-		err = PTR_ERR(host->pwr_en);
-		if (err != -EPROBE_DEFER)
-			dev_warn(hba->dev,
-				 "failed to acquire power gpio: %d. skip\n",
-				 err);
-	} else {
-		host->caps |= GCAP_RSC_UFS_EN_GPIO;
-	}
-
-	host->refclk = devm_clk_get(dev, "ref_clk");
-	if (IS_ERR(host->refclk)) {
-		dev_warn(hba->dev, "failed to acquire refclk: %ld. skip\n",
-			 PTR_ERR(host->refclk));
-		host->refclk = NULL;
-	} else {
-		host->caps |= GCAP_RSC_REF_CLK;
-		clk_prepare_enable(host->refclk);
-		usleep_range(REFCLK_DELAY_MIN_US, REFCLK_DELAY_MAX_US);
-	}
-
-	host->resetb = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_HIGH);
+	/* assert device reset and start config device pins */
+	host->resetb = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
 	if (IS_ERR(host->resetb)) {
 		err = PTR_ERR(host->resetb);
 		if (err != -EPROBE_DEFER)
-			dev_warn(hba->dev, "failed to acquire reset gpio: %d\n",
-				 err);
+			dev_err(dev, "failed to acquire reset gpio: %d\n", err);
 	} else {
 		host->caps |= GCAP_RSC_RSTN_GPIO;
 	}
 
+	host->pwr_en = devm_gpiod_get_optional(dev, "power", GPIOD_OUT_LOW);
+	if (IS_ERR(host->pwr_en)) {
+		err = PTR_ERR(host->pwr_en);
+		if (err != -EPROBE_DEFER)
+			dev_err(dev, "failed to acquire power gpio: %d. skip\n",
+				err);
+	} else {
+		host->caps |= GCAP_RSC_UFS_EN_GPIO;
+	}
+
+	host->gpio_lss = devm_gpiod_get(dev, "lss", GPIOD_OUT_LOW);
+	if (IS_ERR(host->gpio_lss)) {
+		err = PTR_ERR(host->gpio_lss);
+		if (err != -EPROBE_DEFER)
+			dev_err(dev, "failed to acquire lss gpio: %d. skip\n",
+				err);
+	} else {
+		host->caps |= GCAP_RSC_LSS_GPIO;
+	}
+
+	host->gpio_refclk = devm_clk_get(dev, "gpio_ref_clk");
+	if (IS_ERR(host->gpio_refclk)) {
+		dev_err(dev, "failed to acquire gpio_ref_clk: %ld. skip\n",
+			PTR_ERR(host->gpio_refclk));
+		host->gpio_refclk = NULL;
+	} else {
+		host->caps |= GCAP_RSC_GPIO_REF_CLK;
+	}
+
+	host->mphy_refclk = devm_clk_get(dev, "mphy_ref_clk");
+	if (IS_ERR(host->mphy_refclk)) {
+		dev_err(dev, "failed to acquire mphy_refclk: %ld. skip\n",
+			PTR_ERR(host->mphy_refclk));
+		host->mphy_refclk = NULL;
+	}
+
 	host->hsios_aux_clk = devm_clk_get(dev, "aux_clk");
 	if (IS_ERR(host->hsios_aux_clk)) {
-		dev_warn(hba->dev,
-			 "failed to acquire hsios_aux_clk: %ld. skip\n",
-			 PTR_ERR(host->hsios_aux_clk));
+		dev_err(dev, "failed to acquire hsios_aux_clk: %ld. skip\n",
+			PTR_ERR(host->hsios_aux_clk));
 		host->hsios_aux_clk = NULL;
 	} else {
 		host->caps |= GCAP_RSC_AUX_CLK;
 	}
 
+	host->deep_h8_clk = devm_clk_get(dev, "deep_h8_clk");
+	if (IS_ERR(host->deep_h8_clk)) {
+		dev_err(dev, "failed to acquire deep_h8_clk: %ld. skip\n",
+			PTR_ERR(host->deep_h8_clk));
+		host->deep_h8_clk = NULL;
+	} else {
+		host->caps |= GCAP_RSC_DEEP_H8_CLK;
+		ufs_clk_switch(host, host->deep_h8_clk, true,
+			       GCAP_RSC_DEEP_H8_CLK);
+	}
+
+	host->hsios_cp_core_clk = devm_clk_get(dev, "cp_core_clk");
+	if (IS_ERR(host->hsios_cp_core_clk)) {
+		dev_warn(dev,
+			 "failed to acquire hsios_cp_core_clk: %ld. skip\n",
+			 PTR_ERR(host->hsios_cp_core_clk));
+		host->hsios_cp_core_clk = NULL;
+	} else {
+		host->caps |= GCAP_RSC_CP_CORE_CLK;
+		ufs_clk_switch(host, host->hsios_cp_core_clk, true,
+			       GCAP_RSC_CP_CORE_CLK);
+	}
+
 	err = ufs_google_attach_power_domains(host);
 	if (err) {
-		dev_warn(hba->dev,
-			 "%s: failed to attach power domains, error code: %d. skip\n",
-			 __func__, err);
+		dev_err(dev,
+			"%s: failed to attach power domains, error code: %d. skip\n",
+			__func__, err);
 	} else {
 		host->caps |= GCAP_RSC_UFS_PD;
 	}
 
+	/*
+	 * cpu_top_cl is mapped to CPU_TOP_CL in the device-tree, a high-level
+	 * power domain within the CPU power management architecture.
+	 * CPU_TOP_CL is associated with deeper idle states like C4_LITE and
+	 * C4_DEEP. These states are entered when all underlying CPU clusters
+	 * and cores are idle, allowing for significant power savings by
+	 * powering down larger sections of the CPU complex, including the
+	 * DSU (DynamIQ Shared Unit) and other components.
+	 */
+	host->cpu_top_cl = dev_pm_domain_attach_by_name(hba->dev, "cpu_top_cl");
+	if (IS_ERR_OR_NULL(host->cpu_top_cl)) {
+		dev_warn(dev, "failed to acquire cpu top cluster: %ld. skip\n",
+			 PTR_ERR(host->cpu_top_cl));
+		host->cpu_top_cl = NULL;
+	} else {
+		host->caps |= GCAP_RSC_CPU_TOP_CL;
+	}
+
 	ufs_google_init_caps(hba);
 	dev_info(hba->dev, "google caps=%64pbl", &host->caps);
+
+	ufs_google_init_rext(host);
+
+	if (host->caps & GCAP_REF_CLK_ACG &&
+	    (!host->mphy_refclk || !host->gpio_refclk)) {
+		err = -EINVAL;
+		dev_err(hba->dev, "GCAP_REF_CLK_ACG: Missing refclk(s).");
+		goto out_unset;
+	}
 
 	if (host->caps & GCAP_PHY_PATCHING) {
 		/* if google,enable-phy-patching is set, further read patching mode */
@@ -861,7 +1131,7 @@ static int ufs_google_init(struct ufs_hba *hba)
 					   "google,phy-patching-mode",
 					   &patch_mode);
 		if (err) {
-			ufs_dev_err(hba, "invalid phy patching mode %d", err);
+			dev_err(hba->dev, "invalid phy patching mode %d", err);
 			goto out_unset;
 		}
 		host->phy_patch_mode = patch_mode;
@@ -877,7 +1147,20 @@ static int ufs_google_init(struct ufs_hba *hba)
 
 	ufs_google_plat_set_gops(host);
 	if (!host->gops) {
-		ufs_dev_err(hba, "gops not set\n");
+		dev_err(hba->dev, "gops not set\n");
+		goto out_unset;
+	}
+
+	err = ufs_google_register_vh_handlers(host);
+	if (err) {
+		dev_err(hba->dev, "vendor hooks registration failed");
+		goto out_unset;
+	}
+
+	err = ufs_plat_config_cpm(host);
+	if (err) {
+		dev_err(hba->dev, "%s: failed to init ufs cpm, error code: %d.",
+			__func__, err);
 		goto out_unset;
 	}
 
@@ -896,7 +1179,19 @@ static int ufs_google_init(struct ufs_hba *hba)
 	 */
 	ufs_google_pd_get_sync(host);
 
-	hba->android_quirks |= UFSHCD_ANDROID_QUIRK_36BIT_ADDRESS_DMA;
+	err = ufs_google_set_device_on(host);
+	if (err) {
+		dev_err(hba->dev, "set device on failed (%d)", err);
+		goto out_unset;
+	}
+
+	/*
+	 * This quirk should be set at least for LGA, MBU and LAJ. See also:
+	 * https://b.corp.google.com/issues/496003761 (LAJ)
+	 * https://b.corp.google.com/issues/498248007 (MBU)
+	 * https://b.corp.google.com/issues/498535696 (MBU)
+	 */
+	hba->android_quirks |= UFSHCD_ANDROID_QUIRK_AH8_BREAKS_DME;
 #if IS_ENABLED(CONFIG_SOC_LGA)
 	hba->android_quirks |= UFSHCD_ANDROID_QUIRK_SET_IID_TO_ONE;
 #endif
@@ -935,12 +1230,20 @@ static int ufs_google_init(struct ufs_hba *hba)
 
 	err = devm_add_action_or_reset(dev, ufs_google_devm_cleanup, host);
 	if (err) {
-		ufs_dev_err(hba,
-			    "failed to register ufs_google_devm_cleanup\n");
+		dev_err(hba->dev,
+			"failed to register ufs_google_devm_cleanup\n");
 		goto out_unset;
 	}
 
 	ufs_google_init_dbg(hba);
+
+#if IS_ENABLED(CONFIG_UFS_PIXEL_READ_BOOST)
+	err = ufs_google_setup_devfreqs(host);
+	if (err) {
+		ufs_google_detach_power_domains(host);
+		return err;
+	}
+#endif
 
 #if IS_ENABLED(CONFIG_UFS_PIXEL_FEATURES)
 	err = pixel_init(hba, dev, &pixel_ops);
@@ -968,8 +1271,8 @@ static void ufs_google_select_mphy_fw_mode(struct ufs_google_host *host)
 			data &= ~UFS_SRAM_BYPASS_MASK;
 			data |= UFS_SRAM_BOOTLOAD_BYPASS_MASK;
 		} else {
-			dev_warn(host->hba->dev, "invalid mode %d",
-				 host->phy_patch_mode);
+			dev_err(host->hba->dev, "invalid mode %d",
+				host->phy_patch_mode);
 		}
 	} else {
 		/* Use PHY_ROM_MODE */
@@ -989,7 +1292,7 @@ static int ufs_google_pd_notifier(struct notifier_block *nb,
 {
 	struct ufs_google_host *host = container_of(nb, struct ufs_google_host,
 						    top_nb);
-	u32 data, external_mode, rext;
+	u32 data;
 	struct ufs_hba *hba = host->hba;
 	u32 intr_status;
 	int err = 0;
@@ -1000,7 +1303,12 @@ static int ufs_google_pd_notifier(struct notifier_block *nb,
 		host->phy_patching_needed = true;
 		host->phy_init_needed = true;
 
-		ufs_google_phy_setup_vreg(hba, true);
+		err = ufs_google_psm_wait_for_state(host,
+						    host->ufs_phy_psm_status_mmio,
+						    PSM_STATUS_VALID_STATE_PG,
+						    "PHY");
+		if (err)
+			return err;
 
 		ufs_google_select_mphy_fw_mode(host);
 
@@ -1016,35 +1324,54 @@ static int ufs_google_pd_notifier(struct notifier_block *nb,
 		data |= CFG_CLK_SEL_MASK & CFG_CLK_SEL;
 		ufs_top_csr_writel(host, data, REG_HSIOS_UFS_CFG_CLKSEL);
 
-		/* ufs_setup_rext */
-		/* TODO(b/313024923): read external_mode, rext from OTP */
-		external_mode = 1;
-		rext = 0;
+		/*
+		 * Configure the UFS Reference Resistor (REXT) analog matching.
+		 * If the GCAP_REXT_INTERNAL capability is declared by the
+		 * Device Tree, program the persistent dynamic trim setting
+		 * (host->rext_val) stashed stably during the driver probe
+		 * initialization phase and enable internal matching mode.
+		 * If the capability is absent, explicitly disable the
+		 * internal matching arrays.
+		 */
 		data = ufs_top_csr_readl(host, REG_HSIOS_UFS_REXT_CTRL);
-		if (external_mode) {
-			data &= ~UFS_REXT_EN_MASK;
-		} else {
-			data |= FIELD_PREP(UFS_REXT_CONTROL_MASK, rext);
+		data &= ~UFS_REXT_EN_MASK;
+		if (host->caps & GCAP_REXT_INTERNAL) {
+			data &= ~UFS_REXT_CONTROL_MASK;
+			data |= FIELD_PREP(UFS_REXT_CONTROL_MASK, host->rext_val);
 			data |= UFS_REXT_EN_MASK;
 		}
 		ufs_top_csr_writel(host, data, REG_HSIOS_UFS_REXT_CTRL);
 
+		/* 2e. set UFS_LA_RSTMODE_REQ according to LSS mode */
+		data = FIELD_PREP(UFS_LA_RSTMODE_REQ_MASK,
+				  ufs_use_hs_lss(host));
+		ufs_top_csr_writel(host, data, REG_HSIOS_UFS_LA_RSTMODE_REQ);
+
 		break;
 	case GENPD_NOTIFY_ON:
+		/* TODO: b/458531873 - let CPM poll PHY state as well */
+		/* 2f: Wait for HC and PHY PSM to reach ON state */
+		err = ufs_google_psm_wait_for_state(host,
+						    host->ufs_phy_psm_status_mmio,
+						    PSM_STATUS_VALID_STATE_ON,
+						    "PHY");
+		if (err)
+			return err;
+
 		/* ufs_wait_for_fips_140 */
 		err = readl_poll_timeout(host->ufs_top_mmio +
 						 REG_HSIOS_UFS_ENC_STAT,
 					 data, data & CRYPTO_KAT_STAT_MASK,
 					 FIPS_140_DELAY_US,
 					 FIPS_140_TIMEOUT_US);
-		if (err) {
-			ufs_dev_err(hba, "FIPS 140 timeout (%d)\n", err);
-			return err;
-		}
-
-		err = ufs_google_set_device_on(host);
 		if (err)
-			ufs_dev_err(hba, "set device on failed (%d)", err);
+			return err;
+
+		/*
+		 * HPG recommends to keep refclk gating control always-on,
+		 * thus should config only on first initialization
+		 */
+		ufs_plat_set_refclk_control(host, true);
 
 		intr_status = ufshcd_readl(hba, REG_IS);
 		intr_status &= VS_INTERRUPT_MASK;
@@ -1052,11 +1379,12 @@ static int ufs_google_pd_notifier(struct notifier_block *nb,
 
 		break;
 	case GENPD_NOTIFY_OFF:
-		err = ufs_google_set_device_off(host);
+		err = ufs_google_psm_wait_for_state(host,
+						    host->ufs_phy_psm_status_mmio,
+						    PSM_STATUS_VALID_STATE_PG,
+						    "PHY");
 		if (err)
-			ufs_dev_err(hba, "set device off failed (%d)", err);
-
-		ufs_google_phy_setup_vreg(hba, false);
+			return err;
 
 		host->calibration_needed = true;
 		host->phy_patching_needed = true;
@@ -1067,6 +1395,37 @@ static int ufs_google_pd_notifier(struct notifier_block *nb,
 	}
 
 	return err;
+}
+
+static int ufs_google_lga_set_dma_mask(struct ufs_hba *hba)
+{
+	return dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(36));
+}
+
+static int ufs_google_apply_dev_quirks(struct ufs_hba *hba)
+{
+	/*
+	 * The purpose of this function is to customize UFS device behavior by
+	 * setting hba->dev_quirks and/or by calling ufshcd_dme_set(). Disable
+	 * AHIT from this function in SDB mode since this function is the first
+	 * host driver callback after it has been decided whether or not MCQ
+	 * will be used.
+	 */
+	if (hba->mcq_enabled)
+		return 0;
+
+	/*
+	 * Disable AHIT in SDB mode. We can't call
+	 * ufshcd_configure_auto_hibern8() because it would trigger a kernel
+	 * crash. Calling that function is only safe after LUN scanning
+	 * completed. TODO(b/412982589): analyze why UFS command timeouts occur
+	 * with AHIT enabled in SDB mode.
+	 */
+	hba->ahit = 0;
+	ufshcd_writel(hba, hba->ahit, REG_AUTO_HIBERNATE_IDLE_TIMER);
+	hba->quirks |= UFSHCD_QUIRK_BROKEN_AUTO_HIBERN8;
+
+	return 0;
 }
 
 /**
@@ -1096,12 +1455,8 @@ static int ufshcd_google_dme_set_seq(struct ufs_hba *hba,
 	for (i = 0; i < num; ++i) {
 		err = ufshcd_dme_set_attr(hba, arr[i].sel, ATTR_SET_NOR,
 					  arr[i].val, arr[i].peer);
-		if (err) {
-			ufs_dev_err(hba, "dme_set_seq sel=0x%x, val=0x%x (%pe)",
-				    UIC_GET_ATTR_ID(arr[i].sel), arr[i].val,
-				    ERR_PTR(err));
+		if (err)
 			return err;
-		}
 	}
 
 	return 0;
@@ -1113,10 +1468,9 @@ static int ufs_google_wait_for_uic_cmd(struct ufs_hba *hba,
 	u32 val;
 
 	if (read_poll_timeout(ufshcd_readl, val, val & UIC_COMMAND_COMPL,
-				    UIC_COMMAND_DELAY_US,
-				    UIC_COMMAND_POLL_TIMEOUT_US, false, hba,
-				    REG_INTERRUPT_STATUS)) {
-		ufs_dev_err(hba, "uic completion timeout val=%08x\n", val);
+			      UIC_COMMAND_DELAY_US, UIC_COMMAND_POLL_TIMEOUT_US,
+			      false, hba, REG_INTERRUPT_STATUS)) {
+		dev_err(hba->dev, "uic completion timeout val=%08x\n", val);
 		return -ETIMEDOUT;
 	}
 
@@ -1160,27 +1514,32 @@ static int ufs_google_wait_for_uic_cmd(struct ufs_hba *hba,
 	return uic_cmd->argument2 & MASK_UIC_COMMAND_RESULT;
 }
 
-static int ufs_google_send_uic_cmd(struct ufs_hba *hba,
-				   struct uic_command *uic_cmd)
+static void __ufs_google_send_uic_cmd(struct ufs_hba *hba,
+				      const struct uic_command *uic_cmd)
 {
-	int ret = -ETIMEDOUT;
-
-	mutex_lock(&hba->uic_cmd_mutex);
-
-	/* Write Args */
 	ufshcd_writel(hba, uic_cmd->argument1, REG_UIC_COMMAND_ARG_1);
 	ufshcd_writel(hba, uic_cmd->argument2, REG_UIC_COMMAND_ARG_2);
 	ufshcd_writel(hba, uic_cmd->argument3, REG_UIC_COMMAND_ARG_3);
-
-	/* Write UIC Cmd */
 	ufshcd_writel(hba, uic_cmd->command & COMMAND_OPCODE_MASK,
 		      REG_UIC_COMMAND);
+}
 
-	ret = ufs_google_wait_for_uic_cmd(hba, uic_cmd);
+static int ufs_google_send_uic_cmd(struct ufs_hba *hba,
+				   struct uic_command *uic_cmd)
+{
+	guard(mutex)(&hba->uic_cmd_mutex);
+	if (hba->android_quirks & UFSHCD_ANDROID_QUIRK_AH8_BREAKS_DME) {
+		unsigned long flags;
 
-	mutex_unlock(&hba->uic_cmd_mutex);
-
-	return ret;
+		local_irq_save(flags);
+		preempt_disable();
+		__ufs_google_send_uic_cmd(hba, uic_cmd);
+		preempt_enable();
+		local_irq_restore(flags);
+	} else {
+		__ufs_google_send_uic_cmd(hba, uic_cmd);
+	}
+	return ufs_google_wait_for_uic_cmd(hba, uic_cmd);
 }
 
 static int ufs_google_dme_set(struct ufs_hba *hba, u32 attr_sel, u32 mib_val)
@@ -1197,7 +1556,7 @@ static int ufs_google_dme_set(struct ufs_hba *hba, u32 attr_sel, u32 mib_val)
 	ret = ufs_google_send_uic_cmd(hba, &uic_cmd);
 	ufshcd_release(hba);
 	if (ret)
-		ufs_dev_err(hba, "google_dme_set failed ret=%d\n", ret);
+		dev_err(hba->dev, "google_dme_set failed ret=%d\n", ret);
 
 	return ret;
 }
@@ -1214,7 +1573,7 @@ static int ufs_google_dme_get(struct ufs_hba *hba, u32 attr_sel, u32 *mib_val)
 	ret = ufs_google_send_uic_cmd(hba, &uic_cmd);
 	ufshcd_release(hba);
 	if (ret) {
-		ufs_dev_err(hba, "google_dme_get failed ret=%d\n", ret);
+		dev_err(hba->dev, "google_dme_get failed ret=%d\n", ret);
 		return ret;
 	}
 
@@ -1248,16 +1607,16 @@ static int ufs_google_mphy_indirect_reg_write(struct ufs_hba *hba,
 	ret = ufs_google_dme_set(hba, UIC_ARG_MIB(MPHY_G5_CBAPBPADDRLSB_OFFSET),
 				 reg->addr & 0xFF);
 	if (ret) {
-		ufs_dev_err(hba,
-			    "failed to set MPHY_G5_CBAPBPADDRLSB_OFFSET\n");
+		dev_err(hba->dev,
+			"failed to set MPHY_G5_CBAPBPADDRLSB_OFFSET\n");
 		goto out;
 	}
 
 	ret = ufs_google_dme_set(hba, UIC_ARG_MIB(MPHY_G5_CBAPBPADDRMSB_OFFSET),
 				 reg->addr >> 8);
 	if (ret) {
-		ufs_dev_err(hba,
-			    "failed to set MPHY_G5_CBAPBPADDRMSB_OFFSET\n");
+		dev_err(hba->dev,
+			"failed to set MPHY_G5_CBAPBPADDRMSB_OFFSET\n");
 		goto out;
 	}
 
@@ -1265,8 +1624,8 @@ static int ufs_google_mphy_indirect_reg_write(struct ufs_hba *hba,
 				 UIC_ARG_MIB(MPHY_G5_CBAPBPWDATALSB_OFFSET),
 				 reg->data & 0xFF);
 	if (ret) {
-		ufs_dev_err(hba,
-			    "failed to set MPHY_G5_CBAPBPWDATALSB_OFFSET\n");
+		dev_err(hba->dev,
+			"failed to set MPHY_G5_CBAPBPWDATALSB_OFFSET\n");
 		goto out;
 	}
 
@@ -1274,8 +1633,8 @@ static int ufs_google_mphy_indirect_reg_write(struct ufs_hba *hba,
 				 UIC_ARG_MIB(MPHY_G5_CBAPBPWDATAMSB_OFFSET),
 				 reg->data >> 8);
 	if (ret) {
-		ufs_dev_err(hba,
-			    "failed to set MPHY_G5_CBAPBPWDATAMSB_OFFSET\n");
+		dev_err(hba->dev,
+			"failed to set MPHY_G5_CBAPBPWDATAMSB_OFFSET\n");
 		goto out;
 	}
 
@@ -1283,8 +1642,8 @@ static int ufs_google_mphy_indirect_reg_write(struct ufs_hba *hba,
 				 UIC_ARG_MIB(MPHY_G5_CBAPBPWRITESEL_OFFSET),
 				 0x1);
 	if (ret) {
-		ufs_dev_err(hba,
-			    "failed to set MPHY_G5_CBAPBPWRITESEL_OFFSET\n");
+		dev_err(hba->dev,
+			"failed to set MPHY_G5_CBAPBPWRITESEL_OFFSET\n");
 	}
 
 out:
@@ -1307,16 +1666,16 @@ static int ufs_google_mphy_indirect_reg_read(struct ufs_hba *hba,
 	ret = ufs_google_dme_set(hba, UIC_ARG_MIB(MPHY_G5_CBAPBPADDRLSB_OFFSET),
 				 reg->addr & 0xFF);
 	if (ret) {
-		ufs_dev_err(hba,
-			    "failed to set MPHY_G5_CBAPBPADDRLSB_OFFSET\n");
+		dev_err(hba->dev,
+			"failed to set MPHY_G5_CBAPBPADDRLSB_OFFSET\n");
 		goto out;
 	}
 
 	ret = ufs_google_dme_set(hba, UIC_ARG_MIB(MPHY_G5_CBAPBPADDRMSB_OFFSET),
 				 reg->addr >> 8);
 	if (ret) {
-		ufs_dev_err(hba,
-			    "failed to set MPHY_G5_CBAPBPADDRMSB_OFFSET\n");
+		dev_err(hba->dev,
+			"failed to set MPHY_G5_CBAPBPADDRMSB_OFFSET\n");
 		goto out;
 	}
 
@@ -1324,8 +1683,8 @@ static int ufs_google_mphy_indirect_reg_read(struct ufs_hba *hba,
 				 UIC_ARG_MIB(MPHY_G5_CBAPBPWRITESEL_OFFSET),
 				 0x0);
 	if (ret) {
-		ufs_dev_err(hba,
-			    "failed to set MPHY_G5_CBAPBPWRITESEL_OFFSET\n");
+		dev_err(hba->dev,
+			"failed to set MPHY_G5_CBAPBPWRITESEL_OFFSET\n");
 		goto out;
 	}
 
@@ -1333,8 +1692,8 @@ static int ufs_google_mphy_indirect_reg_read(struct ufs_hba *hba,
 				 UIC_ARG_MIB(MPHY_G5_CBAPBPRDATALSB_OFFSET),
 				 &data);
 	if (ret) {
-		ufs_dev_err(hba,
-			    "failed to set MPHY_G5_CBAPBPRDATALSB_OFFSET\n");
+		dev_err(hba->dev,
+			"failed to set MPHY_G5_CBAPBPRDATALSB_OFFSET\n");
 		goto out;
 	}
 	reg->data = data & 0xFF;
@@ -1343,8 +1702,8 @@ static int ufs_google_mphy_indirect_reg_read(struct ufs_hba *hba,
 				 UIC_ARG_MIB(MPHY_G5_CBAPBPRDATAMSB_OFFSET),
 				 &data);
 	if (ret) {
-		ufs_dev_err(hba,
-			    "failed to set MPHY_G5_CBAPBPRDATAMSB_OFFSET\n");
+		dev_err(hba->dev,
+			"failed to set MPHY_G5_CBAPBPRDATAMSB_OFFSET\n");
 		reg->data = 0;
 	} else {
 		reg->data |= data << 8;
@@ -1376,7 +1735,7 @@ static void ufs_google_mphy_apb_mode_select(struct ufs_google_host *host,
 static int ufs_google_set_done_bits(struct ufs_hba *hba)
 {
 	int ret;
-	const struct mphy_reg set_done_registers[] = {
+	static const struct mphy_reg set_done_registers[] = {
 		{ RAWLANEANONN_DIG_RX_AFE_DFE_CAL_DONE_LANE0, 0xc },
 		{ RAWLANEANONN_DIG_RX_AFE_DFE_CAL_DONE_LANE1, 0xc },
 		{ RAWLANEANONN_DIG_RX_STARTUP_CAL_ALGO_CTL_1_LANE0, 0x2 },
@@ -1391,9 +1750,9 @@ static int ufs_google_set_done_bits(struct ufs_hba *hba)
 
 	ret = ufs_google_mphy_indirect_reg_write(hba, &mpll_status);
 	if (ret) {
-		ufs_dev_err(hba,
-			    "failed to write phy reg: 0x%x, value: 0x%x (%d)\n",
-			    mpll_status.addr, mpll_status.data, ret);
+		dev_err(hba->dev,
+			"failed to write phy reg: 0x%x, value: 0x%x (%d)\n",
+			mpll_status.addr, mpll_status.data, ret);
 		return ret;
 	}
 
@@ -1405,8 +1764,8 @@ static int ufs_google_set_done_bits(struct ufs_hba *hba)
 
 		ret = ufs_google_mphy_indirect_reg_read(hba, &tmp_reg);
 		if (ret) {
-			ufs_dev_err(hba, "failed to read phy reg: 0x%x (%d)\n",
-				    tmp_reg.addr, ret);
+			dev_err(hba->dev, "failed to read phy reg: 0x%x (%d)\n",
+				tmp_reg.addr, ret);
 			return ret;
 		}
 
@@ -1414,9 +1773,9 @@ static int ufs_google_set_done_bits(struct ufs_hba *hba)
 
 		ret = ufs_google_mphy_indirect_reg_write(hba, &tmp_reg);
 		if (ret) {
-			ufs_dev_err(hba,
-				    "failed to write phy reg: 0x%x, value: 0x%x (%d)\n",
-				    tmp_reg.addr, tmp_reg.data, ret);
+			dev_err(hba->dev,
+				"failed to write phy reg: 0x%x, value: 0x%x (%d)\n",
+				tmp_reg.addr, tmp_reg.data, ret);
 			return ret;
 		}
 	}
@@ -1427,18 +1786,18 @@ static int ufs_google_set_done_bits(struct ufs_hba *hba)
 static int ufs_google_apply_calibration(struct ufs_hba *hba)
 {
 	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	ktime_t calibration_start = ktime_get();
 	size_t i;
 	int ret;
-	ktime_t calibration_start = ktime_get();
 
 	for (i = 0; i < host->phy_cal_size; i++) {
 		ret = ufs_google_mphy_indirect_reg_write(hba,
 							 &host->phy_cal_data[i]);
 		if (ret) {
-			ufs_dev_err(hba,
-				    "failed to apply calibration parameter addr=%x data=%x\n",
-				    host->phy_cal_data[i].addr,
-				    host->phy_cal_data[i].data);
+			dev_err(hba->dev,
+				"failed to apply calibration parameter addr=%x data=%x\n",
+				host->phy_cal_data[i].addr,
+				host->phy_cal_data[i].data);
 			goto out;
 		}
 	}
@@ -1448,6 +1807,68 @@ static int ufs_google_apply_calibration(struct ufs_hba *hba)
 out:
 	dev_info(hba->dev, "applying calibration took %lld usec\n",
 		 ktime_to_us(ktime_sub(ktime_get(), calibration_start)));
+
+	return ret;
+}
+
+static int ufs_google_apply_mphy_pmc_war(struct ufs_hba *hba)
+{
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	static const struct mphy_reg pre_pmc_cfg = {
+		.addr = SUP_DIG_ANA_XF_BG_OVRD_OUT,
+		.data = 0xC,
+	};
+	static const struct mphy_reg post_pmc_cfg = {
+		.addr = SUP_DIG_ANA_XF_BG_OVRD_OUT,
+		.data = 0,
+	};
+	static const u32 lane_attrs[] = {
+		PA_ACTIVERXDATALANES,
+		PA_ACTIVETXDATALANES,
+	};
+	u32 mode;
+	int ret;
+
+	/* Apply necessary work around for HS-LSS case before PMC */
+	if (host->caps & GCAP_HS_LSS) {
+		ret = ufs_google_mphy_indirect_reg_write(hba, &pre_pmc_cfg);
+		if (ret) {
+			dev_err(hba->dev,
+				"failed to set addr=%x data=%x (%d)\n",
+				pre_pmc_cfg.addr, pre_pmc_cfg.data, ret);
+			return ret;
+		}
+	}
+
+	/* Perform PMC to 2x lanes */
+	for (u32 i = 0; i < ARRAY_SIZE(lane_attrs); i++) {
+		ret = ufshcd_dme_set(hba, UIC_ARG_MIB(lane_attrs[i]),
+				     UFS_LANE_2);
+		if (ret) {
+			dev_err(hba->dev,
+				"failed to set lane attribute %#x to 2 (%d)\n",
+				lane_attrs[i], ret);
+			return ret;
+		}
+	}
+
+	/* Trigger PMC */
+	mode = host->caps & GCAP_HS_LSS ? FASTAUTO_MODE : SLOWAUTO_MODE;
+	ret = ufshcd_uic_change_pwr_mode(hba, mode << 4 | mode);
+	if (ret) {
+		dev_err(hba->dev,
+			"failed to set perform power mode change (%d)\n", ret);
+		return ret;
+	}
+
+	/* Apply necessary work around for HS-LSS case after PMC */
+	if (host->caps & GCAP_HS_LSS) {
+		ret = ufs_google_mphy_indirect_reg_write(hba, &post_pmc_cfg);
+		if (ret)
+			dev_err(hba->dev,
+				"failed to set addr=%x data=%x (%d)\n",
+				post_pmc_cfg.addr, post_pmc_cfg.data, ret);
+	}
 
 	return ret;
 }
@@ -1469,15 +1890,14 @@ static int ufs_google_phy_initialization(struct ufs_hba *hba)
 	 * configuration. If neither AH8 nor SWH8 support HC PG, then disable
 	 * PHY as well. Otherwise enable it.
 	 */
-	ret = ufshcd_dme_set_logged(hba, UIC_ARG_MIB(MPHY_G5_CBULPH8_OFFSET),
-				    !!(host->caps &
-				       (GCAP_HC_AH8_PG | GCAP_HC_SWH8_PG)));
+	ret = ufshcd_dme_set(hba, UIC_ARG_MIB(MPHY_G5_CBULPH8_OFFSET),
+			     !!(host->caps &
+				(GCAP_HC_AH8_PG | GCAP_HC_SWH8_PG)));
 	if (ret)
 		return ret;
 
 	/* Trigger configuration update */
-	ret = ufshcd_dme_set_logged(hba, UIC_ARG_MIB(UNIPRO_DME_MPHY_CFG_UPD),
-				    0x1);
+	ret = ufshcd_dme_set(hba, UIC_ARG_MIB(UNIPRO_DME_MPHY_CFG_UPD), 0x1);
 	if (ret)
 		return ret;
 
@@ -1489,7 +1909,7 @@ static int ufs_google_phy_initialization(struct ufs_hba *hba)
 	/* Program RMMI attributes and update configuration */
 	ret = ufs_plat_get_phy_rmmi_attrs(host, &rmmi_attrs, &attr_len);
 	if (ret) {
-		ufs_dev_err(hba, "get rmmi attrs failed %d", ret);
+		dev_err(hba->dev, "get rmmi attrs failed %d", ret);
 		return ret;
 	}
 	ret = ufshcd_google_dme_set_seq(hba, rmmi_attrs, attr_len);
@@ -1502,7 +1922,7 @@ static int ufs_google_phy_initialization(struct ufs_hba *hba)
 	 */
 	ret = ufs_plat_get_phy_rmmi_tx_eq_attrs(host, &rmmi_attrs, &attr_len);
 	if (ret) {
-		ufs_dev_err(hba, "get tx eq rmmi attrs failed %d", ret);
+		dev_err(hba->dev, "get tx eq rmmi attrs failed %d", ret);
 		return ret;
 	}
 	ret = ufshcd_google_dme_set_seq(hba, rmmi_attrs, attr_len);
@@ -1511,10 +1931,8 @@ static int ufs_google_phy_initialization(struct ufs_hba *hba)
 
 	/* 3f. Release phy reset */
 	ret = reset_control_deassert(host->phy_rst);
-	if (ret) {
-		ufs_dev_err(hba, "failed to deassert phy_rst (%d)\n", ret);
+	if (ret)
 		return ret;
-	}
 
 	if (!skip_phy_init) {
 		ret = readl_poll_timeout(host->ufs_top_mmio +
@@ -1522,10 +1940,8 @@ static int ufs_google_phy_initialization(struct ufs_hba *hba)
 					 data, data & UFS_SRAM_INIT_DONE_MASK,
 					 PHY_STATUS_DELAY_US,
 					 PHY_STATUS_TIMEOUT_US);
-		if (ret) {
-			ufs_dev_err(hba, "sram init timeout (%d)\n", ret);
+		if (ret)
 			return ret;
-		}
 	}
 
 	/* 3g. Check if Rate B calibration needs to be applied */
@@ -1550,7 +1966,7 @@ static int ufs_google_phy_initialization(struct ufs_hba *hba)
 		/* Apply UFS PHY SRAM patch */
 		ret = ufs_plat_get_phy_fw_patch(host, &patch_data, &patch_sz);
 		if (ret) {
-			ufs_dev_err(hba, "get mphy patch failed %d", ret);
+			dev_err(hba->dev, "get mphy patch failed %d", ret);
 			return ret;
 		}
 		memcpy_toio(host->ufs_phy_sram_mmio, patch_data, patch_sz);
@@ -1572,9 +1988,30 @@ static int ufs_google_phy_initialization(struct ufs_hba *hba)
 		host->phy_patching_needed = false;
 	}
 
+	/*
+	 * Apply mphy configuration during phy init for asymmetric power mode
+	 * change workaround.
+	 */
+	if ((host->caps & GCAP_MPHY_PMC_WAR) && (host->caps & GCAP_HS_LSS)) {
+		static const struct mphy_reg mphy_cfg[] = {
+			{ LANE1_DIG_RX_CDR_CDR_CTL_6, 0x2D56 },
+			{ LANE2_DIG_RX_CDR_CDR_CTL_6, 0x2D56 },
+		};
+		for (u32 i = 0; i < ARRAY_SIZE(mphy_cfg); i++) {
+			ret = ufs_google_mphy_indirect_reg_write(hba,
+								 &mphy_cfg[i]);
+			if (ret) {
+				dev_err(hba->dev,
+					"failed to write init war reg %x (%d)\n",
+					mphy_cfg[i].addr, ret);
+				return ret;
+			}
+		}
+	}
+
 	/* 3i. Enable MPHY */
-	ret = ufshcd_dme_set_logged(hba, UIC_ARG_MIB(UNIPRO_DME_MPHY_DISABLE),
-				    0x0);
+	ret = ufshcd_dme_set(hba,
+			   UIC_ARG_MIB(UNIPRO_DME_MPHY_DISABLE), 0x0);
 	if (ret)
 		return ret;
 
@@ -1584,9 +2021,10 @@ static int ufs_google_phy_initialization(struct ufs_hba *hba)
 	/* 3j. Wait for MPHY ready */
 	ret = ufs_plat_poll_phy_ready(host);
 	if (ret)
-		ufs_dev_err(hba, "mphy not ready %d", ret);
+		dev_err(hba->dev, "mphy not ready %d", ret);
 
 	host->phy_init_needed = false;
+
 	return ret;
 }
 
@@ -1596,7 +2034,8 @@ static int ufs_google_phy_initialization(struct ufs_hba *hba)
  */
 static int ufs_cport_setup(struct ufs_hba *hba)
 {
-	const struct ufs_dme_attr connection_attrs[] = {
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	static const struct ufs_dme_attr connection_attrs[] = {
 		{ UIC_ARG_MIB(T_CONNECTIONSTATE), 0x0, DME_LOCAL },
 		{ UIC_ARG_MIB(N_DEVICEID), 0x0, DME_LOCAL },
 		{ UIC_ARG_MIB(N_DEVICEID_VALID), 0x1, DME_LOCAL },
@@ -1616,9 +2055,22 @@ static int ufs_cport_setup(struct ufs_hba *hba)
 		{ UIC_ARG_MIB(T_CPORTMODE), 0x1, DME_PEER },
 		{ UIC_ARG_MIB(T_CONNECTIONSTATE), 0x1, DME_PEER }
 	};
+	u32 conn_state;
+	int ret;
 
-	return ufshcd_google_dme_set_seq(hba, connection_attrs,
-					 ARRAY_SIZE(connection_attrs));
+	if (!(host->caps & GCAP_SKIP_CPORT_SETUP))
+		return ufshcd_google_dme_set_seq(hba, connection_attrs,
+						 ARRAY_SIZE(connection_attrs));
+
+	ret = read_poll_timeout(ufshcd_dme_peer_get, ret,
+				!ret && conn_state == CPORT_CONNECTED,
+				CPORT_CONNECTION_DELAY_US,
+				CPORT_CONNECTION_TIMEOUT_US, false, hba,
+				UIC_ARG_MIB(T_CONNECTIONSTATE), &conn_state);
+	if (ret)
+		dev_err(hba->dev, "CPORT connection failed (%d)\n", ret);
+
+	return ret;
 }
 
 static void ufs_pm_up(struct ufs_google_host *host)
@@ -1631,19 +2083,10 @@ static void ufs_pm_up(struct ufs_google_host *host)
 	if (host->caps & GCAP_RSC_IP_IDLE)
 		google_update_ip_idle_status(host->ip_idle_index, STATE_BUSY);
 
-	if (host->caps & GCAP_RSC_AUX_CLK) {
-		int ret = clk_prepare_enable(host->hsios_aux_clk);
+	ufs_clk_switch(host, host->hsios_aux_clk, true, GCAP_RSC_AUX_CLK);
 
-		if (ret) {
-			struct ufs_hba *hba = host->hba;
-
-			dev_warn(hba->dev,
-				 "hsios_aux_clk failed to enable, ret=%d", ret);
-		}
-	}
-
-	if (host->caps & GCAP_BLOCK_C4)
-		gs_domain_c4_disable();
+	if (host->caps & GCAP_RSC_CPU_TOP_CL)
+		pm_runtime_get_sync(host->cpu_top_cl);
 
 	host->pm_request_active = true;
 }
@@ -1661,8 +2104,8 @@ static void ufs_pm_down(struct ufs_google_host *host)
 	if (host->caps & GCAP_RSC_AUX_CLK)
 		clk_disable_unprepare(host->hsios_aux_clk);
 
-	if (host->caps & GCAP_BLOCK_C4)
-		gs_domain_c4_enable();
+	if (host->caps & GCAP_RSC_CPU_TOP_CL)
+		pm_runtime_put_sync(host->cpu_top_cl);
 
 	host->pm_request_active = false;
 }
@@ -1696,7 +2139,7 @@ static int ufs_google_update_tactivate(struct ufs_hba *hba)
 	ret = ufshcd_dme_get(hba, UIC_ARG_MIB(UNIPRO_L15_PA_T_ACTIVATE),
 			     &tactivate);
 	if (ret) {
-		ufs_dev_err(hba, "unable to get T_ACTIVATE, err %d\n", ret);
+		dev_err(hba->dev, "unable to get T_ACTIVATE, err %d\n", ret);
 		return ret;
 	}
 
@@ -1705,11 +2148,11 @@ static int ufs_google_update_tactivate(struct ufs_hba *hba)
 	 * negotiating with device. b/410823571
 	 */
 	tactivate += 1;
-	ret = ufshcd_dme_set_logged(hba, UIC_ARG_MIB(UNIPRO_L15_PA_T_ACTIVATE),
-				    tactivate);
+	ret = ufshcd_dme_set(hba, UIC_ARG_MIB(UNIPRO_L15_PA_T_ACTIVATE),
+			     tactivate);
 	if (ret)
-		ufs_dev_err(hba, "unable to set T_ACTIVATE %u, err %d\n",
-			    tactivate, ret);
+		dev_err(hba->dev, "unable to set T_ACTIVATE %u, err %d\n",
+			tactivate, ret);
 	return ret;
 }
 
@@ -1721,6 +2164,7 @@ static int ufs_google_update_tactivate(struct ufs_hba *hba)
 static int ufs_google_link_startup_notify(struct ufs_hba *hba,
 					  enum ufs_notify_change_status status)
 {
+	static const unsigned int lss_post_change_delay_us = 500;
 	struct ufs_google_host *host = ufshcd_get_variant(hba);
 	int err;
 	u32 reg_clear_mask = 0;
@@ -1732,32 +2176,38 @@ static int ufs_google_link_startup_notify(struct ufs_hba *hba,
 			      (HCLKDIV_VALUE << HCLKDIV_OFFSET) & HCLKDIV_MASK,
 			      REG_HCLKDIV);
 
-#if IS_ENABLED(CONFIG_SOC_LGA)
-		/* TODO(b/413175647): Misconfig of REG_UFS_AWUSER_VC */
-		/* Configure vc to 1 for read and write */
-		ufs_top_csr_writel(host,
-				   FIELD_PREP(UFS_AWUSER_VC, 1) |
-					   FIELD_PREP(UFS_ARUSER_VC, 1),
-				   REG_HSIOS_UFS_AWUSER_VC);
-#endif
+		ufs_plat_config_vs(host);
+
 		err = ufshcd_vops_phy_initialization(hba);
 		if (err) {
-			ufs_dev_err(hba,
-				    "PHY initialization failed, error: %d\n",
-				    err);
+			dev_err(hba->dev,
+				"PHY initialization failed, error: %d\n", err);
 			return err;
 		}
 		break;
 	case POST_CHANGE:
+		/* TODO: b/456375140 - CPORT error */
+		usleep_range(lss_post_change_delay_us,
+			     lss_post_change_delay_us + 100);
+
 		/* 4b. Host TActivate update */
 		err = ufs_google_update_tactivate(hba);
 		if (err)
 			return err;
 
+		/* Apply asymmetric power mode change workaround if needed */
+		if (host->caps & GCAP_MPHY_PMC_WAR) {
+			err = ufs_google_apply_mphy_pmc_war(hba);
+			if (err)
+				return err;
+			dev_info(hba->dev,
+				 "asymmetric power mode change workaround applied\n");
+		}
+
 		err = ufs_cport_setup(hba);
 		if (err) {
-			ufs_dev_err(hba, "CPORT setup failed, error: %d\n",
-				    err);
+			dev_err(hba->dev, "CPORT setup failed, error: %d\n",
+				err);
 			return err;
 		}
 
@@ -1793,45 +2243,43 @@ ufs_google_pwr_change_notify(struct ufs_hba *hba,
 			     struct ufs_pa_layer_attr *dev_req_params)
 {
 	struct ufs_google_host *host = ufshcd_get_variant(hba);
-	struct ufs_dev_params ufs_google_cap;
+	struct ufs_host_params host_params;
 	int ret = 0;
 
 	if (!dev_req_params) {
-		ufs_dev_err(hba, "%s: incoming dev_req_params is NULL\n",
-			    __func__);
+		dev_err(hba->dev, "%s: incoming dev_req_params is NULL\n", __func__);
 		return -EINVAL;
 	}
 
 	switch (status) {
 	case PRE_CHANGE:
-		ufshcd_init_pwr_dev_param(&ufs_google_cap);
+		ufshcd_init_host_params(&host_params);
 
-		ufs_google_cap.hs_rx_gear = host->google_pwr_mode.gear_rx;
-		ufs_google_cap.hs_tx_gear = host->google_pwr_mode.gear_tx;
-		ufs_google_cap.rx_lanes = host->google_pwr_mode.lane_rx;
-		ufs_google_cap.tx_lanes = host->google_pwr_mode.lane_tx;
-		ufs_google_cap.rx_pwr_hs = host->google_pwr_mode.pwr_rx;
-		ufs_google_cap.tx_pwr_hs = host->google_pwr_mode.pwr_tx;
-		ufs_google_cap.hs_rate = host->google_pwr_mode.hs_rate;
+		host_params.hs_rx_gear = host->google_pwr_mode.gear_rx;
+		host_params.hs_tx_gear = host->google_pwr_mode.gear_tx;
+		host_params.rx_lanes = host->google_pwr_mode.lane_rx;
+		host_params.tx_lanes = host->google_pwr_mode.lane_tx;
+		host_params.rx_pwr_hs = host->google_pwr_mode.pwr_rx;
+		host_params.tx_pwr_hs = host->google_pwr_mode.pwr_tx;
+		host_params.hs_rate = host->google_pwr_mode.hs_rate;
 
-		ret = ufshcd_get_pwr_dev_param(&ufs_google_cap,
-					       dev_max_params,
-					       dev_req_params);
+		ret = ufshcd_negotiate_pwr_params(&host_params,
+						  dev_max_params,
+						  dev_req_params);
 		if (ret) {
-			ufs_dev_err(hba,
-				    "%s: failed to determine capabilities (%d)\n",
-				    __func__, ret);
+			dev_err(hba->dev,
+				"%s: failed to determine capabilities (%d)\n",
+				__func__, ret);
 			return ret;
 		}
 
 		if (dev_req_params->pwr_rx != dev_req_params->pwr_tx ||
 		    dev_req_params->gear_rx != dev_req_params->gear_tx) {
-			ufs_dev_err(hba,
-				    "%s: rx/tx must be symmetrical pwr: %u/%u gear: %u/%u\n",
-				    __func__, dev_req_params->pwr_rx,
-				    dev_req_params->pwr_tx,
-				    dev_req_params->gear_rx,
-				    dev_req_params->gear_tx);
+			dev_err(hba->dev,
+				"%s: rx/tx must be symmetrical pwr: %u/%u gear: %u/%u\n",
+				__func__, dev_req_params->pwr_rx,
+				dev_req_params->pwr_tx, dev_req_params->gear_rx,
+				dev_req_params->gear_tx);
 			return -EINVAL;
 		}
 
@@ -1843,18 +2291,18 @@ ufs_google_pwr_change_notify(struct ufs_hba *hba,
 		if ((dev_req_params->pwr_rx == FAST_MODE ||
 		     dev_req_params->pwr_rx == FASTAUTO_MODE) &&
 		    (dev_req_params->gear_rx >= 4)) {
-			ret = ufshcd_dme_set_logged(hba,
-						    UIC_ARG_MIB(PA_TXHSADAPTTYPE),
-						    PA_INITIAL_ADAPT);
+			ret = ufshcd_dme_set(hba,
+					   UIC_ARG_MIB(PA_TXHSADAPTTYPE),
+					   PA_INITIAL_ADAPT);
 		} else {
-			ret = ufshcd_dme_set_logged(hba,
-						    UIC_ARG_MIB(PA_TXHSADAPTTYPE),
-						    PA_NO_ADAPT);
+			ret = ufshcd_dme_set(hba,
+					   UIC_ARG_MIB(PA_TXHSADAPTTYPE),
+					   PA_NO_ADAPT);
 		}
 
 		if (ret)
-			dev_warn(hba->dev, "%s: failed to set ADAPT(%d)\n",
-				 __func__, ret);
+			dev_err(hba->dev, "%s: failed to set ADAPT(%d)\n",
+				__func__, ret);
 		ret = pixel_ufs_crypto_resume(hba);
 
 		break;
@@ -1918,17 +2366,13 @@ static int ufs_google_pre_link_off(struct ufs_hba *hba)
 		u32 val;
 		int ret;
 
-		ret = ufshcd_dme_set_logged(hba,
-					    UIC_ARG_MIB(MPHY_G5_CBULPH8_OFFSET),
-					    0);
+		ret = ufshcd_dme_set(hba, UIC_ARG_MIB(MPHY_G5_CBULPH8_OFFSET),
+				     0);
 		if (ret)
 			return ret;
 
-		ret = ufshcd_dme_set_logged(hba,
-					    UIC_ARG_MIB(UNIPRO_DME_MPHY_CFG_UPD),
-					    0x1);
-		if (ret)
-			return ret;
+		ret = ufshcd_dme_set(hba, UIC_ARG_MIB(UNIPRO_DME_MPHY_CFG_UPD),
+				     0x1);
 
 		val = ufshcd_readl(hba, REG_BUSTHRTL);
 		val &= ~LP_PGE_MASK;
@@ -1938,6 +2382,12 @@ static int ufs_google_pre_link_off(struct ufs_hba *hba)
 	return 0;
 }
 
+/*
+ * Bring the UFS device and also the link between the host controller and the
+ * UFS device to a lower power state. The @op argument indicates whether this
+ * function is called from the context of system suspend or from the context of
+ * runtime suspend.
+ */
 static int ufs_google_suspend(struct ufs_hba *hba, enum ufs_pm_op op,
 			      enum ufs_notify_change_status status)
 {
@@ -1952,25 +2402,55 @@ static int ufs_google_suspend(struct ufs_hba *hba, enum ufs_pm_op op,
 				ret = ufs_google_pre_link_off(hba);
 			break;
 		case POST_CHANGE:
+			/* TODO: b/444072483 - remove refclk control to avoid PG timeout */
 			ufs_google_phy_setup_vreg(hba, false);
 			break;
 		}
 		break;
 	case UFS_SHUTDOWN_PM:
-		if (status == PRE_CHANGE)
+		if (status == PRE_CHANGE) {
 			ret = ufs_google_pre_link_off(hba);
+		} else if (status == POST_CHANGE) {
+			ret = ufs_google_set_device_off(host);
+			if (ret) {
+				dev_err(hba->dev, "set device off failed (%d)",
+					ret);
+				return ret;
+			}
+		}
 		break;
 	case UFS_SYSTEM_PM:
 		switch (status) {
 		case PRE_CHANGE:
+			if (host->caps & GCAP_REF_CLK_ACG) {
+				ret = ufs_google_set_acg(hba, false);
+				if (ret) {
+					dev_err(hba->dev,
+						"set acg off failed (%d)", ret);
+					return ret;
+				}
+			}
+
+			ufs_clk_switch(host, host->hsios_cp_core_clk, false,
+				       GCAP_RSC_CP_CORE_CLK);
+
 			ret = ufs_google_pre_link_off(hba);
 			break;
 		case POST_CHANGE:
+			ufs_google_phy_setup_vreg(hba, false);
 #if IS_ENABLED(CONFIG_UFS_PIXEL_FEATURES)
 			pixel_ufs_notify_system_pm(hba, true);
 #endif
 			ufs_pm_down(host);
 			ufs_google_pd_put_sync(host);
+
+			ret = ufs_google_set_device_off(host);
+			if (ret) {
+				dev_err(hba->dev, "set device off failed (%d)",
+					ret);
+				/* fail instantly */
+				return -EIO;
+			}
 			break;
 		}
 		break;
@@ -1979,26 +2459,46 @@ static int ufs_google_suspend(struct ufs_hba *hba, enum ufs_pm_op op,
 	return ret;
 }
 
+/*
+ * Power up the UFS device and also the link between the host controller and the
+ * UFS device. The @op argument indicates whether this function is called from
+ * the context of system resume or from the context of runtime resume.
+ */
 static int ufs_google_resume(struct ufs_hba *hba, enum ufs_pm_op op)
 {
 	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	int ret;
+
+	ufs_google_phy_setup_vreg(hba, true);
 
 	if (op == UFS_SYSTEM_PM) {
+		ret = ufs_google_set_device_on(host);
+		if (ret) {
+			dev_err(hba->dev, "set device on failed (%d)", ret);
+			/* fail instantly */
+			return -EIO;
+		}
+
 		ufs_google_pd_get_sync(host);
 #if IS_ENABLED(CONFIG_UFS_PIXEL_FEATURES)
 		pixel_ufs_notify_system_pm(hba, false);
 #endif
+		if (host->caps & GCAP_REF_CLK_ACG) {
+			ret = ufs_google_set_acg(hba, true);
+			if (ret) {
+				dev_err(hba->dev, "set acg on failed (%d)",
+					ret);
+				return ret;
+			}
+		}
+
+		ufs_clk_switch(host, host->hsios_cp_core_clk, true,
+			       GCAP_RSC_CP_CORE_CLK);
 	} else if (op == UFS_RUNTIME_PM) {
-		/*
-		 * Assume host is healthy if it was suspended and able to reach resume flow.
-		 * Try to clear error on early resume before LSS and SSU
-		 */
-		ufs_dev_clear_err(hba);
-
-		ufs_google_phy_setup_vreg(hba, true);
-
-		if (host->caps & GCAP_LOCAL_RPM)
+		if (host->caps & GCAP_LOCAL_RPM) {
 			cancel_delayed_work(&host->ufs_sleep_work);
+		}
+		/* TODO: b/444072483 - remove refclk control to avoid PG timeout */
 	}
 
 	return 0;
@@ -2051,7 +2551,7 @@ static int ufs_google_get_hba_mac(struct ufs_hba *hba)
 	return MAX_SUPP_MAC;
 }
 
-static const struct ufshcd_res_info ufs_res_info[RES_MAX] = {
+static const struct ufs_google_res_info ufs_res_info[] = {
 	{.name = "ufs_mem",},
 	{.name = "mcq",},
 	/* Submission Queue Doorbell Address Offset */
@@ -2071,20 +2571,20 @@ static int ufs_google_map_memory_area_as_resource(struct ufs_hba *hba,
 {
 	struct resource *res_mem, *res_mcq;
 	struct platform_device *pdev = to_platform_device(hba->dev);
-	struct ufshcd_res_info *res;
-	int ret = 0;
-	u32 mem_offsets[RES_MAX] = {
-		[RES_MCQ] = MCQ_QCFG_SIZE,
-		[RES_MCQ_SQD] = MAX_REG_SQDAO,
-		[RES_MCQ_SQIS] = MAX_REG_SQIS,
-		[RES_MCQ_CQD] = MAX_REG_CQDAO,
-		[RES_MCQ_CQIS] = MAX_REG_CQIS,
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	struct ufs_google_res_info *res = &host->res[res_info_index];
+	static const u32 mem_offsets[] = {
+		[UFS_RES_MCQ] = MCQ_QCFG_SIZE,
+		[UFS_RES_MCQ_SQD] = MAX_REG_SQDAO,
+		[UFS_RES_MCQ_SQIS] = MAX_REG_SQIS,
+		[UFS_RES_MCQ_CQD] = MAX_REG_CQDAO,
+		[UFS_RES_MCQ_CQIS] = MAX_REG_CQIS,
 	};
+	int ret = 0;
 
 	res_mem = &pdev->resource[0];
-	res = &hba->res[res_info_index];
 
-	if (res_info_index == RES_UFS) {
+	if (res_info_index == UFS_RES_UFS) {
 		res->resource = res_mem;
 		res->base = hba->mmio_base;
 		goto out;
@@ -2101,23 +2601,28 @@ static int ufs_google_map_memory_area_as_resource(struct ufs_hba *hba,
 	res_mcq->start = mem_offset;
 	res_mcq->flags = res_mem->flags;
 	res_mcq->name = ufs_res_info[res_info_index].name;
-	res_mcq->end = res_mcq->start + hba->nr_hw_queues * mem_offsets[res_info_index] - 1;
+	WARN_ON_ONCE(!res_mcq->name);
+	WARN_ON_ONCE(res_info_index >= ARRAY_SIZE(mem_offsets));
+	WARN_ON_ONCE(mem_offsets[res_info_index] == 0);
+	res_mcq->end = res_mcq->start +
+		       hba->nr_hw_queues * mem_offsets[res_info_index] - 1;
 
 	ret = insert_resource(&iomem_resource, res_mcq);
 	if (ret) {
-		ufs_dev_err(hba, "Failed to insert MCQ resource, err=%d\n",
-			    ret);
+		dev_err(hba->dev, "Failed to insert MCQ resource, err=%d\n",
+			ret);
 		goto out;
 	}
 
 	res->base = devm_ioremap_resource(hba->dev, res_mcq);
 	if (IS_ERR(res->base)) {
-		ufs_dev_err(hba, "MCQ %s registers mapping failed, err=%d\n",
-			    res->name, (int)PTR_ERR(res->base));
+		dev_err(hba->dev, "MCQ %s registers mapping failed, err=%d\n",
+			res->name,
+			(int)PTR_ERR(res->base));
 		ret = PTR_ERR(res->base);
 		goto ioremap_err;
 	}
-	if (res_info_index == RES_MCQ)
+	if (res_info_index == UFS_RES_MCQ)
 		hba->mcq_base = res->base;
 	goto out;
 
@@ -2132,51 +2637,58 @@ static int ufs_google_mcq_config_resource(struct ufs_hba *hba)
 {
 	/* Setting up the memory backed registers for queue configuration. */
 	struct platform_device *pdev = to_platform_device(hba->dev);
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
 	struct resource *res_mem;
 	int ret;
 
-	memcpy(hba->res, ufs_res_info, sizeof(ufs_res_info));
+	memcpy(host->res, ufs_res_info, sizeof(ufs_res_info));
 
 	res_mem = &pdev->resource[0];
 
-	ret = ufs_google_map_memory_area_as_resource(hba, RES_UFS, 0);
+	ret = ufs_google_map_memory_area_as_resource(hba, UFS_RES_UFS, 0);
 	if (ret)
-		ufs_dev_err(hba, "Failed to create UFS memory resource\n");
-	ret = ufs_google_map_memory_area_as_resource(hba, RES_MCQ,
+		dev_err(hba->dev, "Failed to create UFS memory resource\n");
+	ret = ufs_google_map_memory_area_as_resource(
+		hba, UFS_RES_MCQ,
+		res_mem->start + MCQ_SQATTR_OFFSET(hba->mcq_capabilities));
+	if (ret)
+		dev_err(hba->dev, "Failed to create MCQ queue memory resource\n");
+	ret = ufs_google_map_memory_area_as_resource(hba, UFS_RES_MCQ_SQD,
 						     res_mem->start +
-						     MCQ_SQATTR_OFFSET(hba->mcq_capabilities));
+							     MCQ_SQDAO);
 	if (ret)
-		ufs_dev_err(hba,
-			    "Failed to create MCQ queue memory resource\n");
-	ret = ufs_google_map_memory_area_as_resource(hba, RES_MCQ_SQD, res_mem->start + MCQ_SQDAO);
+		dev_err(hba->dev, "Failed to create MCQ SQOPS memory resource\n");
+	ret = ufs_google_map_memory_area_as_resource(hba, UFS_RES_MCQ_SQIS,
+						     res_mem->start +
+							     MCQ_SQINT);
 	if (ret)
-		ufs_dev_err(hba,
-			    "Failed to create MCQ SQOPS memory resource\n");
-	ret = ufs_google_map_memory_area_as_resource(hba, RES_MCQ_SQIS, res_mem->start + MCQ_SQINT);
+		dev_err(hba->dev, "Failed to create MCQ SQINT memory resource\n");
+	ret = ufs_google_map_memory_area_as_resource(hba, UFS_RES_MCQ_CQD,
+						     res_mem->start +
+							     MCQ_CQDAO);
 	if (ret)
-		ufs_dev_err(hba,
-			    "Failed to create MCQ SQINT memory resource\n");
-	ret = ufs_google_map_memory_area_as_resource(hba, RES_MCQ_CQD, res_mem->start + MCQ_CQDAO);
+		dev_err(hba->dev, "Failed to create MCQ CQOPS memory resource\n");
+	ret = ufs_google_map_memory_area_as_resource(hba, UFS_RES_MCQ_CQIS,
+						     res_mem->start +
+							     MCQ_CQINT);
 	if (ret)
-		ufs_dev_err(hba,
-			    "Failed to create MCQ CQOPS memory resource\n");
-	ret = ufs_google_map_memory_area_as_resource(hba, RES_MCQ_CQIS, res_mem->start + MCQ_CQINT);
-	if (ret)
-		ufs_dev_err(hba,
-			    "Failed to create MCQ CQINT memory resource\n");
+		dev_err(hba->dev, "Failed to create MCQ CQINT memory resource\n");
 
 	return ret;
 }
 
 static int ufs_google_op_runtime_config(struct ufs_hba *hba)
 {
-	struct ufshcd_res_info *mem_res, *mcq_res;
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	struct ufs_google_res_info *mem_res, *mcq_res;
 	struct ufshcd_mcq_opr_info_t *opr;
 	unsigned long long mem_base_address;
 	int res_index;
-	unsigned long strides[] = { MAX_REG_SQDAO, MAX_REG_SQIS, MAX_REG_CQDAO, MAX_REG_CQIS };
+	static const unsigned long strides[] = {
+		MAX_REG_SQDAO, MAX_REG_SQIS, MAX_REG_CQDAO, MAX_REG_CQIS
+	};
 
-	mem_res = &hba->res[RES_UFS];
+	mem_res = &host->res[UFS_RES_UFS];
 	if (!mem_res->base)
 		return -EINVAL;
 	mem_base_address = mem_res->resource->start;
@@ -2188,13 +2700,14 @@ static int ufs_google_op_runtime_config(struct ufs_hba *hba)
 	 *          return opr->base + (opr->stride * i);
 	 * array size is nr_hw_queues in size
 	 */
-	for (res_index = RES_MCQ_SQD; res_index <= RES_MCQ_CQIS; ++res_index) {
-		mcq_res = &hba->res[res_index];
+	for (res_index = UFS_RES_MCQ_SQD; res_index <= UFS_RES_MCQ_CQIS;
+	     ++res_index) {
+		mcq_res = &host->res[res_index];
 		if (!mcq_res->base)
 			return -EINVAL;
-		opr = &hba->mcq_opr[OPR_SQD + res_index - RES_MCQ_SQD];
+		opr = &hba->mcq_opr[OPR_SQD + res_index - UFS_RES_MCQ_SQD];
 		opr->offset = mcq_res->resource->start - mem_base_address;
-		opr->stride = strides[res_index - RES_MCQ_SQD];
+		opr->stride = strides[res_index - UFS_RES_MCQ_SQD];
 		opr->base = mcq_res->base;
 	}
 
@@ -2251,6 +2764,7 @@ static int ufs_google_config_multi_interrupt(struct ufs_hba *hba)
 	struct platform_device *pdev = to_platform_device(hba->dev);
 	u32 nr_irqs, maxq, set, legacy_irq;
 	irq_handler_t ufshcd_intr = NULL;
+	irq_handler_t ufshcd_threaded_intr = NULL;
 	int ret, i;
 
 	if (device_property_read_bool(hba->dev, "google,skip-mcq-multi-intr"))
@@ -2293,6 +2807,7 @@ static int ufs_google_config_multi_interrupt(struct ufs_hba *hba)
 	struct irq_desc *desc = irq_to_desc(legacy_irq);
 	if (desc && desc->action) {
 		ufshcd_intr = desc->action->handler;
+		ufshcd_threaded_intr = desc->action->thread_fn;
 		devm_free_irq(hba->dev, legacy_irq, hba);
 	}
 
@@ -2311,8 +2826,15 @@ static int ufs_google_config_multi_interrupt(struct ufs_hba *hba)
 		 * is a duplicate of code in the UFS core driver and must be
 		 * kept in sync with the UFS core driver.
 		 */
-		err = devm_request_irq(hba->dev, legacy_irq, ufshcd_intr,
-				       IRQF_SHARED, UFSHCD, hba);
+		if (ufshcd_threaded_intr) {
+			err = devm_request_threaded_irq(hba->dev, legacy_irq,
+				ufshcd_intr, ufshcd_threaded_intr,
+				IRQF_ONESHOT | IRQF_SHARED, UFSHCD, hba);
+		} else {
+			err = devm_request_irq(hba->dev, legacy_irq,
+					       ufshcd_intr, IRQF_SHARED, UFSHCD,
+					       hba);
+		}
 		if (err) {
 			pr_crit("devm_request_irq() failed: %d\n", err);
 			BUG();
@@ -2329,13 +2851,11 @@ static int ufs_google_config_multi_interrupt(struct ufs_hba *hba)
 	for (i = 0; i < nr_irqs; ++i) {
 		struct cq_irq_desc *desc = &host->cq_desc[i];
 		*desc = (typeof(*desc)){ .host = host, .qid = i };
-		/* TODO: b/359878507 - Remove IRQF_PERCPU again. */
 		ret = devm_request_irq(hba->dev, irqs[i + 1],
-				       ufs_google_mcq_intr,
-				       IRQF_SHARED | IRQF_PERCPU, "ufshcd-cq",
-				       desc);
+				       ufs_google_mcq_intr, IRQF_SHARED,
+				       "ufshcd-cq", desc);
 		if (ret) {
-			ufs_dev_err(hba, "%i request irq failed\n", i);
+			dev_err(hba->dev, "%i request irq failed\n", i);
 			goto out;
 		}
 	}
@@ -2350,27 +2870,30 @@ static int ufs_google_device_reset(struct ufs_hba *hba)
 	struct ufs_google_host *host = ufshcd_get_variant(hba);
 
 	/*
-	 * Limit the physical RSTn device reset exclusively to Micron UFS devices.
+	 * In prior to getting this, GENPD_NOTIFY_PRE_ON and
+	 * GENPD_NOTIFY_ON were called by generic resume callback.
+	 * Hence, returning zero makes ufshcd_set_ufs_dev_active()
+	 * which avoids link_startup_again = true in ufshcd_link_startup.
+	 */
+	/*
+	 * Limit physical reset to error handling and Micron devices if
+	 * GCAP_LIMIT_RESET_TO_EH is set (e.g. LGA).
 	 *
 	 * Background:
-	 * Originally, this reset mechanism was introduced to help Micron UFS devices
-	 * recover from unrecoverable errors during UFS_EVT_LINK_STARTUP_FAIL.
-	 * However, after deploying this logic, other vendor devices (specifically
-	 * Samsung and Kioxia) experienced severe, non-responsive failures during
-	 * suspend/resume or reset sequences.
+	 * Originally, the physical reset was executed unconditionally. However,
+	 * resetting during normal suspend/resume or initialization caused stability
+	 * issues on other vendor devices (Samsung/Kioxia) and Micron devices.
 	 *
-	 * The ufshcd_eh_in_progress() check is added to ensure this physical reset
-	 * is only executed when the device is actively undergoing error recovery.
-	 * It prevents the reset from being mistakenly triggered during normal
-	 * initialization or suspend/resume operations.
+	 * To prevent these issues, on platforms with GCAP_LIMIT_RESET_TO_EH, we
+	 * restrict the physical reset to Micron UFS devices during active error
+	 * recovery (under ufshcd_eh_in_progress).
 	 *
-	 * To mitigate in-market stability issues, we restrict this hardware reset
-	 * behavior so that it is triggered only for the specific vendor (Micron)
-	 * where it is proven to be necessary.
+	 * If GCAP_LIMIT_RESET_TO_EH is not set (e.g. MBU), it defaults to the
+	 * legacy behaviour of always resetting unconditionally.
 	 */
-	if ((host->caps & GCAP_TOGGLE_RESETB_ON_RESET) &&
-	    hba->dev_info.wmanufacturerid == UFS_VENDOR_MICRON &&
-	    ufshcd_eh_in_progress(hba)) {
+	if (!(host->caps & GCAP_LIMIT_RESET_TO_EH) ||
+	    (hba->dev_info.wmanufacturerid == UFS_VENDOR_MICRON &&
+	     ufshcd_eh_in_progress(hba))) {
 		gpiod_set_value(host->resetb, 0);
 		usleep_range(RESETB_DELAY_MIN_US, RESETB_DELAY_MAX_US);
 		gpiod_set_value(host->resetb, 1);
@@ -2379,60 +2902,113 @@ static int ufs_google_device_reset(struct ufs_hba *hba)
 	return 0;
 }
 
-static void ufs_google_config_scsi_dev(struct scsi_device *sdev)
+static void ufs_google_event_notify(struct ufs_hba *hba,
+				    enum ufs_event_type evt, void *data)
 {
-	/* do not use slow FUA */
-	sdev->broken_fua = 1;
-}
+	if (trace_ufs_google_event_enabled()) {
+		u32 val = data ? *((u32 *)data) : 0;
+		const char *evt_str;
 
-void ufs_google_event_notify(struct ufs_hba *hba, enum ufs_event_type evt,
-			     void *data)
-{
-	u32 val = *(u32 *)data;
+		if (evt >= 0 && evt < ARRAY_SIZE(ufs_event_type_str) &&
+		    ufs_event_type_str[evt]) {
+			evt_str = ufs_event_type_str[evt];
+		} else {
+			evt_str = "UFS_EVT_UNKNOWN";
+		}
 
-	if (evt < 0)
+		trace_ufs_google_event(PERFETTO_EVENT_INSTANT, evt_str, val);
+	}
+
+#if IS_ENABLED(CONFIG_UFS_PIXEL_FEATURES)
+	struct pixel_ufs *ufs = to_pixel_ufs(hba);
+
+	if (!ufs->enable_uic_err_dbg)
 		return;
 
-	/*
-	 * Use .event_notify to track core driver error and save to
-	 * kernel panic signature buffer
-	 */
-	switch (evt) {
-	case UFS_EVT_PA_ERR:
-	case UFS_EVT_DL_ERR:
-	case UFS_EVT_NL_ERR:
-	case UFS_EVT_TL_ERR:
-	case UFS_EVT_DME_ERR:
-		ufs_dev_err(hba, "%s reg=0x%x", ufs_event_type_str[evt], val);
-		break;
-	case UFS_EVT_AUTO_HIBERN8_ERR:
-	case UFS_EVT_FATAL_ERR:
-		ufs_dev_err(hba, "%s hba->errors=0x%x", ufs_event_type_str[evt],
-			    val);
-		break;
-	case UFS_EVT_LINK_STARTUP_FAIL:
-	case UFS_EVT_RESUME_ERR:
-	case UFS_EVT_SUSPEND_ERR:
-	case UFS_EVT_WL_SUSP_ERR:
-	case UFS_EVT_WL_RES_ERR:
-	case UFS_EVT_ABORT:
-		ufs_dev_err(hba, "%s err (0x%x)", ufs_event_type_str[evt], val);
-		break;
-	case UFS_EVT_HOST_RESET:
-		/* Only record on error */
-		if (val != 0)
-			ufs_dev_err(hba, "%s err (0x%x)",
-				    ufs_event_type_str[evt], val);
-		break;
-	default:
-		/* UFS_EVT_DEV_RESET */
-		break;
+	const unsigned long uic_err_mask =
+		BIT(UFS_EVT_PA_ERR) | BIT(UFS_EVT_DL_ERR) |
+		BIT(UFS_EVT_NL_ERR) | BIT(UFS_EVT_TL_ERR) |
+		BIT(UFS_EVT_DME_ERR);
+
+	/* Detect UIC error only*/
+	if (evt < BITS_PER_LONG && (BIT(evt) & uic_err_mask))
+		panic("ufshcd has received an UIC error(type: %u).", evt);
+#endif
+}
+
+static void ufs_google_config_scsi_dev(struct scsi_device *sdev)
+{
+	struct Scsi_Host *shost = sdev->host;
+	struct ufs_hba *hba = shost_priv(shost);
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	int err;
+
+	/* do not use slow FUA */
+	sdev->broken_fua = 1;
+
+	if (hba->luns_avail == 1) {
+		/*
+		 * The Auto Clock Gating (ACG) feature requires the clk_gating_wait_us
+		 * device parameter which is read in ufshcd_device_params_init().
+		 * To avoid using a default value (0xFF) that causes high latency,
+		 * we enabled ACG after parameter is read from device.
+		 */
+		if (host->caps & GCAP_REF_CLK_ACG) {
+			ufs_plat_set_refclk_control(host, true);
+
+			err = ufs_google_set_acg(hba, true);
+			if (err)
+				dev_err(hba->dev, "set acg on failed (%d)",
+					err);
+		}
 	}
+}
+
+static int ufs_google_hce_enable_notify(struct ufs_hba *hba,
+					enum ufs_notify_change_status status)
+{
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	int ret;
+
+	if (status != PRE_CHANGE || !ufshcd_eh_in_progress(hba))
+		return 0;
+
+	/* avoid sleep work calling on ufshcd_rpm_get_sync() */
+	cancel_delayed_work_sync(&host->ufs_sleep_work);
+
+	if (host->caps & GCAP_REF_CLK_ACG) {
+		ret = ufs_google_set_acg(hba, false);
+		if (ret) {
+			dev_err(hba->dev, "set acg off failed (%d)", ret);
+			return ret;
+		}
+	}
+
+	/* power cycle device and host controller */
+	ufs_google_set_device_off(host);
+	ufs_google_pd_put_sync(host);
+	/* TODO: b/458531873 - CPM missing state polling */
+	usleep_range(PD_RESET_DELAY_US, PD_RESET_DELAY_US + 100);
+	ufs_google_pd_get_sync(host);
+	ufs_google_set_device_on(host);
+
+	if (host->caps & GCAP_REF_CLK_ACG) {
+		ret = ufs_google_set_acg(hba, true);
+		if (ret) {
+			dev_err(hba->dev, "set acg on failed (%d)", ret);
+			return ret;
+		}
+	}
+	dev_info(hba->dev, "full reset done");
+
+	return 0;
 }
 
 static const struct ufs_hba_variant_ops ufs_hba_google_vops = {
 	.name = "google-ufs",
 	.init = ufs_google_init,
+	.set_dma_mask = ufs_google_lga_set_dma_mask,
+	.apply_dev_quirks = ufs_google_apply_dev_quirks,
 	.link_startup_notify = ufs_google_link_startup_notify,
 	.phy_initialization = ufs_google_phy_initialization,
 	.pwr_change_notify = ufs_google_pwr_change_notify,
@@ -2444,9 +3020,9 @@ static const struct ufs_hba_variant_ops ufs_hba_google_vops = {
 	.op_runtime_config = ufs_google_op_runtime_config,
 	.config_esi = ufs_google_config_multi_interrupt,
 	.device_reset = ufs_google_device_reset,
-	.dbg_register_dump = ufs_google_dbg_register_dump,
-	.config_scsi_dev = ufs_google_config_scsi_dev,
 	.event_notify = ufs_google_event_notify,
+	.config_scsi_dev = ufs_google_config_scsi_dev,
+	.hce_enable_notify = ufs_google_hce_enable_notify,
 };
 
 static const struct of_device_id ufs_google_of_match[] = {
@@ -2479,53 +3055,41 @@ static int ufs_google_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int ufs_google_remove(struct platform_device *pdev)
+static void ufs_google_remove(struct platform_device *pdev)
 {
 	struct ufs_hba *hba = platform_get_drvdata(pdev);
 	struct ufs_google_host *host = ufshcd_get_variant(hba);
 
-	unregister_restart_handler(&host->restart_nb);
-
 	cancel_delayed_work_sync(&host->ufs_sleep_work);
 	atomic_dec(&ufs_host_index);
-
-	ufs_google_pd_put_sync(host);
-	dev_pm_genpd_remove_notifier(host->ufs_pd);
-	ufs_google_detach_power_domains(host);
 
 	ufs_google_remove_debugfs(hba);
 	ufs_google_remove_dbg(hba);
 	ufshcd_remove(hba);
 
-	ufs_google_phy_setup_vreg(hba, false);
+	/* turn off power domain after host is disabled */
+	ufs_google_pd_put_sync(host);
+	dev_pm_genpd_remove_notifier(host->ufs_pd);
+	ufs_google_detach_power_domains(host);
 
-	return 0;
+	ufs_google_set_device_off(host);
+	ufs_google_phy_setup_vreg(hba, false);
 }
 
 static int ufs_google_psm_wait_for_state(struct ufs_google_host *host,
-					 u32 target_state)
+					 void __iomem *status_reg_mmio,
+					 u32 target_state, const char *id)
 {
 	u32 val;
 
-	/* READ UNTIL LPM HC PSM is Power Gated */
-	if (readl_poll_timeout(host->ufs_hc_psm_status_mmio, val,
+	/* Poll the status register until the target state is reached */
+	if (readl_poll_timeout(status_reg_mmio, val,
 			       (val & PSM_STATUS_VALID_STATE_MASK) ==
 				       target_state,
 			       PSM_POLL_DELAY_US, PSM_POLL_TIMEOUT_US)) {
-		ufs_dev_err(host->hba,
-			    "timed out waiting for HC PSM to transition to %#x\n",
-			    target_state);
-		return -ETIMEDOUT;
-	}
-
-	/* READ UNTIL LPM PHY PSM is Power Gated */
-	if (readl_poll_timeout(host->ufs_phy_psm_status_mmio, val,
-			       (val & PSM_STATUS_VALID_STATE_MASK) ==
-				       target_state,
-			       PSM_POLL_DELAY_US, PSM_POLL_TIMEOUT_US)) {
-		ufs_dev_err(host->hba,
-			    "timed out waiting for PHY PSM to transition to %#x\n",
-			    target_state);
+		dev_err(host->hba->dev,
+			"timed out waiting for %s PSM to transition to %#x, status=0x%08x\n",
+			id, target_state, val);
 		return -ETIMEDOUT;
 	}
 
@@ -2534,15 +3098,17 @@ static int ufs_google_psm_wait_for_state(struct ufs_google_host *host,
 
 static int ufs_google_uic_hibern8_enter(struct ufs_google_host *host)
 {
-	struct uic_command uic_cmd = { 0 };
+	struct uic_command uic_cmd = {
+		.command = UIC_CMD_DME_HIBER_ENTER,
+	};
 	struct ufs_hba *hba = host->hba;
 	u32 val;
 	int ret;
 
 	/* Let's fail early in case our expectations are wrong. */
 	if (!ufshcd_is_link_active(hba)) {
-		ufs_dev_err(hba, "uic link in invalid state (%d)\n",
-			    hba->uic_link_state);
+		dev_err(hba->dev, "uic link in invalid state (%d)\n",
+			hba->uic_link_state);
 		return -EINVAL;
 	}
 
@@ -2556,10 +3122,9 @@ static int ufs_google_uic_hibern8_enter(struct ufs_google_host *host)
 	 * requirement for UCCS=1 and WRITE to clear is fulfilled within
 	 * ufs_google_send_uic_cmd().
 	 */
-	uic_cmd.command = UIC_CMD_DME_HIBER_ENTER;
 	ret = ufs_google_send_uic_cmd(hba, &uic_cmd);
 	if (ret) {
-		ufs_dev_err(hba, "failed to hibern8 enter (%d)\n", ret);
+		dev_err(hba->dev, "failed to hibern8 enter (%d)\n", ret);
 		return ret;
 	}
 
@@ -2567,8 +3132,8 @@ static int ufs_google_uic_hibern8_enter(struct ufs_google_host *host)
 	if (read_poll_timeout(ufshcd_readl, val, val & UIC_HIBERNATE_ENTER,
 			      UIC_COMMAND_DELAY_US, UIC_COMMAND_POLL_TIMEOUT_US,
 			      false, hba, REG_INTERRUPT_STATUS)) {
-		ufs_dev_err(hba, "h8 enter uic completion timeout val=%08x\n",
-			    val);
+		dev_err(hba->dev, "h8 enter uic completion timeout val=%08x\n",
+			val);
 		return -ETIMEDOUT;
 	}
 	/* WRITE to clear UHES */
@@ -2579,14 +3144,23 @@ static int ufs_google_uic_hibern8_enter(struct ufs_google_host *host)
 	/* READ HCS.UPMCRS (bits 10:08) - confirm PWR_LOCAL */
 	val = (ufshcd_readl(hba, REG_CONTROLLER_STATUS) >> 8) & 0x7;
 	if (val != PWR_LOCAL) {
-		ufs_dev_err(hba, "hibern8 entry failed HCS.UPMCRS %#x\n", val);
+		dev_err(hba->dev, "hibern8 entry failed HCS.UPMCRS %#x\n", val);
 		return -EINVAL;
 	}
 
 	/* The PSM will only move to PG if enabled*/
 	if (host->caps & GCAP_HC_SWH8_PG) {
 		ret = ufs_google_psm_wait_for_state(host,
-						    PSM_STATUS_VALID_STATE_PG);
+						    host->ufs_hc_psm_status_mmio,
+						    PSM_STATUS_VALID_STATE_PG,
+						    "HC");
+		if (ret)
+			return ret;
+
+		ret = ufs_google_psm_wait_for_state(host,
+						    host->ufs_phy_psm_status_mmio,
+						    PSM_STATUS_VALID_STATE_PG,
+						    "PHY");
 		if (ret)
 			return ret;
 	}
@@ -2598,33 +3172,29 @@ static int ufs_google_uic_hibern8_enter(struct ufs_google_host *host)
 
 static int ufs_google_uic_hibern8_exit(struct ufs_google_host *host)
 {
-	struct uic_command uic_cmd = { 0 };
+	struct uic_command uic_cmd = {
+		.command = UIC_CMD_DME_HIBER_EXIT,
+	};
 	struct ufs_hba *hba = host->hba;
 	u32 val;
 	int ret;
 
 	/* Let's fail early in case our expectations are wrong. */
 	if (!ufshcd_is_link_hibern8(hba)) {
-		ufs_dev_err(hba, "uic link in invalid state (%d)\n",
-			    hba->uic_link_state);
+		dev_err(hba->dev, "uic link in invalid state (%d)\n",
+			hba->uic_link_state);
 		return -EINVAL;
 	}
 
 	/*
 	 * We follow the HPG's section "5b. Exiting SW-driven Hibernate".
-	 * We issue UICCMD DME_HIBERNATE_EXIT per HPG. As the HPG calls for
-	 * the CMD to be written first, we may not write the uic arguments
-	 * and hence we can't use ufs_google_send_uic_cmd(). Instead perform
-	 * the logic here.
+	 * We issue UICCMD DME_HIBERNATE_EXIT per HPG. Although the HPG makes
+	 * clearing the UIC argument registers optional, clear these anyway such
+	 * that we can use an existing function for submitting the DME command.
 	 */
-	uic_cmd.command = UIC_CMD_DME_HIBER_EXIT;
-	mutex_lock(&hba->uic_cmd_mutex);
-	ufshcd_writel(hba, uic_cmd.command & COMMAND_OPCODE_MASK,
-		      REG_UIC_COMMAND);
-	ret = ufs_google_wait_for_uic_cmd(hba, &uic_cmd);
-	mutex_unlock(&hba->uic_cmd_mutex);
+	ret = ufs_google_send_uic_cmd(hba, &uic_cmd);
 	if (ret) {
-		ufs_dev_err(hba, "failed to hibern8 enter (%d)\n", ret);
+		dev_err(hba->dev, "failed to hibern8 enter (%d)\n", ret);
 		return ret;
 	}
 
@@ -2632,8 +3202,8 @@ static int ufs_google_uic_hibern8_exit(struct ufs_google_host *host)
 	if (read_poll_timeout(ufshcd_readl, val, val & UIC_HIBERNATE_EXIT,
 			      UIC_COMMAND_DELAY_US, UIC_COMMAND_POLL_TIMEOUT_US,
 			      false, hba, REG_INTERRUPT_STATUS)) {
-		ufs_dev_err(hba, "h8 exit uic completion timeout val=%08x\n",
-			    val);
+		dev_err(hba->dev, "h8 exit uic completion timeout val=%08x\n",
+			val);
 		return -ETIMEDOUT;
 	}
 	/* WRITE to clear UHXS */
@@ -2644,11 +3214,17 @@ static int ufs_google_uic_hibern8_exit(struct ufs_google_host *host)
 	/* READ HCS.UPMCRS (bits 10:08) - confirm PWR_LOCAL */
 	val = (ufshcd_readl(hba, REG_CONTROLLER_STATUS) >> 8) & 0x7;
 	if (val != PWR_LOCAL) {
-		ufs_dev_err(hba, "hibern8 exit failed HCS.UPMCRS %#x\n", val);
+		dev_err(hba->dev, "hibern8 exit failed HCS.UPMCRS %#x\n", val);
 		return -EINVAL;
 	}
 
-	ret = ufs_google_psm_wait_for_state(host, PSM_STATUS_VALID_STATE_ON);
+	ret = ufs_google_psm_wait_for_state(host, host->ufs_hc_psm_status_mmio,
+					    PSM_STATUS_VALID_STATE_ON, "HC");
+	if (ret)
+		return ret;
+
+	ret = ufs_google_psm_wait_for_state(host, host->ufs_phy_psm_status_mmio,
+					    PSM_STATUS_VALID_STATE_ON, "PHY");
 	if (ret)
 		return ret;
 #if IS_ENABLED(CONFIG_UFS_PIXEL_FEATURES)
@@ -2657,10 +3233,12 @@ static int ufs_google_uic_hibern8_exit(struct ufs_google_host *host)
 	return 0;
 }
 
+/* Perform runtime suspend of the UFS host controller. */
 static int ufs_google_runtime_suspend(struct device *dev)
 {
 	struct ufs_hba *hba = dev_get_drvdata(dev);
 	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	bool enter_deep_h8 = false;
 	bool reenable_irq = false;
 	int retries;
 	int ret;
@@ -2701,7 +3279,7 @@ static int ufs_google_runtime_suspend(struct device *dev)
 	case UFS_PM_LVL_5:
 		return ufshcd_runtime_suspend(dev);
 	default:
-		ufs_dev_err(hba, "unsupported rpm_lvl=%d\n", hba->rpm_lvl);
+		dev_err(hba->dev, "unsupported rpm_lvl=%d\n", hba->rpm_lvl);
 		return -EINVAL;
 	}
 
@@ -2716,8 +3294,11 @@ static int ufs_google_runtime_suspend(struct device *dev)
 
 		for (retries = 0; retries < SW_H8_ENTRY_ATTEMPTS; retries++) {
 			ret = ufs_google_uic_hibern8_enter(host);
-			if (!ret)
+			if (!ret) {
+				if (host->caps & GCAP_HC_SWH8_PG)
+					enter_deep_h8 = true;
 				break;
+			}
 			ufs_google_uic_hibern8_exit(host);
 		}
 
@@ -2730,19 +3311,43 @@ static int ufs_google_runtime_suspend(struct device *dev)
 			return ret;
 	} else if (ufshcd_is_auto_hibern8_supported(hba)) {
 		ret = ufs_google_psm_wait_for_state(host,
-						    PSM_STATUS_VALID_STATE_PG);
+						    host->ufs_hc_psm_status_mmio,
+						    PSM_STATUS_VALID_STATE_PG,
+						    "HC");
 		if (ret)
 			return ret;
+
+		ret = ufs_google_psm_wait_for_state(host,
+						    host->ufs_phy_psm_status_mmio,
+						    PSM_STATUS_VALID_STATE_PG,
+						    "PHY");
+		if (ret)
+			return ret;
+
+		if (host->caps & GCAP_HC_AH8_PG)
+			enter_deep_h8 = true;
 	}
+
+	if (enter_deep_h8)
+		ufs_clk_switch(host, host->deep_h8_clk, false,
+			       GCAP_RSC_DEEP_H8_CLK);
 
 	ufs_pm_down(host);
 	if (hba->rpm_lvl == UFS_PM_LVL_0)
 		schedule_delayed_work(&host->ufs_sleep_work,
 				      msecs_to_jiffies(UFS_SLEEP_DELAY_MS));
 
+	ufs_clk_switch(host, host->hsios_cp_core_clk, false,
+		       GCAP_RSC_CP_CORE_CLK);
+
+#if IS_ENABLED(CONFIG_UFS_PIXEL_FEATURES)
+	pixel_update_power_event(hba, PE_H8_ENTER);
+#endif
+
 	return ufshcd_runtime_suspend(dev);
 }
 
+/* Perform runtime resume of the UFS host controller. */
 static int ufs_google_runtime_resume(struct device *dev)
 {
 	struct ufs_hba *hba = dev_get_drvdata(dev);
@@ -2755,8 +3360,13 @@ static int ufs_google_runtime_resume(struct device *dev)
 	    ret)
 		return ret;
 
+	ufs_clk_switch(host, host->hsios_cp_core_clk, true,
+		       GCAP_RSC_CP_CORE_CLK);
+
 	/* In case of UFS_PM_LVL_5, ufs_pm_up is called from LSS notify */
 	ufs_pm_up(host);
+
+	ufs_clk_switch(host, host->deep_h8_clk, true, GCAP_RSC_DEEP_H8_CLK);
 
 	if (host->caps & GCAP_LOCAL_SWH8) {
 		if (hba->is_irq_enabled) {
@@ -2776,6 +3386,10 @@ static int ufs_google_runtime_resume(struct device *dev)
 			ufs_auto_hibern8_update(hba, true);
 	}
 
+#if IS_ENABLED(CONFIG_UFS_PIXEL_FEATURES)
+	pixel_update_power_event(hba, PE_H8_EXIT);
+#endif
+
 	scoped_guard(spinlock_irqsave, hba->host->host_lock)
 		hba->rpm_lvl = UFS_PM_LVL_0;
 
@@ -2794,8 +3408,45 @@ static void ufs_google_sleep_handler(struct work_struct *work)
 	ufshcd_rpm_put_sync(hba);
 }
 
+/*
+ * ufs_google_system_suspend and ufs_google_system_resume support host
+ * controller RPM. They manage the UFS device and link state directly
+ * because this logic does not fit within standard RPM callbacks.
+ */
+static int ufs_google_system_suspend(struct device *dev)
+{
+	struct ufs_hba *hba = dev_get_drvdata(dev);
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	int ret;
+
+	ret = ufshcd_system_suspend(dev);
+	if (ret)
+		return ret;
+
+	if (host->caps & GCAP_DECOUPLE_UFS_EN)
+		ufs_google_mark_device_off(host);
+
+	return 0;
+}
+
+static int ufs_google_system_resume(struct device *dev)
+{
+	struct ufs_hba *hba = dev_get_drvdata(dev);
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+
+	/*
+	 * If GCAP_DECOUPLE_UFS_EN is set, VCC and VCCQ will be turned on
+	 * in ufshcd_system_resume() instead of ufs_google_set_device_on(),
+	 * thus add an extra wait here.
+	 */
+	if (host->caps & GCAP_DECOUPLE_UFS_EN)
+		ufs_google_wait_device_ready(host);
+
+	return ufshcd_system_resume(dev);
+}
+
 static const struct dev_pm_ops ufs_google_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(ufshcd_system_suspend, ufshcd_system_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(ufs_google_system_suspend, ufs_google_system_resume)
 	.runtime_suspend = ufs_google_runtime_suspend,
 	.runtime_resume = ufs_google_runtime_resume,
 	.prepare = ufshcd_suspend_prepare,

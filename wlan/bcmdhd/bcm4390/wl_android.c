@@ -178,8 +178,6 @@
 #define CMD_TEST_SET_TX_POWER		"TEST_SET_TX_POWER"
 #define CMD_TEST_GET_TX_POWER		"TEST_GET_TX_POWER"
 #endif /* TEST_TX_POWER_CONTROL */
-#define CMD_SARLIMIT_TX_CONTROL		"SET_TX_POWER_CALLING"
-#define CMD_SARLIMIT_NR_SUB6_BANDINFO	"SET_TX_POWER_SUB6_BAND"
 #ifdef SUPPORT_SET_TID
 #define CMD_SET_TID		"SET_TID"
 #define CMD_GET_TID		"GET_TID"
@@ -190,6 +188,9 @@
 #define CMD_BR_VSIE_ENAB_GET	"GET_BR_ERR_REASON_ENABLED"
 #endif /* CUSTOMER_HW4_PRIVATE_CMD */
 #define CMD_KEEP_ALIVE          "KEEPALIVE"
+/* Keep Alive Pvt Commands for CUSTOMER_H4 */
+#define CMD_SET_KEEP_ALIVE_INTERVAL_LEGACY "SET_KEEP_ALIVE_INTERVAL_LEGACY"
+#define CMD_GET_KEEP_ALIVE_INTERVAL_LEGACY "GET_KEEP_ALIVE_INTERVAL_LEGACY"
 
 #ifdef PNO_SUPPORT
 #define CMD_PNOSSIDCLR_SET	"PNOSSIDCLR"
@@ -211,7 +212,6 @@
 #endif /* SUPPORT_RANDOM_MAC_SCAN */
 #define CMD_GET_FACTORY_MAC      "FACTORY_MAC"
 #ifdef CUSTOMER_HW4_PRIVATE_CMD
-
 #ifdef ROAM_API
 #define CMD_ROAMTRIGGER_SET "SETROAMTRIGGER"
 #define CMD_ROAMTRIGGER_GET "GETROAMTRIGGER"
@@ -351,13 +351,6 @@ static android_custom_dwell_time_t custom_scan_dwell[] =
 
 #define CMD_CHANGE_RL 	"CHANGE_RL"
 #define CMD_RESTORE_RL  "RESTORE_RL"
-
-#define CMD_SET_RMC_ENABLE			"SETRMCENABLE"
-#define CMD_SET_RMC_TXRATE			"SETRMCTXRATE"
-#define CMD_SET_RMC_ACTPERIOD		"SETRMCACTIONPERIOD"
-#define CMD_SET_RMC_IDLEPERIOD		"SETRMCIDLEPERIOD"
-#define CMD_SET_RMC_LEADER			"SETRMCLEADER"
-#define CMD_SET_RMC_EVENT			"SETRMCEVENT"
 
 #define CMD_SET_SCSCAN		"SETSINGLEANT"
 #define CMD_GET_SCSCAN		"GETSINGLEANT"
@@ -675,6 +668,10 @@ static const wl_natoe_sub_cmd_t natoe_cmd_list[] = {
 
 #endif /* WL_NATOE */
 
+/* Keep alive timer value has to be input'ed in seconds */
+#define MIN_KEEP_ALIVE_TIMER_VALUE 5u /* Minimum keep-alive interval in seconds */
+#define MAX_KEEP_ALIVE_TIMER_VALUE 255u /* Maximum keep-alive interval in seconds */
+
 #ifdef SET_PCIE_IRQ_CPU_CORE
 #define CMD_PCIE_IRQ_CORE	"PCIE_IRQ_CORE"
 #endif /* SET_PCIE_IRQ_CPU_CORE */
@@ -755,6 +752,17 @@ static const wl_natoe_sub_cmd_t natoe_cmd_list[] = {
 #define CMD_TWT_CLR_STATS	"CLEAR_TWT_STATISTICS"
 #define CMD_TWT_SOFTAP_ENABLE	"TWT_SOFTAP_ENABLE"
 #endif /* WL_TWT */
+
+#ifdef WLSCHED_PM
+#define CMD_SCHED_PM_SETUP			"SCHED_PM_SETUP"
+#define CMD_SCHED_PM_TEARDOWN			"SCHED_PM_TEARDOWN"
+#define CMD_SCHED_PM_STATUS_QUERY		"GET_SCHED_PM_STATUS"
+#define CMD_LEAKY_AP_ACTIVE_DETECTION		"LEAKY_AP_ACTIVE_DETECTION"
+#define CMD_LEAKY_AP_PASSIVE_DETECTION_START	"LEAKY_AP_PASSIVE_DETECTION_START"
+#define CMD_LEAKY_AP_PASSIVE_DETECTION_END	"LEAKY_AP_PASSIVE_DETECTION_END"
+#define CMD_SET_GRACE_PERIOD			"SET_GRACE_PERIOD"
+#endif /* WLSCHED_PM */
+
 
 #define CMD_GET_6G_SOFTAP_FREQ_LIST	"GET_6G_SOFTAP_FREQ_LIST"
 
@@ -2228,6 +2236,7 @@ wl_android_art_set_txrate(struct net_device *dev, char *command, int total_len)
 	uint32 rspec = 0;
 	dhd_pub_t *dhdp = wl_cfg80211_get_dhdp(dev);
 	chanspec_t chanspec;
+	struct bcm_cfg80211 *cfg = wl_get_cfg(dev);
 
 	/* Accept: "TX_RATE <format> <mcs> <nss>", e.g. "TX_RATE HE 7 2" */
 	matched = sscanf(command + strlen(CMD_ART_TX_RATE), "%7s %d %d", format, &mcs, &nss);
@@ -2283,6 +2292,10 @@ wl_android_art_set_txrate(struct net_device *dev, char *command, int total_len)
 		DHD_ERROR(("%s ART_SET_CHAN is not set\n", __FUNCTION__));
 		return -EINVAL;
 	}
+
+	/* abort any scan in progress */
+	wl_cfgscan_scan_abort(cfg);
+
 	if (CHSPEC_BAND(chanspec) == WL_CHANSPEC_BAND_5G) {
 		rspec |= WL_RSPEC_LDPC;
 		error = wldev_iovar_setint(dev, "5g_rate", rspec);
@@ -3506,8 +3519,8 @@ wl_android_reassoc_freq(struct net_device *dev, char *command, int total_len)
 	/* Parse Reassoc BSSID */
 	token = bcmstrtok(&params, " ", NULL);
 	if (!token) {
-	    WL_ERR(("Bad argument!\n"));
-	    return BCME_BADARG;
+		WL_ERR(("Bad argument!\n"));
+		return BCME_BADARG;
 	}
 	bzero(&bssid, ETHER_ADDR_LEN);
 	if (bcm_ether_atoe(token, (struct ether_addr *)&bssid) == 0) {
@@ -3517,8 +3530,8 @@ wl_android_reassoc_freq(struct net_device *dev, char *command, int total_len)
 	/* Parse Reassoc Frequency */
 	token = bcmstrtok(&params, " ", NULL);
 	if (!token) {
-	    WL_ERR(("Bad argument!\n"));
-	    return BCME_BADARG;
+		WL_ERR(("Bad argument!\n"));
+		return BCME_BADARG;
 	}
 	frequency = bcm_atoi(token);
 
@@ -4678,11 +4691,12 @@ wl_android_get_fcc_pwr_limit_2g(struct net_device *dev, char *command, int total
  */
 #define STA_INFO_ADD_FMT	"%d %d %d %d %d %d %d %d %d %d %d %d %d %d"
 
-
 #define STAINFO_BAND_2G    0x0001
 #define STAINFO_BAND_5G    0x0002
 #define STAINFO_BAND_6G    0x0004
 #define STAINFO_BAND_60G   0x0008
+
+
 s32
 wl_cfg80211_get_sta_info(struct net_device *dev, char* command, int total_len)
 {
@@ -4709,16 +4723,22 @@ wl_cfg80211_get_sta_info(struct net_device *dev, char* command, int total_len)
 	uint32 tx_pkts_fw_retry_exhausted = 0;
 	int8 rssi[WL_STA_ANT_MAX] = {0};
 	int8 rx_lastpkt_rssi[WL_STA_ANT_MAX] = {0};
-	wl_if_stats_t *if_stats = NULL;
 	u16 bands = 0;
 	u32 sta_flags = 0;
 	char mac_buf[MAX_NUM_OF_ASSOCLIST *
 		sizeof(struct ether_addr) + sizeof(uint)] = {0};
 	struct maclist *assoc_maclist = (struct maclist *)mac_buf;
 
-	BCM_REFERENCE(if_stats);
+	BCM_REFERENCE(bands);
 	/* This Command used during only SoftAP mode. */
 	WL_DBG(("%s\n", command));
+
+#ifdef BCMDONGLEHOST
+	if (!dhdp) {
+		WL_ERR(("dhdp is NULL\n"));
+		return BCME_ERROR;
+	}
+#endif /* BCMDONGLEHOST */
 
 	/* Check the current op_mode */
 	if (!(dhdp->op_mode & DHD_FLAG_HOSTAP_MODE)) {
@@ -4885,9 +4905,6 @@ wl_cfg80211_get_sta_info(struct net_device *dev, char* command, int total_len)
 error:
 	if (iovar_buf) {
 		MFREE(cfg->osh, iovar_buf, WLC_IOCTL_MAXLEN);
-	}
-	if (if_stats) {
-		MFREE(cfg->osh, if_stats, sizeof(*if_stats));
 	}
 
 	return bytes_written;
@@ -8726,68 +8743,6 @@ wl_android_set_ltecx(struct net_device *dev, const char* string_num)
 }
 #endif /* SUPPORT_LTECX */
 
-#ifdef WL_RELMCAST
-static int
-wl_android_rmc_enable(struct net_device *net, int rmc_enable)
-{
-	int err;
-
-	err = wldev_iovar_setint(net, "rmc_ackreq", rmc_enable);
-	if (err != BCME_OK) {
-		DHD_ERROR(("wl_android_rmc_enable: rmc_ackreq, error = %d\n", err));
-	}
-	return err;
-}
-
-static int
-wl_android_rmc_set_leader(struct net_device *dev, const char* straddr)
-{
-	int error  = BCME_OK;
-	char smbuf[WLC_IOCTL_SMLEN];
-	wl_rmc_entry_t rmc_entry;
-	DHD_INFO(("wl_android_rmc_set_leader: Set new RMC leader %s\n", straddr));
-
-	bzero(&rmc_entry, sizeof(wl_rmc_entry_t));
-	if (!bcm_ether_atoe(straddr, &rmc_entry.addr)) {
-		if (strlen(straddr) == 1 && bcm_atoi(straddr) == 0) {
-			DHD_INFO(("wl_android_rmc_set_leader: Set auto leader selection mode\n"));
-			bzero(&rmc_entry, sizeof(wl_rmc_entry_t));
-		} else {
-			DHD_ERROR(("wl_android_rmc_set_leader: No valid mac address provided\n"));
-			return BCME_ERROR;
-		}
-	}
-
-	error = wldev_iovar_setbuf(dev, "rmc_ar", &rmc_entry, sizeof(wl_rmc_entry_t),
-		smbuf, sizeof(smbuf), NULL);
-
-	if (error != BCME_OK) {
-		DHD_ERROR(("wl_android_rmc_set_leader: Unable to set RMC leader, error = %d\n",
-			error));
-	}
-
-	return error;
-}
-
-static int wl_android_set_rmc_event(struct net_device *dev, char *command)
-{
-	int err = 0;
-	int pid = 0;
-
-	if (sscanf(command, CMD_SET_RMC_EVENT " %d", &pid) <= 0) {
-		WL_ERR(("Failed to get Parameter from : %s\n", command));
-		return -1;
-	}
-
-	/* set pid, and if the event was happened, let's send a notification through netlink */
-	wl_cfg80211_set_rmc_pid(dev, pid);
-
-	WL_DBG(("RMC pid=%d\n", pid));
-
-	return err;
-}
-#endif /* WL_RELMCAST */
-
 int wl_android_get_singlecore_scan(struct net_device *dev, char *command, int total_len)
 {
 	int error = 0;
@@ -8878,147 +8833,7 @@ wl_android_get_tx_power(struct net_device *dev, char *command, int total_len)
 }
 #endif /* TEST_TX_POWER_CONTROL */
 
-#define NRSUB6_SAR_ENABLE "6"
-
-static int
-wl_android_set_sarlimit_txctrl(struct net_device *dev, const char* string_num)
-{
-	int err = BCME_ERROR;
-	int setval = 0;
-	int idx, n_ctls;
-	s32 sar_event = bcm_atoi(string_num);
-	wl_sar_ctl_tbl_t sar_tbl[] = {
-		{HEAD_SAR_BACKOFF_DISABLE, 1,
-		{{FALSE, SAR_MODE_BIT_HEAD}, }},
-		{HEAD_SAR_BACKOFF_ENABLE, 1,
-		{{TRUE, SAR_MODE_BIT_HEAD}, }},
-		{GRIP_SAR_BACKOFF_DISABLE, 1,
-		{{FALSE, SAR_MODE_BIT_GRIP}, }},
-		{GRIP_SAR_BACKOFF_ENABLE, 1,
-		{{TRUE, SAR_MODE_BIT_GRIP}, }},
-		{NR_mmWave_SAR_BACKOFF_DISABLE, 1,
-		{{FALSE, SAR_MODE_BIT_NR_MW}, }},
-		{NR_mmWave_SAR_BACKOFF_ENABLE, 2,
-		{{FALSE, SAR_MODE_BIT_NR_S6}, {TRUE, SAR_MODE_BIT_NR_MW}}},
-		{NR_Sub6_SAR_BACKOFF_DISABLE, 1,
-		{{FALSE, SAR_MODE_BIT_NR_S6}, }},
-		{NR_Sub6_SAR_BACKOFF_ENABLE, 2,
-		{{FALSE, SAR_MODE_BIT_NR_MW}, {TRUE, SAR_MODE_BIT_NR_S6}}},
-		{NR_MMWAVE_NR_SUB6_SAR_BACKOFF_DISABLE, 1,
-		{{FALSE, SAR_MODE_BIT_NR_MWS6}, }},
-		{NR_MMWAVE_NR_SUB6_SAR_BACKOFF_ENABLE, 1,
-		{{TRUE, SAR_MODE_BIT_NR_MWS6}, }},
-		{MHS_SAR_BACKOFF_DISABLE, 1,
-		{{FALSE, SAR_MODE_BIT_MHS}, }},
-		{MHS_SAR_BACKOFF_ENABLE, 1,
-		{{TRUE, SAR_MODE_BIT_MHS}, }},
-		{SAR_BACKOFF_DISABLE_ALL, 1,
-		{{FALSE, SAR_MODE_DIS_ALL}, }}
-	};
-
-	/* As Samsung specific and their requirement,
-	 * the sar_event set as the following form.
-	 * -1 : HEAD SAR disabled
-	 *  0 : HEAD SAR enabled
-	 *  1 : GRIP SAR disabled
-	 *  2 : GRIP SAR enabled
-	 *  3 : NR mmWave SAR disabled
-	 *  4 : NR mmWave SAR enabled
-	 *  5 : NR Sub6 SAR disabled
-	 *  6 : NR Sub6 SAR enabled
-	 *  7 : MHS SAR disabled
-	 *  8 : MHS SAR enabled
-	 *  9 : NR mmWave & NR Sub6 SAR disabled
-	 * 10 : NR mmWave & NR Sub6 SAR enabled
-	 * 11 : SAR BACKOFF disabled all
-	 * The 'SAR BACKOFF disabled all' index should be the end of the sar_event.
-	 */
-	if ((sar_event < HEAD_SAR_BACKOFF_DISABLE) || (sar_event > SAR_BACKOFF_DISABLE_ALL)) {
-		DHD_ERROR(("%s: Request for Unsupported:%d\n", __FUNCTION__, bcm_atoi(string_num)));
-		err = BCME_RANGE;
-		goto error;
-	}
-
-	err = wldev_iovar_getint(dev, "sar_enable", &setval);
-	if (unlikely(err)) {
-		DHD_ERROR(("%s: Failed to get sar_enable - error (%d)\n", __FUNCTION__, err));
-		goto error;
-	}
-
-	for (idx = 0; idx <= SAR_BACKOFF_EVENT_MAX; idx++) {
-		if (sar_event == sar_tbl[idx].sar_evt_id) {
-			for (n_ctls = 0; n_ctls < sar_tbl[idx].num_ctls; n_ctls++) {
-				if (sar_tbl[idx].sar_mode[n_ctls].enab) {
-					setval |= sar_tbl[idx].sar_mode[n_ctls].setval;
-				} else {
-					setval &= ~(sar_tbl[idx].sar_mode[n_ctls].setval);
-				}
-				DHD_ERROR(("%s: SAR limit control event %d enab %d setval %d\n",
-					__FUNCTION__, sar_event,
-					sar_tbl[idx].sar_mode[n_ctls].enab, setval));
-			}
-			break;
-		}
-	}
-
-	err = wldev_iovar_setint(dev, "sar_enable", setval);
-	if (unlikely(err)) {
-		DHD_ERROR(("%s: Failed to set sar_enable - error (%d)\n", __FUNCTION__, err));
-		goto error;
-	}
-	err = BCME_OK;
-error:
-	return err;
-}
-
-static int
-wl_android_set_tx_power_nrsub6_band(struct net_device *dev, const char* string_num)
-{
-	int err = BCME_ERROR;
-	s32 bandinfo = bcm_atoi(string_num);
-	int getval = 0;
-
-	/* check if sub6 sar is enabled */
-	err = wldev_iovar_getint(dev, "sar_enable", &getval);
-	if (unlikely(err)) {
-		DHD_ERROR(("%s: Failed to get sar_enable - error (%d)\n", __FUNCTION__, err));
-		goto error;
-	}
-
-	if ((getval & SAR_MODE_BIT_NR_S6) != SAR_MODE_BIT_NR_S6) {
-		err = BCME_NOTREADY;
-		DHD_ERROR(("%s: sub6 sar is not enabled (%d)\n", __FUNCTION__, getval));
-		goto error;
-	}
-
-	/* As Samsung specific and their requirement,
-	 * the bandinfo set as the following form. Wrong band will work as -1 in FW.
-	 * -1 : Disabled bandinfo control
-	 *  2 : NR Sub6 band2 tx power backoff
-	 *  25 : NR Sub6 band25 tx power backoff
-	 *  41 : NR Sub6 band41 tx power backoff
-	 *  44 : NR Sub6 band44 tx power backoff
-	 *  66 : NR Sub6 band66 tx power backoff
-	 *  77 : NR Sub6 band77 tx power backoff
-	 */
-
-	if (bandinfo == SAR_NR_SUB6_BANDINFO_DISABLE) {
-		DHD_ERROR(("%s: SAR NR Sub6 bandinfo disable!\n", __FUNCTION__));
-	} else {
-		DHD_ERROR(("%s: SAR NR Sub6 bandinfo set band%d\n",
-			__FUNCTION__, bandinfo));
-	}
-
-	err = wldev_iovar_setint(dev, "sar_nrsub6_bandinfo", bandinfo);
-	if (unlikely(err)) {
-		DHD_ERROR(("%s: Failed to set sar_nrsub6_bandinfo - error (%d)\n",
-			__FUNCTION__, err));
-		goto error;
-	}
-	err = BCME_OK;
-error:
-	return err;
-}
+/* SAR command handlers moved to wl_android_hw4.c */
 
 #ifdef SUPPORT_SET_TID
 int
@@ -9703,11 +9518,6 @@ static int wl_android_set_ibss_txfail_event(struct net_device *dev, char *comman
 	/* set pid, and if the event was happened, let's send a notification through netlink */
 	wl_cfg80211_set_txfail_pid(dev, pid);
 
-#ifdef WL_RELMCAST
-	/* using same pid for RMC, AIBSS shares same pid with RMC and it is set once */
-	wl_cfg80211_set_rmc_pid(dev, pid);
-#endif /* WL_RELMCAST */
-
 	/* If retry value is 0, it disables the functionality for TX Fail. */
 	if (retry > 0) {
 		txfail_config.max_tx_retry = retry;
@@ -10003,45 +9813,103 @@ int wl_android_set_ibss_antenna(struct net_device *dev, char *command, int total
 
 int wl_keep_alive_set(struct net_device *dev, char* extra)
 {
-	wl_mkeep_alive_pkt_v1_t	mkeep_alive_pkt;
+	wl_mkeep_alive_pkt_v1_t mkeep_alive_pkt_v1;
+	wl_mkeep_alive_pkt_v2_t mkeep_alive_pkt_v2;
 	int ret;
-	uint period_msec = 0;
+	uint interval = 0;
 	char *buf;
 	struct bcm_cfg80211 *cfg = wl_get_cfg(dev);
+	uint8 version = WL_MKEEP_ALIVE_VERSION_1;
 
 	if (extra == NULL) {
 		 DHD_ERROR(("wl_keep_alive_set: extra is NULL\n"));
 		 return -1;
 	}
-	if (sscanf(extra, "%d", &period_msec) != 1) {
+	if (sscanf(extra, "%u", &interval) != 1) {
 		 DHD_ERROR(("wl_keep_alive_set: sscanf error. check period_msec value\n"));
 		 return -EINVAL;
 	}
-	DHD_ERROR(("wl_keep_alive_set: period_msec is %d\n", period_msec));
 
-	bzero(&mkeep_alive_pkt, sizeof(wl_mkeep_alive_pkt_v1_t));
+	if ((interval < MIN_KEEP_ALIVE_TIMER_VALUE) ||
+		(interval > MAX_KEEP_ALIVE_TIMER_VALUE)) {
+		DHD_ERROR(("wl_set_keep_alive_interval: Input time interval is NOT IN RANGE\n"));
+		return BCME_RANGE;
+	}
 
-	mkeep_alive_pkt.period_msec = period_msec;
-	mkeep_alive_pkt.version = htod16(WL_MKEEP_ALIVE_VERSION_1);
-	mkeep_alive_pkt.length = htod16(WL_MKEEP_ALIVE_FIXED_LEN);
-
-	/* Setup keep alive zero for null packet generation */
-	mkeep_alive_pkt.keep_alive_id = 0;
-	mkeep_alive_pkt.len_bytes = 0;
+	/* Convert it to milli seconds for FW processing */
+	interval *= 1000;
 
 	buf = (char *)MALLOC(cfg->osh, WLC_IOCTL_SMLEN);
 	if (!buf) {
 		DHD_ERROR(("wl_keep_alive_set: buffer alloc failed\n"));
 		return BCME_NOMEM;
 	}
-	ret = wldev_iovar_setbuf(dev, "mkeep_alive", (char *)&mkeep_alive_pkt,
-			WL_MKEEP_ALIVE_FIXED_LEN, buf, WLC_IOCTL_SMLEN, NULL);
+
+	ret = wldev_iovar_getbuf(dev, "mkeep_alive", NULL, 0, buf, WLC_IOCTL_SMLEN, NULL);
+	if (ret < 0) {
+		MFREE(cfg->osh, buf, WLC_IOCTL_SMLEN);
+		DHD_ERROR(("wl_set_keep_alive_interval:"
+			"Failed to get the keep alive version=%d\n", ret));
+		return ret;
+	}
+
+	version = ((wl_mkeep_alive_pkt_v1_t *)buf)->version;
+
+	if (version == WL_MKEEP_ALIVE_VERSION_2) {
+		bzero(&mkeep_alive_pkt_v2, sizeof(wl_mkeep_alive_pkt_v2_t));
+
+		mkeep_alive_pkt_v2.version = htod16(WL_MKEEP_ALIVE_VERSION_2);
+		mkeep_alive_pkt_v2.length = htod16(WL_MKEEP_ALIVE_FIXED_LEN_V2);
+
+		mkeep_alive_pkt_v2.period_msec = interval;
+
+		/* Setup keep alive zero for null packet generation */
+		mkeep_alive_pkt_v2.keep_alive_id = 0;
+		mkeep_alive_pkt_v2.len_bytes = 0;
+
+		ret = wldev_iovar_setbuf(dev, "mkeep_alive", (char *)&mkeep_alive_pkt_v2,
+				WL_MKEEP_ALIVE_FIXED_LEN_V2, buf, WLC_IOCTL_SMLEN, NULL);
+	} else {
+		bzero(&mkeep_alive_pkt_v1, sizeof(wl_mkeep_alive_pkt_v1_t));
+
+		mkeep_alive_pkt_v1.version = htod16(WL_MKEEP_ALIVE_VERSION_1);
+		mkeep_alive_pkt_v1.length = htod16(WL_MKEEP_ALIVE_FIXED_LEN);
+
+		mkeep_alive_pkt_v1.period_msec = interval;
+
+		ret = wldev_iovar_setbuf(dev, "mkeep_alive", (char *)&mkeep_alive_pkt_v1,
+				WL_MKEEP_ALIVE_FIXED_LEN, buf, WLC_IOCTL_SMLEN, NULL);
+	}
+
 	if (ret < 0)
 		DHD_ERROR(("wl_keep_alive_set:keep_alive set failed:%d\n", ret));
 	else
 		DHD_TRACE(("wl_keep_alive_set: keep_alive set ok\n"));
 	MFREE(cfg->osh, buf, WLC_IOCTL_SMLEN);
 	return ret;
+}
+
+int wl_keep_alive_get(struct net_device *dev, char *command, int total_len)
+{
+	int error = 0;
+	int bytes_written = 0;
+	u8 buf[WLC_IOCTL_SMLEN] = {0};
+	wl_mkeep_alive_pkt_v2_t keep_alive_pkt;
+
+	if ((error = wldev_iovar_getbuf(dev, "mkeep_alive", NULL, 0, buf, WLC_IOCTL_SMLEN, NULL))) {
+		DHD_ERROR(("wl_get_keep_alive_interval:"
+			"Failed to get the keep alive time interval=%d\n", error));
+		return error;
+	}
+
+	(void)memcpy_s(&keep_alive_pkt, sizeof(keep_alive_pkt), buf, sizeof(keep_alive_pkt));
+
+	/* Convert the value into seconds for display */
+	keep_alive_pkt.period_msec /= 1000;
+	bytes_written = snprintf(command, total_len, "%s %d",
+			CMD_GET_KEEP_ALIVE_INTERVAL_LEGACY, keep_alive_pkt.period_msec);
+
+	return bytes_written;
 }
 
 #ifdef P2PRESP_WFDIE_SRC
@@ -12826,6 +12694,10 @@ wl_android_set_softap_ax_mode(struct net_device *dev, const char* cmd_str)
 	}
 
 	WL_INFORM(("HAPD_SET_AX_MODE = %d\n", enable));
+	if (!enable) {
+		/* if 11 ax mode is disabled, wifi7 needs to be diabled */
+		cfg->mlo.wifi7_disable = 1;
+	}
 	err = wl_cfg80211_set_he_mode(dev, cfg, bssidx, WL_HE_FEATURES_HE_AP, (bool)enable);
 	if (err) {
 		WL_ERR(("failed to set softap ax mode(%d)\n", enable));
@@ -12837,6 +12709,50 @@ exit :
 
 
 #ifdef WL_TWT
+static wifi_error_t
+wl_android_twt_bcmerr_to_hal_error_code(int ret)
+{
+	wifi_error_t error_code;
+	switch (ret) {
+	case BCME_OK:
+		error_code = WIFI_SUCCESS;
+		break;
+	case BCME_ERROR:
+		error_code = WIFI_ERROR_UNINITIALIZED;
+		break;
+	case BCME_BADARG:
+	case BCME_RANGE:
+		error_code = WIFI_ERROR_INVALID_ARGS;
+		break;
+	case BCME_BUSY:
+		error_code = WIFI_ERROR_BUSY;
+		break;
+	case BCME_UNSUPPORTED:
+		error_code = WIFI_ERROR_NOT_SUPPORTED;
+		break;
+	case BCME_NOTASSOCIATED:
+	case BCME_NORESOURCE:
+	case BCME_EPERM:
+	case BCME_NOTFOUND:
+		error_code = WIFI_ERROR_NOT_AVAILABLE;
+		break;
+	case BCME_BUFTOOSHORT:
+	case BCME_NOMEM:
+	case BCME_VERSION:
+		error_code = WIFI_ERROR_UNKNOWN;
+		break;
+
+	default:
+		WL_ERR(("%s Unmapped error code, error = %d\n",
+				__func__, ret));
+		/* Generic error */
+		error_code = WIFI_ERROR_UNKNOWN;
+	}
+
+	return error_code;
+}
+
+#ifdef TWT_KERN_ERR_MAP
 static int
 wl_android_twt_bcmerr_to_kernel_err(int bcm_err)
 {
@@ -12901,6 +12817,7 @@ wl_android_twt_bcmerr_to_kernel_err(int bcm_err)
 
 	return ret;
 }
+#endif /* TWT_KERN_ERR_MAP */
 
 static int
 wl_android_twt_setup(struct net_device *ndev, char *command, int total_len)
@@ -13089,7 +13006,7 @@ wl_android_twt_setup(struct net_device *ndev, char *command, int total_len)
 		WL_ERR(("twt config set failed. ret:%d\n", bw));
 	}
 exit:
-	return wl_android_twt_bcmerr_to_kernel_err(bw);
+	return wl_android_twt_bcmerr_to_hal_error_code(bw);
 }
 
 static int
@@ -13436,7 +13353,7 @@ wl_android_twt_info(struct net_device *ndev, char *command, int total_len)
 		WL_ERR(("twt info failed. ret:%d\n", bw));
 	}
 exit:
-	return wl_android_twt_bcmerr_to_kernel_err(bw);
+	return wl_android_twt_bcmerr_to_hal_error_code(bw);
 
 }
 
@@ -13499,7 +13416,7 @@ wl_android_twt_teardown(struct net_device *ndev, char *command, int total_len)
 		WL_ERR(("twt teardown failed. ret:%d\n", bw));
 	}
 exit:
-	return wl_android_twt_bcmerr_to_kernel_err(bw);
+	return wl_android_twt_bcmerr_to_hal_error_code(bw);
 }
 
 /* wl twt stats result display version 2 */
@@ -13656,7 +13573,7 @@ wl_android_twt_softap_enable(struct net_device *ndev, int twt_softap_enable)
 	}
 
 exit:
-	return wl_android_twt_bcmerr_to_kernel_err(err);
+	return wl_android_twt_bcmerr_to_hal_error_code(err);
 }
 
 int
@@ -13844,6 +13761,619 @@ fail:
 	return err;
 }
 #endif /* WL_TWT */
+
+#ifdef WLSCHED_PM
+/* wl_android_sched_pm_setup - sched_pm setup handler
+ * Wi-Fi driver should immediately return a negative value if dongle cannot process this request.
+ * Otherwise, the firmware should process this command and return success.
+ *
+ * SCHED_PM_SETUP <options>
+ * @param options: Following parameters separated with a space are delivered in text form.
+ * Desired duration. Unit: microseconds. Range: 8192~64512
+ * Desired interval. Unit: microseconds. Range: 16384~1024000
+ * Additional duration. Duration for listening more after transmitting QoS Null with PM1.
+ * Unit: microseconds. Range: 0~6144
+ * Minimum interval. Minimum tolerance limit of interval.
+ * Maximum interval. Maximum tolerance limit of interval.
+ * Minimum duration. Minimum tolerance limit of duration.
+ * Maximum duration. Maximum tolerance limit of duration.
+ * Setting -1 for any parameter means Not specified
+ *
+ * @return status
+ * 0: Success
+ * Negative value: Failure
+ * Positive value: Success and Others
+ *
+ * Usage examples: Setup a PM schedule with duration 8192us and interval 40960us
+ * DRIVER SCHED_PM_SETUP 8192 40960 2048 35000 45000 8000 10000
+ * DRIVER SCHED_PM_SETUP 8192 40960 0 -1 -1 -1 -1
+ */
+static int
+wl_android_sched_pm_setup(struct net_device *ndev, char *command, int total_len)
+{
+	wl_sched_pm_cmd_setup_t val;
+	s32 bw;
+	char *token, *pos;
+	u8 mybuf[WLC_IOCTL_SMLEN] = {0};
+	u8 resp_buf[WLC_IOCTL_SMLEN] = {0};
+	uint8 *rem = mybuf;
+	uint16 rem_len = sizeof(mybuf);
+
+	WL_DBG_MEM(("Enter sched_pm_setup cmd:%s\n", command));
+
+	if (strlen(command) == strlen(CMD_SCHED_PM_SETUP)) {
+		WL_ERR(("Error, sched_pm_setup cmd  missing params\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+
+	bzero(&val, sizeof(val));
+	val.version = WL_SCHED_PM_SETUP_VER;
+	val.length = sizeof(val.version) + sizeof(val.length);
+
+	/* Default values, Override Below */
+	val.desc.wake_dur = 0xFFFFFFFF;
+	val.desc.wake_int = 0xFFFFFFFF;
+	val.desc.add_li_dur = 0xFFFFFFFF;
+	val.desc.wake_int_min = 0xFFFFFFFF;
+	val.desc.wake_int_max = 0xFFFFFFFF;
+	val.desc.wake_dur_min = 0xFFFFFFFF;
+	val.desc.wake_dur_max = 0xFFFFFFFF;
+
+	pos = command + sizeof(CMD_SCHED_PM_SETUP);
+
+	/* Wake Duration */
+	token = strsep((char**)&pos, " ");
+	if (!token) {
+		WL_ERR(("sched_pm_setup: No Wake Duration provided\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+	val.desc.wake_dur = htod32((u32)bcm_atoi(token));
+
+	/* Wake interval */
+	token = strsep((char**)&pos, " ");
+	if (!token) {
+		WL_ERR(("sched_pm_setup: No Wake interval provided\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+	val.desc.wake_int = htod32((u32)bcm_atoi(token));
+
+	/* Additional Duration */
+	token = strsep((char**)&pos, " ");
+	if (!token) {
+		WL_ERR(("sched_pm_setup: No Additional Duration provided\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+	val.desc.add_li_dur = htod32((u32)bcm_atoi(token));
+
+	/* Minimum allowed Wake interval */
+	token = strsep((char**)&pos, " ");
+	if (!token) {
+		WL_ERR(("sched_pm_setup: No Minimum allowed Wake interval provided\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+	val.desc.wake_int_min = htod32((u32)bcm_atoi(token));
+
+	/* Max Allowed Wake interval */
+	token = strsep((char**)&pos, " ");
+	if (!token) {
+		WL_ERR(("sched_pm_setup: Maximum allowed Wake interval not provided,\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+	val.desc.wake_int_max = htod32((u32)bcm_atoi(token));
+
+	/* Minimum allowed Wake duration */
+	token = strsep((char**)&pos, " ");
+	if (!token) {
+		WL_ERR(("sched_pm_setup: Minimum allowed Wake duration not provided\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+	val.desc.wake_dur_min = htod32((u32)bcm_atoi(token));
+
+	/* Maximum allowed Wake duration */
+	token = strsep((char**)&pos, " ");
+	if (!token) {
+		WL_ERR(("sched_pm_setup: Maximum allowed Wake duration not provided\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+	val.desc.wake_dur_max = htod32((u32)bcm_atoi(token));
+
+	bw = bcm_pack_xtlv_entry(&rem, &rem_len, WL_SCHED_PM_CMD_SETUP,
+		sizeof(val), (uint8 *)&val, BCM_XTLV_OPTION_ALIGN32);
+	if (bw != BCME_OK) {
+		WL_ERR(("sched_pm_setup: bcm_pack_xtlv_entry failed\n"));
+		goto exit;
+	}
+
+	bw = wldev_iovar_setbuf(ndev, "sched_pm",
+		mybuf, sizeof(mybuf) - rem_len, resp_buf, WLC_IOCTL_SMLEN, NULL);
+	if (bw < 0) {
+		WL_ERR(("sched_pm_setup: wldev_iovar_setbuf failed\n"));
+	}
+exit:
+	return wl_android_twt_bcmerr_to_hal_error_code(bw);
+}
+
+/* wl_android_sched_pm_teardown - sched_pm teardown handler
+ * This command will be delivered when host wants to terminate the existing PM schedule.
+ * Wi-Fi driver should immediately return negative value if the firmware cannot process
+ * this request.Otherwise, the firmware should process this command and return success.
+ *
+ * SCHED_PM_TEARDOWN
+ * @return status
+ * 0: Success
+ * Negative value: Failure
+ * Positive value: Success and Others
+ *
+ * Usage examples:
+ * DRIVER SCHED_PM_TEARDOWN
+ */
+static int
+wl_android_sched_pm_teardown(struct net_device *ndev, char *command, int total_len)
+{
+	wl_sched_pm_teardown_t val;
+	s32 bw;
+	u8 mybuf[WLC_IOCTL_SMLEN] = {0};
+	u8 res_buf[WLC_IOCTL_SMLEN] = {0};
+	uint8 *rem = mybuf;
+	uint16 rem_len = sizeof(mybuf);
+
+	WL_DBG_MEM(("Enter sched_pm_teardown cmd:%s\n", command));
+
+
+	bzero(&val, sizeof(val));
+
+	val.version = 0u;
+	val.length = sizeof(val.version) + sizeof(val.length);
+
+	/* Default values, Overide Below */
+	val.status = 0xFF;
+
+	bw = bcm_pack_xtlv_entry(&rem, &rem_len, WL_SCHED_PM_CMD_TEARDOWN,
+		sizeof(val), (uint8 *)&val, BCM_XTLV_OPTION_ALIGN32);
+	if (bw != BCME_OK) {
+		goto exit;
+	}
+
+	bw = wldev_iovar_setbuf(ndev, "sched_pm",
+		mybuf, sizeof(mybuf) - rem_len, res_buf, WLC_IOCTL_SMLEN, NULL);
+	if (bw < 0) {
+		WL_ERR(("sched_pm_teardown: failed. ret:%d\n", bw));
+	}
+exit:
+	return wl_android_twt_bcmerr_to_hal_error_code(bw);
+}
+
+/* wl_android_sched_pm_status_query - sched_pm status query handler
+ * This command will be delivered when host wants to query current status of PM schedule.
+ *
+ * @return status
+ * Following information should be returned as a text form separated with a single space:
+ * State. 0: Not established or Inactive, 1: Active, 2: Suspended
+ * Duration. Unit: microseconds.
+ * Interval. Unit: microseconds.
+ *
+ * Return value examples:
+ * > DRIVER GET_ SCHED_PM_STATUS
+ * 1 10240 204800
+ * (PM schedule is now activated with the duration 10240us and interval 204800us)
+ *
+ * > DRIVER GET_SCHED_PM_STATUS
+ * 0 0 0
+ * (There is no PM schedule.)
+ */
+static int
+wl_android_sched_pm_status_query(struct net_device *ndev, char *command, int total_len)
+{
+	int ret = BCME_OK;
+	char iovbuf[WLC_IOCTL_SMLEN] = {0, };
+	uint8 *pxtlv = NULL;
+	uint8 *iovresp = NULL;
+	wl_twt_status_cmd_v1_t status_cmd;
+	wl_twt_status_v1_t result;
+
+	uint16 buflen = 0, bufstart = 0;
+	struct bcm_cfg80211 *cfg = wl_get_cfg(ndev);
+
+	bzero(&status_cmd, sizeof(status_cmd));
+
+	status_cmd.version = WL_TWT_CMD_STATUS_VERSION_1;
+	status_cmd.length = sizeof(status_cmd) - OFFSETOF(wl_twt_status_cmd_v1_t, peer);
+
+	iovresp = (uint8 *)MALLOCZ(cfg->osh, WLC_IOCTL_MEDLEN);
+	if (iovresp == NULL) {
+		WL_ERR(("%s: iov resp memory alloc exited\n", __FUNCTION__));
+		goto exit;
+	}
+
+	buflen = bufstart = WLC_IOCTL_SMLEN;
+	pxtlv = (uint8 *)iovbuf;
+
+	ret = bcm_pack_xtlv_entry(&pxtlv, &buflen, WL_TWT_CMD_STATUS,
+			sizeof(status_cmd), (uint8 *)&status_cmd, BCM_XTLV_OPTION_ALIGN32);
+	if (ret != BCME_OK) {
+		WL_ERR(("%s : Error return during sched_pm status pack xtlv :%d\n",
+			__FUNCTION__, ret));
+		goto exit;
+	}
+
+	ret = wldev_iovar_getbuf(ndev, "twt", iovbuf, bufstart-buflen,
+		iovresp, WLC_IOCTL_MEDLEN, NULL);
+	if (ret) {
+		WL_ERR(("%s : iov get failed err=%d \n", __FUNCTION__, ret));
+		goto exit;
+	}
+
+	(void)memcpy_s(&result, sizeof(result), iovresp, sizeof(result));
+
+	if (dtoh16(result.version) == WL_TWT_CMD_STATUS_VERSION_1) {
+		int rem_len = 0, bytes_written = 0;
+		wl_twt_sdesc_v0_t *desc;
+		desc = &result.itwt_status[0].desc;
+		rem_len = total_len;
+
+		DHD_ERROR(("sched_pm_status_query: ver %d, \n", dtoh16(result.version)));
+			bytes_written = scnprintf(command, rem_len, "%d %d %u \n",
+				!!result.num_fid, desc->wake_dur, desc->wake_int);
+		CHECK_SCNPRINTF_RET_VAL(bytes_written);
+		rem_len -= bytes_written;
+
+		if ((total_len - rem_len) > 0) {
+			ret = total_len - rem_len;
+		}
+	} else {
+		WL_ERR(("sched_pm_status_query: Version 1 unsupported. ver %d\n",
+			dtoh16(result.version)));
+		ret = BCME_UNSUPPORTED;
+		goto exit;
+	}
+
+exit:
+	if (iovresp) {
+		MFREE(cfg->osh, iovresp, WLC_IOCTL_MEDLEN);
+	}
+	if (ret < 0) {
+		ret = wl_android_twt_bcmerr_to_hal_error_code(ret);
+	}
+	return ret;
+}
+
+/* wl_android_sched_pm_leaky_ap_active_detection - sched_pm_leaky_ap_active_detection handler
+ * This command will be delivered when host wants to detect the APs leaky behavior.
+ *
+ * LEAKY_AP_ACTIVE_DETECTION <options>
+ * @param options: Following parameters separated with a space are delivered in text form.
+ * Src_ipaddr. IP address of this client device.
+ * Target_ipaddr. IP address of the connected AP.
+ * Duration. Duration for the additional listening in PM1 state.
+ * Unit: microseconds. Range: 3072~10240
+ *
+ * @return status
+ * 0: Success
+ * Negative value: Failure
+ * Positive value: Success and Others
+ *
+ * Usage examples:
+ * DRIVER LEAKY_AP_ACTIVE_DETECTION 192.168.1.100 192.168.1.1 6144
+ */
+static int
+wl_android_sched_pm_leaky_ap_active_detection(struct net_device *ndev, char *command, int total_len)
+{
+	wl_sched_pm_cmd_lap_act_det_t val;
+	s32 bw = 0;
+	char *token, *pos;
+	u8 mybuf[WLC_IOCTL_SMLEN] = {0};
+	u8 resp_buf[WLC_IOCTL_SMLEN] = {0};
+	uint8 *rem = mybuf;
+	uint16 rem_len = sizeof(mybuf);
+
+
+	WL_DBG_MEM(("Enter leaky_ap_active_detection cmd:%s\n", command));
+
+	if (strlen(command) == strlen(CMD_LEAKY_AP_ACTIVE_DETECTION)) {
+		WL_ERR(("Error, leaky_ap_active_detection cmd  missing params\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+
+	bzero(&val, sizeof(val));
+	val.version = 0u;
+	val.length = sizeof(val.version) + sizeof(val.length);
+
+	/* Default values, Override Below */
+	bzero(&val.src_addr, IPV4_ADDR_LEN);
+	bzero(&val.tgt_addr, IPV4_ADDR_LEN);
+	val.add_li_dur = 0xFFFFFFFF;
+
+	pos = (command + sizeof(CMD_LEAKY_AP_ACTIVE_DETECTION));
+
+	token = strsep((char**)&pos, " ");
+	if (!token) {
+		WL_ERR(("sched_pm_leaky_ap_active_detection: No source ipaddr\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+
+	if (!bcm_atoipv4(token, (struct ipv4_addr *)&val.src_addr)) {
+		WL_ERR(("sched_pm_leaky_ap_active_detection: Invalid source ipaddr\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+
+	token = strsep((char**)&pos, " ");
+	if (!token) {
+		WL_ERR(("sched_pm_leaky_ap_active_detection: No target ipaddr\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+
+	if (!bcm_atoipv4(token, (struct ipv4_addr *)&val.tgt_addr)) {
+		WL_ERR(("sched_pm_leaky_ap_active_detection: Invalid target ipaddr\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+
+	token = strsep((char**)&pos, " ");
+	if (!token) {
+		WL_ERR(("sched_pm_leaky_ap_active_detection:"
+			" No Additional Listen Duration provided\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+	val.add_li_dur = htod32((u32)bcm_atoi(token));
+
+	bw = bcm_pack_xtlv_entry(&rem, &rem_len, WL_SCHED_PM_CMD_LEAKYAP_ACTIVE_DET,
+		sizeof(val), (uint8 *)&val, BCM_XTLV_OPTION_ALIGN32);
+	if (bw != BCME_OK) {
+		WL_ERR(("leaky_ap_active_detection: bcm_pack_xtlv_entry failed\n"));
+		goto exit;
+	}
+
+	bw = wldev_iovar_setbuf(ndev, "sched_pm",
+		mybuf, sizeof(mybuf) - rem_len, resp_buf, WLC_IOCTL_SMLEN, NULL);
+	if (bw < 0) {
+		WL_ERR(("leaky_ap_active_detection: wldev_iovar_setbuf failed\n"));
+	}
+
+exit:
+	return wl_android_twt_bcmerr_to_hal_error_code(bw);
+}
+
+/* wl_android_sched_pm_leaky_ap_passive_detection_start -
+ * sched_pm_leaky_ap_passive_detection_start handler
+ * This command will be delivered when host wants to detect the APs leaky behavior.
+ *
+ * LEAKY_AP_PASSIVE_DETECTION_START <options>
+ * @param options: Following parameters separated with a space are delivered in text form.
+ * Duration. Duration for the additional listening at every PM1 state.
+ * Unit: microseconds. Range: 3072~10240
+ *
+ * @return status
+ * 0: Success
+ * Negative value: Failure
+ * Positive value: Success and Others
+ *
+ * Usage examples:
+ * DRIVER LEAKY_AP_PASSIVE_DETECTION_START 6144
+ */
+static int
+wl_android_sched_pm_leaky_ap_passive_detection_start(struct net_device *ndev,
+	char *command, int total_len)
+{
+	wl_sched_pm_cmd_lap_pas_det_start_t val;
+	s32 bw;
+	char *token, *pos;
+	u8 mybuf[WLC_IOCTL_SMLEN] = {0};
+	u8 resp_buf[WLC_IOCTL_SMLEN] = {0};
+	uint8 *rem = mybuf;
+	uint16 rem_len = sizeof(mybuf);
+
+	WL_DBG_MEM(("Enter sched_pm_ap_passive_detection_start cmd:%s\n", command));
+
+	if (strlen(command) == strlen(CMD_LEAKY_AP_PASSIVE_DETECTION_START)) {
+		WL_ERR(("Error, sched_pm_ap_passive_detection_start cmd  missing params\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+
+	bzero(&val, sizeof(val));
+	val.version = 0u;
+	val.length = sizeof(val.version) + sizeof(val.length);
+
+	/* Default values, Override Below */
+	val.add_li_dur = 0xFFFFFFFF;
+
+	pos = command + sizeof(CMD_LEAKY_AP_PASSIVE_DETECTION_START);
+
+	/* Duration */
+	token = strsep((char**)&pos, " ");
+	if (!token) {
+		WL_ERR(("sched_pm_ap_passive_detection_start: No Duration provided\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+	val.add_li_dur = htod32((u32)bcm_atoi(token));
+
+	bw = bcm_pack_xtlv_entry(&rem, &rem_len, WL_SCHED_PM_CMD_LEAKYAP_PASSIVE_DET_START,
+		sizeof(val), (uint8 *)&val, BCM_XTLV_OPTION_ALIGN32);
+	if (bw != BCME_OK) {
+		WL_ERR(("sched_pm_ap_passive_detection_start: bcm_pack_xtlv_entry failed\n"));
+		goto exit;
+	}
+
+	bw = wldev_iovar_setbuf(ndev, "sched_pm",
+		mybuf, sizeof(mybuf) - rem_len, resp_buf, WLC_IOCTL_SMLEN, NULL);
+	if (bw < 0) {
+		WL_ERR(("sched_pm_ap_passive_detection_start: wldev_iovar_setbuf failed\n"));
+	}
+exit:
+	return wl_android_twt_bcmerr_to_hal_error_code(bw);
+}
+
+/* wl_android_sched_pm_leaky_ap_passive_detection_end -
+ * sched_pm_leaky_ap_passive_detection_end handler
+ * This command will be delivered when host wants to terminate the passive detection.
+ *
+ * LEAKY_AP_PASSIVE_DETECTION_END
+ * @return status
+ * 0: Success
+ * Negative value: Failure
+ * Positive value: Success and Others
+ *
+ * Usage examples:
+ * DRIVER LEAKY_AP_PASSIVE_DETECTION_END
+ */
+static int
+wl_android_sched_pm_leaky_ap_passive_detection_end(struct net_device *ndev,
+	char *command, int total_len)
+{
+	wl_sched_pm_lap_pas_det_stop_t val;
+	s32 bw;
+	u8 mybuf[WLC_IOCTL_SMLEN] = {0};
+	u8 res_buf[WLC_IOCTL_SMLEN] = {0};
+	uint8 *rem = mybuf;
+	uint16 rem_len = sizeof(mybuf);
+
+	WL_DBG_MEM(("Enter sched_pm_leaky_ap_passive_detection_end cmd:%s\n", command));
+
+
+	bzero(&val, sizeof(val));
+
+	val.version = 0u;
+	val.length = sizeof(val.version) + sizeof(val.length);
+
+	/* Default values, Overide Below */
+	val.status = 0xFF;
+
+	bw = bcm_pack_xtlv_entry(&rem, &rem_len, WL_SCHED_PM_CMD_LEAKYAP_PASSIVE_DET_END,
+		sizeof(val), (uint8 *)&val, BCM_XTLV_OPTION_ALIGN32);
+	if (bw != BCME_OK) {
+		goto exit;
+	}
+
+	bw = wldev_iovar_setbuf(ndev, "sched_pm",
+		mybuf, sizeof(mybuf) - rem_len, res_buf, WLC_IOCTL_SMLEN, NULL);
+	if (bw < 0) {
+		WL_ERR(("sched_pm_leaky_ap_passive_detection_end: failed. ret:%d\n", bw));
+	}
+exit:
+	return wl_android_twt_bcmerr_to_hal_error_code(bw);
+}
+
+
+/* wl_android_sched_pm_grace_period - sched_pm_grace_period handler
+ * This command will be delivered when host wants to configure the grace period during the
+ * leaky AP detection. The grace period will be always lower or equal than the
+ * whole duration for the leaky AP detection.
+ * This command will be delivered before other commands for leaky AP detection.
+ *
+ * SET_GRACE_PERIOD <grace_period>
+ * @param grace_period: Duration for receiving the remaining frame in APs HWQ.
+ * Unit: us. Range:0 ~ 6144
+ *
+ * @return status
+ * 0: Success
+ * Negative value: Failure
+ * Positive value: Success and Others
+ * Usage examples:
+ * DRIVER SET_GRACE_PERIOD 1024
+ */
+static int
+wl_android_sched_pm_grace_period(struct net_device *ndev,
+	char *command, int total_len)
+{
+	wl_sched_pm_cmd_grace_prd_t val;
+	s32 bw;
+	char *token, *pos;
+	u8 mybuf[WLC_IOCTL_SMLEN] = {0};
+	u8 resp_buf[WLC_IOCTL_SMLEN] = {0};
+	uint8 *rem = mybuf;
+	uint16 rem_len = sizeof(mybuf);
+
+	WL_DBG_MEM(("Enter sched_pm_grace_period cmd:%s\n", command));
+
+	if (strlen(command) == strlen(CMD_SET_GRACE_PERIOD)) {
+		WL_ERR(("Error, sched_pm_grace_period cmd  missing params\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+
+	bzero(&val, sizeof(val));
+	val.version = 0u;
+	val.length = sizeof(val.version) + sizeof(val.length);
+
+	/* Default values, Override Below */
+	val.grace_period = 0xFFFFFFFF;
+
+	pos = command + sizeof(CMD_SET_GRACE_PERIOD);
+
+	/* Duration */
+	token = strsep((char**)&pos, " ");
+	if (!token) {
+		WL_ERR(("sched_pm_grace_period: No Duration provided\n"));
+		bw = -EINVAL;
+		goto exit;
+	}
+	val.grace_period = htod32((u32)bcm_atoi(token));
+
+	bw = bcm_pack_xtlv_entry(&rem, &rem_len, WL_SCHED_PM_CMD_GRACE_PERIOD,
+		sizeof(val), (uint8 *)&val, BCM_XTLV_OPTION_ALIGN32);
+	if (bw != BCME_OK) {
+		WL_ERR(("sched_pm_grace_period: bcm_pack_xtlv_entry failed\n"));
+		goto exit;
+	}
+
+	bw = wldev_iovar_setbuf(ndev, "sched_pm",
+		mybuf, sizeof(mybuf) - rem_len, resp_buf, WLC_IOCTL_SMLEN, NULL);
+	if (bw < 0) {
+		WL_ERR(("sched_pm_grace_period: wldev_iovar_setbuf failed\n"));
+	}
+exit:
+	return wl_android_twt_bcmerr_to_hal_error_code(bw);
+}
+
+int
+wl_update_sched_pm_teardown_evt_info(struct sk_buff *skb, void *event_data)
+{
+	s32 err = BCME_OK;
+	const wl_sched_pm_teardown_cplt_t *td_cplt = (wl_sched_pm_teardown_cplt_t *)event_data;
+
+	WL_DBG(("SCHED_PM_TEARDOWN: event_id %d, reason_code %d, status %d\n",
+		(int)td_cplt->event_id, (int)td_cplt->reason_code, (int)td_cplt->status));
+
+	err = nla_put_u8(skb, WIFI_SCHED_PM_ATTR_SUB_EVENT, WL_SCHED_PM_EVENT_TEARDOWN);
+	if (unlikely(err)) {
+		WL_ERR(("nla_put_u8 WIFI_SCHED_PM_ATTR_SUB_EVENT failed\n"));
+		goto fail;
+	}
+	err = nla_put_u8(skb, WIFI_SCHED_PM_ATTR_REASON_CODE, td_cplt->reason_code);
+	if (unlikely(err)) {
+		WL_ERR(("nla_put_u8 WIFI_SCHED_PM_ATTR_REASON_CODE failed\n"));
+		goto fail;
+	}
+	err = nla_put_u8(skb, WIFI_SCHED_PM_ATTR_STATUS, !!(td_cplt->status));
+	if (unlikely(err)) {
+		WL_ERR(("nla_put_u8 WIFI_SCHED_PM_ATTR_STATUS failed\n"));
+		goto fail;
+	}
+
+	err = nla_put_u8(skb, WIFI_SCHED_PM_ATTR_EVENT_ID, td_cplt->event_id);
+	if (unlikely(err)) {
+		WL_ERR(("nla_put_u8 WIFI_SCHED_PM_ATTR_EVENT_ID failed\n"));
+		goto fail;
+	}
+
+fail:
+	return err;
+}
+#endif /* WLSCHED_PM */
 
 static int
 wl_android_get_6g_softap_freq_list(struct net_device *ndev, char *command, int total_len)
@@ -14076,7 +14606,10 @@ wl_handle_private_cmd(struct net_device *net, char *command, u32 cmd_len)
 {
 	int bytes_written = 0;
 	android_wifi_priv_cmd priv_cmd;
+	int cmd_index = -1;
+	char cmd_name[WLC_IOCTL_SMLEN] = {0};
 
+	BCM_REFERENCE(cmd_index);
 	bzero(&priv_cmd, sizeof(android_wifi_priv_cmd));
 	priv_cmd.total_len = cmd_len;
 
@@ -14102,7 +14635,14 @@ wl_handle_private_cmd(struct net_device *net, char *command, u32 cmd_len)
 		return 0;
 	}
 
-	if (strnicmp(command, CMD_STOP, strlen(CMD_STOP)) == 0) {
+	/* Extract the command name by getting the first token (up to first space) */
+	if (sscanf(command, "%s", cmd_name) != 1) {
+		DHD_ERROR(("wl_handle_private_cmd: Not Received Any Private Command\n"));
+		return -1;
+	}
+
+	if (strlen(CMD_STOP) == strlen(cmd_name) &&
+			strnicmp(command, CMD_STOP, strlen(CMD_STOP)) == 0) {
 #ifdef SUPPORT_DEEP_SLEEP
 		trigger_deep_sleep = 1;
 #else
@@ -14477,36 +15017,6 @@ wl_handle_private_cmd(struct net_device *net, char *command, u32 cmd_len)
 		bytes_written = wl_android_set_ltecx(net, (const char*)command+skip);
 	}
 #endif /* SUPPORT_LTECX */
-#ifdef WL_RELMCAST
-	else if (strnicmp(command, CMD_SET_RMC_ENABLE, strlen(CMD_SET_RMC_ENABLE)) == 0) {
-		int rmc_enable = *(command + strlen(CMD_SET_RMC_ENABLE) + 1) - '0';
-		bytes_written = wl_android_rmc_enable(net, rmc_enable);
-	}
-	else if (strnicmp(command, CMD_SET_RMC_TXRATE, strlen(CMD_SET_RMC_TXRATE)) == 0) {
-		int rmc_txrate;
-		sscanf(command, "%*s %10d", &rmc_txrate);
-		bytes_written = wldev_iovar_setint(net, "rmc_txrate", rmc_txrate * 2);
-	}
-	else if (strnicmp(command, CMD_SET_RMC_ACTPERIOD, strlen(CMD_SET_RMC_ACTPERIOD)) == 0) {
-		int actperiod;
-		sscanf(command, "%*s %10d", &actperiod);
-		bytes_written = wldev_iovar_setint(net, "rmc_actf_time", actperiod);
-	}
-	else if (strnicmp(command, CMD_SET_RMC_IDLEPERIOD, strlen(CMD_SET_RMC_IDLEPERIOD)) == 0) {
-		int acktimeout;
-		sscanf(command, "%*s %10d", &acktimeout);
-		acktimeout *= 1000;
-		bytes_written = wldev_iovar_setint(net, "rmc_acktmo", acktimeout);
-	}
-	else if (strnicmp(command, CMD_SET_RMC_LEADER, strlen(CMD_SET_RMC_LEADER)) == 0) {
-		int skip = strlen(CMD_SET_RMC_LEADER) + 1;
-		bytes_written = wl_android_rmc_set_leader(net, (const char*)command+skip);
-	}
-	else if (strnicmp(command, CMD_SET_RMC_EVENT,
-		strlen(CMD_SET_RMC_EVENT)) == 0) {
-		bytes_written = wl_android_set_rmc_event(net, command);
-	}
-#endif /* WL_RELMCAST */
 	else if (strnicmp(command, CMD_GET_SCSCAN, strlen(CMD_GET_SCSCAN)) == 0) {
 		bytes_written = wl_android_get_singlecore_scan(net, command, priv_cmd.total_len);
 	}
@@ -14524,16 +15034,6 @@ wl_handle_private_cmd(struct net_device *net, char *command, u32 cmd_len)
 		wl_android_get_tx_power(net, command, priv_cmd.total_len);
 	}
 #endif /* TEST_TX_POWER_CONTROL */
-	else if (strnicmp(command, CMD_SARLIMIT_TX_CONTROL,
-		strlen(CMD_SARLIMIT_TX_CONTROL)) == 0) {
-		int skip = strlen(CMD_SARLIMIT_TX_CONTROL) + 1;
-		bytes_written = wl_android_set_sarlimit_txctrl(net, (const char*)command+skip);
-	}
-	else if (strnicmp(command, CMD_SARLIMIT_NR_SUB6_BANDINFO,
-		strlen(CMD_SARLIMIT_NR_SUB6_BANDINFO)) == 0) {
-		int skip = strlen(CMD_SARLIMIT_NR_SUB6_BANDINFO) + 1;
-		bytes_written = wl_android_set_tx_power_nrsub6_band(net, (const char*)command+skip);
-	}
 #ifdef SUPPORT_SET_TID
 	else if (strnicmp(command, CMD_SET_TID, strlen(CMD_SET_TID)) == 0) {
 		bytes_written = wl_android_set_tid(net, command);
@@ -15063,6 +15563,37 @@ wl_handle_private_cmd(struct net_device *net, char *command, u32 cmd_len)
 		bytes_written = wl_android_twt_softap_enable(net, twt_softap_enable);
 	}
 #endif /* WL_TWT */
+#ifdef WLSCHED_PM
+	else if (strnicmp(command, CMD_SCHED_PM_SETUP, strlen(CMD_SCHED_PM_SETUP)) == 0) {
+		bytes_written = wl_android_sched_pm_setup(net, command, priv_cmd.total_len);
+	}
+	else if (strnicmp(command, CMD_SCHED_PM_TEARDOWN, strlen(CMD_SCHED_PM_TEARDOWN)) == 0) {
+		bytes_written = wl_android_sched_pm_teardown(net, command, priv_cmd.total_len);
+	}
+	else if (strnicmp(command, CMD_SCHED_PM_STATUS_QUERY,
+			strlen(CMD_SCHED_PM_STATUS_QUERY)) == 0) {
+		bytes_written = wl_android_sched_pm_status_query(net, command, priv_cmd.total_len);
+	}
+	else if (strnicmp(command, CMD_LEAKY_AP_ACTIVE_DETECTION,
+			strlen(CMD_LEAKY_AP_ACTIVE_DETECTION)) == 0) {
+		bytes_written = wl_android_sched_pm_leaky_ap_active_detection(net,
+			command, priv_cmd.total_len);
+	}
+	else if (strnicmp(command, CMD_LEAKY_AP_PASSIVE_DETECTION_START,
+			strlen(CMD_LEAKY_AP_PASSIVE_DETECTION_START)) == 0) {
+		bytes_written = wl_android_sched_pm_leaky_ap_passive_detection_start(net,
+			command, priv_cmd.total_len);
+	}
+	else if (strnicmp(command, CMD_LEAKY_AP_PASSIVE_DETECTION_END,
+			strlen(CMD_LEAKY_AP_PASSIVE_DETECTION_END)) == 0) {
+		bytes_written = wl_android_sched_pm_leaky_ap_passive_detection_end(net,
+			command, priv_cmd.total_len);
+	}
+	else if (strnicmp(command, CMD_SET_GRACE_PERIOD, strlen(CMD_SET_GRACE_PERIOD)) == 0) {
+		bytes_written = wl_android_sched_pm_grace_period(net, command, priv_cmd.total_len);
+	}
+#endif /* WLSCHED_PM */
+
 #ifdef CUSTOMER_HW4
 #ifdef DHD_PCIE_RUNTIMEPM
 	else if (strnicmp(command, CMD_PCIE_RPM_ENABLE, strlen(CMD_PCIE_RPM_ENABLE)) == 0) {
@@ -15151,6 +15682,13 @@ wl_handle_private_cmd(struct net_device *net, char *command, u32 cmd_len)
 		strlen(CMD_ART_TX_RATE)) == 0) {
 		bytes_written = wl_android_art_set_txrate(net, command, priv_cmd.total_len);
 #endif /* DHD_ART */
+	} else if (strnicmp(command, CMD_SET_KEEP_ALIVE_INTERVAL_LEGACY,
+			strlen(CMD_SET_KEEP_ALIVE_INTERVAL_LEGACY)) == 0) {
+		int skip = strlen(CMD_SET_KEEP_ALIVE_INTERVAL_LEGACY) + 1;
+		bytes_written = wl_keep_alive_set(net, command + skip);
+	} else if (strnicmp(command, CMD_GET_KEEP_ALIVE_INTERVAL_LEGACY,
+			strlen(CMD_GET_KEEP_ALIVE_INTERVAL_LEGACY)) == 0) {
+		bytes_written = wl_keep_alive_get(net, command, priv_cmd.total_len);
 	} else {
 		DHD_ERROR(("Unknown PRIVATE command %s - ignored\n", command));
 #ifdef CUSTOMER_HW4_DEBUG
@@ -16853,6 +17391,7 @@ wl_wbtext_init(struct bcm_cfg80211 *cfg)
 
 	/* Allocate spinlock for protecting wbtext_bssid_list */
 	cfg->wbtext_bssid_list_sync = (void *)WL_CFG_WBTEXT_BSSID_LIST_SYNC_INIT(cfg->osh);
+	OSL_LOCK_CLASS_SET(cfg->wbtext_bssid_list_sync);
 
 	if (!cfg->wbtext_bssid_list_sync) {
 		WL_ERR(("Failed to alloc spinlock\n"));
@@ -17406,7 +17945,7 @@ wl_cfg80211_get_bss_sta_info(struct bcm_cfg80211 *cfg, struct net_device *dev,
 
 s32
 wl_android_set_blacklist_bssid(struct net_device *dev, maclist_t *blacklist,
-    uint32 len, uint32 flush)
+	uint32 len, uint32 flush)
 {
 	s32 err;
 	s32 macmode;
@@ -17431,7 +17970,7 @@ wl_android_set_blacklist_bssid(struct net_device *dev, maclist_t *blacklist,
 
 s32
 wl_android_set_whitelist_ssid(struct net_device *dev, wl_ssid_whitelist_t *ssid_whitelist,
-    uint32 len, uint32 flush)
+	uint32 len, uint32 flush)
 {
 	s32 err;
 	u8 *buf;

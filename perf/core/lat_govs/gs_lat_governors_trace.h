@@ -35,7 +35,7 @@ TRACE_EVENT(gs_lat_governor,
 	),
 
 	TP_fast_assign(
-		__assign_str(name, name);
+		__assign_str(name);
 		__entry->cpu = cpu;
 		__entry->ratio = ratio;
 		__entry->stall = stall;
@@ -58,7 +58,7 @@ TRACE_EVENT(gs_lat_governor,
 
 /* This part must be outside protection */
 #undef TRACE_INCLUDE_PATH
-#define TRACE_INCLUDE_PATH ../core/lat_govs
+#define TRACE_INCLUDE_PATH .
 
 #undef TRACE_INCLUDE_FILE
 #define TRACE_INCLUDE_FILE gs_lat_governors_trace

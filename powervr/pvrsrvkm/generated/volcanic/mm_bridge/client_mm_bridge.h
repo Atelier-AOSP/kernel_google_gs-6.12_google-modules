@@ -139,13 +139,15 @@ IMG_INTERNAL PVRSRV_ERROR BridgeDevmemIntReserveRangeAndMapPMR(IMG_HANDLE hBridg
 IMG_INTERNAL PVRSRV_ERROR BridgeDevmemIntUnreserveRange(IMG_HANDLE hBridge,
 							IMG_HANDLE hReservation);
 
-IMG_INTERNAL PVRSRV_ERROR BridgeChangeSparseMem(IMG_HANDLE hBridge,
-						IMG_UINT32 ui32AllocPageCount,
-						IMG_UINT32 * pui32AllocPageIndices,
-						IMG_UINT32 ui32FreePageCount,
-						IMG_UINT32 * pui32FreePageIndices,
-						IMG_UINT32 ui32SparseFlags,
-						IMG_HANDLE hReservation);
+IMG_INTERNAL PVRSRV_ERROR BridgeSparseAddBacking(IMG_HANDLE hBridge,
+						 IMG_UINT32 ui32AllocPageCount,
+						 IMG_UINT32 * pui32AllocPageIndices,
+						 IMG_HANDLE hReservation);
+
+IMG_INTERNAL PVRSRV_ERROR BridgeSparseRemoveBacking(IMG_HANDLE hBridge,
+						    IMG_UINT32 ui32FreePageCount,
+						    IMG_UINT32 * pui32FreePageIndices,
+						    IMG_HANDLE hReservation);
 
 IMG_INTERNAL PVRSRV_ERROR BridgeDevmemIsVDevAddrValid(IMG_HANDLE hBridge,
 						      IMG_HANDLE hDevmemCtx,
@@ -176,7 +178,9 @@ IMG_INTERNAL PVRSRV_ERROR BridgeHeapCfgHeapDetails(IMG_HANDLE hBridge,
 						   IMG_DEVMEM_SIZE_T * puiHeapLength,
 						   IMG_DEVMEM_SIZE_T * puiReservedRegionLength,
 						   IMG_UINT32 * pui32Log2DataPageSizeOut,
-						   IMG_UINT32 * pui32Log2ImportAlignmentOut);
+						   IMG_UINT32 * pui32Log2ImportAlignmentOut,
+						   IMG_UINT32 * pui32HeapManagerFlags,
+						   IMG_UINT32 * pui32PolicyVMRA);
 
 IMG_INTERNAL PVRSRV_ERROR BridgeDevmemIntRegisterPFNotifyKM(IMG_HANDLE hBridge,
 							    IMG_HANDLE hDevmemCtx,
@@ -185,7 +189,7 @@ IMG_INTERNAL PVRSRV_ERROR BridgeDevmemIntRegisterPFNotifyKM(IMG_HANDLE hBridge,
 IMG_INTERNAL PVRSRV_ERROR BridgePhysHeapGetMemInfo(IMG_HANDLE hBridge,
 						   IMG_UINT32 ui32PhysHeapCount,
 						   PVRSRV_PHYS_HEAP * peaPhysHeapID,
-						   PHYS_HEAP_MEM_STATS * pasapPhysHeapMemStats);
+						   PHYS_HEAP_MEM_STATS_OLD * psapPhysHeapMemStats);
 
 IMG_INTERNAL PVRSRV_ERROR BridgeGetDefaultPhysicalHeap(IMG_HANDLE hBridge,
 						       PVRSRV_PHYS_HEAP * peHeap);
@@ -234,5 +238,10 @@ IMG_INTERNAL PVRSRV_ERROR BridgeDevmemIntFindCPUAddress(IMG_HANDLE hBridge,
 							IMG_UINT64 ui64Size,
 							IMG_UINT64 ui64AddrHint,
 							IMG_UINT64 * pui64Addr);
+
+IMG_INTERNAL PVRSRV_ERROR BridgePhysHeapGetMemInfo2(IMG_HANDLE hBridge,
+						    IMG_UINT32 ui32PhysHeapCount,
+						    PVRSRV_PHYS_HEAP * peaPhysHeapID,
+						    PHYS_HEAP_MEM_STATS * pasapPhysHeapMemStats);
 
 #endif /* CLIENT_MM_BRIDGE_H */

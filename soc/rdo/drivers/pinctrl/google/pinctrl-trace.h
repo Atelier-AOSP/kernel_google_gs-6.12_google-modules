@@ -290,6 +290,16 @@ DEFINE_EVENT(pinctrl_irq_group_event, google_gpio_irq_unmask,
 	TP_ARGS(gctl, irq, pad)
 );
 
+DEFINE_EVENT(pinctrl_irq_group_event, google_gpio_irq_startup,
+	TP_PROTO(struct google_pinctrl *gctl, u32 irq, u32 pad),
+	TP_ARGS(gctl, irq, pad)
+);
+
+DEFINE_EVENT(pinctrl_irq_group_event, google_gpio_irq_shutdown,
+	TP_PROTO(struct google_pinctrl *gctl, u32 irq, u32 pad),
+	TP_ARGS(gctl, irq, pad)
+);
+
 DECLARE_EVENT_CLASS(pinctrl_power_group_event,
 	TP_PROTO(struct google_pinctrl *gctl),
 	TP_ARGS(gctl),
@@ -341,8 +351,6 @@ DEFINE_EVENT(pinctrl_power_group_event, google_pinconf_group_set_enter,
 	TP_PROTO(struct google_pinctrl *gctl),
 	TP_ARGS(gctl)
 );
-
-void google_pinctrl_trace_init(struct platform_device *pdev);
 
 #endif /* _TRACE_PINCTRL_H */
 

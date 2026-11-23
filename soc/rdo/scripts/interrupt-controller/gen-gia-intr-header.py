@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 #
-# Copyright 2024 Google LLC
+# Copyright 2024-2025 Google LLC
 
 import os
 import datetime
@@ -57,6 +57,9 @@ def align_line(x_string, yy_string):
 
 # Print o/p line with proper formatting
 def print_nice_line(sswrp, gia, irq_name, hwirq):
+	if "SSWRP" in sswrp:
+		sswrp = sswrp.split('SSWRP_')[1]
+
 	prefix = "#define " + sswrp + "_" +  gia + "_" + irq_name
 	suffix=hwirq
 	result = align_line(prefix, suffix)
@@ -66,19 +69,41 @@ def print_nice_line(sswrp, gia, irq_name, hwirq):
 	else:
 		print(result)
 
+def extract_sswrp(fname):
+	#in, out csvs match with launch, the addr csv matches gia_map
+	match = re.search(r'sswrp_(.*?)_(?:launch|gia)_', fname)
+	if match:
+		sswrp = match.group(1)
+
+		# manual corrections for these two
+		if sswrp == 'memss_top':
+			sswrp = 'memss'
+		if sswrp == 'aurdsp':
+			sswrp = 'aurora'
+		# defense against HSIO_S vs HSIOS
+		if 'sio_' in sswrp:
+			sswrp = sswrp.replace('_','')
+
+		return sswrp
+
+	if fname.lower().startswith('cpm_m55'):
+		return 'cpm_m55'
+
+	#print("ERROR: Unable to extract sswrp from file name " + fname)
+	return None
+
+
 # Extract SSWRP from a filename
-def extract_sswrp(line):
-	tokens = line.split('/')
-	sub_tokens = tokens[len(tokens) - 1].split('_launch')
+def set_current_sswrp(file_path):
 	global sswrp_str
-	sswrp_str = sub_tokens[0].strip().split('sswrp_')[1].upper()
+	sswrp_str = extract_sswrp(os.path.basename(file_path)).strip().upper()
 
 	tokens = sswrp_str.split('_')
 	for token in tokens:
 		dictionary.add(token.lower())
 
 	print("")
-	print("/* SSWRP_", sswrp_str.strip().upper(), " */", sep="")
+	print("/* ", sswrp_str, " */", sep="")
 
 def extract_trailing_number(text):
 	match = re.search(r"(\d+)$", text)  # Search for one or more digits at the end
@@ -144,7 +169,7 @@ def generate_macros(tokens):
 		i = i + 1
 
 	if gia == None or hwirq == "-1" or gia_raw == None:
-		#print("//Ignore this line (No interrupt information found): ", tokens)
+		#print("// Ignore this line (No interrupt information found): ", tokens)
 		return
 
 	gia = gia_raw.replace("RAW", "GIA").replace("INTR", "AGGR")
@@ -152,11 +177,6 @@ def generate_macros(tokens):
 	# !!Exception!! - DPU has different way of representing wide
 	#				 GIA. So, handle that.
 	global sswrp_str
-	if (sswrp_str.lower() == "dpu" and "level" in gia.lower()):
-		# print("Wide GIA special case: ", tokens)
-		temp_instance = extract_number_part_of_string(gia)
-		gia_instance = temp_instance % 10
-		gia = gia.replace(str(temp_instance), str(temp_instance - gia_instance)) # Wide GIA gets the base name
 
 	# Normal case
 	if (gia_instance == -1):
@@ -164,6 +184,7 @@ def generate_macros(tokens):
 		gia_instance = extract_trailing_number(tokens[i - 1])
 
 	irq_name = tokens[i - 2].strip().upper()
+	#print("// irq_name: ", irq_name)
 
 	if (length >= 5) and tokens[i - 4] != "":
 		all_prefixes = tokens[i - 3] + "_" + tokens[i - 4]
@@ -177,7 +198,7 @@ def generate_macros(tokens):
 
 	if "[" in irq_name or "]" in irq_name or "[" in gia or "]" in gia:
 		badline = True
-		#print("//complicated input line : ", sswrp, "_",  gia, "_", irq_name, "\t\t", hwirq, sep="")
+		#print("//complicated input line : ", sswrp_str, "_",  gia, "_", irq_name, "\t\t", hwirq, sep="")
 
 	# Use regex and determine square bracket
 	pattern = r"^(.*)\[(\d+):?(\d*)\]"
@@ -233,25 +254,64 @@ def validate_tokens(tokens):
 			#print("//Ignore this line (heading): ", tokens)
 			return False;
 
+		# Don't make macros for the aggregators which come *after* GIC
+		if ("u_gsa_gia" in token.lower()):
+			return False;
+
 		i = i + 1
 
 	return True  # All tokens passed validation
 
-def print_csv_lines(root_folder, pattern="_launch_i.csv"):
-	for dirpath, _, filenames in os.walk(root_folder):
+def get_fnames_by_pattern(root_dir, pattern):
+	#dict to defend against duplicate files
+	file_dict = {}
+
+	for dirpath, _, filenames in os.walk(root_dir):
 		for filename in filenames:
 			if filename.endswith(pattern):
-				filepath = os.path.join(dirpath, filename)
-				with open(filepath, 'r') as file:
-					extract_sswrp(filepath)
-					csv_reader = csv.reader(file)
-					for line in csv_reader:
-						if validate_tokens(line):
-							generate_macros(line)
+				file_dict[filename] = os.path.join(dirpath, filename)
 
-					tokens = sswrp_str.split('_')
-					for token in tokens:
-						dictionary.remove(token.lower())
+	sorted_list = [file_dict[i] for i in sorted(file_dict)]
+	return sorted_list
+
+def print_csv_lines(root_folder, pattern="_i.csv"):
+	filepaths = get_fnames_by_pattern(root_folder, pattern)
+
+	for filepath in filepaths:
+		with open(filepath, 'r') as file:
+			set_current_sswrp(filepath)
+			csv_reader = csv.reader(file)
+			for line in csv_reader:
+				if validate_tokens(line):
+					generate_macros(line)
+
+			tokens = sswrp_str.split('_')
+			for token in tokens:
+				if token.lower() in dictionary:
+					#print("// Token removed from dictionary: ", token.lower())
+					dictionary.remove(token.lower())
+
+def print_manual_hacks():
+	# If adding lines, add bugs
+	manual_hacks = []
+	#b/366554453
+	manual_hacks.append("#define GSA_GIA_LEVEL_AGGR_1_GSA_GIA_MULTICAST_AGGR_INTR_1       1")
+	manual_hacks.append("#define GSA_GIA_LEVEL_AGGR_1_GSA_GIA_PULSE_AGGR_INTR_2           0")
+	#b/366531370
+	manual_hacks.append("#define DPU_GIA_LEVEL_AGGR_0_AUX_AON_GIA_GIA_GIA_MULTICAST_AGGR_INTR_0       3")
+	manual_hacks.append("#define DPU_GIA_LEVEL_AGGR_0_AUX_AON_GIA_GIA_GIA_MULTICAST_AGGR_INTR_1       0")
+	manual_hacks.append("#define DPU_GIA_LEVEL_AGGR_0_AUX_AON_GIA_GIA_GIA_MULTICAST_AGGR_INTR_2       1")
+	manual_hacks.append("#define DPU_GIA_LEVEL_AGGR_0_AUX_AON_GIA_GIA_GIA_MULTICAST_AGGR_INTR_3       2")
+
+	if len(manual_hacks) == 0:
+		return
+
+	print("/*")
+	print(" * These lines are manually hacked additions to work around errors in generating from data")
+	print(" * add or remove lines from print_manual_hacks() in the generating script")
+	print(" */")
+	for hack in manual_hacks:
+		print(hack)
 
 def print_header():
 	now = datetime.datetime.now()
@@ -263,18 +323,18 @@ def print_header():
  * !!!!! THIS IS A GENERATED FILE, DO NOT EDIT !!!!!
  * !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
  *
- * This header provides macros for hwirq of LGA GIAs.
+ * This header provides macros for hwirq of MBU GIAs.
  * generate using scripts/interrupt-controller/gen-gia-intr-header.py
  *
  * Copyright {current_year} Google LLC
  */
 
-#ifndef _DT_BINDINGS_IRQ_GIA_GOOGLE_LGA_H
-#define _DT_BINDINGS_IRQ_GIA_GOOGLE_LGA_H"""
+#ifndef _DT_BINDINGS_IRQ_GIA_GOOGLE_MBU_H
+#define _DT_BINDINGS_IRQ_GIA_GOOGLE_MBU_H"""
 	print(lines)
 
 def print_footer():
-	lines = r"""#endif /* _DT_BINDINGS_IRQ_GIA_GOOGLE_LGA_H */"""
+	lines = r"""#endif /* _DT_BINDINGS_IRQ_GIA_GOOGLE_MBU_H */"""
 	print(lines)
 
 if __name__ == "__main__":
@@ -285,5 +345,5 @@ if __name__ == "__main__":
 	root_folder = sys.argv[1]
 	print_header()
 	print_csv_lines(root_folder)
+	print_manual_hacks()
 	print_footer()
-

@@ -36,7 +36,7 @@ extern "C" {
 typedef struct bcm_tlv {
 	uint8	id;
 	uint8	len;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8	data[BCM_FLEX_ARRAY];
 } bcm_tlv_t;
 
 /* size of tlv including data */
@@ -62,7 +62,7 @@ typedef struct bcm_tlv_ext {
 	uint8	id;
 	uint8	len;
 	uint8	ext;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8	data[BCM_FLEX_ARRAY];
 } bcm_tlv_ext_t;
 
 /* get next tlv_ext - no length checks */
@@ -167,7 +167,7 @@ uint8 *bcm_copy_tlv_safe(const void *src, uint8 *dst, uint dst_maxlen);
 typedef struct bcm_xtlv {
 	uint16	id;
 	uint16	len;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8	data[BCM_FLEX_ARRAY];
 } bcm_xtlv_t;
 
 /* xtlv options */
@@ -347,7 +347,7 @@ void bcm_xtlv_unpack_xtlv(const bcm_xtlv_t *xtlv, uint16 *type, uint16 *len,
 /* length value pairs */
 struct bcm_xlv {
 	uint16 len;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 };
 typedef struct bcm_xlv bcm_xlv_t;
 

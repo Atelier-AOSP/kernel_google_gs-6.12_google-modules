@@ -280,7 +280,6 @@ static const struct dev_pm_ops dhdpcie_pm_ops = {
 #endif /* DHD_PCIE_NATIVE_RUNTIMEPM */
 
 static struct pci_driver dhdpcie_driver = {
-	node:		{&dhdpcie_driver.node, &dhdpcie_driver.node},
 	name:		"pcieh",
 	id_table:	dhdpcie_pci_devid,
 	probe:		dhdpcie_pci_probe,
@@ -303,11 +302,11 @@ int dhdpcie_init_succeeded = FALSE;
 static int dhdpcie_smmu_init(struct pci_dev *pdev, void *smmu_cxt)
 {
 	struct dma_iommu_mapping *mapping;
-	struct device_node *root_node = NULL;
+	struct device_node *root_node;
 	dhdpcie_smmu_info_t *smmu_info = (dhdpcie_smmu_info_t *)smmu_cxt;
 	int smmu_iova_address[2];
-	char *wlan_node = "android,bcmdhd_wlan";
-	char *wlan_smmu_node = "wlan-smmu-iova-address";
+	const char *wlan_node = "android,bcmdhd_wlan";
+	const char *wlan_smmu_node = "wlan-smmu-iova-address";
 	int atomic_ctx = 1;
 	int s1_bypass = 1;
 	int ret = 0;
@@ -320,8 +319,10 @@ static int dhdpcie_smmu_init(struct pci_dev *pdev, void *smmu_cxt)
 		return -ENODEV;
 	}
 
-	if (of_property_read_u32_array(root_node, wlan_smmu_node,
-		smmu_iova_address, 2) == 0) {
+	ret = of_property_read_u32_array(root_node, wlan_smmu_node,
+					 smmu_iova_address, 2);
+	of_node_put(root_node);
+	if (ret == 0) {
 		DHD_ERROR(("%s : get SMMU start address 0x%x, size 0x%x\n",
 			__FUNCTION__, smmu_iova_address[0], smmu_iova_address[1]));
 		smmu_info->smmu_iova_start = smmu_iova_address[0];

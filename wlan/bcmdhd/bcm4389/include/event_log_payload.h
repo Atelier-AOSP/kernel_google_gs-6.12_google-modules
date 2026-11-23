@@ -88,7 +88,7 @@ typedef struct enhanced_ts_message_v2 {
 typedef struct xtlv_string {
 	uint16 id;                  /* XTLV ID: EVENT_LOG_XTLV_ID_STR */
 	uint16 len;                 /* XTLV Len (String length) */
-	BCM_DECLARE_FLEX_ARRAY(char, str); /* var len array characters */
+	char   str[BCM_FLEX_ARRAY]; /* var len array characters */
 } xtlv_string_t;
 
 #define XTLV_STRING_FULL_LEN(str_len)     (BCM_XTLV_HDR_SIZE + (str_len) * sizeof(char))
@@ -108,7 +108,7 @@ typedef struct txq_summary {
 	uint32 stopped;               /* flow control bitmap */
 	uint8  prec_count;            /* count of precedences/fifos and len of following array */
 	uint8  pad;
-	BCM_DECLARE_FLEX_ARRAY(uint16, plen);  /* array of lengths of each prec/fifo in the queue */
+	uint16 plen[BCM_FLEX_ARRAY];  /* array of lengths of each prec/fifo in the queue */
 } txq_summary_t;
 
 #define TXQ_SUMMARY_LEN                   (OFFSETOF(txq_summary_t, plen))
@@ -122,7 +122,7 @@ typedef struct txq_summary_v2 {
 	uint32 hw_stopped;            /* flow control bitmap */
 	uint8  prec_count;            /* count of precedences/fifos and len of following array */
 	uint8  pad;
-	BCM_DECLARE_FLEX_ARRAY(uint16, plen);  /* array of lengths of each prec/fifo in the queue */
+	uint16 plen[BCM_FLEX_ARRAY];  /* array of lengths of each prec/fifo in the queue */
 } txq_summary_v2_t;
 
 #define TXQ_SUMMARY_V2_LEN                (OFFSETOF(txq_summary_v2_t, plen))
@@ -141,7 +141,7 @@ typedef struct scb_subq_summary {
 	uint8  sub_id;                /* sub ID if a cubby has more than one queue */
 	uint8  prec_count;            /* count of precedences/fifos and len of following array */
 	uint8  pad;
-	BCM_DECLARE_FLEX_ARRAY(uint16, plen);  /* array of lengths of each prec/fifo in the queue */
+	uint16 plen[BCM_FLEX_ARRAY];  /* array of lengths of each prec/fifo in the queue */
 } scb_subq_summary_t;
 
 #define SCB_SUBQ_SUMMARY_LEN              (OFFSETOF(scb_subq_summary_t, plen))
@@ -194,7 +194,7 @@ typedef struct bsscfg_q_summary {
 	uint8  type;                 /* bsscfg type enumeration: BSSCFG_TYPE_XXX */
 	uint8  subtype;              /* bsscfg subtype enumeration: BSSCFG_SUBTYPE_XXX */
 	uint8  prec_count;           /* count of precedences/fifos and len of following array */
-	BCM_DECLARE_FLEX_ARRAY(uint16, plen); /* array of lengths of each prec/fifo in the queue */
+	uint16 plen[BCM_FLEX_ARRAY]; /* array of lengths of each prec/fifo in the queue */
 } bsscfg_q_summary_t;
 
 #define BSSCFG_Q_SUMMARY_LEN              (OFFSETOF(bsscfg_q_summary_t, plen))
@@ -211,7 +211,7 @@ typedef struct xtlv_uc_txs {
 	uint16 len;                 /* XTLV Len */
 	uint8  entry_size;          /* num uint32 words per entry */
 	uint8  pad[3];              /* reserved, zero */
-	BCM_DECLARE_FLEX_ARRAY(uint32, w);   /* var len array of words */
+	uint32 w[BCM_FLEX_ARRAY];   /* var len array of words */
 } xtlv_uc_txs_t;
 
 #define XTLV_UCTXSTATUS_LEN                (OFFSETOF(xtlv_uc_txs_t, w))
@@ -304,7 +304,7 @@ typedef struct wl_scan_summary_info {
 	uint32 total_chan_num;				/* Total number of channels scanned */
 	uint32 scan_start_time;				/* Scan start time in milliseconds */
 	uint32 scan_end_time;				/* Scan end time in milliseconds */
-	BCM_DECLARE_FLEX_ARRAY(wl_scan_ssid_info_t, ssid);	/* SSID being scanned in current
+	wl_scan_ssid_info_t ssid[BCM_FLEX_ARRAY];	/* SSID being scanned in current
 							* channel. For future use
 							*/
 } wl_scan_summary_info_t;
@@ -818,7 +818,7 @@ typedef enum {
 typedef struct msch_collect_tlv {
 	uint16	type;
 	uint16	size;
-	BCM_DECLARE_FLEX_ARRAY(char, value);
+	char	value[BCM_FLEX_ARRAY];
 } msch_collect_tlv_t;
 
 typedef struct msch_profiler_event_data {
@@ -835,7 +835,7 @@ typedef struct msch_start_profiler_event_data {
 typedef struct msch_message_profiler_event_data {
 	uint32	time_lo;			/* Request time */
 	uint32	time_hi;
-	BCM_DECLARE_FLEX_ARRAY(char, message);	/* message */
+	char	message[BCM_FLEX_ARRAY];	/* message */
 } msch_message_profiler_event_data_t;
 
 typedef struct msch_event_log_profiler_event_data {
@@ -1953,7 +1953,7 @@ typedef struct phycal_log_v1 {
 	uint16 length;  /* Length of the entire structure */
 	phycal_log_cmn_t phycal_log_cmn; /* Logging common structure */
 	/* This will be a variable length based on the numcores field defined above */
-	BCM_DECLARE_FLEX_ARRAY(phycal_log_core_t, phycal_log_core);
+	phycal_log_core_t phycal_log_core[BCM_FLEX_ARRAY];
 } phycal_log_v1_t;
 
 typedef struct phy_periodic_log_cmn {
@@ -3774,7 +3774,7 @@ typedef struct phy_periodic_log_v1 {
 	phy_periodic_log_cmn_t phy_perilog_cmn;
 	phy_periodic_counters_v1_t counters_peri_log;
 	/* This will be a variable length based on the numcores field defined above */
-	BCM_DECLARE_FLEX_ARRAY(phy_periodic_log_core_t, phy_perilog_core);
+	phy_periodic_log_core_t phy_perilog_core[BCM_FLEX_ARRAY];
 } phy_periodic_log_v1_t;
 
 #define PHYCAL_LOG_VER3		(3u)
@@ -3793,7 +3793,7 @@ typedef struct phy_periodic_log_v3 {
 	phy_periodic_counters_v3_t counters_peri_log;
 
 	/* Logs data pertaining to each core */
-	BCM_DECLARE_FLEX_ARRAY(phy_periodic_log_core_t, phy_perilog_core);
+	phy_periodic_log_core_t phy_perilog_core[BCM_FLEX_ARRAY];
 } phy_periodic_log_v3_t;
 
 #define PHY_PERIODIC_LOG_VER5	(5u)
@@ -3810,7 +3810,7 @@ typedef struct phy_periodic_log_v5 {
 	phy_periodic_counters_v3_t counters_peri_log;
 
 	/* Logs data pertaining to each core */
-	BCM_DECLARE_FLEX_ARRAY(phy_periodic_log_core_v3_t, phy_perilog_core);
+	phy_periodic_log_core_v3_t phy_perilog_core[BCM_FLEX_ARRAY];
 } phy_periodic_log_v5_t;
 
 #define PHY_PERIODIC_LOG_VER6	(6u)
@@ -3830,7 +3830,7 @@ typedef struct phy_periodic_log_v6 {
 	phy_periodic_btc_stats_v1_t phy_perilog_btc_stats;
 
 	/* Logs data pertaining to each core */
-	BCM_DECLARE_FLEX_ARRAY(phy_periodic_log_core_v4_t, phy_perilog_core);
+	phy_periodic_log_core_v4_t phy_perilog_core[BCM_FLEX_ARRAY];
 } phy_periodic_log_v6_t;
 
 typedef struct phycal_log_v3 {
@@ -3839,7 +3839,7 @@ typedef struct phycal_log_v3 {
 	uint16 length;  /* Length of the entire structure */
 	phycal_log_cmn_v2_t phycal_log_cmn; /* Logging common structure */
 	/* This will be a variable length based on the numcores field defined above */
-	BCM_DECLARE_FLEX_ARRAY(phycal_log_core_v3_t, phycal_log_core);
+	phycal_log_core_v3_t phycal_log_core[BCM_FLEX_ARRAY];
 } phycal_log_v3_t;
 
 #define PHY_CAL_EVENTLOG_VER4		(4u)
@@ -4307,7 +4307,7 @@ typedef struct phy_periodic_log_v7 {
 	phy_periodic_counters_v5_t counters_peri_log;
 	phy_periodic_btc_stats_v1_t btc_stats_peri_log;
 	/* This will be a variable length based on the numcores field defined above */
-	BCM_DECLARE_FLEX_ARRAY(phy_periodic_log_core_t, phy_perilog_core);
+	phy_periodic_log_core_t phy_perilog_core[BCM_FLEX_ARRAY];
 } phy_periodic_log_v7_t;
 
 /* Slotted BSS timer reference for RX deafness debug */
@@ -4415,7 +4415,7 @@ typedef struct phy_periodic_log_v8 {
 	phy_periodic_btc_stats_v1_t btc_stats_peri_log;
 
 	/* Logs data pertaining to each core */
-	BCM_DECLARE_FLEX_ARRAY(phy_periodic_log_core_v5_t, phy_perilog_core);
+	phy_periodic_log_core_v5_t phy_perilog_core[BCM_FLEX_ARRAY];
 } phy_periodic_log_v8_t;
 
 #define PHY_PERIODIC_LOG_VER9	(9u)
@@ -4434,7 +4434,7 @@ typedef struct phy_periodic_log_v9 {
 	phy_periodic_btc_stats_v1_t phy_perilog_btc_stats;
 
 	/* Logs data pertaining to each core */
-	BCM_DECLARE_FLEX_ARRAY(phy_periodic_log_core_v4_t, phy_perilog_core);
+	phy_periodic_log_core_v4_t phy_perilog_core[BCM_FLEX_ARRAY];
 } phy_periodic_log_v9_t;
 
 #define PHY_PERIODIC_LOG_VER10	10u

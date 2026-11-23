@@ -8,6 +8,7 @@
 #include <linux/miscdevice.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/of_device.h>
 #include <linux/of_platform.h>
 
 #include <linux/pm_domain.h>
@@ -16,12 +17,16 @@
 
 #include <linux/kvm_host.h>
 #include "kvm_s2mpu.h"
-#include <soc/google/exynos-pd.h>
+#include <soc/google/exynos-usbdrd.h>
 #include <soc/google/pkvm-s2mpu.h>
 
 /* Print caches in s2mpu faults. */
 static bool print_caches;
 module_param(print_caches, bool, 0);
+
+/* Use SMC to notify TZ to shadow NS configuration of certain S2MPU instances */
+static bool smc_s2;
+module_param(smc_s2, bool, 0);
 
 /* Declare EL2 module init function as it is needed by pkvm_load_el2_module. */
 int __kvm_nvhe_s2mpu_hyp_init(const struct pkvm_module_ops *ops);
@@ -122,17 +127,6 @@ int __pkvm_s2mpu_of_link(struct device *parent)
 	return 0;
 }
 
-struct device *__pkvm_s2mpu_of_parse(struct device *parent)
-{
-	struct platform_device *pdev;
-
-	pdev = __of_get_phandle_pdev(parent, "s2mpu", 0);
-	if (IS_ERR_OR_NULL(pdev))
-		return ERR_PTR(PTR_ERR(pdev));
-
-	return &pdev->dev;
-}
-
 static irqreturn_t s2mpu_irq_handler(int irq, void *ptr)
 {
 	return s2mpu_fault_handler((struct s2mpu_data *)ptr, print_caches);
@@ -166,7 +160,7 @@ static void s2mpu_probe_irq(struct platform_device *pdev, struct s2mpu_data *dat
 	}
 }
 
-int __pkvm_s2mpu_suspend(struct device *dev)
+static int __pkvm_s2mpu_suspend(struct device *dev)
 {
 	struct s2mpu_data *data = s2mpu_dev_data(dev);
 
@@ -182,7 +176,7 @@ int __pkvm_s2mpu_suspend(struct device *dev)
 	return 0;
 }
 
-int __pkvm_s2mpu_resume(struct device *dev)
+static int __pkvm_s2mpu_resume(struct device *dev)
 {
 	struct s2mpu_data *data = s2mpu_dev_data(dev);
 
@@ -198,7 +192,7 @@ int __pkvm_s2mpu_resume(struct device *dev)
 	return 0;
 }
 
-int s2mpu_pm_control(struct device *dev, bool on)
+static int s2mpu_pm_control(struct device *dev, bool on)
 {
 	if (on)
 		return __pkvm_s2mpu_resume(dev);
@@ -245,34 +239,26 @@ static void s2mpu_sync_state(struct device *dev)
 
 static int pkvm_iommu_s2mpu_register(struct pkvm_iommu *dev, phys_addr_t addr, u8 flags)
 {
-	/* TODO: REVERTME */
-	if (1 || !is_protected_kvm_enabled())
+	if (!is_protected_kvm_enabled())
 		return -ENODEV;
 	/* Populate the new device entry. */
 	*dev = (struct pkvm_iommu){
-		.children = LIST_HEAD_INIT(dev->children),
 		.pa = addr,
 		.size = S2MPU_MMIO_SIZE,
 		.flags = flags,
 	};
 	dev->iommu.power_domain.type = KVM_POWER_DOMAIN_HOST_HVC;
 	dev->iommu.power_domain.device_id = nr_devs_registered;
+	dev->iommu.power_is_off = true;
 
 	return 0;
 }
 
-int pkvm_iommu_sysmmu_sync_register(struct device *dev, phys_addr_t addr,
-				    struct device *parent)
-{
-	/* TBD */
-	return 0;
-}
-
-static int sysmmu_sync_probe(struct device *parent)
+static int sysmmu_sync_probe(struct device *parent, struct pkvm_iommu *parent_hyp_dev)
 {
 	struct platform_device *pdev;
 	struct resource *res;
-	int i, ret;
+	int i;
 
 	for (i = 0; (pdev = __of_get_phandle_pdev(parent, "sysmmu_syncs", i)); i++) {
 		if (IS_ERR(pdev))
@@ -281,6 +267,12 @@ static int sysmmu_sync_probe(struct device *parent)
 		if (!of_match_device(sysmmu_sync_of_match, &pdev->dev)) {
 			dev_err(parent, "%s is not sysmmu_sync compatible",
 				dev_name(&pdev->dev));
+			return -EINVAL;
+		}
+
+		if (parent_hyp_dev->num_sync_devs == MAX_SYNC_DEVS) {
+			dev_err(parent, "too many sysmmu_sync devices (max is %d)\n",
+				MAX_SYNC_DEVS);
 			return -EINVAL;
 		}
 
@@ -297,12 +289,8 @@ static int sysmmu_sync_probe(struct device *parent)
 			return -EINVAL;
 		}
 
-		ret = pkvm_iommu_sysmmu_sync_register(&pdev->dev, res->start,
-						      parent);
-		if (ret) {
-			dev_err(&pdev->dev, "could not register: %d\n", ret);
-			return ret;
-		}
+		parent_hyp_dev->sync_devs[parent_hyp_dev->num_sync_devs].pa = res->start;
+		parent_hyp_dev->num_sync_devs++;
 	}
 
 	return 0;
@@ -379,7 +367,7 @@ static int s2mpu_probe(struct platform_device *pdev)
 	struct device_node *np = pdev->dev.of_node;
 	struct resource *res;
 	struct s2mpu_data *data;
-	bool has_sync, deny_all;
+	bool has_sync, deny_all, has_tz_sibling;
 	int ret, nr_devs = 0;
 	u8 flags = 0;
 	struct pkvm_iommu *hyp_dev;
@@ -406,6 +394,8 @@ static int s2mpu_probe(struct platform_device *pdev)
 	has_sync = !!of_get_property(np, "built-in-sync", NULL);
 	data->has_pd = !!of_get_property(np, "power-domains", NULL);
 	deny_all = !!of_get_property(np, "deny-all", NULL);
+	has_tz_sibling = !!of_get_property(np, "has-tz-sibling", NULL);
+
 	/*
 	 * Try to parse IRQ information. This is optional as it only affects
 	 * runtime fault reporting, and therefore errors do not fail the whole
@@ -417,6 +407,8 @@ static int s2mpu_probe(struct platform_device *pdev)
 		flags |= S2MPU_HAS_SYNC;
 	if (deny_all)
 		flags |= S2MPU_DENY_ALL;
+	if (has_tz_sibling && smc_s2)
+		flags |= S2MPU_HAS_TZ_SIBLING;
 
 	/* If a device have a dma-cons property link it as a consumer. */
 	WARN_ON(pkvm_s2mpu_of_link_with_cons(dev));
@@ -432,12 +424,12 @@ static int s2mpu_probe(struct platform_device *pdev)
 	if (!data->pkvm_registered)
 		dev_warn(dev, "pKVM disabled, control from kernel\n");
 	else {
+		ret = sysmmu_sync_probe(dev, hyp_dev);
+		if (ret)
+			return ret;
 		nr_devs = nr_devs_registered++;
 		dev_info(dev, "registered with hypervisor [%d/%zu]\n", nr_devs,
 			 kvm_hyp_s2mpu_count);
-		ret = sysmmu_sync_probe(dev);
-		if (ret)
-			return ret;
 	}
 
 	data->has_sysmmu = false;
@@ -473,17 +465,24 @@ static void kvm_s2mpu_remove(void)
 {
 }
 
-pkvm_handle_t kvm_s2mpu_id(struct device *dev)
+static pkvm_handle_t kvm_s2mpu_id(struct device_node *np)
 {
-	struct s2mpu_data *s2mpu = dev_get_drvdata(dev);
+	struct device *dev;
+	struct s2mpu_data *s2mpu;
 
+	dev = driver_find_device_by_of_node(&s2mpu_driver.driver, np);
+	if (WARN_ON(!dev))
+		return -1;
+
+	s2mpu = dev_get_drvdata(dev);
+	put_device(dev);
 	return s2mpu->id;
 }
 
 struct kvm_iommu_driver kvm_s2mpu_ops = {
 	.init_driver = kvm_s2mpu_init,
 	.remove_driver = kvm_s2mpu_remove,
-	.get_iommu_id = kvm_s2mpu_id,
+	.get_iommu_id_by_of = kvm_s2mpu_id,
 };
 
 static int kvm_s2mpu_array_alloc(void)

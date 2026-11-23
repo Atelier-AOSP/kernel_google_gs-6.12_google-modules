@@ -38,6 +38,12 @@ properties:
        at the same time, or if one sensor is continuously wet for the
        duration specified by the timer.
 
+  vref_div:
+    description:
+       When this is set, it indicates the board has a divider on the
+       vref line.  The configuration needs to use a lower comparator
+       voltage setting.
+
 required:
   - compatible
 

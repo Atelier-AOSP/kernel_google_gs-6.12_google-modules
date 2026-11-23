@@ -551,6 +551,7 @@ typedef struct pcie_dma_xfer_params {
 #define BCMPCIE_FLOW_RING_INTF_MESH		0x04u /* bit2, identifies the mesh flow ring */
 #define BCMPCIE_FLOW_RING_INTF_LLW		0x08u /* bit3, identifies the llw flow ring */
 #define BCMPCIE_FLOW_RING_INTF_ART		0x10u /* bit4, identifies the art flow ring */
+#define BCMPCIE_FLOW_RING_INTF_8021X		0x20u /* bit5, identifies the 802_1x flow ring */
 
 /** Complete msgbuf hdr for flow ring update from host to dongle */
 typedef struct tx_flowring_create_request {
@@ -1318,6 +1319,7 @@ typedef host_txbuf_post_v1_t host_txbuf_post_t;
 /* These are added to fix up compile issues */
 #define BCMPCIE_TXPOST_FLAGS_FRAME_802_3	BCMPCIE_PKT_FLAGS_FRAME_802_3
 #define BCMPCIE_TXPOST_FLAGS_FRAME_802_11	BCMPCIE_PKT_FLAGS_FRAME_802_11
+#define BCMPCIE_TXPOST_FLAGS_FRAME_AMSDU	0x08u
 #define BCMPCIE_TXPOST_FLAGS_PRIO_SHIFT		BCMPCIE_PKT_FLAGS_PRIO_SHIFT
 #define BCMPCIE_TXPOST_FLAGS_PRIO_MASK		BCMPCIE_PKT_FLAGS_PRIO_MASK
 

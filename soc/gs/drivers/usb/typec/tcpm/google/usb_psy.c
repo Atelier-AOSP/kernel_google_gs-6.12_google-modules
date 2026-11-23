@@ -44,7 +44,7 @@
 
 /* At least get one more try to meet sub state sync requirement */
 #define ERR_RETRY_DELAY_MS 20
-#define ERR_RETRY_COUNT    3
+#define ERR_RETRY_COUNT    10
 /* EAGAIN is only returned when charger init is pending */
 #define EAGAIN_RETRY_DELAY_MS 100
 
@@ -89,6 +89,8 @@ struct usb_psy_data {
 	int current_max_cache;
 	/* Current limits requested from USB data stack */
 	int sdp_input_current_limit;
+	/* Requested voltage limits */
+	int input_voltage_limit;
 
 	struct usb_psy_ops *psy_ops;
 
@@ -175,7 +177,7 @@ void init_vote(struct usb_vote *vote, const char *reason,
 }
 EXPORT_SYMBOL_GPL(init_vote);
 
-int usb_find_chg_psy(struct usb_psy_data *usb)
+static int usb_find_chg_psy(struct usb_psy_data *usb)
 {
 	struct device *dev = usb->dev;
 
@@ -427,6 +429,10 @@ static int usb_psy_data_get_prop(struct power_supply *psy,
 				max(CDP_DCP_ICL_UA, usb->current_max_cache) :
 				usb->current_max_cache;
 		break;
+	/* Current limit voted to chg psy */
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
+		val->intval =  usb->sink_enabled ? usb->current_max_cache : 0;
+		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_MAX:
 		/* Report in uv */
 		val->intval = ops->tcpc_get_vbus_voltage_max_mv(dev) * 1000;
@@ -441,6 +447,9 @@ static int usb_psy_data_get_prop(struct power_supply *psy,
 		break;
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
 		val->intval = usb->sdp_input_current_limit;
+		break;
+	case POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT:
+		val->intval = usb->input_voltage_limit;
 		break;
 	case POWER_SUPPLY_PROP_USB_TYPE:
 		val->intval = usb->usb_type;
@@ -485,6 +494,18 @@ static int usb_psy_data_set_prop(struct power_supply *psy,
 		usb->sdp_input_current_limit = val->intval;
 		kthread_mod_delayed_work(usb->wq, &usb->sdp_icl_work, 0);
 		break;
+	case POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT:
+		logbuffer_logk(usb->log, LOGLEVEL_INFO, "set voltage lim %d", val->intval);
+		/* Only 5V and 9V are acceptable */
+		switch (val->intval) {
+		case 5000000: /* 5V */
+		case 9000000: /* 9V */
+			break;
+		default:
+			return -EINVAL;
+		}
+		usb->input_voltage_limit = val->intval;
+		break;
 	case POWER_SUPPLY_PROP_USB_TYPE:
 		logbuffer_log(usb->log, "usb_psy: set usb type %d -> %d",
 			      usb->usb_type, val->intval);
@@ -504,6 +525,8 @@ static int usb_psy_data_set_prop(struct power_supply *psy,
 					 usb->usb_type != POWER_SUPPLY_USB_TYPE_UNKNOWN ?
 					 msecs_to_jiffies(BC_VOTE_DELAY_MS) : 0);
 		break;
+	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX:
+		return -EOPNOTSUPP;
 	default:
 		break;
 	}
@@ -630,22 +653,19 @@ static enum power_supply_property usb_psy_data_props[] = {
 	POWER_SUPPLY_PROP_VOLTAGE_MAX,
 	POWER_SUPPLY_PROP_CURRENT_MAX,
 	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
+	POWER_SUPPLY_PROP_INPUT_VOLTAGE_LIMIT,
 	POWER_SUPPLY_PROP_USB_TYPE,
 	POWER_SUPPLY_PROP_PRESENT,
-};
-
-static enum power_supply_usb_type usb_psy_data_types[] = {
-	POWER_SUPPLY_USB_TYPE_UNKNOWN,
-	POWER_SUPPLY_USB_TYPE_SDP,
-	POWER_SUPPLY_USB_TYPE_CDP,
-	POWER_SUPPLY_USB_TYPE_DCP,
+	POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT_MAX,
 };
 
 static const struct power_supply_desc usb_psy_desc = {
 	.name = "usb",
 	.type = POWER_SUPPLY_TYPE_USB,
-	.usb_types = usb_psy_data_types,
-	.num_usb_types = ARRAY_SIZE(usb_psy_data_types),
+	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN) |
+		     BIT(POWER_SUPPLY_USB_TYPE_SDP) |
+		     BIT(POWER_SUPPLY_USB_TYPE_CDP) |
+		     BIT(POWER_SUPPLY_USB_TYPE_DCP),
 	.properties = usb_psy_data_props,
 	.num_properties = ARRAY_SIZE(usb_psy_data_props),
 	.get_property = usb_psy_data_get_prop,
@@ -1051,6 +1071,7 @@ void *usb_psy_setup(struct device *dev, struct logbuffer *log,
 
 	usb->main_chg_psy_name = (char *)of_get_property(dn, "main-chg-psy-name", NULL);
 
+	usb->input_voltage_limit = 9000000; /* 9V */
 	usb_cfg.drv_data = usb;
 	usb_cfg.of_node =  dev->of_node;
 	usb->usb_psy = power_supply_register(dev, &usb_psy_desc, &usb_cfg);

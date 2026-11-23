@@ -233,6 +233,8 @@ char fw_path2[MOD_PARAM_PATHLEN];
 extern bool softap_enabled;
 #endif
 
+extern uint dhd_rx_hc_rts_cts_noucast_interval;
+
 #ifdef REPORT_FATAL_TIMEOUTS
 #ifdef BCMINTERNAL
 /*
@@ -5022,12 +5024,10 @@ wl_show_host_event(dhd_pub_t *dhd_pub, wl_event_msg_t *event, void *event_data,
 #endif /* REPORT_FATAL_TIMEOUTS */
 		break;
 
-#ifdef WL_CLIENT_SAE
 	case WLC_E_AUTH_START:
 		DHD_EVENT(("MACEVENT: %s, MAC %s, reason %d ifidx %d cfgidx %d\n", event_name,
 			eabuf, (int)reason, ifidx, bsscfgidx));
 		break;
-#endif /* WL_CLIENT_SAE */
 
 	case WLC_E_BSSID:
 		DHD_EVENT(("MACEVENT: %s, MAC %s, reason %d datalen %d ifidx %d cfgidx %d\n",
@@ -5723,6 +5723,28 @@ wl_show_host_event(dhd_pub_t *dhd_pub, wl_event_msg_t *event, void *event_data,
 			wl_show_host_bcn_mute_miti_event(event, event_data);
 			break;
 		}
+	case WLC_E_SCHED_PM:
+		{
+			const char *sched_pm_event_type;
+			wl_sched_pm_event_t *sched_pm_event =
+				(wl_sched_pm_event_t *)event_data;
+			if (sched_pm_event->event_type == WL_SCHED_PM_EVENT_TEARDOWN) {
+				sched_pm_event_type = "TEARDOWN";
+			} else if (sched_pm_event->event_type ==
+					WL_SCHED_PM_EVENT_LEAKY_AP_DETECTION) {
+				sched_pm_event_type = "LEAKY_AP_DETECTION";
+			} else {
+				sched_pm_event_type = "UNKNOWN EVENT TYPE";
+			}
+			DHD_EVENT(("MACEVENT: %s, MAC %s, event_type %s\n",
+				event_name, eabuf, sched_pm_event_type));
+			break;
+		}
+	case WLC_E_CSI_DATA:
+		{
+			DHD_EVENT(("MACEVENT: %s, MAC %s reason:%d\n", event_name, eabuf, reason));
+			break;
+		}
 	default:
 		DHD_INFO(("MACEVENT: %s %d, MAC %s, status %d, reason %d, auth %d\n",
 		       event_name, event_type, eabuf, (int)status, (int)reason,
@@ -5769,6 +5791,15 @@ hck_id_to_str_t hck_sw_id_to_str[] = {
 	{WL_HC_DD_PHY, "WL_HC_DD_PHY"},
 	{WL_HC_DD_REINIT, "WL_HC_DD_REINIT"},
 	{WL_HC_DD_TXQ_STALL, "WL_HC_DD_TXQ_STALL"},
+	{WL_HC_DD_RX_STALL_V2, "WL_HC_DD_RX_STALL_V2"},
+
+	{WL_HC_DD_SBSS, "WL_HC_DD_SBSS"},
+	{WL_HC_DD_NAN, "WL_HC_DD_NAN"},
+	{WL_HC_DD_CHSW, "WL_HC_DD_CHSW"},
+	{WL_HC_DD_LHL, "WL_HC_DD_LHL"},
+	{WL_HC_DD_RX_STALL_V3, "WL_HC_DD_RX_STALL_V3"},
+	{WL_HC_DD_TX_STALL_V2, "WL_HC_DD_TX_STALL_V2"},
+	{WL_HC_DD_RX_STALL_V4, "WL_HC_DD_RX_STALL_V4"},
 	{0, NULL}
 };
 
@@ -5839,6 +5870,39 @@ dhd_parse_hck_common_sw_event(bcm_xtlv_t *wl_hc)
 				hck_sw_id_to_str);
 	}
 
+}
+
+bool
+dhd_rx_stall_v4(dhd_pub_t *dhdp, bcm_xtlv_t *wl_hc)
+{
+	uint64 cur_tm_ns;
+	wl_rx_hc_info_v4_t *hck_rx_stall_v4;
+
+	hck_rx_stall_v4 = (wl_rx_hc_info_v4_t *)wl_hc;
+
+	/*
+	 * rate limit only BCM_RX_HC_NOUDATA_RXRTS_TXCTS, since the same
+	 * can be notified to host frequently.
+	 */
+	if (ltoh32(hck_rx_stall_v4->reason) == BCM_RX_HC_NOUDATA_RXRTS_TXCTS) {
+
+		if (!dhdp->rx_hc_rts_cts_noucast) {
+			dhdp->rx_hc_rts_cts_noucast = OSL_SYSUPTIME_NS();
+			/* 1st instance, collect socram */
+			return FALSE;
+		}
+		cur_tm_ns = OSL_SYSUPTIME_NS();
+		/* collect socram only after the interval elapse */
+		if ((cur_tm_ns - dhdp->rx_hc_rts_cts_noucast) >
+			(dhd_rx_hc_rts_cts_noucast_interval * NSEC_PER_SEC)) {
+			return FALSE;
+		}
+		/* default do not collect socram for BCM_RX_HC_NOUDATA_RXRTS_TXCTS */
+		return TRUE;
+	} else {
+		/* default collect socram */
+		return FALSE;
+	}
 }
 
 #ifdef SKIP_COREDUMP_PKTDROP_RXHC
@@ -5964,179 +6028,182 @@ dngl_host_event_process(dhd_pub_t *dhdp, bcm_dngl_event_t *event,
 		return;
 	}
 	switch (type) {
-	   case DNGL_E_SOCRAM_IND:
+	case DNGL_E_SOCRAM_IND:
+	{
+		bcm_dngl_socramind_t *socramind_ptr = (bcm_dngl_socramind_t *)p;
+		uint16 tag = ltoh32(socramind_ptr->tag);
+		uint16 taglen = ltoh32(socramind_ptr->length);
+		p = (uint8 *)socramind_ptr->value;
+		DHD_EVENT(("Tag:%d Len:%d Datalen:%d\n", tag, taglen, datalen));
+		switch (tag) {
+		case SOCRAM_IND_ASSERT_TAG:
 		{
-		   bcm_dngl_socramind_t *socramind_ptr = (bcm_dngl_socramind_t *)p;
-		   uint16 tag = ltoh32(socramind_ptr->tag);
-		   uint16 taglen = ltoh32(socramind_ptr->length);
-		   p = (uint8 *)socramind_ptr->value;
-		   DHD_EVENT(("Tag:%d Len:%d Datalen:%d\n", tag, taglen, datalen));
-		   switch (tag) {
-			case SOCRAM_IND_ASSERT_TAG:
-			    {
-				/*
-				* The payload consists of -
-				* null terminated function name padded till 32 bit boundary +
-				* Line number - (32 bits)
-				* Caller address (32 bits)
-				*/
-				char *fnname = (char *)p;
-				if (datalen < (ROUNDUP(strlen(fnname) + 1, sizeof(uint32)) +
-					sizeof(uint32) * 2)) {
-					DHD_ERROR(("Wrong length:%d\n", datalen));
-					return;
-				}
-				DHD_EVENT(("ASSRT Function:%s ", p));
-				p += ROUNDUP(strlen(p) + 1, sizeof(uint32));
-				DHD_EVENT(("Line:%d ", *(uint32 *)p));
-				p += sizeof(uint32);
-				DHD_EVENT(("Caller Addr:0x%x\n", *(uint32 *)p));
+			/*
+			* The payload consists of -
+			* null terminated function name padded till 32 bit boundary +
+			* Line number - (32 bits)
+			* Caller address (32 bits)
+			*/
+			char *fnname = (char *)p;
+			if (datalen < (ROUNDUP(strlen(fnname) + 1, sizeof(uint32)) +
+				sizeof(uint32) * 2)) {
+				DHD_ERROR(("Wrong length:%d\n", datalen));
+				return;
+			}
+			DHD_EVENT(("ASSRT Function:%s ", p));
+			p += ROUNDUP(strlen(p) + 1, sizeof(uint32));
+			DHD_EVENT(("Line:%d ", *(uint32 *)p));
+			p += sizeof(uint32);
+			DHD_EVENT(("Caller Addr:0x%x\n", *(uint32 *)p));
 #ifdef PARSE_DONGLE_HOST_EVENT
-				DHD_PRINT(("DONGLE_HCK_EVENT: SOCRAM_IND_ASSERT_TAG\n"));
+			DHD_PRINT(("DONGLE_HCK_EVENT: SOCRAM_IND_ASSERT_TAG\n"));
+#endif /* PARSE_DONGLE_HOST_EVENT */
+			break;
+		}
+		case SOCRAM_IND_TAG_HEALTH_CHECK:
+		{
+			bcm_dngl_healthcheck_t *dngl_hc = (bcm_dngl_healthcheck_t *)p;
+			DHD_EVENT(("SOCRAM_IND_HEALTHCHECK_TAG:%d Len:%d datalen:%d\n",
+				ltoh32(dngl_hc->top_module_tag),
+				ltoh32(dngl_hc->top_module_len),
+				datalen));
+			if (DHD_EVENT_ON()) {
+				dhd_prhex("HEALTHCHECK", (volatile uchar *)p,
+					MIN(ltoh32(dngl_hc->top_module_len)
+					+ BCM_XTLV_HDR_SIZE, datalen), DHD_ERROR_VAL);
+			}
+#ifdef DHD_LOG_DUMP
+			bzero(dhdp->health_chk_event_data, HEALTH_CHK_BUF_SIZE);
+			memcpy(dhdp->health_chk_event_data, p,
+					MIN(ltoh32(dngl_hc->top_module_len),
+					HEALTH_CHK_BUF_SIZE));
+#endif /* DHD_LOG_DUMP */
+			p = (uint8 *)dngl_hc->value;
+
+			switch (ltoh32(dngl_hc->top_module_tag)) {
+			case HEALTH_CHECK_TOP_LEVEL_MODULE_PCIEDEV_RTE:
+			{
+				bcm_dngl_pcie_hc_t *pcie_hc;
+				pcie_hc = (bcm_dngl_pcie_hc_t *)p;
+				BCM_REFERENCE(pcie_hc);
+				if (ltoh32(dngl_hc->top_module_len) <
+						sizeof(bcm_dngl_pcie_hc_t)) {
+					DHD_ERROR(("Wrong length:%d\n",
+						ltoh32(dngl_hc->top_module_len)));
+					break;
+				}
+				DHD_EVENT(("%d:PCIE HC error:%d flag:0x%x,"
+					" control:0x%x\n",
+					ltoh32(pcie_hc->version),
+					ltoh32(pcie_hc->pcie_err_ind_type),
+					ltoh32(pcie_hc->pcie_flag),
+					ltoh32(pcie_hc->pcie_control_reg)));
+#ifdef PARSE_DONGLE_HOST_EVENT
+				dhd_print_dongle_hck_id(
+					ltoh32(pcie_hc->pcie_err_ind_type),
+						hck_pcie_module_to_str);
 #endif /* PARSE_DONGLE_HOST_EVENT */
 				break;
-			    }
-			case SOCRAM_IND_TAG_HEALTH_CHECK:
-			   {
-				bcm_dngl_healthcheck_t *dngl_hc = (bcm_dngl_healthcheck_t *)p;
-				DHD_EVENT(("SOCRAM_IND_HEALTHCHECK_TAG:%d Len:%d datalen:%d\n",
-					ltoh32(dngl_hc->top_module_tag),
-					ltoh32(dngl_hc->top_module_len),
-					datalen));
-				if (DHD_EVENT_ON()) {
-					dhd_prhex("HEALTHCHECK", (volatile uchar *)p,
-						MIN(ltoh32(dngl_hc->top_module_len)
-						+ BCM_XTLV_HDR_SIZE, datalen), DHD_ERROR_VAL);
-				}
-#ifdef DHD_LOG_DUMP
-				bzero(dhdp->health_chk_event_data, HEALTH_CHK_BUF_SIZE);
-				memcpy(dhdp->health_chk_event_data, p,
-						MIN(ltoh32(dngl_hc->top_module_len),
-						HEALTH_CHK_BUF_SIZE));
-#endif /* DHD_LOG_DUMP */
-				p = (uint8 *)dngl_hc->value;
-
-				switch (ltoh32(dngl_hc->top_module_tag)) {
-					case HEALTH_CHECK_TOP_LEVEL_MODULE_PCIEDEV_RTE:
-					   {
-						bcm_dngl_pcie_hc_t *pcie_hc;
-						pcie_hc = (bcm_dngl_pcie_hc_t *)p;
-						BCM_REFERENCE(pcie_hc);
-						if (ltoh32(dngl_hc->top_module_len) <
-								sizeof(bcm_dngl_pcie_hc_t)) {
-							DHD_ERROR(("Wrong length:%d\n",
-								ltoh32(dngl_hc->top_module_len)));
-							break;
-						}
-						DHD_EVENT(("%d:PCIE HC error:%d flag:0x%x,"
-							" control:0x%x\n",
-							ltoh32(pcie_hc->version),
-							ltoh32(pcie_hc->pcie_err_ind_type),
-							ltoh32(pcie_hc->pcie_flag),
-							ltoh32(pcie_hc->pcie_control_reg)));
-#ifdef PARSE_DONGLE_HOST_EVENT
-						dhd_print_dongle_hck_id(
-							ltoh32(pcie_hc->pcie_err_ind_type),
-								hck_pcie_module_to_str);
-#endif /* PARSE_DONGLE_HOST_EVENT */
-						break;
-					   }
+			}
 #ifdef HCHK_COMMON_SW_EVENT
-					case HCHK_SW_ENTITY_WL_PRIMARY:
-					case HCHK_SW_ENTITY_WL_SECONDARY:
-					{
-						bcm_xtlv_t *wl_hc = (bcm_xtlv_t *)p;
+			case HCHK_SW_ENTITY_WL_PRIMARY:
+			case HCHK_SW_ENTITY_WL_SECONDARY:
+			{
+				bcm_xtlv_t *wl_hc = (bcm_xtlv_t *)p;
 
-						if (ltoh32(dngl_hc->top_module_len) <
-								sizeof(bcm_xtlv_t)) {
-							DHD_ERROR(("WL SW HC Wrong length:%d\n",
-								ltoh32(dngl_hc->top_module_len)));
-							break;
-						}
-						BCM_REFERENCE(wl_hc);
-						DHD_EVENT(("WL SW HC type %d len %d\n",
-						ltoh16(wl_hc->id), ltoh16(wl_hc->len)));
+				if (ltoh32(dngl_hc->top_module_len) <
+						sizeof(bcm_xtlv_t)) {
+					DHD_ERROR(("WL SW HC Wrong length:%d\n",
+						ltoh32(dngl_hc->top_module_len)));
+					break;
+				}
+				BCM_REFERENCE(wl_hc);
+				DHD_EVENT(("WL SW HC type %d len %d\n",
+				ltoh16(wl_hc->id), ltoh16(wl_hc->len)));
 #ifdef DHD_LB_STATS
-						if ((ltoh16(wl_hc->id) == WL_HC_DD_RX_DMA_STALL) &&
-							(dhdp->lb_rxp_stop_thr_hitcnt >
-							dhdp->lb_rxp_strt_thr_hitcnt)) {
-							ignore_hc = TRUE;
-							dhdp->rx_dma_stall_hc_ignore_cnt++;
-							DHD_ERROR(("%s:lb_rxp_stop_thr_hitcnt(%llu)"
-								" > lb_rxp_strt_thr_hitcnt(%llu)"
-								" rx_dma_stall_hc_ignore_cnt(%llu)"
-								"\n",
-								__FUNCTION__,
-								dhdp->lb_rxp_stop_thr_hitcnt,
-								dhdp->lb_rxp_strt_thr_hitcnt,
-								dhdp->rx_dma_stall_hc_ignore_cnt));
-						}
+				if ((ltoh16(wl_hc->id) == WL_HC_DD_RX_DMA_STALL) &&
+					(dhdp->lb_rxp_stop_thr_hitcnt >
+					dhdp->lb_rxp_strt_thr_hitcnt)) {
+					ignore_hc = TRUE;
+					dhdp->rx_dma_stall_hc_ignore_cnt++;
+					DHD_ERROR(("%s:lb_rxp_stop_thr_hitcnt(%llu)"
+						" > lb_rxp_strt_thr_hitcnt(%llu)"
+						" rx_dma_stall_hc_ignore_cnt(%llu)"
+						"\n",
+						__FUNCTION__,
+						dhdp->lb_rxp_stop_thr_hitcnt,
+						dhdp->lb_rxp_strt_thr_hitcnt,
+						dhdp->rx_dma_stall_hc_ignore_cnt));
+				}
 #endif /* DHD_LB_STATS */
 
 #ifdef PARSE_DONGLE_HOST_EVENT
-						dhd_parse_hck_common_sw_event(wl_hc);
+				dhd_parse_hck_common_sw_event(wl_hc);
+				if (ltoh16(wl_hc->id) == WL_HC_DD_RX_STALL_V4) {
+					ignore_hc = dhd_rx_stall_v4(dhdp, wl_hc);
+				}
 #endif /* PARSE_DONGLE_HOST_EVENT */
 #ifdef SKIP_COREDUMP_PKTDROP_RXHC
-						if (dhd_skip_coredump_for_rxhc(wl_hc) == TRUE) {
-							ignore_hc = TRUE;
-						}
+				if (dhd_skip_coredump_for_rxhc(wl_hc) == TRUE) {
+					ignore_hc = TRUE;
+				}
 #endif /* SKIP_COREDUMP_PKTDROP_RXHC */
 #ifdef WL_CFGVENDOR_SEND_ALERT_EVENT
-						dhd_send_error_alert_event(dhdp, wl_hc);
+				dhd_send_error_alert_event(dhdp, wl_hc);
 #endif /* WL_CFGVENDOR_SEND_ALERT_EVENT */
-						break;
+				break;
 
-					}
+			}
 #endif /* HCHK_COMMON_SW_EVENT */
-					default:
-					{
-						DHD_ERROR(("%s:Unknown module TAG:%d\n",
-						  __FUNCTION__,
-						  ltoh32(dngl_hc->top_module_tag)));
-						break;
-					}
-				}
-				break;
-			   }
 			default:
-			   DHD_ERROR(("%s:Unknown TAG\n", __FUNCTION__));
-			   if (p && DHD_EVENT_ON()) {
-				dhd_prhex("SOCRAMIND", (volatile uchar *)p,
-					taglen, DHD_ERROR_VAL);
-			   }
-			   break;
-		   }
-		   break;
-		}
-	   case DNGL_E_PROFILE_DATA_IND:
-		{
-			bcm_dngl_profile_data_ind_t *ind_data = (bcm_dngl_profile_data_ind_t *)p;
-			dngl_host_profile_event_process(dhdp, ind_data->value, ind_data->length);
-			return;
-		}
-	case DNGL_E_SPMI_RESET_IND:
-		{
-			bcm_dngl_spmi_reset_ind_v1_t *spmi_reset_ind_v1_ptr =
-				(bcm_dngl_spmi_reset_ind_v1_t *)p;
-			uint16 ver = ltoh32(spmi_reset_ind_v1_ptr->version);
-			switch (ver) {
-			case DNGL_E_SPMI_RESET_IND_VERSION_1:
-				{
-					uint16 num_resets =
-						ltoh32(spmi_reset_ind_v1_ptr->num_resets);
-					uint16 slave_idx =
-						ltoh32(spmi_reset_ind_v1_ptr->slave_idx);
-					DHD_EVENT(("DNGL_E_SPMI_RESET_IND resets=%u "
-						"SPMI core=%u\n", num_resets, slave_idx));
-					break;
-				}
-			default:
-				DHD_ERROR(("DNGL_E_SPMI_RESET_IND: unknown version\n"));
+			{
+				DHD_ERROR(("%s:Unknown module TAG:%d\n",
+				  __FUNCTION__,
+				  ltoh32(dngl_hc->top_module_tag)));
 				break;
+			}
 			}
 			break;
 		}
-	   default:
+		default:
+			DHD_ERROR(("%s:Unknown TAG\n", __FUNCTION__));
+			if (p && DHD_EVENT_ON()) {
+				dhd_prhex("SOCRAMIND", (volatile uchar *)p,
+					taglen, DHD_ERROR_VAL);
+			}
+			break;
+		}
+		break;
+	}
+	case DNGL_E_PROFILE_DATA_IND:
+	{
+		bcm_dngl_profile_data_ind_t *ind_data = (bcm_dngl_profile_data_ind_t *)p;
+		dngl_host_profile_event_process(dhdp, ind_data->value, ind_data->length);
+		return;
+	}
+	case DNGL_E_SPMI_RESET_IND:
+	{
+		bcm_dngl_spmi_reset_ind_v1_t *spmi_reset_ind_v1_ptr =
+			(bcm_dngl_spmi_reset_ind_v1_t *)p;
+		uint16 ver = ltoh32(spmi_reset_ind_v1_ptr->version);
+		switch (ver) {
+		case DNGL_E_SPMI_RESET_IND_VERSION_1:
+		{
+			uint16 num_resets =
+				ltoh32(spmi_reset_ind_v1_ptr->num_resets);
+			uint16 slave_idx =
+				ltoh32(spmi_reset_ind_v1_ptr->slave_idx);
+			DHD_EVENT(("DNGL_E_SPMI_RESET_IND resets=%u "
+				"SPMI core=%u\n", num_resets, slave_idx));
+			break;
+		}
+		default:
+			DHD_ERROR(("DNGL_E_SPMI_RESET_IND: unknown version\n"));
+			break;
+		}
+		break;
+	}
+	default:
 		DHD_ERROR(("%s:Unknown DNGL Event Type:%d\n", __FUNCTION__, type));
 		if (p && DHD_EVENT_ON()) {
 			dhd_prhex("SOCRAMIND", (volatile uchar *)p, datalen, DHD_ERROR_VAL);
@@ -6521,6 +6588,15 @@ wl_process_host_event(dhd_pub_t *dhd_pub, int *ifidx, void *pktdata, uint pktlen
 			dhd_del_all_sta(dhd_pub, dhd_ifname2idx(dhd_pub->info, event->ifname));
 			dhd_flow_rings_delete(dhd_pub, (uint8)dhd_ifname2idx(dhd_pub->info,
 				event->ifname));
+#ifdef GOOGLE_DAL_CORE
+			platform_bus_notify_station_state((u8)flags, dhd_pub,
+					dhd_ifname2idx(dhd_pub->info, event->ifname));
+#endif /* GOOGLE_DAL_CORE */
+		} else {
+#ifdef GOOGLE_DAL_CORE
+			platform_bus_notify_station_state((u8)flags, dhd_pub,
+					dhd_ifname2idx(dhd_pub->info, event->ifname));
+#endif /* GOOGLE_DAL_CORE */
 		}
 #endif /* PCIE_FULL_DONGLE */
 		/* falls through */
@@ -9082,9 +9158,13 @@ init_dhd_timeouts(dhd_pub_t *pub)
 	} else {
 		DHD_INFO(("Initializing dhd_timeouts\n"));
 		pub->timeout_info->scan_timer_lock = osl_spin_lock_init(pub->osh);
+		OSL_LOCK_CLASS_SET(pub->timeout_info->scan_timer_lock);
 		pub->timeout_info->join_timer_lock = osl_spin_lock_init(pub->osh);
+		OSL_LOCK_CLASS_SET(pub->timeout_info->join_timer_lock);
 		pub->timeout_info->bus_timer_lock = osl_spin_lock_init(pub->osh);
+		OSL_LOCK_CLASS_SET(pub->timeout_info->bus_timer_lock);
 		pub->timeout_info->cmd_timer_lock = osl_spin_lock_init(pub->osh);
+		OSL_LOCK_CLASS_SET(pub->timeout_info->cmd_timer_lock);
 		pub->timeout_info->scan_timeout_val = SCAN_TIMEOUT_DEFAULT;
 		pub->timeout_info->join_timeout_val = JOIN_TIMEOUT_DEFAULT;
 		pub->timeout_info->cmd_timeout_val = CMD_TIMEOUT_DEFAULT;
@@ -10377,14 +10457,6 @@ dhd_tput_test(dhd_pub_t *dhd, tput_test_t *tput_data)
 		err_exit = BCME_BUSY;
 		goto exit_error;
 	}
-
-	if (tput_data->payload_size < TPUT_TEST_MIN_PAYLOAD_SIZE) {
-		DHD_ERROR(("%s: min payload size is %u !\n", __FUNCTION__,
-			TPUT_TEST_MIN_PAYLOAD_SIZE));
-		err_exit = BCME_BADOPTION;
-		goto exit_error;
-	}
-
 #ifdef PCIE_FULL_DONGLE
 	/*
 	 * 100 bytes to accommodate ether header and tput header. As of today

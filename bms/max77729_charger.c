@@ -29,6 +29,7 @@
 #include <linux/regmap.h>
 #include <misc/gvotable.h>
 #include "gbms_power_supply.h"
+#include "google_bms.h"
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 # include <linux/debugfs.h>
@@ -681,6 +682,8 @@ static int max77729_set_charge_current_max_ua(struct max77729_chgr_data *data, i
 	const int enabled = ua != 0;
 	uint8_t reg;
 	int ret;
+
+	ua = (ua == GBMS_MSC_FCC_CHARGE_OFF) ? 0 : ua;
 
 	if (ua < 0)
 		return 0;

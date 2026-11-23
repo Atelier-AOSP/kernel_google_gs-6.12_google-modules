@@ -229,7 +229,9 @@ void dhd_select_cpu_candidacy(dhd_info_t *dhd)
 		dhd->cpumask_curr_avail);
 
 	/* Clear DPC cpu from new masks so that dpc cpu is not chosen for LB */
+#if !(IS_ENABLED(CONFIG_SOC_GOOGLE) && defined(DHD_LB_CPU_NAPI_RX))
 	cpumask_clear_cpu(dpc_cpu, dhd->cpumask_set8_new);
+#endif /* !(CONFIG_SOC_GOOGLE && DHD_LB_CPU_NAPI_RX) */
 	cpumask_clear_cpu(dpc_cpu, dhd->cpumask_set4_new);
 	cpumask_clear_cpu(dpc_cpu, dhd->cpumask_set0_new);
 
@@ -298,6 +300,11 @@ void dhd_select_cpu_candidacy(dhd_info_t *dhd)
 		/* No CPUs available from primary or secondary mask */
 		tx_cpu = napi_cpu = nr_cpu_ids - 1;
 	}
+
+#if IS_ENABLED(CONFIG_SOC_GOOGLE) && defined(DHD_LB_CPU_NAPI_RX)
+	if (use_big_core && napi_cpu != IRQ_AFFINITY_BIG_CORE)
+		napi_cpu = IRQ_AFFINITY_BIG_CORE;
+#endif /* CONFIG_SOC_GOOGLE && DHD_LB_CPU_NAPI_RX */
 
 	/* If no CPU was available for napi processing, choose CPU 0 */
 	if (napi_cpu >= nr_cpu_ids)

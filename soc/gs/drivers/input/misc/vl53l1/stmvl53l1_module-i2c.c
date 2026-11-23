@@ -71,7 +71,7 @@ bool is_shared_i2c_with_stmvl53l1(struct pinctrl *pinctrl)
 }
 EXPORT_SYMBOL_GPL(is_shared_i2c_with_stmvl53l1);
 
-void shared_i2c_data_release(struct kref *ref)
+static void shared_i2c_data_release(struct kref *ref)
 {
 	struct shared_i2c_data *data =
 		container_of(ref, struct shared_i2c_data, refcount);

@@ -20,4 +20,11 @@ int lwis_i3c_io_entry_rw(struct lwis_i2c_device *i3c_dev, struct lwis_io_entry *
 int lwis_i3c_io_entries_rw(struct lwis_i2c_device *i3c_dev, struct lwis_io_entry *entries,
 			   int entries_cnt);
 
+/*
+ *  lwis_i3c_io_entry_mod: lwis_io_modify operation consists of
+ *  an io_read followed by an io_write, where the io_write is dependent
+ *  on the io_read result. Not compatible to asynchronous process.
+ */
+int lwis_i3c_io_entry_mod(struct lwis_i2c_device *i3c_dev, struct lwis_io_entry *entry);
+
 #endif /* LWIS_I3C_H_ */

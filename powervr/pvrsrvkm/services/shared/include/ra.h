@@ -190,7 +190,8 @@ typedef struct _RA_MULTIBASE_ITERATOR_ RA_MULTIBASE_ITERATOR;
  * Nodes picked up from this bucket may likely to satisfy the request but not
  * guaranteed. Failing to satisfy the request from this bucket mean further
  * higher size buckets are selected in the later iterations till the request
- * is satisfied.
+ * is satisfied. RA instances intending to be used as block allocators where
+ * the request size is consistent should use this mode.
  *
  * Hence response times may vary depending on availability of free nodes
  * that satisfy the request.

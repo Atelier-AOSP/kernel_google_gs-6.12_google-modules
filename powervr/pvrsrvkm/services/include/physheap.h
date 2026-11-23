@@ -597,4 +597,12 @@ PVRSRV_ERROR PhysHeapFreeMemCheck(PHYS_HEAP *psPhysHeap,
 PVRSRV_ERROR PhysHeapSpasWithDevice(PHYS_HEAP* psFromPhysHeap, PPVRSRV_DEVICE_NODE psToDevNode);
 #endif
 
+/*************************************************************************/ /*!
+@Function       PhysHeapHasUMAHeap
+@Description    Tells whether the system has at least one UMA heap set up.
+@Input          psDevNode  Pointer to device node struct.
+@Return         (bool)     true if a UMA heap exists, false otherwise.
+*/ /**************************************************************************/
+IMG_INTERNAL bool PhysHeapHasUMAHeap(PPVRSRV_DEVICE_NODE psDevNode);
+
 #endif /* PHYSHEAP_H */

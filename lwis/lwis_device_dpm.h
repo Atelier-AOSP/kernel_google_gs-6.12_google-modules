@@ -60,6 +60,11 @@ int lwis_query_devfreq_verify(struct lwis_device *lwis_dev, int devfreq_sync_upd
  */
 uint32_t lwis_dpm_read_clock(struct lwis_device *lwis_dev);
 
+/*
+ *  lwis_dpm_op_level_get: gets the operating level for the requesting entity.
+ */
+int lwis_dpm_op_level_get(struct lwis_device *lwis_dev, struct lwis_dpm_op_level *op_level);
+
 int lwis_dpm_device_init(void);
 int lwis_dpm_device_deinit(void);
 

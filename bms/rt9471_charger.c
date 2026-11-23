@@ -14,6 +14,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/cleanup.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/version.h>
@@ -1394,7 +1395,8 @@ static int rt9471_parse_dt(struct rt9471_chip *chip)
 {
 	int ret, irqnum;
 	int irqcnt = 0;
-	struct device_node *parent_np = chip->dev->of_node, *np = NULL;
+	struct device_node *parent_np = chip->dev->of_node;
+	struct device_node *np __free(device_node) = NULL;
 	struct rt9471_desc *desc = NULL;
 	const char *name = NULL;
 	enum gpiod_flags init_flags = GPIOD_OUT_LOW;
@@ -1432,7 +1434,8 @@ static int rt9471_parse_dt(struct rt9471_chip *chip)
 		init_flags = GPIOD_OUT_HIGH;
 
 	/* ceb gpio */
-	chip->ceb_gpio = devm_gpiod_get(chip->dev, "rt,ceb", init_flags);
+	chip->ceb_gpio = devm_gpiod_get(chip->dev, "rt,ceb",
+					init_flags | GPIOD_FLAGS_BIT_NONEXCLUSIVE);
 	if (IS_ERR(chip->ceb_gpio))
 		return PTR_ERR(chip->ceb_gpio);
 
@@ -1729,7 +1732,7 @@ static void rt9471_init_work_handler(struct work_struct *work)
 #if IS_ENABLED(CONFIG_GPIOLIB)
 static int rt9471_gpio_get_direction(struct gpio_chip *chip, unsigned int offset)
 {
-	return GPIOF_DIR_OUT;
+	return GPIO_LINE_DIRECTION_OUT;
 }
 
 static int rt9471_gpio_get(struct gpio_chip *chip, unsigned int offset)
@@ -2076,6 +2079,8 @@ static int rt9471_probe(struct i2c_client *client)
 	if (chip->dev_id == RT9470_DEVID) {
 		rt9471_gpio_init(chip);
 		chip->gpio.parent = chip->dev;
+		/* balance of_node_put() in of_find_node_by_name() */
+		of_node_get(client->dev.of_node);
 		dp = of_find_node_by_name(client->dev.of_node,
 							chip->gpio.label);
 		if (!dp)

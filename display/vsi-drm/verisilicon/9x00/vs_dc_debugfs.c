@@ -16,6 +16,8 @@
 #include <linux/seq_file.h>
 
 #include "vs_dc.h"
+#include "vs_dc_pre.h"
+#include "vs_dc_post.h"
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 static int vs_dc_reg_dump(struct seq_file *s, struct dc_hw *hw, enum dc_hw_reg_bank_type reg_type)
@@ -38,11 +40,14 @@ static int vs_dc_reg_dump(struct seq_file *s, struct dc_hw *hw, enum dc_hw_reg_b
 		hw->reg_dump_size = hw->reg_size - hw->reg_dump_offset;
 	}
 
-	ret = pm_runtime_get_if_in_use(hw->dev);
+	ret = dc_be_power_get_if_active(hw->dev);
 	if (ret < 0) {
-		dev_err(hw->dev, "Failed to power ON, ret %d\n", ret);
+		dev_err(hw->dev, "Failed to power BE ON, ret %d\n", ret);
 		return ret;
 	}
+	ret = dc_fe_power_get(hw->dev, true);
+	if (ret < 0)
+		dev_err(hw->dev, "Failed to power FE ON, ret %d\n", ret);
 
 	if (!ret) {
 		dev_dbg(hw->dev, "Device is powered OFF\n");
@@ -51,9 +56,12 @@ static int vs_dc_reg_dump(struct seq_file *s, struct dc_hw *hw, enum dc_hw_reg_b
 
 	ret_dump = dc_hw_reg_dump(hw, &p, reg_type);
 
-	ret = pm_runtime_put_sync(hw->dev);
+	ret = dc_fe_power_put(hw->dev, false);
+	if (ret < 0)
+		dev_err(hw->dev, "Failed to power FE OFF, ret %d\n", ret);
+	ret = dc_be_power_put(hw->dev, true);
 	if (ret < 0) {
-		dev_err(hw->dev, "Failed to power OFF, ret %d\n", ret);
+		dev_err(hw->dev, "Failed to power BE OFF, ret %d\n", ret);
 		return ret;
 	}
 
@@ -248,7 +256,7 @@ void dc_deinit_debugfs(struct vs_dc *dc)
 	debugfs_remove_recursive(dc->debugfs);
 }
 #else
-int dc_init_debugfs(struct device *dev, struct vs_dc *dc)
+int dc_init_debugfs(struct vs_dc *dc)
 {
 	return 0;
 }

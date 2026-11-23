@@ -276,6 +276,40 @@ struct gs_panel_mode {
 	enum gs_panel_idle_mode idle_mode;
 };
 
+/**
+ * struct gs_panel_detect_fault_desc - Configuration for DDIC fault detection
+ *
+ * @errfg_reg: Address of the ERR_FG Register, read DSI error register directly if 0
+ * @errfg_len: Length of ERR_FG data (1 or 2 bytes)
+ * @dsi_err_reg: Address of the DSI Error Register
+ * @dsi_err_mask: Bitmask to indicate DSI errors in @errfg_reg
+ * @vgh_mask: Bitmask for VGH error in @errfg_reg
+ * @vlin1_mask: Bitmask for VLIN1 error in @errfg_reg
+ * @csum_mask: Bitmask for Checksum error in @errfg_reg
+ * @te_mask: Bitmask for TE error in @errfg_reg
+ * @detect_interval_ms: Minimum interval between checks for panel DDIC faults
+ *                      A value of 0 is interpreted as "fault detection unsupported"
+ * @panel_errors_mask: Bitmask of @panel_errors for defining reset requirement
+ *                     Perform a bitwise AND on @panel_errors and this mask before propagation
+ *                     This field is a u64 const because @panel_errors is set via DRM property,
+ *                     which is limited to a uint64_t.
+ *
+ * This structure defines the register addresses, lengths, and error bit
+ * definitions required to detect and log DDIC faults for a specific panel.
+ */
+struct gs_panel_detect_fault_desc {
+	u8 errfg_reg;
+	size_t errfg_len;
+	u8 dsi_err_reg;
+	u32 dsi_err_mask;
+	u32 vgh_mask;
+	u32 vlin1_mask;
+	u32 csum_mask;
+	u32 te_mask;
+	u32 detect_interval_ms;
+	u64 panel_errors_mask;
+};
+
 /* PANEL FUNCS */
 
 struct gs_panel_funcs {
@@ -541,10 +575,10 @@ struct gs_panel_funcs {
 	/**
 	 * @get_panel_rev
 	 *
-	 * This callback is used to get panel HW revision from panel_extinfo.
+	 * This callback is used to get panel HW revision from panel_id.
 	 * It is expected to fill in the `panel_rev_id` member of the `gs_panel`
 	 *
-	 * @id: contents of `extinfo`, read as a binary value
+	 * @id: 32-bit panel id integer. See &gs_panel.panel_id for format and byte layout.
 	 */
 	void (*get_panel_rev)(struct gs_panel *gs_panel, u32 id);
 
@@ -710,6 +744,16 @@ struct gs_panel_funcs {
 	int (*set_pwm_mode)(struct gs_panel *gs_panel, enum gs_pwm_mode mode);
 
 	/**
+	 * @get_pwm_mode
+	 *
+	 * This callback is used to get the panel PWM mode on panels that need
+	 * to handle special cases.
+	 *
+	 * Returns the current gs_pwm_mode.
+	 */
+	enum gs_pwm_mode (*get_pwm_mode)(struct gs_panel *gs_panel);
+
+	/**
 	 * @handle_skin_temperature
 	 *
 	 * This callback is used to handle the skin temperature.
@@ -722,11 +766,10 @@ struct gs_panel_funcs {
 	 * This callback is used to implement panel specific logic for reading
 	 * faults detected by panel DDIC.
 	 *
-	 * Returns 0 if no errors detected, nonzero values for errors
-	 *    By convention, prefer negative values for errors in reading
-	 *    data, and positive values for errors reported from DDIC
+	 * Returns 0 if success, nonzero values for errors
 	 */
-	int (*detect_fault)(struct gs_panel *gs_panel);
+	int (*detect_fault)(struct gs_panel *gs_panel,
+			    const struct gs_panel_detect_fault_desc *desc, bool irq_triggered);
 
 	/**
 	 * @set_mp_mode_en:
@@ -737,6 +780,46 @@ struct gs_panel_funcs {
 	 * enabled: true for MP mode enabled, false for MP mode disabled
 	 */
 	void (*set_mp_mode_en)(struct gs_panel *gs_panel, bool enabled);
+
+	/**
+	 * @run_reset_gpio_sequence
+	 *
+	 * This callback is used to implement panel specific reset sequence.
+	 *
+	 * In most cases, panels should use the `reset_timing_ms` member to define
+	 * reset timing sequences; this callback is for cases where other gpio control
+	 * or unusual/complex timings are required around the sequence of
+	 * controlling the reset pin.
+	 */
+	void (*run_reset_gpio_sequence)(struct gs_panel *gs_panel);
+
+	/**
+	 * @is_mode_valid
+	 *
+	 * This callback is used to check if a mode is valid for the panel.
+	 *
+	 * Some panels may need to filter out display modes on certain hardware
+	 * revisions. This callback is used to facilitate that filtering.
+	 *
+	 * mode: the mode to check
+	 *
+	 * Returns true if the mode is valid for the panel, or false if not.
+	 */
+	bool (*is_mode_valid)(struct gs_panel *gs_panel, const struct gs_panel_mode *pmode);
+
+	/**
+	 * @trace_panel_settings_full:
+	 *
+	 * This callback is used to trace settings of full panels.
+	 */
+	void (*trace_panel_settings_full)(struct gs_panel *gs_panel);
+
+	/**
+	 * @trace_panel_settings_lite:
+	 *
+	 * This callback is used to trace settings of lite panels.
+	 */
+	void (*trace_panel_settings_lite)(struct gs_panel *gs_panel);
 };
 
 /* PANEL DESC */
@@ -980,20 +1063,12 @@ struct gs_panel_desc {
 	 *                                         for TE2 freq change
 	 */
 	const u32 notify_te2_freq_changed_work_delay_ms;
+
 	/**
-	 * @fault_detect_interval_ms: minimum interval between checks for panel
-	 * DDIC faults. A value of 0 is interpreted as "fault detection
-	 * unsupported", while nonzero values represent minimum "wait" times
-	 * between calls to detect_fault()
+	 * @fault_desc: Configuration for the fault detection mechanism, including registers
+	 * and error masks.
 	 */
-	const u32 fault_detect_interval_ms;
-	/**
-	 * @panel_errors_mask: mask of @panel_errors for defining reset requirement
-	 * Perform a bitwise AND operation on @panel_errors and this mask before propagation.
-	 * This field is a u64 const because @panel_errors is set via DRM property, which is limited
-	 * to a uint64_t, even though @panel_errors bitmap is of length GS_PANEL_ERR_MAX.
-	 */
-	const u64 panel_errors_mask;
+	const struct gs_panel_detect_fault_desc *fault_desc;
 };
 
 /* PRIV DATA */
@@ -1022,7 +1097,9 @@ enum gs_panel_gpio_names {
 	DISP_ENABLE_GPIO,
 	DISP_VDDD_GPIO,
 	DISP_TOUT_GPIO,
+	DISP_TP_RESET_GPIO,
 	DISP_ERR_FG_GPIO,
+	DISP_PMIC_IRQ_GPIO,
 	MAX_DISP_GPIO,
 };
 
@@ -1032,6 +1109,18 @@ enum gs_panel_gpio_names {
 struct gs_panel_gpio {
 	struct gpio_desc *gpiod[MAX_DISP_GPIO];
 	enum gpio_level vddd_gpio_fixed_level;
+};
+
+/**
+ * struct gs_panel_gpio_config - config for each gpio
+ */
+struct gs_panel_gpio_config {
+	/** @id: gpio id */
+	enum gs_panel_gpio_names id;
+	/** @flag: gpio initialization flag */
+	enum gpiod_flags flag;
+	/** @mandatory: whether the gpio is mandatory */
+	bool mandatory;
 };
 
 /**
@@ -1135,6 +1224,10 @@ struct gs_te2_data {
 	u32 last_rr_te_usec;
 };
 
+struct gs_pmic_irq_data {
+	int irq;
+};
+
 /**
  * struct gs_panel_timestamps - keeps track of timestamps
  * for particular operations the panel has performed
@@ -1151,6 +1244,7 @@ struct gs_panel_timestamps {
 	ktime_t timeline_expected_present_ts;
 	/** @conn_last_present_ts: last expected present timestamp */
 	ktime_t conn_last_present_ts;
+	ktime_t last_panel_settings_trace_ts;
 };
 
 /**
@@ -1431,9 +1525,13 @@ struct gs_panel {
 	 */
 	u32 ddic_read_fail_cnt;
 	/*
-	 * @panel_errors_cnt: Count of all panel errors for telemetry
+	 * @panel_errors_cnt: Count of all panel errors
 	 */
 	u32 panel_errors_cnt[GS_PANEL_ERR_MAX];
+	/** @pmic_errors: Errors related to the panel PMIC */
+	DECLARE_BITMAP(pmic_errors, GS_PMIC_ERR_MAX);
+	/** @pmic_errors_cnt: Count of all PMIC errors */
+	u32 pmic_errors_cnt[GS_PMIC_ERR_MAX];
 	/* If true, panel won't be powered off */
 	bool force_power_on;
 	struct gs_panel_idle_data idle_data;
@@ -1471,22 +1569,35 @@ struct gs_panel {
 	char panel_name[PANEL_NAME_MAX];
 	char panel_serial_number[PANEL_SERIAL_MAX];
 	/**
-	 * @panel_extinfo: contents of extended info registers
-	 * Stored as hex string; data used in part to derive panel_rev_id and
-	 * panel_rev_bitmask members
+	 * @panel_id: 32-bit panel ID read from bootloader or panel registers.
+	 * Stored as a little-endian integer (reversed relative to register read order).
+	 *
+	 * Register read order: ID1 (DAh), ID2 (DBh), ID3 (DCh), ID4 (A1h)
+	 * Memory layout (LE):  [ID1, ID2, ID3, ID4]
+	 * Integer value (LE):  0x(ID4)(ID3)(ID2)(ID1)
+	 *
+	 * Example: If reads return DAh=0xDA, DBh=0xDB, DCh=0xDC, A1h=0xA1
+	 * (sysfs panel_extinfo: "dadbdca1"), then panel_id is 0xA1DCDBDA.
 	 */
-	char panel_extinfo[PANEL_EXTINFO_MAX];
+	u32 panel_id;
 	char panel_model[PANEL_MODEL_MAX];
 	/**
 	 * @panel_rev_id: panel revision id
 	 * A way to encode the panel revision that is descriptive, expandable,
-	 * and disconnected from manufacturer encodings like panel_extinfo is
+	 * and disconnected from manufacturer encodings like panel_id is
 	 */
 	panel_rev_id_t panel_rev_id;
 	/** @panel_rev_bitmask: panel_rev_id, converted to bitmask */
 	u32 panel_rev_bitmask;
+	/**
+	 * @mode_override_idx: index of mode for override-and-limit option
+	 * If value is -1, does not change behavior; otherwise,
+	 * selects index of mode in desc->modes to limit to
+	 */
+	int mode_override_idx;
 	enum drm_panel_orientation orientation;
 	struct gs_te2_data te2;
+	struct gs_pmic_irq_data pmic_irq;
 	/** @touch_bridge_data: keeps track of connection to touch bridge */
 	struct gs_touch_bridge_data touch_bridge_data;
 	struct gs_panel_timestamps timestamps;
@@ -1531,6 +1642,8 @@ struct gs_panel {
 	bool ssc_en;
 	/* @ffc_en: indicate whether FFC is enabled */
 	bool ffc_en;
+	/* @force_ffc_off: if true, ffc will be off all the time */
+	bool force_ffc_off;
 
 	/** @common_work: periodic work for each panel */
 	struct gs_common_work common_work;
@@ -1596,6 +1709,12 @@ struct gs_panel {
 	 * collision.
 	 */
 	bool trigger_dumps_for_gram_collision;
+
+	/**
+	 * @panel_settings_changed: whether panel settings are changed.
+	 * This is used for trace_panel_settings_full and trace_panel_settings_lite.
+	 */
+	bool panel_settings_changed;
 };
 
 /* FUNCTIONS */
@@ -1720,6 +1839,18 @@ static inline void notify_panel_te2_option_changed(struct gs_panel *ctx)
 	schedule_work(&ctx->notify_panel_te2_option_changed_work);
 }
 
+static inline void notify_panel_pwm_mode_changed(struct gs_panel *ctx)
+{
+	sysfs_notify(&ctx->dev->kobj, NULL, "pwm_mode");
+}
+
+static inline void notify_panel_op_hz_changed(struct gs_panel *ctx)
+{
+	blocking_notifier_call_chain(&ctx->op_hz_notifier_head, GS_PANEL_NOTIFIER_SET_OP_HZ,
+					     &ctx->op_hz);
+	sysfs_notify(&ctx->dev->kobj, NULL, "op_hz");
+}
+
 static inline u32 get_current_frame_duration_us(struct gs_panel *ctx)
 {
 	return USEC_PER_SEC / drm_mode_vrefresh(&ctx->current_mode->mode);
@@ -1811,10 +1942,7 @@ int gs_dcs_set_brightness(struct gs_panel *ctx, u16 br);
  * reading panel module ID and serial number, getting panel revision, and
  * calling panel_init, etc.
  *
- * If your driver uses gs_panel_reset_helper_pre_enable(), you should consider
- * calling this within your panel's enable() function.
- *
- * Return: Enable-configuration results; 0 for success, negative value for error
+ * Return: Enable results; 0 for success, negative value for error
  */
 int gs_panel_first_enable_helper(struct gs_panel *ctx);
 /**
@@ -1865,14 +1993,8 @@ int gs_dsi_panel_common_probe(struct mipi_dsi_device *dsi);
 /**
  * gs_dsi_panel_common_remove - Removes dsi panel
  * @dsi: dsi device pointer for panel
- *
- * Return: 0 on success, negative value for error
  */
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
 void gs_dsi_panel_common_remove(struct mipi_dsi_device *dsi);
-#else
-int gs_dsi_panel_common_remove(struct mipi_dsi_device *dsi);
-#endif
 
 /**
  * gs_panel_debugfs_create_cmdset - Creates a cmdset debugfs entry
@@ -1976,6 +2098,19 @@ void gs_panel_update_lhbm_hist_data_helper(struct gs_panel *ctx, struct drm_atom
  * Return: 0 on success, negative value for error
  */
 int gs_panel_gpio_set(struct gs_panel *ctx, enum gs_panel_gpio_names gpio, bool value);
+
+/**
+ * gs_panel_gpio_set_optional() - sets gpio to value, if present
+ * @ctx: handle for gs_panel
+ * @gpio: GPIO pin descriptor associated with panel
+ * @value: new GPIO pin value
+ *
+ * This is the same as gs_panel_gpio_set(), but does not give an error
+ * for a non-existent GPIO.
+ *
+ * Return: 0 on success, -EINVAL if not given a valid GPIO
+ */
+int gs_panel_gpio_set_optional(struct gs_panel *ctx, enum gs_panel_gpio_names gpio, bool value);
 
 /**
  * _gs_panel_update_dev_stat() - updates dev_stat with panel state (see b/384403177)
@@ -2094,23 +2229,6 @@ void gs_panel_refresh_ctrl(struct gs_panel *ctx, ktime_t frame_start_ts);
  * @work: Reference to work struct executing callback
  */
 void gs_panel_detect_fault_work(struct kthread_work *work);
-
-#define GS_HBM_FLAG_GHBM_UPDATE BIT(0)
-#define GS_HBM_FLAG_BL_UPDATE BIT(1)
-#define GS_HBM_FLAG_LHBM_UPDATE BIT(2)
-#define GS_HBM_FLAG_DIMMING_UPDATE BIT(3)
-#define GS_FLAG_OP_RATE_UPDATE BIT(4)
-#define GS_FLAG_MIN_RR_UPDATE BIT(5)
-#define GS_FLAG_INSERT_FRAMES BIT(6)
-#define GS_FLAG_AUTO_FI_UPDATE BIT(7)
-#define GS_FLAG_PWM_MODE_UPDATE BIT(8)
-#define GS_FLAG_POWER_STATE_UPDATE BIT(9)
-#define GS_FLAG_EARLY_EXIT_UPDATE BIT(10)
-
-#define GS_FLAG_REFRESH_CTRL_UPDATE (GS_FLAG_MIN_RR_UPDATE | \
-				     GS_FLAG_INSERT_FRAMES | \
-				     GS_FLAG_AUTO_FI_UPDATE |\
-				     GS_FLAG_EARLY_EXIT_UPDATE)
 
 /* TODO: b/402868084 - refactor when more states are controlled by HWC */
 /* HBM */

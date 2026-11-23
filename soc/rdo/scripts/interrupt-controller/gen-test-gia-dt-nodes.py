@@ -60,10 +60,6 @@ def build_interrupts_from_macros(node_name, macros):
     # second parameter is default value: If we don't get a translation, use what we already had
     node_name_bits[0] = sswrp_mapping.get(sswrp, sswrp)
 
-    # for some reason G2D macros put number before _AGGR_. Swap them
-    if sswrp == 'g2d':
-        node_name_bits[3], node_name_bits[2] = node_name_bits[2], node_name_bits[3]
-
     node_name_bits.insert(1,"GIA")
 
     # discard anything after number
@@ -76,7 +72,7 @@ def build_interrupts_from_macros(node_name, macros):
             interrupt_names.append(f"\n\t\t\t\"{macro_name}\"")
 
     # not all SSWRPS in LGA let us correctly insert a test line.
-    ier_enabled = global_soc == 'lga' and bool(sswrp in lga_sswrps_with_ier)
+    ier_enabled = global_soc != 'lga' or bool(sswrp in lga_sswrps_with_ier)
 
     # only insert test lines on nodes which are not fully claimed by real irqs
     # =0 case is for nodes without data in interrupts tracker (ISPBE). Add only test line.

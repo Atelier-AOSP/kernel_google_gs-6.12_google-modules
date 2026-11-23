@@ -19,6 +19,7 @@
 #pragma clang diagnostic ignored "-Wenum-conversion"
 #pragma clang diagnostic ignored "-Wswitch"
 
+#include <linux/cleanup.h>
 #include <linux/err.h>
 #include <linux/i2c.h>
 #include <linux/iio/consumer.h>
@@ -34,6 +35,7 @@
 #include <linux/device.h>
 #include <linux/fs.h> /* register_chrdev, unregister_chrdev */
 #include <linux/seq_file.h> /* seq_read, seq_lseek, single_release */
+#include <misc/logbuffer.h>
 #include "max1720x_battery.h"
 
 #include <linux/debugfs.h>
@@ -3073,13 +3075,9 @@ static int max1720x_gbms_get_property(struct power_supply *psy,
 							       chip->aafv_modified_fus;
 		break;
 	default:
-		pr_debug("%s: route to max1720x_get_property, psp:%d\n", __func__, psp);
 		err = -ENODATA;
 		break;
 	}
-
-	if (err < 0)
-		pr_debug("error %d reading prop %d\n", err, psp);
 
 	mutex_unlock(&chip->model_lock);
 
@@ -3519,6 +3517,7 @@ static void max17201_fg_stuck_monitor_work(struct work_struct *work)
 	int ret;
 	bool was_stuck = chip->is_timer_stuck, was_br = chip->is_battery_removal;
 	bool need_reset = false;
+	u8 lotr, bpst, bpst_reset;
 
 	if (chip->por)
 		goto done;
@@ -3579,10 +3578,38 @@ static void max17201_fg_stuck_monitor_work(struct work_struct *work)
 
 	if (need_reset) {
 		dev_info(chip->dev, "max17201 stuck detected, initiating reset.\n");
+		/* check lotr version for NV storage allocation, go/maxfg-nvstorage */
+		ret = gbms_storage_read(GBMS_TAG_LOTR, &lotr, sizeof(lotr));
+		if (ret < 0) {
+			dev_err(chip->dev, "%s: failed to read LOTR, ret=%d.\n", __func__, ret);
+			goto done;
+		}
+
+		if (lotr == GBMS_LOTR_DEFAULT) {
+			ret = gbms_storage_read(GBMS_TAG_BPST, &bpst, sizeof(bpst));
+			if (ret < 0) {
+				dev_err(chip->dev, "%s: failed to read BPST, ret=%d.\n",
+					__func__, ret);
+				goto done;
+			}
+		}
 		mutex_lock(&chip->model_lock);
 		max1720x_full_reset(chip);
 		max17x0x_fg_reset(chip);
 		mutex_unlock(&chip->model_lock);
+		/* restore BPST into NV reg if needed */
+		if (lotr == GBMS_LOTR_DEFAULT) {
+			ret = gbms_storage_read(GBMS_TAG_BPST, &bpst_reset, sizeof(bpst_reset));
+			if (ret < 0)
+				dev_warn(chip->dev, "%s: failed to read BPST after reset, ret=%d.\n",
+					 __func__, ret);
+
+			if (ret == sizeof(bpst_reset) && bpst != bpst_reset) {
+				ret = gbms_storage_write(GBMS_TAG_BPST, &bpst, sizeof(bpst));
+				dev_info(chip->dev, "%s: restore BPST fail count %d->%d, ret=%d.\n",
+					 __func__, bpst_reset, bpst, ret);
+			}
+		}
 		chip->stuck_reset_retry--;
 	}
 
@@ -3662,10 +3689,13 @@ static struct device_node *max1720x_find_batt_node(struct max1720x_chip *chip)
 {
 	const int batt_id = chip->batt_id;
 	const struct device *dev = chip->dev;
-	struct device_node *config_node, *child_node;
+	struct device_node *config_node __free(device_node);
+	struct device_node *child_node;
 	u32 batt_id_range = 20, batt_id_kohm;
 	int ret;
 
+	/* balance of_node_put() in of_find_node_by_name() */
+	of_node_get(dev->of_node);
 	config_node = of_find_node_by_name(dev->of_node, "maxim,config");
 	if (!config_node) {
 		dev_warn(dev, "Failed to find maxim,config setting\n");
@@ -3705,7 +3735,7 @@ static struct device_node *max1720x_find_batt_node(struct max1720x_chip *chip)
 }
 
 static int max17x0x_apply_regval_shadow(struct max1720x_chip *chip,
-					struct device_node *node,
+					const struct device_node *node,
 					struct max17x0x_cache_data *nRAM,
 					int nb)
 {
@@ -3913,7 +3943,7 @@ error_out:
 }
 
 static int max17x0x_apply_regval_register(struct max1720x_chip *chip,
-					struct device_node *node)
+					  const struct device_node *node)
 {
 	int cnt, ret = 0, idx, err;
 	u16 *regs, data;
@@ -6088,7 +6118,8 @@ static int max17x0x_storage_iter(int index, gbms_tag_t *tag, void *ptr)
 	static gbms_tag_t keys[] = {GBMS_TAG_SNUM, GBMS_TAG_BCNT,
 				    GBMS_TAG_MXSN, GBMS_TAG_MXCN,
 				    GBMS_TAG_RAVG, GBMS_TAG_RFCN,
-				    GBMS_TAG_CMPC, GBMS_TAG_DXAC};
+				    GBMS_TAG_CMPC, GBMS_TAG_DXAC,
+				    GBMS_TAG_BPST};
 	const int count = ARRAY_SIZE(keys);
 
 
@@ -6167,7 +6198,16 @@ static int max17x0x_storage_read(gbms_tag_t tag, void *buff, size_t size,
 /*	MAX17201_COMP_UPDATE_CNT = MAX1720X_NVALRTTH, */
 		reg = NULL;
 		break;
+	case GBMS_TAG_BPST:
+		if (size != sizeof(u8))
+			return -ERANGE;
 
+		ret = REGMAP_READ(&chip->regmap_nvram, MAX1720X_NODSCTH, data);
+		if (ret < 0)
+			return ret;
+
+		*(u8 *)buff = data[0];
+		return size;
 	default:
 		reg = NULL;
 		break;
@@ -6185,6 +6225,7 @@ static int max17x0x_storage_write(gbms_tag_t tag, const void *buff, size_t size,
 	int ret;
 	const struct maxfg_reg *reg;
 	struct max1720x_chip *chip = (struct max1720x_chip *)ptr;
+	u16 data;
 
 	switch (tag) {
 	case GBMS_TAG_MXCN:
@@ -6213,7 +6254,16 @@ static int max17x0x_storage_write(gbms_tag_t tag, const void *buff, size_t size,
 /*	MAX17201_COMP_UPDATE_CNT = MAX1720X_NVALRTTH, */
 		reg = NULL;
 		break;
+	case GBMS_TAG_BPST:
+		if (size != sizeof(u8))
+			return -ERANGE;
 
+		data = *(u8 *)buff;
+		ret = REGMAP_WRITE(&chip->regmap_nvram, MAX1720X_NODSCTH, data);
+		if (ret < 0)
+			return ret;
+
+		return size;
 	default:
 		reg = NULL;
 		break;
@@ -6617,6 +6667,9 @@ static int max1720x_probe(struct i2c_client *client)
 	if (chip->gauge_type < 0)
 		chip->gauge_type = -1;
 
+	if (chip->gauge_type == MAX_M5_GAUGE_TYPE)
+		chip->dev->init_name = "i2c-max77759_fg";
+
 	ret = of_property_read_u32(dev->of_node, "maxim,status-charge-threshold-ma",
 				   &data32);
 	if (ret == 0)
@@ -6827,6 +6880,8 @@ static void max1720x_remove(struct i2c_client *client)
 		i2c_unregister_device(chip->secondary);
 
 	maxfg_free_capture_buf(&chip->cb_lh);
+
+	of_node_put(chip->batt_node);
 }
 
 static const struct of_device_id max1720x_of_match[] = {

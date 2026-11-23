@@ -253,13 +253,8 @@ PMRContiguousSparseMappingTest(PVRSRV_DEVICE_NODE *psDeviceNode, PVRSRV_MEMALLOC
 		}
 
 		/* Allocate 8 more physical pages on the Sparse PMR */
-		eError = PMR_ChangeSparseMem(psPMR,
-									 8,
-									 aui32MappingTableSecondAlloc,
-									 0,
-									 NULL,
-									 SPARSE_RESIZE_ALLOC);
-		PVR_LOG_GOTO_IF_ERROR(eError, "PMR_ChangeSparseMem", ErrorUnrefSpacingPMR);
+		eError = PMR_GrowSparseMem(psPMR, 8, aui32MappingTableSecondAlloc);
+		PVR_LOG_GOTO_IF_ERROR(eError, "PMR_GrowSparseMem", ErrorUnrefSpacingPMR);
 
 		/* Allocate some more memory from the same physheap so that we can ensure
 		 * the allocations aren't linear
@@ -285,13 +280,8 @@ PMRContiguousSparseMappingTest(PVRSRV_DEVICE_NODE *psDeviceNode, PVRSRV_MEMALLOC
 		}
 
 		/* Allocate final 4 physical pages on the Sparse PMR */
-		eError = PMR_ChangeSparseMem(psPMR,
-									 4,
-									 aui32MappingTableThirdAlloc,
-									 0,
-									 NULL,
-									 SPARSE_RESIZE_ALLOC);
-		PVR_LOG_GOTO_IF_ERROR(eError, "PMR_ChangeSparseMem", ErrorUnrefSecondSpacingPMR);
+		eError = PMR_GrowSparseMem(psPMR, 4, aui32MappingTableThirdAlloc);
+		PVR_LOG_GOTO_IF_ERROR(eError, "PMR_GrowSparseMem", ErrorUnrefSecondSpacingPMR);
 
 		/*
 		 * Check we have in fact managed to obtain a PMR with non contiguous

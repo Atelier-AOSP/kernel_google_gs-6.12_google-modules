@@ -7,11 +7,24 @@
 #ifndef __TCPCI_MAX77779_VENDOR_REG_H
 #define __TCPCI_MAX77779_VENDOR_REG_H
 
+/* Charger Address Space */
 #define CHG_CNFG_00                             0xBC
 #define MODE_MASK                               GENMASK(3, 0)
 #define MODE_BUCK_ON                            0x4
 #define MODE_BOOST_ON                           0xA
 #define MODE_OFF                                0x0
+
+/* PMIC Address Space */
+#define AGPIO_CNFG5				0xFA
+#define AGPIO_CNFG5_MODE_MASK			GENMASK(3, 2)
+#define AGPIO_CNFG5_MODE_SHIFT			2
+#define AGPIO_CNFG5_MODE_FN_PP			0
+#define AGPIO_CNFG5_MODE_FN_OD			1
+#define AGPIO_CNFG5_MODE_GPIO_PP		2
+#define AGPIO_CNFG5_MODE_GPIO_OD		3
+
+/* TCPC Address Space */
+#define TCPC_VENDOR_ID_L			0x0
 
 #define VNDR_ALRT                               BIT(15)
 #define VNDR_ALRT_H                             BIT(7)
@@ -120,5 +133,9 @@
 #define SBURPCTRL_ULP_EN			BIT(2)
 
 #define TCPC_VENDOR_SBU_CTRL2			0x97
+
+#define MAX77779_MIN_ADDR			TCPC_VENDOR_ID_L
+#define MAX77779_MAX_ADDR			TCPC_VENDOR_SBU_CTRL2
+#define MAX77779_REG_COUNT			(MAX77779_MAX_ADDR - MAX77779_MIN_ADDR + 1)
 
 #endif /* __TCPCI_MAX77779_VENDOR_REG_H */

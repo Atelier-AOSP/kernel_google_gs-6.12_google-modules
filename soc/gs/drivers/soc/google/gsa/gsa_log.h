@@ -13,6 +13,8 @@
 #ifndef __LINUX_GSA_LOG_H
 #define __LINUX_GSA_LOG_H
 
+#define GSA_LOG_SIZE ((CONFIG_GSA_LOG_REGION_SIZE) / 2)
+
 struct gsa_log;
 
 struct gsa_log *gsa_log_init(struct platform_device *pdev);

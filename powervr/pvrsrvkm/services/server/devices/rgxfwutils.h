@@ -691,19 +691,16 @@ PVRSRV_ERROR RGXSetFirmwareAddress(RGXFWIF_DEV_VIRTADDR	*ppDest,
 /*************************************************************************/ /*!
 @Function       RGXSetMetaDMAAddress
 
-@Description    Fills a Firmware structure used to setup the Meta DMA with two
-                pointers to the same data, one on 40 bit and one on 32 bit
-                (pointer in the FW memory space).
+@Description    Fills a Firmware structure used to setup the Meta DMA with
+                the 40 bit Device Virtual Address
 
 @Input          ppDest          Address of the structure to set
 @Input          psSrcMemDesc    MemDesc describing the pointer
-@Input          psSrcFWDevVAddr Firmware memory space pointer
 
 @Return         void
 */ /**************************************************************************/
 void RGXSetMetaDMAAddress(RGXFWIF_DMA_ADDR		*psDest,
 						  DEVMEM_MEMDESC		*psSrcMemDesc,
-						  RGXFWIF_DEV_VIRTADDR	*psSrcFWDevVAddr,
 						  IMG_UINT32			uiOffset);
 
 
@@ -772,11 +769,14 @@ PVRSRV_ERROR RGXMMUCacheInvalidateKick(PVRSRV_DEVICE_NODE *psDevNode,
 @Description Sends a flush command to a particular DM but first takes
              the power lock. Blocks unit the command finishes.
 
-@Input       psDevNode   Device Node pointer
+@Input       psDevNode     Device Node pointer
+@Input       eFlags        Additional operation flags. e.g force invalidate
+                           on all contexts.
 
 @Return      PVRSRV_ERROR
 */ /**************************************************************************/
-PVRSRV_ERROR RGXMMUCacheInvalidateKickAndWait(PVRSRV_DEVICE_NODE *psDevNode);
+PVRSRV_ERROR RGXMMUCacheInvalidateKickAndWait(PVRSRV_DEVICE_NODE *psDevNode,
+                                              MMU_CACHE_INVAL_FLAGS eFlags);
 
 /*!
 *******************************************************************************
@@ -1070,21 +1070,19 @@ PVRSRV_ERROR RGXFWRequestHWRTDataCleanUp(PVRSRV_DEVICE_NODE *psDeviceNode,
 
 /*!
 *******************************************************************************
-@Function       RGXFWRequestFreeListCleanUp
+@Function       RGXFWRequestGlobalFreeListCleanUp
 
-@Description    Schedules a FW FreeList cleanup. The firmware doesn't block
+@Description    Schedules a FW Global FreeList cleanup. The firmware doesn't block
                 waiting for the resource to become idle but rather notifies the
                 host that the resource is busy.
 
-@Input          psDeviceNode        pointer to device node
-@Input          psFWFreeList        firmware address of the FreeList for clean-up
-@Input          bIsGlobalFreelist   is the freelist a global freelist
+@Input          psDeviceNode    pointer to device node
+@Input          psFWFreeList    firmware address of the Global FreeList for clean-up
 
 @Return         PVRSRV_ERROR
 ******************************************************************************/
-PVRSRV_ERROR RGXFWRequestFreeListCleanUp(PVRSRV_RGXDEV_INFO *psDeviceNode,
-										 PRGXFWIF_FREELIST psFWFreeList,
-										 IMG_BOOL bIsGlobalFreelist);
+PVRSRV_ERROR RGXFWRequestGlobalFreeListCleanUp(PVRSRV_RGXDEV_INFO *psDeviceNode,
+                                               PRGXFWIF_FREELIST psFWFreeList);
 
 /*!
 *******************************************************************************

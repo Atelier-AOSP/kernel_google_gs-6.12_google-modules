@@ -344,7 +344,9 @@ static struct attribute *async_dvfs_attrs[] = {
 	NULL,
 };
 
-ATTRIBUTE_GROUPS(async_dvfs);
+const struct attribute_group exynos_acpm_async_dvfs_group = {
+	.attrs = async_dvfs_attrs,
+};
 
 int exynos_acpm_dvfs_init(void)
 {
@@ -357,6 +359,8 @@ int exynos_acpm_dvfs_init(void)
 	if (ret < 0)
 		pr_err("acpm_dvfs_init fail ret = %d\n", ret);
 
+	/* balance of_node_put() in of_find_node_by_name() */
+	of_node_get(acpm_dvfs.device_node);
 	sub_node = of_find_node_by_name(acpm_dvfs.device_node, "async_dvfs");
 	if (IS_ERR(sub_node)) {
 		pr_info("%s : Async DVFS not enabled in device tree\n", __func__);
@@ -382,10 +386,6 @@ int exynos_acpm_dvfs_init(void)
 				acpm_async_dvfs_states.requested.num_dvfs_domain /=
 					sizeof(uint32_t);
 			}
-
-			ret2 = devm_device_add_groups(acpm_dvfs.device, async_dvfs_groups);
-			if (ret2)
-				dev_err(acpm_dvfs.device, "Failed to add device groups\n");
 
 			async_dvfs_enable(true);
 		}

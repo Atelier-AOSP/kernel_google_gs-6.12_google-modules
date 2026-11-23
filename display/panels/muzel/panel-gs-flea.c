@@ -266,10 +266,6 @@ static struct gs_panel_brightness_desc flea_brightness_desc = {
 #define MIPI_DSI_FREQ_DEFAULT 756
 #define MIPI_DSI_FREQ_ALTERNATIVE 740
 
-#define ERR_DSI_ADDR 0xE9
-#define ERR_DSI_ERR_LEN 2
-#define FLEA_PPS_LEN 90
-
 #define PROJECT "FLEA"
 
 static const u8 VRR_MIN_IDLE_RR_HZ = 60;
@@ -978,67 +974,6 @@ static int flea_set_color_data_config(struct gs_panel *ctx, enum color_data_type
 	return 0;
 }
 
-#define BR_LEN 2
-static int flea_detect_fault(struct gs_panel *ctx)
-{
-	struct device *dev = ctx->dev;
-	struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
-	u8 buf[ERR_DSI_ERR_LEN] = { 0 };
-	int ret;
-
-	PANEL_ATRACE_BEGIN(__func__);
-
-	bitmap_zero(ctx->panel_errors, GS_PANEL_ERR_MAX);
-	ret = mipi_dsi_dcs_read(dsi, ERR_DSI_ADDR, buf, ERR_DSI_ERR_LEN);
-	if (ret != ERR_DSI_ERR_LEN) {
-		ctx->ddic_read_fail_cnt++;
-		dev_warn(dev, "Error reading ERR_FG (%pe), cnt=%d\n",
-			ERR_PTR(ret), ctx->ddic_read_fail_cnt);
-		if (ctx->ddic_read_fail_cnt >= MAX_DDIC_READ_FAIL_CNT)
-			set_bit(GS_PANEL_ERR_DSI_READ_FAILURE, ctx->panel_errors);
-		goto end;
-	} else {
-		dev_dbg(dev, "ERR_DSI: %02x %02x\n", buf[0], buf[1]);
-		ctx->ddic_read_fail_cnt = 0;
-	}
-
-	if (buf[0] || buf[1]) {
-		u8 br_buf[BR_LEN] = { 0 };
-		u8 pps_buf[FLEA_PPS_LEN] = { 0 };
-
-		bitmap_set_value8(ctx->panel_errors, buf[0], 8);
-		bitmap_set_value8(ctx->panel_errors, buf[1], 0);
-		dev_err(dev, "DDIC error: %*pbl\n", GS_PANEL_ERR_MAX, ctx->panel_errors);
-
-		/* Brightness */
-		ret = mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_BRIGHTNESS, br_buf, BR_LEN);
-		if (ret == BR_LEN)
-			dev_err(dev, "br: %02x %02x\n", br_buf[0], br_buf[1]);
-		else
-			dev_err(dev, "Error reading brightness (%pe)\n", ERR_PTR(ret));
-
-		/* PPS */
-		ret = mipi_dsi_dcs_read(dsi, MIPI_DCS_READ_PPS_START, pps_buf, FLEA_PPS_LEN);
-		if (ret == FLEA_PPS_LEN) {
-			char pps_str[FLEA_PPS_LEN * 2 + 1];
-
-			bin2hex(pps_str, pps_buf, FLEA_PPS_LEN);
-			dev_err(dev, "pps: %s\n", pps_str);
-		} else {
-			dev_err(dev, "Error reading pps (%pe)\n", ERR_PTR(ret));
-		}
-		/* positive return to indicate successful read of extant faults */
-		ret = 1;
-	} else {
-		ret = 0;
-	}
-
-end:
-	PANEL_ATRACE_END(__func__);
-
-	return ret;
-}
-
 static const struct drm_panel_funcs flea_drm_funcs = {
 	.disable = flea_disable,
 	.unprepare = gs_panel_unprepare,
@@ -1068,7 +1003,7 @@ static const struct gs_panel_funcs flea_gs_funcs = {
 	.update_ffc = flea_update_ffc,
 	.get_color_data = flea_get_color_data,
 	.set_color_data_config = flea_set_color_data_config,
-	.detect_fault = flea_detect_fault,
+	.detect_fault = gs_panel_detect_fault_helper,
 };
 
 const struct gs_panel_reg_ctrl_desc flea_reg_ctrl_desc = {
@@ -1103,6 +1038,13 @@ static struct gs_panel_calibration_desc flea_calibration_desc = {
 	},
 };
 
+static const struct gs_panel_detect_fault_desc flea_fault_desc = {
+	.dsi_err_reg = 0xE9,
+	.dsi_err_mask = 0,
+	.detect_interval_ms = 5000,
+	.panel_errors_mask = BIT(GS_PANEL_ERR_DSI_READ_FAILURE),
+};
+
 const struct gs_panel_desc google_flea = {
 	.data_lane_cnt = 4,
 	/* supported HDR format bitmask : 1(DOLBY_VISION), 2(HDR10), 3(HLG) */
@@ -1120,8 +1062,7 @@ const struct gs_panel_desc google_flea = {
 	.gs_panel_func = &flea_gs_funcs,
 	.default_dsi_hs_clk_mbps = MIPI_DSI_FREQ_DEFAULT,
 	.reset_timing_ms = { -1, 1, 10 },
-	.fault_detect_interval_ms = 5000,
-	.panel_errors_mask = BIT(GS_PANEL_ERR_DSI_READ_FAILURE),
+	.fault_desc = &flea_fault_desc,
 };
 
 static const struct of_device_id gs_panel_of_match[] = {

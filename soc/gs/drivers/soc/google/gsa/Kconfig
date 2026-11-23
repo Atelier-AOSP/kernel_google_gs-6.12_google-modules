@@ -39,9 +39,9 @@ config GSA_DEBUGFS
 	  as well as `pm_state` power-state statistics.
 
 config GSA_PKVM
-	tristate "Support pKVM"
+	bool "Support pKVM"
 	depends on GSA
-	depends on PKVM_S2MPU_V9 || PKVM_S2MPU
+	depends on PKVM_S2MPU_V9 || PKVM_S2MPU || S2MPU_BYPASS
 	default n
 
 config GSA_GSC
@@ -53,3 +53,21 @@ config TZ_PROT
 	tristate "TZ Prot"
 	depends on GSA
 	default n
+
+config GSA_IPC
+	tristate "GSA IPC support"
+	depends on GSA
+	help
+	  Enabling this option will enable "gsa_ipc" kernel module.
+	  This module implements GSA IPC infrastructure that allows the user space apps
+	  to communicate with GSA core using Trusty IPC compatible IPC protocol. Both
+	  simple message exchange and memory sharing is supported.
+
+config GSA_WAKELOCK
+	bool "Hold wakelock during mailbox transactions"
+	depends on GSA
+	default n
+	help
+	  Enabling this option will hold a wakelock during GSA mailbox
+	  transactions to prevent the system from suspending while a
+	  transaction is in progress.

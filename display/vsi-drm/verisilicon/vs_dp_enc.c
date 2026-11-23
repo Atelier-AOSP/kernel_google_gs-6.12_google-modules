@@ -4,7 +4,7 @@
  */
 
 #include <linux/component.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/module.h>
 #include <linux/media-bus-format.h>
 
@@ -15,6 +15,7 @@
 #include <drm/drm_bridge_connector.h>
 #include <drm/drm_simple_kms_helper.h>
 #include "vs_crtc.h"
+
 
 #define MAX_MUX_ID 6
 #define bridge_to_vs_dp(_bridge) container_of_const(_bridge, struct vs_dp, bridge)
@@ -233,14 +234,12 @@ static int vs_dp_probe(struct platform_device *pdev)
 	return component_add(dev, &vs_dp_component_ops);
 }
 
-static int vs_dp_remove(struct platform_device *pdev)
+static void vs_dp_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 
 	component_del(dev, &vs_dp_component_ops);
 	dev_set_drvdata(dev, NULL);
-
-	return 0;
 }
 
 struct platform_driver vs_dp_driver = {

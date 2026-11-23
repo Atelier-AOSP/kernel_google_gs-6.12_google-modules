@@ -1,7 +1,7 @@
 /*
  * DSCP Policy public header file, exports the APIs for other modules.
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -26,7 +26,6 @@
 
 #include <dhd.h>
 
-int dhd_dscp_policy_set_vndr_ie(struct bcm_cfg80211 *cfg, struct net_device *ndev, int bssidx);
 int dhd_dscp_policy_process_vsaf(struct bcm_cfg80211 *cfg, struct net_device *dev,
                                  uint8 *body, uint body_len);
 int dhd_dscp_policy_attach(struct bcm_cfg80211 *cfg);

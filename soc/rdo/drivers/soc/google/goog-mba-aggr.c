@@ -91,24 +91,19 @@ static struct goog_mba_aggr_session *
 goog_mba_aggr_get_session(struct goog_mba_aggr_service *gservice)
 {
 	struct goog_mba_aggr_session *session;
-	unsigned long flags;
 	int i;
 
 	for (i = 0; i < gservice->nr_sessions; i++) {
 		session = &gservice->session_pool[i];
 
-		if (!spin_trylock_irqsave(&session->lock, flags))
-			continue;
+		scoped_guard(spinlock_irqsave_try, &session->lock) {
+			if (session->status == SESSION_FREE_STATUS) {
+				session->status = SESSION_RESERVE_STATUS;
+				reinit_completion(&session->complete);
 
-		if (session->status == SESSION_FREE_STATUS) {
-			session->status = SESSION_RESERVE_STATUS;
-			reinit_completion(&session->complete);
-			spin_unlock_irqrestore(&session->lock, flags);
-
-			return session;
+				return session;
+			}
 		}
-
-		spin_unlock_irqrestore(&session->lock, flags);
 	}
 
 	return NULL;
@@ -120,11 +115,8 @@ goog_mba_aggr_get_session(struct goog_mba_aggr_service *gservice)
  */
 static void goog_mba_aggr_host_put_session(struct goog_mba_aggr_session *session)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&session->lock, flags);
-	session->status |= SESSION_HOST_DONE;
-	spin_unlock_irqrestore(&session->lock, flags);
+	scoped_guard(spinlock_irqsave, &session->lock)
+		session->status |= SESSION_HOST_DONE;
 }
 
 /*
@@ -133,11 +125,8 @@ static void goog_mba_aggr_host_put_session(struct goog_mba_aggr_session *session
  */
 static void goog_mba_aggr_client_put_session(struct goog_mba_aggr_session *session)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&session->lock, flags);
-	session->status |= SESSION_CLIENT_DONE;
-	spin_unlock_irqrestore(&session->lock, flags);
+	scoped_guard(spinlock_irqsave, &session->lock)
+		session->status |= SESSION_CLIENT_DONE;
 }
 
 struct goog_mba_aggr_service *goog_mba_request_gservice(struct device *dev, int index,
@@ -514,7 +503,7 @@ static int goog_mba_aggr_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int goog_mba_aggr_remove(struct platform_device *pdev)
+static void goog_mba_aggr_remove(struct platform_device *pdev)
 {
 	struct goog_mba_aggr_service *gservice;
 	int i;
@@ -524,8 +513,6 @@ static int goog_mba_aggr_remove(struct platform_device *pdev)
 		mbox_free_channel(gservice->client_tx_chans[i].chan);
 	for (i = 0; i < gservice->nr_host_tx_chans; i++)
 		mbox_free_channel(gservice->host_tx_chans[i].chan);
-
-	return 0;
 }
 
 static const struct of_device_id goog_mba_aggr_of_match_table[] = {

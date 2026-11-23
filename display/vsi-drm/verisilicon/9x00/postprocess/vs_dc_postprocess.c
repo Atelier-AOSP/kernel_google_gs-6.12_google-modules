@@ -1146,7 +1146,7 @@ static bool ccm_lnr_config_hw(struct dc_hw *hw, u8 hw_id, bool enable, const voi
 	config = dc_read(hw, VS_SET_PANEL_FIELD(DCREG_SH_PANEL, hw_id, CONFIG_Address));
 	config = (hw_id > HW_DISPLAY_1) ?
 			 (VS_SET_FIELD(config, DCREG_SH_PANEL2_CONFIG, GAMUT_MATRIX, enable)) :
-			 VS_SET_FIELD(config, DCREG_SH_PANEL0_CONFIG, GAMUT_MATRIX, enable);
+			 (VS_SET_FIELD(config, DCREG_SH_PANEL0_CONFIG, GAMUT_MATRIX, enable));
 	dc_write(hw, VS_SET_PANEL_FIELD(DCREG_SH_PANEL, hw_id, CONFIG_Address), config);
 
 	if (enable) {

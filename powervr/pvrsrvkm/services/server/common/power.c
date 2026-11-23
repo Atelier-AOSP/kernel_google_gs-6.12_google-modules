@@ -102,7 +102,6 @@ struct _PVRSRV_POWER_DEV_TAG_
 	IMG_HANDLE						psDevNode;
 	PVRSRV_DEV_POWER_STATE			eDefaultPowerState;
 	ATOMIC_T						eCurrentPowerState;
-	ATOMIC_T						ePoweronReqPending;
 #if defined(PVRSRV_ENABLE_PROCESS_STATS)
 	PVRSRV_POWER_STATS				sPowerStats;
 #endif
@@ -110,6 +109,8 @@ struct _PVRSRV_POWER_DEV_TAG_
 	 * must be protected by power lock.
 	 */
 	IMG_INT32                       iIdleReqInFlight;
+	/* Lock for SPU power island change */
+	POS_LOCK                        hLockSPUChange;
 };
 
 #if defined(PVRSRV_ENABLE_PROCESS_STATS)
@@ -383,10 +384,7 @@ typedef void (*PFN_POWER_LOCK_ACQUIRE) (PPVRSRV_DEVICE_NODE psDevNode
 static inline IMG_UINT64 PVRSRVProcessStatsGetTimeNs(void)
 {
 #if defined(PVRSRV_ENABLE_PROCESS_STATS)
-	// Timestamps produced by this function are only used in the context of measuring
-	// execution times by subtracting values, so we can simply use ktime_get and avoid
-	// any of the scheduling-related work associated with OSClockns64.
-	return ktime_get();
+	return OSClockns64();
 #else
 	return 0;
 #endif
@@ -395,12 +393,7 @@ static inline IMG_UINT64 PVRSRVProcessStatsGetTimeNs(void)
 static inline IMG_UINT64 PVRSRVProcessStatsGetTimeUs(void)
 {
 #if defined(PVRSRV_ENABLE_PROCESS_STATS)
-	// Similar to PVRSRVProcessStatsGetTimeNs above, use ktime_get directly to
-	// avoid any overhead with requesting time.
-	ktime_t now;
-
-	now = ktime_get();
-	return ktime_to_us(now);
+	return OSClockus();
 #else
 	return 0;
 #endif
@@ -627,16 +620,20 @@ void PVRSRVPowerLockDowngradeWrite(PPVRSRV_DEVICE_NODE psDeviceNode)
 
 @Description    Transitions the device to ON (firmware ready) prior to sending
                 commands to the KCCB. In case of an error occurring, the lock
-                is unlocked. The power lock state may be:
+                is unlocked. The RW power lock state may be:
                 - UNLOCKED
                 - WRITE_LOCKED
                   Transition the device to ON with exclusive access.
                 - READ_BIAS
                   No change. Device should be powered ON.
+                When rt_mutex is used, the lock is always taken to ensure
+                the power state is ON while the command(s) are scheduled on
+                the GPU.
 
 @Input          psDeviceNode        - RGX Device node
 
-@Return         PVRSRV_ERROR. On success, the lock state is PVR_RWSEM_READER_BIAS.
+@Return         PVRSRV_ERROR. On success, the lock state is PVR_RWSEM_READER_BIAS
+                or locked when PVRSRV_ENABLE_POWERLOCK_PRIO_INHERIT=1.
 ******************************************************************************/
 PVRSRV_ERROR PVRSRVPowerLockPreCommand(PVRSRV_DEVICE_NODE *psDeviceNode)
 {
@@ -667,6 +664,7 @@ PVRSRV_ERROR PVRSRVPowerLockPreCommand(PVRSRV_DEVICE_NODE *psDeviceNode)
 		goto _ReleaseLock_exit;
 	}
 
+	/* Hold the power lock and return */
 	return PVRSRV_OK;
 #else
 	/* Try write lock. If success, the write lock is held */
@@ -941,10 +939,6 @@ PVRSRV_ERROR PVRSRVDeviceSystemPrePowerStateKM(PVRSRV_POWER_DEV			*psPowerDevice
 	PVR_ASSERT(eNewPowerState != PVRSRV_DEV_POWER_STATE_DEFAULT);
 
 	eCurrentPowerState = OSAtomicRead(&psPowerDevice->eCurrentPowerState);
-	if (eNewPowerState == PVRSRV_DEV_POWER_STATE_OFF &&
-		OSAtomicRead(&psPowerDevice->ePoweronReqPending)) {
-		return PVRSRV_ERROR_DEVICE_POWER_CHANGE_DENIED;
-	}
 
 	if (psPowerDevice->pfnDevicePrePower != NULL)
 	{
@@ -1052,9 +1046,6 @@ PVRSRV_ERROR PVRSRVDeviceSystemPostPowerStateKM(PVRSRV_POWER_DEV		*psPowerDevice
 	PVR_ASSERT(eNewPowerState != PVRSRV_DEV_POWER_STATE_DEFAULT);
 
 	eCurrentPowerState = OSAtomicRead(&psPowerDevice->eCurrentPowerState);
-	if (eNewPowerState == PVRSRV_DEV_POWER_STATE_ON) {
-		OSAtomicWrite(&psPowerDevice->ePoweronReqPending, 1);
-	}
 
 	/* Do any required system-layer processing. */
 	if (psPowerDevice->pfnSystemPostPower != NULL)
@@ -1104,10 +1095,6 @@ PVRSRV_ERROR PVRSRVDeviceSystemPostPowerStateKM(PVRSRV_POWER_DEV		*psPowerDevice
 							 IMG_FALSE);
 
 	PVRSRVSetDeviceCurrentPowerState(psPowerDevice, eNewPowerState);
-
-	if (eNewPowerState == PVRSRV_DEV_POWER_STATE_ON) {
-		OSAtomicWrite(&psPowerDevice->ePoweronReqPending, 0);
-	}
 
 	return PVRSRV_OK;
 }
@@ -1400,6 +1387,7 @@ PVRSRV_ERROR PVRSRVRegisterPowerDevice(PPVRSRV_DEVICE_NODE psDeviceNode,
 									   PVRSRV_DEV_POWER_STATE		eDefaultPowerState)
 {
 	PVRSRV_POWER_DEV *psPowerDevice;
+	PVRSRV_ERROR eError;
 
 	PVR_ASSERT(!psDeviceNode->psPowerDev);
 
@@ -1428,15 +1416,23 @@ PVRSRV_ERROR PVRSRVRegisterPowerDevice(PPVRSRV_DEVICE_NODE psDeviceNode,
 	PVRSRVSetDeviceCurrentPowerState(psPowerDevice, eCurrentPowerState);
 	psPowerDevice->eDefaultPowerState = eDefaultPowerState;
 	psPowerDevice->iIdleReqInFlight = 0;
-	OSAtomicWrite(&psPowerDevice->ePoweronReqPending, 0);
 
 #if defined(PVRSRV_ENABLE_PROCESS_STATS)
 	OSCachedMemSet(&psPowerDevice->sPowerStats, 0, sizeof(psPowerDevice->sPowerStats));
 #endif
 
+	eError = OSLockCreate(&psPowerDevice->hLockSPUChange);
+	PVR_LOG_GOTO_IF_ERROR(eError, "PVRSRVRegisterPowerDevice", ErrorFreePowerDevice);
+
 	psDeviceNode->psPowerDev = psPowerDevice;
 
 	return PVRSRV_OK;
+
+ErrorFreePowerDevice:
+	OSFreeMem(psPowerDevice);
+	psDeviceNode->psPowerDev = NULL;
+
+	return eError;
 }
 
 void PVRSRVRemovePowerDevice(PPVRSRV_DEVICE_NODE psDeviceNode)
@@ -1445,6 +1441,10 @@ void PVRSRVRemovePowerDevice(PPVRSRV_DEVICE_NODE psDeviceNode)
 	{
 		/* RGX device/firmware should now be powered down */
 		PVR_ASSERT(PVRSRVIsDevicePowered(psDeviceNode) == IMG_FALSE);
+		if (psDeviceNode->psPowerDev->hLockSPUChange != NULL)
+		{
+			OSLockDestroy(psDeviceNode->psPowerDev->hLockSPUChange);
+		}
 		OSFreeMem(psDeviceNode->psPowerDev);
 		psDeviceNode->psPowerDev = NULL;
 	}
@@ -1610,8 +1610,7 @@ PVRSRVDevicePostClockSpeedChange(PPVRSRV_DEVICE_NODE psDeviceNode,
 }
 
 PVRSRV_ERROR PVRSRVDeviceGPUUnitsPowerChange(PPVRSRV_DEVICE_NODE psDeviceNode,
-                                             IMG_UINT32 ui32NewValue,
-                                             IMG_BOOL bCallerHasPowerLock)
+                                             IMG_UINT32 ui32NewValue)
 {
 	PVRSRV_ERROR		eError = PVRSRV_OK;
 	PVRSRV_POWER_DEV	*psPowerDevice;
@@ -1621,10 +1620,8 @@ PVRSRV_ERROR PVRSRVDeviceGPUUnitsPowerChange(PPVRSRV_DEVICE_NODE psDeviceNode,
 	{
 		PVRSRV_DEV_POWER_STATE eDevicePowerState;
 
-		if (!bCallerHasPowerLock)
-		{
-			PVRSRVPowerLockWrite(psDeviceNode);
-		}
+		/* Lock to ensure the following sequence of operations run sequentially. */
+		OSLockAcquire(psPowerDevice->hLockSPUChange);
 
 		eDevicePowerState = OSAtomicRead(&psPowerDevice->eCurrentPowerState);
 		if (eDevicePowerState == PVRSRV_DEV_POWER_STATE_ON)
@@ -1654,22 +1651,14 @@ PVRSRV_ERROR PVRSRVDeviceGPUUnitsPowerChange(PPVRSRV_DEVICE_NODE psDeviceNode,
 
 		if (eDevicePowerState == PVRSRV_DEV_POWER_STATE_ON)
 		{
+			/* Take device out of IDLE state */
 			eError = PVRSRVDeviceIdleCancelRequestKM(psDeviceNode);
 			PVR_LOG_GOTO_IF_ERROR(eError, "PVRSRVDeviceIdleCancelRequestKM", ErrorUnlockAndExit);
 		}
 
-		if (!bCallerHasPowerLock)
-		{
-			PVRSRVPowerUnlockWrite(psDeviceNode);
-		}
-	}
-
-	return eError;
-
 ErrorUnlockAndExit:
-	if (!bCallerHasPowerLock)
-	{
-		PVRSRVPowerUnlockWrite(psDeviceNode);
+		/* Unlock mutex */
+		OSLockRelease(psPowerDevice->hLockSPUChange);
 	}
 
 	return eError;

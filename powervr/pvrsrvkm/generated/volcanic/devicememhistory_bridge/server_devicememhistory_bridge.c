@@ -136,8 +136,9 @@ PVRSRVBridgeDevicememHistoryMap(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (DEVMEM_ANNOTATION_MAX_LEN * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiTextInt, (const void __user *)psDevicememHistoryMapIN->puiText,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiTextInt,
+		     (const void __user *)psDevicememHistoryMapIN->puiText,
 		     DEVMEM_ANNOTATION_MAX_LEN * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psDevicememHistoryMapOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -282,8 +283,9 @@ PVRSRVBridgeDevicememHistoryUnmap(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (DEVMEM_ANNOTATION_MAX_LEN * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiTextInt, (const void __user *)psDevicememHistoryUnmapIN->puiText,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiTextInt,
+		     (const void __user *)psDevicememHistoryUnmapIN->puiText,
 		     DEVMEM_ANNOTATION_MAX_LEN * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psDevicememHistoryUnmapOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -426,8 +428,9 @@ PVRSRVBridgeDevicememHistoryMapVRange(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (DEVMEM_ANNOTATION_MAX_LEN * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiTextInt, (const void __user *)psDevicememHistoryMapVRangeIN->puiText,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiTextInt,
+		     (const void __user *)psDevicememHistoryMapVRangeIN->puiText,
 		     DEVMEM_ANNOTATION_MAX_LEN * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psDevicememHistoryMapVRangeOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -545,8 +548,9 @@ PVRSRVBridgeDevicememHistoryUnmapVRange(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (DEVMEM_ANNOTATION_MAX_LEN * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiTextInt, (const void __user *)psDevicememHistoryUnmapVRangeIN->puiText,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiTextInt,
+		     (const void __user *)psDevicememHistoryUnmapVRangeIN->puiText,
 		     DEVMEM_ANNOTATION_MAX_LEN * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psDevicememHistoryUnmapVRangeOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -693,8 +697,8 @@ PVRSRVBridgeDevicememHistorySparseChange(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (DEVMEM_ANNOTATION_MAX_LEN * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiTextInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiTextInt,
 		     (const void __user *)psDevicememHistorySparseChangeIN->puiText,
 		     DEVMEM_ANNOTATION_MAX_LEN * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
@@ -715,8 +719,8 @@ PVRSRVBridgeDevicememHistorySparseChange(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psDevicememHistorySparseChangeIN->ui32AllocPageCount * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32AllocPageIndicesInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32AllocPageIndicesInt,
 		     (const void __user *)psDevicememHistorySparseChangeIN->pui32AllocPageIndices,
 		     psDevicememHistorySparseChangeIN->ui32AllocPageCount * sizeof(IMG_UINT32)) !=
 		    PVRSRV_OK)
@@ -737,8 +741,8 @@ PVRSRVBridgeDevicememHistorySparseChange(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psDevicememHistorySparseChangeIN->ui32FreePageCount * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32FreePageIndicesInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32FreePageIndicesInt,
 		     (const void __user *)psDevicememHistorySparseChangeIN->pui32FreePageIndices,
 		     psDevicememHistorySparseChangeIN->ui32FreePageCount * sizeof(IMG_UINT32)) !=
 		    PVRSRV_OK)

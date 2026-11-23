@@ -33,6 +33,7 @@ TRACE_EVENT(gs_perf_mon,
 		__field(unsigned long,	l3_cachemiss	)
 		__field(unsigned long,	l2_cachemiss	)
 		__field(unsigned long,	mem_stalls	)
+		__field(u64,		last_update_ts)
 	),
 
 	TP_fast_assign(
@@ -43,11 +44,13 @@ TRACE_EVENT(gs_perf_mon,
 		__entry->l3_cachemiss = cpu_data->perf_ev_last_delta[PERF_L3_CACHE_MISS_IDX];
 		__entry->l2_cachemiss = cpu_data->perf_ev_last_delta[PERF_L2D_CACHE_REFILL_IDX];
 		__entry->mem_stalls = cpu_data->perf_ev_last_delta[PERF_STALL_BACKEND_MEM_IDX];
+		__entry->last_update_ts = cpu_data->last_update_ts;
 	),
 
-	TP_printk("cpu=%d, time_delta_us=%lu, inst=%lu, cpu_cycles=%lu, mem_stall_backend=%lu, "
+	TP_printk("cpu=%d, last_update_ts=%llu, time_delta_us=%lu, inst=%lu, cpu_cycles=%lu, mem_stall_backend=%lu, "
 			"l2_cachemiss=%lu, l3_cachemiss=%lu\n",
 		__entry->cpu,
+		__entry->last_update_ts,
 		__entry->time_delta_us,
 		__entry->instructions,
 		__entry->cpu_cycles,
@@ -61,7 +64,7 @@ TRACE_EVENT(gs_perf_mon,
 
 /* This part must be outside protection */
 #undef TRACE_INCLUDE_PATH
-#define TRACE_INCLUDE_PATH ../core/gs_perf_mon
+#define TRACE_INCLUDE_PATH .
 
 #undef TRACE_INCLUDE_FILE
 #define TRACE_INCLUDE_FILE gs_perf_mon_trace

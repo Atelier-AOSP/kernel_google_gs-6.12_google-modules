@@ -818,8 +818,8 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickTA3D2IN->ui32ClientTAFenceCount * sizeof(IMG_HANDLE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, hClientTAFenceSyncPrimBlockInt2,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, hClientTAFenceSyncPrimBlockInt2,
 		     (const void __user *)psRGXKickTA3D2IN->phClientTAFenceSyncPrimBlock,
 		     psRGXKickTA3D2IN->ui32ClientTAFenceCount * sizeof(IMG_HANDLE)) != PVRSRV_OK)
 		{
@@ -838,8 +838,8 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickTA3D2IN->ui32ClientTAFenceCount * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32ClientTAFenceSyncOffsetInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32ClientTAFenceSyncOffsetInt,
 		     (const void __user *)psRGXKickTA3D2IN->pui32ClientTAFenceSyncOffset,
 		     psRGXKickTA3D2IN->ui32ClientTAFenceCount * sizeof(IMG_UINT32)) != PVRSRV_OK)
 		{
@@ -858,8 +858,8 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickTA3D2IN->ui32ClientTAFenceCount * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32ClientTAFenceValueInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32ClientTAFenceValueInt,
 		     (const void __user *)psRGXKickTA3D2IN->pui32ClientTAFenceValue,
 		     psRGXKickTA3D2IN->ui32ClientTAFenceCount * sizeof(IMG_UINT32)) != PVRSRV_OK)
 		{
@@ -882,8 +882,8 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickTA3D2IN->ui32ClientTAUpdateCount * sizeof(IMG_HANDLE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, hClientTAUpdateSyncPrimBlockInt2,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, hClientTAUpdateSyncPrimBlockInt2,
 		     (const void __user *)psRGXKickTA3D2IN->phClientTAUpdateSyncPrimBlock,
 		     psRGXKickTA3D2IN->ui32ClientTAUpdateCount * sizeof(IMG_HANDLE)) != PVRSRV_OK)
 		{
@@ -902,8 +902,8 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickTA3D2IN->ui32ClientTAUpdateCount * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32ClientTAUpdateSyncOffsetInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32ClientTAUpdateSyncOffsetInt,
 		     (const void __user *)psRGXKickTA3D2IN->pui32ClientTAUpdateSyncOffset,
 		     psRGXKickTA3D2IN->ui32ClientTAUpdateCount * sizeof(IMG_UINT32)) != PVRSRV_OK)
 		{
@@ -922,8 +922,8 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickTA3D2IN->ui32ClientTAUpdateCount * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32ClientTAUpdateValueInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32ClientTAUpdateValueInt,
 		     (const void __user *)psRGXKickTA3D2IN->pui32ClientTAUpdateValue,
 		     psRGXKickTA3D2IN->ui32ClientTAUpdateCount * sizeof(IMG_UINT32)) != PVRSRV_OK)
 		{
@@ -946,8 +946,8 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickTA3D2IN->ui32Client3DUpdateCount * sizeof(IMG_HANDLE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, hClient3DUpdateSyncPrimBlockInt2,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, hClient3DUpdateSyncPrimBlockInt2,
 		     (const void __user *)psRGXKickTA3D2IN->phClient3DUpdateSyncPrimBlock,
 		     psRGXKickTA3D2IN->ui32Client3DUpdateCount * sizeof(IMG_HANDLE)) != PVRSRV_OK)
 		{
@@ -966,8 +966,8 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickTA3D2IN->ui32Client3DUpdateCount * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32Client3DUpdateSyncOffsetInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32Client3DUpdateSyncOffsetInt,
 		     (const void __user *)psRGXKickTA3D2IN->pui32Client3DUpdateSyncOffset,
 		     psRGXKickTA3D2IN->ui32Client3DUpdateCount * sizeof(IMG_UINT32)) != PVRSRV_OK)
 		{
@@ -986,8 +986,8 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickTA3D2IN->ui32Client3DUpdateCount * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32Client3DUpdateValueInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32Client3DUpdateValueInt,
 		     (const void __user *)psRGXKickTA3D2IN->pui32Client3DUpdateValue,
 		     psRGXKickTA3D2IN->ui32Client3DUpdateCount * sizeof(IMG_UINT32)) != PVRSRV_OK)
 		{
@@ -1006,8 +1006,8 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (PVRSRV_SYNC_NAME_LENGTH * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiUpdateFenceNameInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiUpdateFenceNameInt,
 		     (const void __user *)psRGXKickTA3D2IN->puiUpdateFenceName,
 		     PVRSRV_SYNC_NAME_LENGTH * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
@@ -1028,8 +1028,8 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (PVRSRV_SYNC_NAME_LENGTH * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiUpdateFenceName3DInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiUpdateFenceName3DInt,
 		     (const void __user *)psRGXKickTA3D2IN->puiUpdateFenceName3D,
 		     PVRSRV_SYNC_NAME_LENGTH * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
@@ -1049,8 +1049,9 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickTA3D2IN->ui32TACmdSize * sizeof(IMG_BYTE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui8TACmdInt, (const void __user *)psRGXKickTA3D2IN->pui8TACmd,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui8TACmdInt,
+		     (const void __user *)psRGXKickTA3D2IN->pui8TACmd,
 		     psRGXKickTA3D2IN->ui32TACmdSize * sizeof(IMG_BYTE)) != PVRSRV_OK)
 		{
 			psRGXKickTA3D2OUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -1067,8 +1068,9 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickTA3D2IN->ui323DPRCmdSize * sizeof(IMG_BYTE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui83DPRCmdInt, (const void __user *)psRGXKickTA3D2IN->pui83DPRCmd,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui83DPRCmdInt,
+		     (const void __user *)psRGXKickTA3D2IN->pui83DPRCmd,
 		     psRGXKickTA3D2IN->ui323DPRCmdSize * sizeof(IMG_BYTE)) != PVRSRV_OK)
 		{
 			psRGXKickTA3D2OUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -1085,8 +1087,9 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickTA3D2IN->ui323DCmdSize * sizeof(IMG_BYTE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui83DCmdInt, (const void __user *)psRGXKickTA3D2IN->pui83DCmd,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui83DCmdInt,
+		     (const void __user *)psRGXKickTA3D2IN->pui83DCmd,
 		     psRGXKickTA3D2IN->ui323DCmdSize * sizeof(IMG_BYTE)) != PVRSRV_OK)
 		{
 			psRGXKickTA3D2OUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -1104,8 +1107,8 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickTA3D2IN->ui32SyncPMRCount * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32SyncPMRFlagsInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32SyncPMRFlagsInt,
 		     (const void __user *)psRGXKickTA3D2IN->pui32SyncPMRFlags,
 		     psRGXKickTA3D2IN->ui32SyncPMRCount * sizeof(IMG_UINT32)) != PVRSRV_OK)
 		{
@@ -1125,8 +1128,9 @@ PVRSRVBridgeRGXKickTA3D2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickTA3D2IN->ui32SyncPMRCount * sizeof(IMG_HANDLE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, hSyncPMRsInt2, (const void __user *)psRGXKickTA3D2IN->phSyncPMRs,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, hSyncPMRsInt2,
+		     (const void __user *)psRGXKickTA3D2IN->phSyncPMRs,
 		     psRGXKickTA3D2IN->ui32SyncPMRCount * sizeof(IMG_HANDLE)) != PVRSRV_OK)
 		{
 			psRGXKickTA3D2OUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -1588,8 +1592,8 @@ PVRSRVBridgeRGXCreateHWRTDataSet(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (RGXMKIF_NUM_RTDATA_FREELISTS * sizeof(IMG_HANDLE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, hapsFreeListsInt2,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, hapsFreeListsInt2,
 		     (const void __user *)psRGXCreateHWRTDataSetIN->phapsFreeLists,
 		     RGXMKIF_NUM_RTDATA_FREELISTS * sizeof(IMG_HANDLE)) != PVRSRV_OK)
 		{
@@ -1608,8 +1612,8 @@ PVRSRVBridgeRGXCreateHWRTDataSet(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (RGXMKIF_NUM_GEOMDATAS * sizeof(IMG_DEV_VIRTADDR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, sTailPtrsDevVAddrInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, sTailPtrsDevVAddrInt,
 		     (const void __user *)psRGXCreateHWRTDataSetIN->psTailPtrsDevVAddr,
 		     RGXMKIF_NUM_GEOMDATAS * sizeof(IMG_DEV_VIRTADDR)) != PVRSRV_OK)
 		{
@@ -1731,9 +1735,9 @@ PVRSRVBridgeRGXCreateHWRTDataSet(IMG_UINT32 ui32DispatchTableEntry,
 	if ((hKmHwRTDataSetInt2) && ((RGXMKIF_NUM_RTDATAS * sizeof(RGX_KM_HW_RT_DATASET *)) > 0))
 	{
 		if (unlikely
-		    (OSCopyToUser
-		     (NULL, (void __user *)psRGXCreateHWRTDataSetOUT->phKmHwRTDataSet,
-		      hKmHwRTDataSetInt2,
+		    (CopyToUserWrapper
+		     (NULL, ui32DispatchTableEntry,
+		      (void __user *)psRGXCreateHWRTDataSetOUT->phKmHwRTDataSet, hKmHwRTDataSetInt2,
 		      (RGXMKIF_NUM_RTDATAS * sizeof(RGX_KM_HW_RT_DATASET *))) != PVRSRV_OK))
 		{
 			psRGXCreateHWRTDataSetOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -2132,8 +2136,8 @@ PVRSRVBridgeRGXCreateRenderContext(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXCreateRenderContextIN->ui32FrameworkCmdSize * sizeof(IMG_BYTE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui8FrameworkCmdInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui8FrameworkCmdInt,
 		     (const void __user *)psRGXCreateRenderContextIN->pui8FrameworkCmd,
 		     psRGXCreateRenderContextIN->ui32FrameworkCmdSize * sizeof(IMG_BYTE)) !=
 		    PVRSRV_OK)
@@ -2154,8 +2158,8 @@ PVRSRVBridgeRGXCreateRenderContext(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXCreateRenderContextIN->ui32GeomContextDataSize * sizeof(IMG_BYTE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui8GeomContextDataInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui8GeomContextDataInt,
 		     (const void __user *)psRGXCreateRenderContextIN->pui8GeomContextData,
 		     psRGXCreateRenderContextIN->ui32GeomContextDataSize * sizeof(IMG_BYTE)) !=
 		    PVRSRV_OK)
@@ -2176,8 +2180,8 @@ PVRSRVBridgeRGXCreateRenderContext(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXCreateRenderContextIN->ui32FragContextDataSize * sizeof(IMG_BYTE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui8FragContextDataInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui8FragContextDataInt,
 		     (const void __user *)psRGXCreateRenderContextIN->pui8FragContextData,
 		     psRGXCreateRenderContextIN->ui32FragContextDataSize * sizeof(IMG_BYTE)) !=
 		    PVRSRV_OK)

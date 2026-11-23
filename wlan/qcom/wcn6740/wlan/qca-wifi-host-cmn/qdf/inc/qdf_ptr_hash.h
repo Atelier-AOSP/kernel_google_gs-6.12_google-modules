@@ -64,7 +64,7 @@ struct qdf_ptr_hash_bucket {
 struct qdf_ptr_hash {
 	int8_t bits;
 	int16_t count;
-	struct qdf_ptr_hash_bucket buckets[0];
+	struct qdf_ptr_hash_bucket buckets[];
 };
 
 /**

@@ -10,6 +10,7 @@
 
 #include <drm/bridge/dw_mipi_dsi2h.h>
 #include <drm/drm_encoder.h>
+#include <drm/drm_managed.h>
 #include <drm/drm_file.h>
 #include <drm/drm_of.h>
 #include <drm/drm_mipi_dsi.h>
@@ -20,7 +21,9 @@
 #include <linux/debugfs.h>
 #include <linux/module.h>
 #include <linux/media-bus-format.h>
+#include <linux/of.h>
 #include <linux/of_device.h>
+#include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
 #include <gs_drm/gs_drm_connector.h>
@@ -188,6 +191,7 @@ static int dw_mipi_dsi2h_of_parse_pdata(struct device *dev, struct dw_mipi_dsi2h
 
 	pdata->in_emulation = of_property_read_bool(np, "in_emulation");
 	pdata->auto_calc_off = of_property_read_bool(np, "auto_calc_off");
+	pdata->hs_link_enable = of_property_read_bool(np, "hs_link_enable");
 	pdata->dynamic_hs_clk_en = of_property_read_bool(np, "dynamic_hs_clk_en");
 
 	return 0;
@@ -354,6 +358,26 @@ static bool is_primary_display(struct vs_mipi_dsi2h *dsi)
 	return (dsi->pdata.index == DISPLAY_INDEX_PRIMARY);
 }
 
+static void vs_mipi_dsi_bridge_cleanup(struct drm_device *dev, void *data)
+{
+	struct drm_bridge *bridge = data;
+
+	bridge->base.state = NULL;
+}
+
+static int vs_mipi_dsi_register_bridge_cleanup(struct drm_device *drm_dev,
+					       struct drm_encoder *encoder)
+{
+	struct drm_bridge *bridge;
+
+	list_for_each_entry(bridge, &encoder->bridge_chain, chain_node) {
+		if (is_dw_mipi_dsi2h_bridge(bridge)) {
+			return drmm_add_action_or_reset(drm_dev, vs_mipi_dsi_bridge_cleanup,
+							bridge);
+		}
+	}
+	return -ENODEV;
+}
 
 static int vs_mipi_dsi_bind(struct device *dev, struct device *master, void *data)
 {
@@ -380,6 +404,7 @@ static int vs_mipi_dsi_bind(struct device *dev, struct device *master, void *dat
 			DRM_DEV_ERROR(dev, "Failed to bind: %d\n", ret);
 			return ret;
 		}
+		vs_mipi_dsi_register_bridge_cleanup(drm_dev, &dsi->encoder);
 
 		for (i = 0; i < MAX_DSI_CNT; i++) {
 			if (dsi_drvdata[i] && (dsi_drvdata[i]->pdata.index != pdata->index) &&
@@ -391,6 +416,8 @@ static int vs_mipi_dsi_bind(struct device *dev, struct device *master, void *dat
 					DRM_DEV_ERROR(dev, "Failed to bind: %d\n", ret);
 					return ret;
 				}
+				vs_mipi_dsi_register_bridge_cleanup(drm_dev,
+								    &dsi_drvdata[i]->encoder);
 			}
 		}
 	}
@@ -400,15 +427,9 @@ static int vs_mipi_dsi_bind(struct device *dev, struct device *master, void *dat
 
 static void vs_mipi_dsi_unbind(struct device *dev, struct device *master, void *data)
 {
-	int ret;
 	struct vs_mipi_dsi2h *dsi = dev_get_drvdata(dev);
 
 	dw_mipi_dsi2h_unbind(dsi->dw_mipi_dsi_handle);
-
-	DRM_DEV_DEBUG(dsi->dev, "power OFF\n");
-	ret = pm_runtime_put_sync(dsi->dev);
-	if (ret < 0)
-		DRM_DEV_ERROR(dsi->dev, "failed to power OFF\n");
 }
 
 static const struct component_ops vs_mipi_dsi2h_component_ops = {
@@ -472,12 +493,11 @@ static int vs_mipi_dsi2h_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int vs_mipi_dsi2h_remove(struct platform_device *pdev)
+static void vs_mipi_dsi2h_remove(struct platform_device *pdev)
 {
 	struct vs_mipi_dsi2h *dsi = platform_get_drvdata(pdev);
 
 	dw_mipi_dsi2h_remove(dsi->dw_mipi_dsi_handle);
-	return 0;
 }
 
 static const struct of_device_id vs_mipi_dsi2h_dt_match[] = {

@@ -2466,7 +2466,6 @@ dhd_pktid_map_init(dhd_pub_t *dhd, uint32 num_items)
 
 	/* Initialize the lock that protects this structure */
 	map->pktid_lock = DHD_PKTID_LOCK_INIT(osh);
-	OSL_LOCK_CLASS_SET(map->pktid_lock);
 	if (map->pktid_lock == NULL) {
 		DHD_ERROR(("%s:%d: Lock init failed \r\n", __FUNCTION__, __LINE__));
 		goto error;
@@ -2490,7 +2489,6 @@ dhd_pktid_map_init(dhd_pub_t *dhd, uint32 num_items)
 				__FUNCTION__, __LINE__, map_items + 1));
 		}
 		map->pktid_audit_lock = DHD_PKTID_AUDIT_LOCK_INIT(osh);
-		OSL_LOCK_CLASS_SET(map->pktid_audit_lock);
 #endif /* DHD_PKTID_AUDIT_ENABLED */
 
 	for (nkey = 1; nkey <= map_items; nkey++) { /* locker #0 is reserved */
@@ -7863,9 +7861,21 @@ BCMFASTPATH(dhd_prot_process_msgbuf_rxcpl)(dhd_pub_t *dhd, int ringtype, uint32 
 				pktid = ltoh32(msg->cmn_hdr.request_id);
 				if (msg->cmn_hdr.flags &
 					BCMPCIE_CMNHDR_FLAGS_WAKE_PACKET) {
-					DHD_ERROR(("%s:Rx: Wakeup Packet received\n",
+					DHD_PRINT(("%s:Rx: Wakeup Packet received\n",
 						__FUNCTION__));
 					prot->rx_wakeup_pkt++;
+
+#if defined(DHD_WAKE_STATUS)
+					/* Check if host was woken up by any packets */
+					if (dhd_bus_get_bus_wake(dhd) > 0) {
+						/* Clear bus_wake */
+						dhd_bus_set_get_bus_wake(dhd, 0);
+						/* Request packet dump for first Rx packet */
+						DHD_PRINT(("%s: set wake pkt dump\n",
+							__FUNCTION__));
+						dhd_bus_set_get_bus_wake_pkt_dump(dhd, 1);
+					}
+#endif /* DHD_WAKE_STATUS */
 				}
 
 #ifdef DHD_PKTID_AUDIT_RING
@@ -12009,6 +12019,7 @@ int dhd_d2h_h2d_ring_dump(dhd_pub_t *dhd, void *file, const void *user_buf,
 	int ret = 0;
 	uint16 h2d_flowrings_total;
 	uint16 flowid;
+	flow_ring_node_t *flow_ring_node;
 
 	if (!(dhd) || !(dhd->prot)) {
 		goto exit;
@@ -12047,6 +12058,20 @@ int dhd_d2h_h2d_ring_dump(dhd_pub_t *dhd, void *file, const void *user_buf,
 		goto exit;
 	}
 	FOREACH_RING_IN_FLOWRINGS_POOL(prot, ring, flowid, h2d_flowrings_total) {
+		flow_ring_node = dhd_flow_ring_node(dhd, flowid);
+		if (!flow_ring_node || !flow_ring_node->active) {
+			/* Write zero-length stub: max_items=0, item_len=0 */
+			uint16 zero = 0;
+			ret = dhd_export_debug_data((char *)&zero, file, user_buf,
+				sizeof(zero), (int *)file_posn);
+			if (ret < 0)
+				goto exit;
+			ret = dhd_export_debug_data((char *)&zero, file, user_buf,
+				sizeof(zero), (int *)file_posn);
+			if (ret < 0)
+				goto exit;
+			continue;
+		}
 		ret = dhd_ring_write(dhd, ring, file, user_buf, file_posn);
 		if (ret < 0) {
 			goto exit;
@@ -12892,7 +12917,6 @@ dhd_prot_ring_attach(dhd_pub_t *dhd, msgbuf_ring_t *ring, const char *name,
 	dhd_base_addr_htolpa(&ring->base_addr, ring->dma_buf.pa);
 
 	ring->ring_lock = osl_spin_lock_init(dhd->osh);
-	OSL_LOCK_CLASS_SET(ring->ring_lock);
 
 #ifdef TX_FLOW_RING_INDICES_TRACE
 	dhd_prot_txflowring_rw_trace_attach(dhd, ring);

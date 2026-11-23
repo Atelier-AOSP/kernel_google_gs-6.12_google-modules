@@ -9,14 +9,22 @@
 
 #include <linux/input/mt.h>
 
-enum gti_cmd_type : u32{
+#ifndef __CODESONAR__
+#define ENUM_U32 : u32
+#else
+#define ENUM_U32
+#endif
+
+enum gti_cmd_type ENUM_U32 {
 	GTI_CMD_NOP,
 };
 
-enum gti_vendor_dev_pm_state : u32 {
+enum gti_vendor_dev_pm_state ENUM_U32 {
 	GTI_VENDOR_DEV_RESUME = 0,
 	GTI_VENDOR_DEV_SUSPEND,
 };
+
+#undef ENUM_U32
 
 struct gti_union_cmd_data {
 	u32 nop_cmd;

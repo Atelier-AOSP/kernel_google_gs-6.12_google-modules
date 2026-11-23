@@ -44,9 +44,17 @@ int cdev_devfreq_init(struct cdev_devfreq_data *cdev,
 		      cdev_cb release_cb);
 void cdev_devfreq_exit(struct cdev_devfreq_data *cdev);
 void cdev_pm_qos_update_request(struct cdev_devfreq_data *cdev, unsigned long freq);
+int cdev_dev_pm_qos_update_request(struct dev_pm_qos_request *req, s32 new_value);
+int cdev_pm_qos_add_devfreq_request(struct devfreq *devfreq,
+				    struct dev_pm_qos_request *req,
+				    enum dev_pm_qos_req_type type, s32 value);
+int cdev_pm_qos_remove_devfreq_request(struct devfreq *devfreq,
+				       struct dev_pm_qos_request *req);
 void __cdev_devfreq_fetch_work(struct work_struct *work);
 int __cdev_devfreq_fetch_register(struct cdev_devfreq_data *cdev);
 int __cdev_devfreq_update_opp_from_pd(struct cdev_devfreq_data *cdev, struct device *dev);
 int __cdev_devfreq_update_opp_from_firmware(struct cdev_devfreq_data *cdev,
 					   struct device *dev);
+struct devfreq *cdev_get_devfreq_by_node(struct device_node *node);
+struct em_perf_state *cdev_em_perf_state_from_pd(struct em_perf_domain *pd);
 #endif  // _CDEV_DEVFREQ_HELPER_H_

@@ -31,9 +31,8 @@ static int genpd_test_consumer_probe(struct platform_device *pdev)
 	return 0;
 };
 
-static int genpd_test_consumer_remove(struct platform_device *pdev)
+static void genpd_test_consumer_remove(struct platform_device *pdev)
 {
-	return 0;
 }
 
 static const struct of_device_id genpd_test_consumer_of_match_table[] = {

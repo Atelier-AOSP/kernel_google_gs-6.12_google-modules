@@ -9,6 +9,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/regmap.h>
+#include "tcpci_otg_helper.h"
 
 #define COMMAND_REGISTER	0x7a
 #define CLEAR_RESET_LOCK	0x0

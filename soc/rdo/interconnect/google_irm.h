@@ -12,8 +12,7 @@
 
 #include <soc/google/goog_mba_cpm_iface.h>
 
-#include "google_icc_internal.h"
-#include "google_irm_debugfs.h"
+#include "google_icc_vote.h"
 
 enum {
 	IRM_CLIENT_PROP_REG_OFFSET = 0,
@@ -24,7 +23,9 @@ enum {
 
 struct irm_client {
 	u32 base;
-	u32 type;
+	u32 sync_type;
+	/* Accept GMC vote only, or both GMC and GSLC votes */
+	u32 irm_type;
 	/* protect internal struct/register access */
 	struct mutex mutex;
 	struct completion cpm_done;
@@ -56,9 +57,10 @@ struct irm_dev {
 };
 
 struct irm_dev_ops {
-	int (*vote)(struct irm_dev *irm_dev, u32 attr, const struct icc_vote *vote);
+	int (*irm_vote)(struct irm_dev *irm_dev, u32 attr,
+			const struct icc_vote *vote);
 };
 
-void irm_vote_restore(struct irm_dev *irm_dev, u8 id);
+int irm_vote_commit(struct irm_dev *irm_dev, u8 id);
 
 #endif /* _GOOGLE_IRM_H */

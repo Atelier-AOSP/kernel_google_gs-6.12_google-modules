@@ -13,6 +13,7 @@
 #define DP_PIPE_LANEx_DISABLE			1
 
 /* HSIO_N_DP_CONFIG block */
+#if IS_ENABLED(CONFIG_SOC_LGA)
 #define DP_CONFIG_DP_ENCRYPTION_MODE_MASK		BIT(0)
 #define DP_CONFIG_DP_ENCRYPTION_MODE_VAL(x)		(x << 0)
 #define DP_CONFIG_DSC_ENABLE_0_MASK			BIT(1)
@@ -21,6 +22,12 @@
 #define DP_CONFIG_DSC_ENABLE_1_VAL(x)			(x << 2)
 #define DP_CONFIG_REG_DP_HPD_MASK			BIT(4)
 #define DP_CONFIG_REG_DP_HPD_VAL(x)			(x << 4)
+#else
+#define DP_CONFIG_REG_DP_HPD_MASK			BIT(0)
+#define DP_CONFIG_REG_DP_HPD_VAL(x)			(x << 0)
+#define DP_CONFIG_DP_ENCRYPTION_MODE_MASK		BIT(1)
+#define DP_CONFIG_DP_ENCRYPTION_MODE_VAL(x)		(x << 1)
+#endif
 
 /* Type-C Specific */
 #define DPTX_PIN_TO_NUM_LANES(_assign_)		((_assign_) == PIN_TYPE_D ? 2 : 4)

@@ -5,8 +5,6 @@
 
 #include <dt-bindings/ip-idle/google,lga.h>
 
-#include "soc/google/google_gtc.h"
-
 #include "google_powerdashboard_impl.h"
 #include "../google_powerdashboard_iface.h"
 #include "../google_powerdashboard_helper.h"
@@ -292,24 +290,7 @@ static struct pd_curr_volt_section curr_volt_section = {
 static u32 ppu[PD_PPU_CNT];
 static struct pd_apc_power_section apc_power_section = { .ppu = ppu };
 
-static struct pd_power_state_blocker_stats kernel_blocker_stats[SOC_PWR_STATE_NUM_KERNEL_BLOCKERS];
-
-#define DEFINE_BLOCKER(a, b)                       \
-	static struct pd_power_state_blocker_stats \
-		sswrp_blockers_##b[SOC_POWER_PRE_LPB_NUM_SSWRPS];
-
-#define ASSIGN_BLOCKER(a, b)[a] = { .blocker_stats = sswrp_blockers_##b },
-
-LGA_SOC_POWER_STATE_X_MACRO_TABLE(DEFINE_BLOCKER)
-static struct pd_power_state_sswrp_blockers
-	sswrp_blockers[SOC_POWER_STATE_NUM] = {
-		LGA_SOC_POWER_STATE_X_MACRO_TABLE(ASSIGN_BLOCKER)
-	};
-
-static struct pd_power_state_blockers_section power_state_blockers_section = {
-	.kernel_blockers = {.blocker_stats = kernel_blocker_stats},
-	.sswrp_blockers = sswrp_blockers
-};
+static struct pd_power_state_blockers_section power_state_blockers_section;
 
 static struct pd_fabric_acg_apg_res fabric_acg_apg_res;
 static struct pd_gmc_acg_apg_res gmc_acg_apg_res;
@@ -340,17 +321,7 @@ static struct pd_acg_apg_csr_res_section acg_apg_csr_res_section = {
 #define CURR_VOLT_SECTION_SIZE (BASE_SIZE + 4 + sizeof(buck_ldo_data))
 #define APC_POWER_SECTION_SIZE (BASE_SIZE + sizeof(ppu))
 #define CPM_M55_SECTION_SIZE (BASE_SIZE + sizeof(power_state_res) + 1)
-
-#define KERNEL_BLOCKERS_SIZE							\
-	(8 + sizeof(struct pd_power_state_blocker_stats) * \
-			SOC_PWR_STATE_NUM_KERNEL_BLOCKERS)
-#define SSWRP_BLOCKERS_SIZE                                  \
-	(16 + (sizeof(struct pd_power_state_blocker_stats) * \
-	       SOC_POWER_PRE_LPB_NUM_SSWRPS))
-#define POWER_STATE_BLOCKERS_SECTION_SIZE       \
-	(BASE_SIZE + 4 + KERNEL_BLOCKERS_SIZE + \
-	 (SOC_POWER_STATE_NUM * SSWRP_BLOCKERS_SIZE))
-
+#define POWER_STATE_BLOCKERS_SECTION_SIZE sizeof(power_state_blockers_section)
 #define ACG_APG_CSR_RES_SECTION_SIZE	\
 	(BASE_SIZE + sizeof(fabric_acg_apg_res) + sizeof(gmc_acg_apg_res))
 
@@ -484,33 +455,8 @@ static void cpm_m55_copy(void *section_data)
 
 static void power_state_blockers_copy(void *section_data)
 {
-	HEADER_COPY(power_state_blockers, section_data);
-	power_state_blockers_section._reserved =
-		*(u32 *)(section_data + offset);
-	offset += 4;
-	power_state_blockers_section.kernel_blockers.total_blocked_count =
-		*(u64 *)(section_data + offset);
-	offset += 8;
-
-	memcpy(kernel_blocker_stats, section_data + offset,
-			sizeof(struct pd_power_state_blocker_stats) *
-				SOC_PWR_STATE_NUM_KERNEL_BLOCKERS);
-	offset += sizeof(struct pd_power_state_blocker_stats) *
-				SOC_PWR_STATE_NUM_KERNEL_BLOCKERS;
-
-	for (int i = 0; i < SOC_POWER_STATE_NUM; i++) {
-		sswrp_blockers[i].total_blocked_count =
-			*(u64 *)(section_data + offset);
-		offset += 8;
-		sswrp_blockers[i].total_time_blocked =
-			*(u64 *)(section_data + offset);
-		offset += 8;
-		memcpy(sswrp_blockers[i].blocker_stats, section_data + offset,
-		       SOC_POWER_PRE_LPB_NUM_SSWRPS *
-			       sizeof(struct pd_power_state_blocker_stats));
-		offset += SOC_POWER_PRE_LPB_NUM_SSWRPS *
-			  sizeof(struct pd_power_state_blocker_stats);
-	}
+	power_state_blockers_section =
+		*(struct pd_power_state_blockers_section *)section_data;
 }
 
 static void acg_apg_csr_res_copy(void *section_data)
@@ -521,6 +467,11 @@ static void acg_apg_csr_res_copy(void *section_data)
 	offset += sizeof(fabric_acg_apg_res);
 	memcpy(&gmc_acg_apg_res, section_data + offset,
 			sizeof(struct pd_gmc_acg_apg_res));
+}
+
+bool plat_dvfs_helper_ready(void)
+{
+	return true;
 }
 
 static section_copy_func section_copy_funcs[PD_SECTION_NUM] = {
@@ -549,6 +500,7 @@ const struct google_powerdashboard_iface powerdashboard_iface = {
 		.apc_power_section = &apc_power_section,
 		.cpm_m55_power_section = &cpm_m55_power_section,
 		.power_state_blockers_section = &power_state_blockers_section,
+		.vote_section = NULL,
 		.acg_apg_csr_res_section = &acg_apg_csr_res_section,
 		.section_ptrs = section_ptrs,
 		.section_bases = (void __iomem **)section_bases,
@@ -565,6 +517,9 @@ const struct google_powerdashboard_iface powerdashboard_iface = {
 		.cpm_m55_power_state_names = &pd_cpm_m55_power_state_names,
 		.sswrp_names = &pd_sswrp_names,
 		.ip_idle_id_names = &pd_ip_idle_id_names,
+		.blocker_names = NULL,
+		.voter_names = NULL,
+		.voted_resource_names = NULL,
 		.precondition_blocker_lpb_ids = &pd_precondition_blocker_lpb_ids,
 	},
 };
@@ -580,122 +535,3 @@ const struct google_powerdashboard_constants powerdashboard_constants = {
 	.ip_idle_idx_num = IP_IDLE_IDX_NUM,
 	.soc_power_state_dormant_suspend = SOC_POWER_STATE_DORMANT_SUSPEND,
 };
-
-static ssize_t blocker_stats_sysfs_helper(struct pd_power_state_blocker_stats blocker_stats,
-		const char *blocker_str, enum blocker_modes mode, char *buf, ssize_t len)
-{
-	u64 blocked_count, last_blocked_ts;
-
-	blocked_count = blocker_stats.blocked_count;
-	last_blocked_ts = blocker_stats.last_blocked_ts;
-
-	switch (mode) {
-	case BLOCKER_FABSTBY_VOTE:
-		len += sysfs_emit_at(buf, len, "Blocker: FABSTBY %s\n", blocker_str);
-		break;
-	case BLOCKER_DRAM_VOTE:
-		len += sysfs_emit_at(buf, len, "Blocker: DRAM %s\n", blocker_str);
-		break;
-	default:
-		len += sysfs_emit_at(buf, len, "Blocker: %s\n", blocker_str);
-		break;
-	}
-
-	len += sysfs_emit_at(buf, len, "Blocked Count: %llu\n", blocked_count);
-	len += sysfs_emit_at(buf, len, "Last Blocked Timestamp (ticks): %llu\n", last_blocked_ts);
-
-	return len;
-}
-
-ssize_t google_power_state_blockers_show(struct google_powerdashboard *pd, char *buf,
-				unsigned int state)
-{
-	struct pd_power_state_blocker_stats kernel_blocker_stats;
-	struct pd_power_state_kernel_blockers kernel_blockers;
-	struct pd_power_state_sswrp_blockers sswrp_blocker;
-	u64 curr_time, blocked_time, last_blocked_ts;
-	u32 is_currently_blocking;
-	int j, blocker_id;
-	ssize_t len = 0;
-	enum blocker_modes mode = BLOCKER_SSWRP;
-
-	curr_time = goog_gtc_get_counter();
-
-	len += sysfs_emit_at(buf, len, "\n[%s]\n\n",
-		powerdashboard_iface.attrs.platform_power_state_names->values[state]);
-
-	/* Current SSWRP Blockers */
-	sswrp_blocker =
-		powerdashboard_iface.sections.power_state_blockers_section->sswrp_blockers[state];
-	len += sysfs_emit_at(buf, len, "Current Blockers:\n");
-
-	for (j = 0; j < SOC_POWER_PRE_LPB_NUM_SSWRPS; j++) {
-		blocker_id = precondition_blocker_lpb_ids[j];
-		if (sswrp_blocker.blocker_stats[j].is_currently_blocking) {
-			if (j == SOC_POWER_PRE_FABSTBY_AOC_ID ||
-				j == SOC_POWER_PRE_FABSTBY_GSA_ID) {
-				len += sysfs_emit_at(buf, len, " FABSTBY %s\n",
-				powerdashboard_iface.attrs.sswrp_names->values[blocker_id]);
-			} else if (j == SOC_POWER_PRE_DRAM_AOC_ID ||
-						j == SOC_POWER_PRE_DRAM_GSA_ID) {
-				len += sysfs_emit_at(buf, len, " DRAM %s\n",
-				powerdashboard_iface.attrs.sswrp_names->values[blocker_id]);
-			} else {
-				len += sysfs_emit_at(buf, len, " %s\n",
-				powerdashboard_iface.attrs.sswrp_names->values[blocker_id]);
-			}
-		}
-	}
-	len += sysfs_emit_at(buf, len, "\n\n");
-
-	/* Kernel Blocker Stats */
-	if (IP_IDLE_IDX_NUM > SOC_PWR_STATE_NUM_KERNEL_BLOCKERS)
-		len += sysfs_emit_at(buf, len,
-			"FW UPDATE REQD: Update number of kernel blockers\n\n");
-
-	if (state == SOC_POWER_STATE_DORMANT_SUSPEND) {
-		kernel_blockers =
-			powerdashboard_iface.sections.power_state_blockers_section->kernel_blockers;
-		for (j = 1; j < IP_IDLE_IDX_NUM; j++) {
-			if (j >= SOC_PWR_STATE_NUM_KERNEL_BLOCKERS)
-				break;
-			kernel_blocker_stats = kernel_blockers.blocker_stats[j];
-			len = blocker_stats_sysfs_helper(kernel_blocker_stats,
-					powerdashboard_iface.attrs.ip_idle_id_names->values[j],
-						mode, buf, len);
-			len += sysfs_emit_at(buf, len, "\n");
-		}
-	}
-
-	/* SSWRP Blocker Stats */
-	for (j = 0; j < SOC_POWER_PRE_LPB_NUM_SSWRPS; j++) {
-		blocker_id = precondition_blocker_lpb_ids[j];
-		blocked_time = sswrp_blocker.blocker_stats[j].time_blocked;
-		last_blocked_ts = sswrp_blocker.blocker_stats[j].last_blocked_ts;
-		is_currently_blocking =
-			sswrp_blocker.blocker_stats[j].is_currently_blocking;
-		mode = BLOCKER_SSWRP;
-
-		if (j == SOC_POWER_PRE_FABSTBY_AOC_ID ||
-			j == SOC_POWER_PRE_FABSTBY_GSA_ID) {
-			mode = BLOCKER_FABSTBY_VOTE;
-		} else if (j == SOC_POWER_PRE_DRAM_AOC_ID ||
-					j == SOC_POWER_PRE_DRAM_GSA_ID) {
-			mode = BLOCKER_DRAM_VOTE;
-		}
-
-		len = blocker_stats_sysfs_helper(sswrp_blocker.blocker_stats[j],
-			powerdashboard_iface.attrs.sswrp_names->values[blocker_id],
-				mode, buf, len);
-		if (is_currently_blocking)
-			blocked_time += (curr_time - last_blocked_ts);
-		len += sysfs_emit_at(buf, len,
-				"Blocked Time (ms): %llu\n",
-				get_ms_from_ticks(blocked_time));
-		len += sysfs_emit_at(buf, len,
-				"Currently blocking: %s\n\n",
-				is_currently_blocking ? "Yes" : "No");
-	}
-
-	return len;
-}

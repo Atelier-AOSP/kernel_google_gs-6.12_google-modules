@@ -129,4 +129,21 @@ IMG_BOOL SysDevExtractFFToken(IMG_HANDLE hSysData,
                               IMG_UINT16 *pui16FFToken);
 #endif
 
+#if defined(RGX_FEATURE_AXI_ACE_BIT_MASK)
+/**************************************************************************/ /*!
+@Function       SysGetSystemCoherencyMode
+@Description    Common routine for system modules that initializes the system
+                cache coherency variable and applies DisableCacheCoherency
+                apphint.
+                This function should only be used on volcanic and newer systems
+                that support the RGX_CR_SOC_AXI register which is read to
+                configure the system coherency mode inside the device config.
+@Input          psDeviceConfig        Pointer to the device config object.
+@Input          peCacheSnoopingMode   Cache snooping mode to be set.
+@Return         PVRSRV_OK if successful, a PVRSRV_ERROR otherwise.
+*/ /***************************************************************************/
+PVRSRV_ERROR SysGetSystemCoherencyMode(PVRSRV_DEVICE_CONFIG *psDeviceConfig,
+                                       PVRSRV_DEVICE_SNOOP_MODE *peCacheSnoopingMode);
+#endif
+
 #endif /* SYSCONFIG_CMN_H */

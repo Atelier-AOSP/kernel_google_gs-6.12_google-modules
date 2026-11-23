@@ -1865,6 +1865,7 @@ dhdpcie_pci_stop(struct pci_dev *pdev)
 	if (bus) {
 		/*  Stop Runtime PM in pci_remove */
 		DHD_STOP_RPM_TIMER(bus->dhd);
+		dhd_force_close_primary_dev(bus->dhd);
 #ifdef SUPPORT_LINKDOWN_RECOVERY
 		dhd_plat_pcie_deregister_event(bus->dhd->plat_info);
 #endif /* SUPPORT_LINKDOWN_RECOVERY */
@@ -3674,12 +3675,13 @@ bool dhd_runtimepm_state(dhd_pub_t *dhd)
 bool dhd_runtime_bus_wake(dhd_bus_t *bus, bool wait, void *func_addr)
 {
 	unsigned long flags;
-	bus->idlecount = 0;
+
 	DHD_TRACE(("%s : enter\n", __FUNCTION__));
 
 	if (bus == NULL || bus->dhd == NULL) {
 		return FALSE;
 	}
+	bus->idlecount = 0;
 
 	if (bus->dhd->up == FALSE) {
 		DHD_INFO(("%s : dhd is not up\n", __FUNCTION__));
@@ -3728,8 +3730,11 @@ bool dhd_runtime_bus_wake(dhd_bus_t *bus, bool wait, void *func_addr)
 
 bool dhdpcie_runtime_bus_wake(dhd_pub_t *dhdp, bool wait, void *func_addr)
 {
-	dhd_bus_t *bus = dhdp->bus;
-	return dhd_runtime_bus_wake(bus, wait, func_addr);
+	if (dhdp == NULL || dhdp->bus == NULL) {
+		return FALSE;
+	}
+
+	return dhd_runtime_bus_wake(dhdp->bus, wait, func_addr);
 }
 
 void dhdpcie_block_runtime_pm(dhd_pub_t *dhdp)

@@ -198,7 +198,7 @@ struct wlan_ipa_tx_hdr {
     defined(QCA_WIFI_QCA6490) || defined(QCA_WIFI_QCA6750) || \
     defined(QCA_WIFI_WCN7850)
 struct frag_header {
-	uint8_t reserved[0];
+	__QDF_DECLARE_FLEX_ARRAY(uint8_t, reserved);
 };
 #elif defined(QCA_WIFI_3_0)
 struct frag_header {
@@ -225,7 +225,7 @@ struct frag_header {
     defined(QCA_WIFI_QCA6490) || defined(QCA_WIFI_QCA6750) || \
     defined(QCA_WIFI_WCN7850)
 struct ipa_header {
-	uint8_t reserved[0];
+	__QDF_DECLARE_FLEX_ARRAY(uint8_t, reserved);
 };
 #else
 struct ipa_header {

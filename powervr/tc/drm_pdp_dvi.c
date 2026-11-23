@@ -63,6 +63,8 @@
 #include <drm/drm_probe_helper.h>
 #endif
 
+#include <drm/drm_print.h>
+
 #include "kernel_compatibility.h"
 
 struct pdp_mode_data {

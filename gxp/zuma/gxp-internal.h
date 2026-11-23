@@ -22,7 +22,9 @@
 #include <linux/platform_device.h>
 #include <linux/rwsem.h>
 #include <linux/spinlock.h>
+#include <linux/types.h>
 
+#include <gcip/gcip-coresight-remote.h>
 #include <gcip/gcip-memory.h>
 #include <gcip/gcip-resource-accessor.h>
 #include <gcip/gcip-thermal.h>
@@ -61,7 +63,7 @@ struct gxp_tpu_dev {
 };
 
 /* Forward declarations from submodules */
-struct gcip_iommu_domain_pool;
+struct gcip_domain_pool;
 struct gcip_iommu_domain;
 struct gxp_client;
 struct gxp_mailbox_manager;
@@ -131,7 +133,8 @@ struct gxp_dev {
 	 * May be NULL if the chip does not support firmware authentication
 	 */
 	struct device *gsa_dev;
-	struct gcip_iommu_domain_pool *domain_pool;
+	struct gcip_domain_pool *domain_pool;
+	size_t iommu_space_size;
 	struct list_head client_list;
 	struct mutex client_list_lock;
 	/* Pointer and mutex of secure virtual device */
@@ -152,9 +155,6 @@ struct gxp_dev {
 	void __iomem *sysreg_shareability; /* sysreg shareability csr base */
 	/* Next virtual device ID. */
 	atomic_t next_vdid;
-
-	/* To manage DMA fences. */
-	struct gcip_dma_fence_manager *gfence_mgr;
 
 	/* To save device properties */
 	struct gxp_dev_prop device_prop;
@@ -277,6 +277,14 @@ struct gxp_dev {
 	 * This callback is optional.
 	 */
 	void (*lpm_init)(struct gxp_dev *gxp);
+	/*
+	 * To support CoreSight remote functionality.
+	 *
+	 * These callbacks are optional.
+	 */
+	void (*coresight_remote_init)(struct gxp_dev *gxp);
+	void (*coresight_remote_exit)(struct gxp_dev *gxp);
+	void (*coresight_remote_restore)(struct gxp_dev *gxp);
 };
 
 /* GXP device IO functions */

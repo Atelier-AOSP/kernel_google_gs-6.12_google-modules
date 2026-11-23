@@ -97,16 +97,14 @@ typedef IMG_UINT64
 (*PFN_SYS_DEV_SOC_TIMER_READ)(IMG_HANDLE hSysData);
 #endif
 
-typedef enum _PVRSRV_DEVICE_FABRIC_TYPE_
-{
-	PVRSRV_DEVICE_FABRIC_NONE = 0,
-	PVRSRV_DEVICE_FABRIC_ACELITE,
-	PVRSRV_DEVICE_FABRIC_FULLACE,
-} PVRSRV_DEVICE_FABRIC_TYPE;
+#if defined(SUPPORT_FOREIGN_FENCE_TOKEN)
+typedef void
+(*PFN_SYS_DEV_RELEASE_FF)(IMG_HANDLE hSysData,
+                          SYNC_CHECKPOINT_FF_TOKEN ui16FFToken);
+#endif
 
+#if defined(SUPPORT_FOREIGN_FENCE_TOKEN) || defined(SUPPORT_FASTPATH_FENCE)
 
-
-#if defined(SUPPORT_NATIVE_FENCE_SYNC)
 /**************************************************************************/ /*!
 @Function       PFN_SYS_DEV_EXTRACT_FF_TOKEN
 @Description    A callback to extract a foreign fence (FF) token from a
@@ -123,9 +121,7 @@ typedef IMG_BOOL
 (*PFN_SYS_DEV_EXTRACT_FF_TOKEN)(IMG_HANDLE hSysData,
                                 IMG_HANDLE hEnvFenceObjPtr,
                                 SYNC_CHECKPOINT_FF_TOKEN *pui16FFToken);
-
-typedef void (*PFN_SYS_DEV_RELEASE_FF)(IMG_HANDLE hSysData,
-				       SYNC_CHECKPOINT_FF_TOKEN ui16FFToken);
+#endif // SUPPORT_FOREIGN_FENCE_TOKEN || SUPPORT_FASTPATH_FENCE
 
 
 #if defined(SUPPORT_FASTPATH_FENCE)
@@ -156,7 +152,6 @@ typedef void
 (*PFN_SYS_DEV_DEINIT_KICK_AND_COMMUNICATE)(PVRSRV_DEVICE_CONFIG *psDeviceConfig);
 #endif // SUPPORT_FASTPATH_FENCE
 
-#endif // SUPPORT_NATIVE_FENCE_SYNC
 
 typedef PVRSRV_ERROR
 (*PFN_SYS_PRE_POWER)(IMG_HANDLE hSysData,
@@ -291,6 +286,15 @@ typedef void (*PFN_SYS_INIT_FIREWALL)(IMG_HANDLE hSysData,
                                       IMG_UINT64[GPUVIRT_VALIDATION_NUM_REGIONS][GPUVIRT_VALIDATION_NUM_OS]);
 #endif /* defined(SUPPORT_GPUVIRT_VALIDATION) */
 
+#if defined(SUPPORT_LINUX_WRAP_EXTMEM_PAGE_TABLE_WALK)
+typedef PVRSRV_ERROR
+(*PFN_SYS_ACQUIRE_PHYS_PAGES_FROM_VIRT)(IMG_DEVMEM_SIZE_T uiSize,
+                                        uintptr_t pvCpuVAddr,
+                                        void *pvPrivData);
+typedef void
+(*PFN_SYS_RELEASE_PHYS_PAGES_FROM_VIRT)(void * pvPrivData);
+#endif /* defined(SUPPORT_LINUX_WRAP_EXTMEM_PAGE_TABLE_WALK) */
+
 typedef struct _PVRSRV_ROBUSTNESS_ERR_DATA_HOST_WDG_
 {
 	IMG_UINT32 ui32Status;     /*!< FW status */
@@ -364,7 +368,7 @@ struct _PVRSRV_DEVICE_CONFIG_
 	IMG_UINT32 ui32IRQ;
 
 	/*! Device Coherency capability */
-	PVRSRV_DEVICE_SNOOP_MODE eCacheSnoopingMode;
+	PVRSRV_DEVICE_SNOOP_MODE eSystemCoherencyMode;
 
 	/*! Device specific data handle */
 	IMG_HANDLE hDevData;
@@ -386,21 +390,21 @@ struct _PVRSRV_DEVICE_CONFIG_
 	PHYS_HEAP_CONFIG *pasPhysHeaps;
 	IMG_UINT32 ui32PhysHeapCount;
 
-#if defined(SUPPORT_NATIVE_FENCE_SYNC)
+#if defined(SUPPORT_FOREIGN_FENCE_TOKEN)
+	/*
+	 * A callback to release a foreign fence (FF) token from a fence's user data.
+	 * It is valid for this pfn to be NULL when the platform doesn't require any clean-up to
+	 * be performed for a FF.
+	 */
+	PFN_SYS_DEV_RELEASE_FF pfnSysDevReleaseFF;
+#endif
+
+#if defined(SUPPORT_FOREIGN_FENCE_TOKEN) || defined(SUPPORT_FASTPATH_FENCE)
 	/*!
 	 * A callback to extract a foreign fence (FF) token from a dma_fence's user bits.
 	 */
 	PFN_SYS_DEV_EXTRACT_FF_TOKEN pfnSysDevExtractFFToken;
-
-  	/*!
-	 *! A callback to release a foreign fence (FF) token from a fence's user data.
-	 *! It is valid for this pfn to be NULL when the platform doesn't require any clean-up to
-	 *! be performed for an FF.
-	 *!
-	 *! @Input  hSysData       A system data handle.
-	 *! @Input  ui16FFToken    The fence token to be released.
-	 */
-	PFN_SYS_DEV_RELEASE_FF pfnSysDevReleaseFF;
+#endif
 
 #if defined(SUPPORT_FASTPATH_FENCE)
 	/*!
@@ -414,7 +418,6 @@ struct _PVRSRV_DEVICE_CONFIG_
 	PFN_SYS_DEV_DEINIT_KICK_AND_COMMUNICATE pfnDeInitFPFKickAndCommunicate;
 	IMG_HANDLE                   psFpfConfigPrivData;
 	RGXFWIF_FPF_GPU_KICKREG_TYPE eGPUKickType;
-#endif
 #endif
 
 	/*!
@@ -556,6 +559,15 @@ struct _PVRSRV_DEVICE_CONFIG_
 	 *!  Whether virtual platform configuration should be enabled
 	 */
 	IMG_BOOL bIsVirtualPlatform;
+#endif
+#if defined(SUPPORT_LINUX_WRAP_EXTMEM_PAGE_TABLE_WALK)
+	/*!
+	 *!  Interface to allow systems that require a platform specific method of
+	 *!  acquiring the PAs from the supplied user-mode VA given to the GPU
+	 *!  driver APIs PVRSRVWrapExtMem() / PVRSRVWrapExtMemDevMemX()
+	 */
+	PFN_SYS_ACQUIRE_PHYS_PAGES_FROM_VIRT pfnAcquireWrapMemPhysPagesFromVirt;
+	PFN_SYS_RELEASE_PHYS_PAGES_FROM_VIRT pfnReleaseWrapMemPhysPagesFromVirt;
 #endif
 };
 

@@ -234,7 +234,8 @@ static void link_trigger_cp_crash(struct mem_link_device *mld, u32 crash_type,
 	}
 
 	if (!reason_done && reason && reason[0] != '\0') {
-		strlcpy(ld->crash_reason.string, reason, CP_CRASH_INFO_SIZE);
+		strscpy(ld->crash_reason.string, reason,
+			sizeof(ld->crash_reason.string));
 		reason_done = true;
 	}
 
@@ -3975,6 +3976,7 @@ static int init_shmem_maps(u32 link_type, struct modem_data *modem,
 
 		of_property_read_u32(np_acpm, "dump-size", &mld->acpm_size);
 		of_property_read_u32(np_acpm, "dump-base", &acpm_addr);
+		of_node_put(np_acpm);
 		mld->acpm_base = cp_shmem_get_nc_region(acpm_addr, mld->acpm_size);
 		if (!mld->acpm_base) {
 			mif_err("Failed to vmap acpm_region\n");

@@ -246,6 +246,7 @@ pvr_fence_context_free_deferred(struct pvr_fence_context *fctx)
 {
 	struct pvr_fence *pvr_fence, *tmp;
 	struct list_head deferred_free_list;
+	bool entries_not_ready = false;
 	unsigned long flags;
 
 	INIT_LIST_HEAD(&deferred_free_list);
@@ -257,15 +258,39 @@ pvr_fence_context_free_deferred(struct pvr_fence_context *fctx)
 	list_for_each_entry_safe(pvr_fence, tmp,
 				 &deferred_free_list,
 				 fence_head) {
+
+		if (pvr_fence->type == PVR_FENCE_TYPE_PROXY_FOREIGN)
+		{
+			PVRSRV_ERROR srv_error =
+				SyncCheckpointFreeProxy(pvr_fence->sync_checkpoint);
+			if (srv_error != PVRSRV_OK)
+			{
+				/* Checkpoint not ready to free, attempt later */
+				entries_not_ready = true;
+				continue;
+			}
+		}
+		else
+		{
+			SyncCheckpointFree(pvr_fence->sync_checkpoint);
+		}
+
 		list_del(&pvr_fence->fence_head);
 
 		if (pvr_fence_is_proxy(pvr_fence)) {
 			dma_fence_put(pvr_fence->fence);
 		}
 
-		SyncCheckpointFree(pvr_fence->sync_checkpoint);
 		call_rcu(&pvr_fence->rcu, pvr_fence_sched_free);
 		module_put(THIS_MODULE);
+	}
+
+	if (entries_not_ready)
+	{
+		spin_lock_irqsave(&fctx->list_lock, flags);
+		/* Put remaining entries that were not ready to free back on the defer list */
+		list_splice(&deferred_free_list, &fctx->deferred_free_list);
+		spin_unlock_irqrestore(&fctx->list_lock, flags);
 	}
 }
 

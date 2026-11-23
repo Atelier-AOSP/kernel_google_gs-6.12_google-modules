@@ -5,8 +5,18 @@
  * Copyright (c) 2024, Google LLC. All rights reserved.
  */
 
+#include <kunit/static_stub.h>
+#include <kunit/visibility.h>
+
 #include "thermal_zone_helper.h"
 #include "thermal_zone_mock.h"
+#include <soc/google/thermal.h>
+
+VISIBLE_IF_KUNIT void tzh_register_tz_id_irq_wakeable(int tz_id)
+{
+	KUNIT_STATIC_STUB_REDIRECT(tzh_register_tz_id_irq_wakeable, tz_id);
+	register_tz_id_irq_wakeable(tz_id);
+}
 
 /*
  * thermal_register_sensors - Register the thermal sensors with thermal zone.
@@ -18,9 +28,11 @@
  * devicetree.
  *
  * @dev: Device pointer for the sensor device.
- * @sensor_ct: Maximum number of sensors this device suppors.
+ * @sensor_ct: Maximum number of sensors this device supports.
  * @ops: A set of thermal sensor ops.
  * @head: A list head to be populated with the sensors.
+ * @ignore_genl: If true, ignore generic netlink for the thermal zone.
+ * @irq_wakeable: If true, register the thermal zone as IRQ wakeable.
  *
  * Return: 0 on success.
  *      - EINVAL if the input argument is not expected.
@@ -29,7 +41,8 @@
  */
 int thermal_register_sensors(struct device *dev, int sensor_ct,
 			    const struct thermal_zone_device_ops *ops,
-			    struct list_head *head)
+			    struct list_head *head, bool ignore_genl,
+			    bool irq_wakeable)
 {
 	int ret = 0, i = 0;
 	struct google_sensor_data *sens = NULL;
@@ -37,9 +50,7 @@ int thermal_register_sensors(struct device *dev, int sensor_ct,
 	if (!dev || !ops || !head || sensor_ct <= 0)
 		return -EINVAL;
 
-	if (!ops->get_temp ||
-	    (ops->set_trip_temp && !ops->set_trip_hyst) ||
-	    (!ops->set_trip_temp && ops->set_trip_hyst)) {
+	if (!ops->get_temp) {
 		dev_err(dev, "Invalid callback combination.\n");
 		return -EINVAL;
 	}
@@ -58,6 +69,11 @@ int thermal_register_sensors(struct device *dev, int sensor_ct,
 		sens->sens_data.ntc_data.fault_trip = INT_MAX;
 		sens->sens_data.ntc_data.tr_stats_handle = -1;
 		sens->tzd = register_thermal_zone(dev, i, sens, ops);
+		if (!IS_ERR(sens->tzd) && ignore_genl)
+			register_tz_id_ignore_genl(sens->tzd->id);
+		if (!IS_ERR(sens->tzd) && irq_wakeable)
+			tzh_register_tz_id_irq_wakeable(sens->tzd->id);
+
 		if (IS_ERR(sens->tzd)) {
 			ret = PTR_ERR(sens->tzd);
 			if (ret == -ENODEV) {
@@ -186,12 +202,38 @@ int thermal_setup_irq_and_sensors(struct platform_device *pdev, int sensor_ct,
 	if (ret)
 		goto setup_irq_sensor_exit;
 
-	ret = thermal_register_sensors(dev, sensor_ct, ops, head);
+	ret = thermal_register_sensors(dev, sensor_ct, ops, head, false, false);
 	if (ret)
 		goto setup_irq_sensor_exit;
 
 setup_irq_sensor_exit:
 	return ret;
+}
+
+struct thermal_configure_fault_threshold_trip_walk_data {
+	struct google_sensor_data *sens;
+	set_fault_trip_handler *fault_trip;
+};
+
+static int thermal_configure_fault_threshold_trip_walk_cb(struct thermal_trip *trip,
+							  void *data)
+{
+	struct thermal_configure_fault_threshold_trip_walk_data * const twd = data;
+	struct google_sensor_data *sens = twd->sens;
+	int ret;
+
+	if (trip->type != THERMAL_TRIP_HOT)
+		return 0;
+
+	dev_info(sens->dev, "sensor:%d configure fault threshold:%d\n",
+		 sens->sensor_id, trip->temperature);
+	ret = twd->fault_trip(sens->tzd, trip->temperature);
+	if (ret) {
+		dev_err(sens->dev, "sensor:%d fault trip error:%d.\n",
+			sens->sensor_id, ret);
+		return ret;
+	}
+	return 0;
 }
 
 /*
@@ -211,38 +253,23 @@ setup_irq_sensor_exit:
 int thermal_configure_fault_threshold(struct list_head *head,
 				      set_fault_trip_handler fault_trip)
 {
-	int ret = 0, i = 0;
+	int ret = 0;
 	struct list_head *pos;
-	struct google_sensor_data *sens = NULL;
+	struct thermal_configure_fault_threshold_trip_walk_data twd = {
+		.fault_trip = fault_trip,
+	};
 
 	if (!head || !fault_trip)
 		return -EINVAL;
 
 	list_for_each(pos, head) {
-		sens = list_entry(pos, struct google_sensor_data, node);
+		twd.sens = list_entry(pos, struct google_sensor_data, node);
 
-		for (i = 0; i < thermal_zone_get_num_trips(sens->tzd); i++) {
-			struct thermal_trip trip;
-
-			ret = thermal_zone_get_trip(sens->tzd, i, &trip);
-			if (ret) {
-				dev_err(sens->dev, "sensor:%d get trip error:%d.\n",
-					sens->sensor_id, ret);
-				return ret;
-			}
-			if (trip.type != THERMAL_TRIP_HOT)
-				continue;
-
-			dev_info(sens->dev, "sensor:%d configure fault threshold:%d\n",
-				sens->sensor_id, trip.temperature);
-			ret = fault_trip(sens->tzd, trip.temperature);
-			if (ret) {
-				dev_err(sens->dev, "sensor:%d fault trip error:%d.\n",
-					sens->sensor_id, ret);
-				return ret;
-			}
-			break;
-		}
+		ret = thermal_zone_for_each_trip(twd.sens->tzd,
+						 thermal_configure_fault_threshold_trip_walk_cb,
+						 &twd);
+		if (ret)
+			return ret;
 	}
 
 	return ret;

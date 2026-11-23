@@ -80,7 +80,7 @@
  * ===== TYPE: GDMC_MBA_VDU_PROCESS_DIRECTIVE =======
  * ==================================================
  *
- * This operation is used to send VDU directive to gRoot.
+ * This operation is used to send VDU directive to gRoot. Supported only on LGA.
  *
  * Request:
  * AP must pass physical SoC address of the buffer where VDU directive is stored and size of
@@ -165,6 +165,60 @@
  * Word 2: (unchanged)
  * Word 3: (unchanged)
  *
+ * ==================================================
+ * ===== TYPE: GDMC_MBA_VDU_PROCESS_GRANT =====
+ * ==================================================
+ *
+ * This operation is used to send VDU grant to gRoot. Supported on MBU+.
+ *
+ * Request:
+ * AP must pass physical SoC address of the buffer where VDU grant is stored and size of it
+ * NOTE: Buffer must be placed in the first gigabyte of DRAM (SoC range: 0x80000000 - 0xBFFFFFFF)
+ *
+ * Word 0: Non-queue mode header and data
+ *  bit [ 31 - 16       | 15-0     ]
+ *      | common header | TYPE   |
+ * Word 1: Bits 31-0 of SOC physical address of the buffer
+ * Word 2: Bits 63-32 of SOC physical address of the buffer
+ * Word 3: Size of grant in the buffer
+ *
+ * Response:
+ * GDMC passes provided VDU grant to gRoot to process and returns status code.
+ *
+ * Word 0: Non-queue mode header and data (unchanged)
+ *  bit [ 31 - 16       | 15-0     ]
+ *      | common header | TYPE   |
+ * Word 1: (unchanged)
+ * Word 2: (unchanged)
+ * Word 3: (unchanged)
+ *
+ * ==================================================
+ * ===== TYPE: GDMC_MBA_VDU_PROCESS_DELEGATE =====
+ * ==================================================
+ *
+ * This operation is used to send VDU delegate to gRoot. Supported on MBU+.
+ *
+ * Request:
+ * AP must pass physical SoC address of the buffer where VDU delegate is stored and size of it
+ * NOTE: Buffer must be placed in the first gigabyte of DRAM (SoC range: 0x80000000 - 0xBFFFFFFF)
+ *
+ * Word 0: Non-queue mode header and data
+ *  bit [ 31 - 16       | 15-0     ]
+ *      | common header | TYPE   |
+ * Word 1: Bits 31-0 of SOC physical address of the buffer
+ * Word 2: Bits 63-32 of SOC physical address of the buffer
+ * Word 3: Size of delegate in the buffer
+ *
+ * Response:
+ * GDMC passes provided VDU delegate to gRoot to process and returns status code.
+ *
+ * Word 0: Non-queue mode header and data (unchanged)
+ *  bit [ 31 - 16       | 15-0     ]
+ *      | common header | TYPE   |
+ * Word 1: (unchanged)
+ * Word 2: (unchanged)
+ * Word 3: (unchanged)
+ *
 */
 
 /* Valid values for the TYPE field. */
@@ -173,6 +227,8 @@ enum gdmc_mba_vdu_op_type {
 	GDMC_MBA_VDU_PROCESS_DIRECTIVE = 1,
 	GDMC_MBA_VDU_GET_TIMER = 2,
 	GDMC_MBA_VDU_GET_VECTOR = 3,
+	GDMC_MBA_VDU_PROCESS_GRANT = 4,
+	GDMC_MBA_VDU_PROCESS_DELEGATE = 5,
 };
 
 struct gdmc_mba_vdu_msg {
@@ -180,15 +236,16 @@ struct gdmc_mba_vdu_msg {
 	uint32_t header;
 
 	union {
+		/* Reused for RETRIEVE_NONCE, GET_VECTOR, PROCESS_GRANT, PROCESS_DELEGATE */
 		struct {
 			uint32_t pa_low;
 			uint32_t pa_high;
-			uint32_t buffer_capacity;
-		} retrieve_nonce_req;
+			uint32_t size;
+		} send_buffer_req;
 
 		struct {
 			uint32_t rsvd[3];
-		} retrieve_nonce_res;
+		} send_buffer_res;
 
 		struct {
 			uint32_t pa_low;
@@ -212,16 +269,6 @@ struct gdmc_mba_vdu_msg {
 			uint32_t remaining_mins;
 			uint32_t rsvd[1];
 		} get_timer_rsp;
-
-		struct {
-			uint32_t pa_low;
-			uint32_t pa_high;
-			uint32_t buffer_capacity;
-		} get_vector_req;
-
-		struct {
-			uint32_t rsvd[3];
-		} get_vector_rsp;
 	} payload;
 };
 

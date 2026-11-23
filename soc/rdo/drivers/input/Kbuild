@@ -1,6 +1,0 @@
-# SPDX-License-Identifier: GPL-2.0
-#
-# Makefile for the input drivers.
-#
-
-obj-$(CONFIG_INPUT_POWER_KEYDEBUG) += power_keydebug.o

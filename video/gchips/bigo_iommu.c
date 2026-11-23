@@ -11,7 +11,6 @@
 
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/samsung-dma-mapping.h>
 #include <uapi/linux/dma-buf.h>
 
 #include "bigo_iommu.h"
@@ -198,14 +197,15 @@ int bigo_dma_sync(struct bigo_buf_sync *sync)
 	return ret;
 }
 
-int bigo_iommu_fault_handler(struct iommu_fault *fault, void *param)
+int bigo_iommu_fault_handler(struct iommu_domain *domain,
+			     struct device *dev, unsigned long iova,
+			     int flags, void *token)
 {
-	struct bigo_core *core = (struct bigo_core*)param;
+	struct bigo_core *core = token;
 	struct bufinfo *binfo;
 	struct bigo_inst *inst;
 
-	/* Don't try to mutex_lock core->lock here since worker thread
-	 * already has the lock */
+	mutex_lock(&core->lock);
 	pr_info("mapped iova list:\n");
 	list_for_each_entry(inst, &core->instances, list) {
 		mutex_lock(&inst->lock);
@@ -213,7 +213,7 @@ int bigo_iommu_fault_handler(struct iommu_fault *fault, void *param)
 			pr_info("iova: 0x%llx size: %lu", binfo->iova, binfo->size);
 		mutex_unlock(&inst->lock);
 	}
-
+	mutex_unlock(&core->lock);
 	return NOTIFY_OK;
 }
 

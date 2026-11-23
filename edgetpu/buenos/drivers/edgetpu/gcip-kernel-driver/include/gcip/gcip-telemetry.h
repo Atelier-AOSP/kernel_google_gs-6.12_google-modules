@@ -9,12 +9,12 @@
 #define __GCIP_TELEMETRY_H__
 
 #include <linux/device.h>
-#include <linux/eventfd.h>
 #include <linux/mm_types.h>
 #include <linux/mutex.h>
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
+#include <gcip/gcip-event.h>
 #include <gcip/gcip-memory.h>
 
 #define GCIP_TELEMETRY_NAME_LOG "telemetry_log"
@@ -99,12 +99,13 @@ struct gcip_log_entry_header {
  * @dev: Device used for logging and memory allocation.
  * @type: Type of the telemetry object (log, trace, hwtrace, opaque).
  * @memory: Shared memory buffer metadata.
+ * @state_lock: Mutex protecting @state transitions.
  * @state: State of the telemetry instance.
  * @header: Pointer to the telemetry buffer header in shared memory.
- * @ctx: Eventfd context used to signal the runtime when data is available.
- * @state_ctx_lock: Mutex protecting eventfd context @ctx and @state transitions.
+ * @event_mgr: The event manager to signal userspace.
+ * @event_id: The event ID to signal for telemetry events.
  * @name: Name of the telemetry buffer instance for debugging purposes.
- * @work: Delayed work structure for deferred processing of incoming telemetry data.
+ * @work: Work structure for processing of incoming telemetry data.
  * @fallback_fn: Fallback function called if no eventfd is registered or for default handling.
  * @mmap_lock: Mutex protecting @mmapped_count.
  * @mmapped_count: Number of VMAs currently mapped to this telemetry buffer.
@@ -113,12 +114,13 @@ struct gcip_telemetry {
 	struct device *dev;
 	enum gcip_telemetry_type type;
 	struct gcip_memory memory;
+	struct mutex state_lock;
 	enum gcip_telemetry_state state;
 	struct gcip_telemetry_header *header;
-	struct eventfd_ctx *ctx;
-	struct mutex state_ctx_lock;
+	struct gcip_event_mgr *event_mgr;
+	size_t event_id;
 	const char *name;
-	struct delayed_work work;
+	struct work_struct work;
 	void (*fallback_fn)(const struct gcip_telemetry *tel);
 	struct mutex mmap_lock;
 	long mmapped_count;
@@ -155,21 +157,6 @@ int gcip_telemetry_kci(struct gcip_telemetry *tel,
 		       struct gcip_kci *kci);
 
 /**
- * gcip_telemetry_set_event() - Sets the eventfd for the given array of telemetries.
- * @tel: The gcip_telemetry to be set.
- * @eventfd: The evenfd to be set.
- *
- * Return: 0 on success, or a negative errno otherwise.
- */
-int gcip_telemetry_set_event(struct gcip_telemetry *tel, u32 eventfd);
-
-/**
- * gcip_telemetry_unset_event() - Unsets the eventfd for the given array of telemetries.
- * @tel: The gcip_telemetry to be unset.
- */
-void gcip_telemetry_unset_event(struct gcip_telemetry *tel);
-
-/**
  * gcip_telemetry_irq_handler() - The interrupt handler to schedule the worker when irq arrives.
  * @tel: The object holds the info of the telemetry buffer.
  */
@@ -189,11 +176,13 @@ int gcip_telemetry_mmap(struct gcip_telemetry *tel, struct vm_area_struct *vma);
  * @tel: The telemetry object to be initialized.
  * @type: The type of telemetry.
  * @dev: The device this telemetry object bound to.
+ * @event_mgr: The event manager to associate.
+ * @event_id: The event ID to signal for telemetry events.
  *
  * Return: 0 on success, or a negative errno otherwise.
  */
 int gcip_telemetry_init(struct gcip_telemetry *tel, enum gcip_telemetry_type type,
-			struct device *dev);
+			struct device *dev, struct gcip_event_mgr *event_mgr, size_t event_id);
 
 /**
  * gcip_telemetry_exit() - Exits and sets the telemetry state to GCIP_TELEMETRY_INVALID.

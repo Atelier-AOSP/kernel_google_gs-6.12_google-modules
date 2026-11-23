@@ -18,7 +18,7 @@
  *
  * <<Broadcom-WL-IPTag/Dual:>>
  *
- * + epivers.py --key-comp-dir=../../../../components/dhd/src ../../../../build/dhd/android-v/gg_pixel25-gg/pcie@gg/source//include/epivers.h
+ * + epivers.py --key-comp-dir=../../../../components/dhd/src ../../../../build/dhd/android-b/gg_pixel24-gg/pcie@gg/source//include/epivers.h
  *
  * FILE-CSTYLED
  *
@@ -29,29 +29,29 @@
 
 #define EPI_MAJOR_VERSION	103u
 
-#define EPI_MINOR_VERSION	511u
+#define EPI_MINOR_VERSION	10u
 
-#define EPI_RC_NUMBER		77u
+#define EPI_RC_NUMBER		640u
 
-#define EPI_INCREMENTAL_NUMBER	27u
+#define EPI_INCREMENTAL_NUMBER	0u
 
-#define EPI_VERSION		(103, 511, 77, 27)
+#define EPI_VERSION		(103, 10, 640, 0)
 
-#define EPI_VERSION_NUM		0x671ff4d1u
+#define EPI_VERSION_NUM		0x670a2800u
 
-#define EPI_UNIQUE_NUM		0x671ff4d1bu
+#define EPI_UNIQUE_NUM		0x670a28000u
 
-#define EPI_VERSION_DEV		(103.511.77)
+#define EPI_VERSION_DEV		(103.10.640)
 
 /* Driver Version String, ASCII, 32 chars max */
 #if defined(WLTEST)
-#define EPI_VERSION_STR		"103.511.77.27 (g1f0de29 WLTEST)"
+#define EPI_VERSION_STR		"103.10.640 (g456db78 WLTEST)"
 #elif (defined(BCMDBG_ASSERT) && \
 	!defined(BCMDBG_ASSERT_DISABLED) && \
 	!defined(ASSERT_FP_DISABLE))
-#define EPI_VERSION_STR		"103.511.77.27 (g1f0de29 ASSRT)"
+#define EPI_VERSION_STR		"103.10.640 (g456db78 ASSRT)"
 #else
-#define EPI_VERSION_STR		"103.511.77.27 (g1f0de29)"
+#define EPI_VERSION_STR		"103.10.640 (g456db78)"
 #endif /* BCMINTERNAL */
 
 #endif /* _epivers_h_ */

@@ -163,14 +163,14 @@ struct bcm_iov_batch_subcmd {
 		uint32 options;
 		uint32 status;
 	} u;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 };
 
 struct bcm_iov_batch_buf {
 	uint16 version;
 	uint8 count;
 	uint8 is_set;   /* obsolete */
-	struct bcm_iov_batch_subcmd cmds[];
+	struct bcm_iov_batch_subcmd cmds[0];
 };
 
 /* Non-Batched commands will have the following memory layout
@@ -212,7 +212,7 @@ struct bcm_iov_buf {
 	uint16 version;
 	uint16 len;                  /* length of data, after id */
 	bcm_iov_cmd_id_t id;
-	BCM_DECLARE_FLEX_ARRAY(uint16, data); /* 32 bit alignment may be repurposed by the command */
+	uint16 data[BCM_FLEX_ARRAY]; /* 32 bit alignment may be repurposed by the command */
 	/* command specific data follows */
 };
 

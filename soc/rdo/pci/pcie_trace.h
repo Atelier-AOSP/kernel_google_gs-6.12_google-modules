@@ -5,51 +5,52 @@
 #if !defined(_TRACE_PCI_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_PCI_H
 
+#include <linux/device.h>
 #include <linux/tracepoint.h>
 #include <linux/api-compat.h>
 
 TRACE_EVENT(pci_suspend_start,
-	    TP_PROTO(const char *name),
-	    TP_ARGS(name),
-	    TP_STRUCT__entry(__string(name, name)),
+	    TP_PROTO(struct device *dev),
+	    TP_ARGS(dev),
+	    TP_STRUCT__entry(__string(name, dev_name(dev))),
 	    TP_fast_assign(assign_str_wrp(name, name);),
-	    TP_printk("[%s]\n", __get_str(name)));
+	    TP_printk("[%s]", __get_str(name)));
 TRACE_EVENT(pci_suspend_end,
-	    TP_PROTO(const char *name),
-	    TP_ARGS(name),
-	    TP_STRUCT__entry(__string(name, name)),
+	    TP_PROTO(struct device *dev),
+	    TP_ARGS(dev),
+	    TP_STRUCT__entry(__string(name, dev_name(dev))),
 	    TP_fast_assign(assign_str_wrp(name, name);),
-	    TP_printk("[%s]\n", __get_str(name)));
+	    TP_printk("[%s]", __get_str(name)));
 TRACE_EVENT(pci_resume_start,
-	    TP_PROTO(const char *name),
-	    TP_ARGS(name),
-	    TP_STRUCT__entry(__string(name, name)),
+	    TP_PROTO(struct device *dev),
+	    TP_ARGS(dev),
+	    TP_STRUCT__entry(__string(name, dev_name(dev))),
 	    TP_fast_assign(assign_str_wrp(name, name);),
-	    TP_printk("[%s]\n", __get_str(name)));
+	    TP_printk("[%s]", __get_str(name)));
 TRACE_EVENT(pci_reg_enable,
-	    TP_PROTO(const char *name),
-	    TP_ARGS(name),
-	    TP_STRUCT__entry(__string(name, name)),
+	    TP_PROTO(struct device *dev),
+	    TP_ARGS(dev),
+	    TP_STRUCT__entry(__string(name, dev_name(dev))),
 	    TP_fast_assign(assign_str_wrp(name, name);),
-	    TP_printk("[%s]\n", __get_str(name)));
+	    TP_printk("[%s]", __get_str(name)));
 TRACE_EVENT(pci_reset_complete,
-	    TP_PROTO(const char *name),
-	    TP_ARGS(name),
-	    TP_STRUCT__entry(__string(name, name)),
+	    TP_PROTO(struct device *dev),
+	    TP_ARGS(dev),
+	    TP_STRUCT__entry(__string(name, dev_name(dev))),
 	    TP_fast_assign(assign_str_wrp(name, name);),
-	    TP_printk("[%s]\n", __get_str(name)));
+	    TP_printk("[%s]", __get_str(name)));
 TRACE_EVENT(pci_phy_fw_write,
-	    TP_PROTO(const char *name),
-	    TP_ARGS(name),
-	    TP_STRUCT__entry(__string(name, name)),
+	    TP_PROTO(struct device *dev),
+	    TP_ARGS(dev),
+	    TP_STRUCT__entry(__string(name, dev_name(dev))),
 	    TP_fast_assign(assign_str_wrp(name, name);),
-	    TP_printk("[%s]\n", __get_str(name)));
+	    TP_printk("[%s]", __get_str(name)));
 TRACE_EVENT(pci_resume_end,
-	    TP_PROTO(const char *name),
-	    TP_ARGS(name),
-	    TP_STRUCT__entry(__string(name, name)),
+	    TP_PROTO(struct device *dev),
+	    TP_ARGS(dev),
+	    TP_STRUCT__entry(__string(name, dev_name(dev))),
 	    TP_fast_assign(assign_str_wrp(name, name);),
-	    TP_printk("[%s]\n", __get_str(name)));
+	    TP_printk("[%s]", __get_str(name)));
 
 #endif /* _TRACE_PCI_H */
 

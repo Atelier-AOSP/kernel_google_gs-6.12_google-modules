@@ -20,7 +20,7 @@
 
 #include <trace/hooks/reboot.h>
 
-#include "../../bms/google_bms.h"
+#include <gbms_storage.h>
 
 #define BMS_RSBM_VALID			BIT(31)
 
@@ -30,6 +30,7 @@
 #define PIXEL_REBOOT_VER_03_01		(0x0301)
 
 struct gpio_desc *power_gpio;
+// TODO: b/517433810 - Encapsulate global variables within a struct.
 static u32 pixel_shutdown_offset, pixel_shutdown_mask, pixel_shutdown_value;
 
 struct pixel_reboot_data {
@@ -52,16 +53,20 @@ struct pixel_reboot_context {
 enum pixel_reboot_mode {
 	REBOOT_MODE_NORMAL		= 0x00,
 	REBOOT_MODE_CHARGE		= 0x0A,
+	REBOOT_MODE_SHUTDOWN		= 0x10,
 
 	REBOOT_MODE_DMVERITY_CORRUPTED	= 0x50,
 	REBOOT_MODE_SHUTDOWN_THERMAL	= 0x51,
 	REBOOT_MODE_AB_UPDATE		= 0x52,
 
-	REBOOT_MODE_THERMAL_HW_PROTECTION_SHUTDOWN	= 0x60,
-	REBOOT_MODE_REG_HW_FAIL_HW_PROTECTION_SHUTDOWN1	= 0x61,
-	REBOOT_MODE_REG_HW_FAIL_HW_PROTECTION_SHUTDOWN2	= 0x62,
-	REBOOT_MODE_REG_FAIL_HW_PROTECTION_SHUTDOWN1	= 0x63,
-	REBOOT_MODE_REG_FAIL_HW_PROTECTION_SHUTDOWN2	= 0x64,
+	REBOOT_MODE_THERMAL_HW_PROTECTION_SHUTDOWN		= 0x60,
+	REBOOT_MODE_REG_HW_FAIL_HW_PROTECTION_SHUTDOWN1		= 0x61,
+	REBOOT_MODE_REG_HW_FAIL_HW_PROTECTION_SHUTDOWN2		= 0x62,
+	REBOOT_MODE_REG_FAIL_HW_PROTECTION_SHUTDOWN1		= 0x63,
+	REBOOT_MODE_REG_FAIL_HW_PROTECTION_SHUTDOWN2		= 0x64,
+	REBOOT_MODE_REG_UNDER_VOLTAGE_HW_PROTECTION_SHUTDOWN	= 0x65,
+	REBOOT_MODE_REG_OVER_CURRENT_HW_PROTECTION_SHUTDOWN	= 0x66,
+	REBOOT_MODE_REG_EVENT_FAIL_HW_PROTECTION_SHUTDOWN	= 0x67,
 	REBOOT_MODE_UNKNOWN_HW_PROTECTION_SHUTDOWN	= 0x6F,
 
 	REBOOT_MODE_RESCUE		= 0xF9,
@@ -102,6 +107,7 @@ static void pixel_power_off(void)
 			 */
 			pr_info("PWR Key is not released.\n");
 		}
+		// TODO: b/517437119 - Investigate and remove 1000ms infinite busy-wait loop.
 		mdelay(1000);
 	}
 }
@@ -126,7 +132,26 @@ static int pixel_reboot_mode_set(struct pixel_reboot_context *ctx,
 	return pixel_reboot_mode_set_gbms(mode);
 }
 
-static int pixel_reboot_parse(struct pixel_reboot_context *ctx, const char *cmd)
+static int pixel_reboot_mode_get_gbms(enum pixel_reboot_mode *mode)
+{
+	int ret = 0;
+	u32 rsbm = 0;
+
+	ret = gbms_storage_read(GBMS_TAG_RSBM, &rsbm, sizeof(rsbm));
+	if (ret < 0) {
+		pr_err("failed to read gbms storage: %d(%d)\n", GBMS_TAG_RSBM, ret);
+		return ret;
+	}
+
+	if (rsbm & BMS_RSBM_VALID) {
+		rsbm &= ~BMS_RSBM_VALID;
+		*mode = (enum pixel_reboot_mode)rsbm;
+	}
+
+	return 0;
+}
+
+static int pixel_reboot_parse_restart(struct pixel_reboot_context *ctx, const char *cmd)
 {
 	enum pixel_reboot_mode mode = REBOOT_MODE_UNKNOWN;
 
@@ -175,12 +200,52 @@ static int pixel_reboot_parse(struct pixel_reboot_context *ctx, const char *cmd)
 	return NOTIFY_OK;
 }
 
+static int pixel_reboot_parse_poweroff(struct pixel_reboot_context *ctx)
+{
+	enum pixel_reboot_mode mode = REBOOT_MODE_UNKNOWN;
+
+	pr_info("Poweroff. Skipping command fetch.\n");
+
+	/*
+	 * Skip the following steps if it's not post-RDO devices with gBMS support.
+	 * This logic corresponds to PIXEL_REBOOT version 3.0.
+	 */
+	if (!ctx->reboot_data || ctx->reboot_data->version != PIXEL_REBOOT_VER_03_00)
+		return NOTIFY_DONE;
+
+	if (!pixel_reboot_mode_get_gbms(&mode) && mode == REBOOT_MODE_NORMAL) {
+		/*
+		 * This is not a specific shutdown.
+		 * Set reboot mode to general shutdown.
+		 */
+		mode = REBOOT_MODE_SHUTDOWN;
+	}
+
+	if (mode == REBOOT_MODE_UNKNOWN) {
+		pr_err("Unknown reboot mode.\n");
+		return NOTIFY_DONE;
+	}
+
+	if (ctx->reboot_data->bms_persist_reboot_mode && pixel_reboot_mode_set(ctx, mode) < 0)
+		return NOTIFY_DONE;
+
+	return NOTIFY_OK;
+}
+
 static int pixel_reboot_handler(struct notifier_block *nb, unsigned long action, void *cmd)
 {
-	struct pixel_reboot_context *ctx = container_of(nb, struct
-							pixel_reboot_context,
-							reboot_handler);
-	return pixel_reboot_parse(ctx, cmd);
+	struct pixel_reboot_context *ctx =
+		container_of(nb, struct pixel_reboot_context, reboot_handler);
+	pr_info("Reboot action: 0x%lx\n", action);
+	switch (action) {
+	case SYS_RESTART:
+		return pixel_reboot_parse_restart(ctx, cmd);
+	case SYS_POWER_OFF:
+		return pixel_reboot_parse_poweroff(ctx);
+	default:
+		break;
+	}
+	return NOTIFY_DONE;
 }
 
 static int pixel_restart_handler(struct sys_off_data *data)
@@ -210,20 +275,27 @@ static int pixel_restart_handler(struct sys_off_data *data)
 
 static void pixel_reboot_hw_protection_shutdown(void *ignore, const char *reason)
 {
-	pr_emerg("detect hw_protection_shutdown: %s.\n", reason);
-	if (!strcmp(reason, "Temperature too high")) {
+	int len = strnlen(reason, 64);
+
+	pr_emerg("detect hw_protection_shutdown: len(%d), reason(%s).\n", len, reason);
+	if (!strncmp(reason, "Temperature too high", len))
 		pixel_reboot_mode_set_gbms(REBOOT_MODE_THERMAL_HW_PROTECTION_SHUTDOWN);
-	} else if (!strcmp(reason, "Regulator HW failure? - no IC recovery")) {
+	else if (!strncmp(reason, "Regulator HW failure? - no IC recovery", len))
 		pixel_reboot_mode_set_gbms(REBOOT_MODE_REG_HW_FAIL_HW_PROTECTION_SHUTDOWN1);
-	} else if (!strcmp(reason, "Regulator HW failure. IC recovery failed")) {
+	else if (!strncmp(reason, "Regulator HW failure. IC recovery failed", len))
 		pixel_reboot_mode_set_gbms(REBOOT_MODE_REG_HW_FAIL_HW_PROTECTION_SHUTDOWN2);
-	} else if (!strcmp(reason, "Regulator failure. Retry count exceeded")) {
+	else if (!strncmp(reason, "Regulator failure. Retry count exceeded", len))
 		pixel_reboot_mode_set_gbms(REBOOT_MODE_REG_FAIL_HW_PROTECTION_SHUTDOWN1);
-	} else if (!strcmp(reason, "Regulator failure. Recovery failed")) {
+	else if (!strncmp(reason, "Regulator failure. Recovery failed", len))
 		pixel_reboot_mode_set_gbms(REBOOT_MODE_REG_FAIL_HW_PROTECTION_SHUTDOWN2);
-	} else {
+	else if (!strncmp(reason, "System critical regulator: voltage drop detected", len))
+		pixel_reboot_mode_set_gbms(REBOOT_MODE_REG_UNDER_VOLTAGE_HW_PROTECTION_SHUTDOWN);
+	else if (!strncmp(reason, "System critical regulator: over-current detected", len))
+		pixel_reboot_mode_set_gbms(REBOOT_MODE_REG_OVER_CURRENT_HW_PROTECTION_SHUTDOWN);
+	else if (!strncmp(reason, "System critical regulator: unknown error", len))
+		pixel_reboot_mode_set_gbms(REBOOT_MODE_REG_EVENT_FAIL_HW_PROTECTION_SHUTDOWN);
+	else
 		pixel_reboot_mode_set_gbms(REBOOT_MODE_UNKNOWN_HW_PROTECTION_SHUTDOWN);
-	}
 }
 
 static int pixel_reboot_probe(struct platform_device *pdev)
@@ -267,6 +339,7 @@ static int pixel_reboot_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	// TODO: b/517435912 - Refactor gpio_keys node probing to use phandle.
 	np = of_find_node_by_path("/gpio_keys");
 	if (!np)
 		return -EINVAL;

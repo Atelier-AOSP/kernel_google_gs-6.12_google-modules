@@ -139,6 +139,11 @@ BCMRAMFN(privacy_addrmask_get)(void)
 uint8 prio_arp = PRIO_8021D_NC;
 #endif
 
+int BCMACCESSOR_RAMFN(bcm_get_last_err)(void)
+{
+	return BCME_LAST;
+}
+
 #ifdef BCMDRIVER
 
 #ifndef BCM_ARM_BACKTRACE
@@ -160,32 +165,21 @@ void (*const BCMPOST_TRAP_RODATA(print_btrace_int_fn))(int depth, uint32 pc, uin
 /* Forward declarations */
 static int getintvararray_internal(char *vars, const char *name, int index);
 static int getintvararraysize_internal(char *vars, const char *name);
-static
-#ifndef ATE_BUILD
-const
-#endif
-char * getvar_internal(char *vars, const char *name);
+static const char *getvar_internal(char *vars, const char *name);
 static int getintvar_internal(char *vars, const char *name);
 
 /*
  * Search the name=value vars for a specific one and return its value.
  * Returns NULL if not found.
  */
-#ifndef ATE_BUILD
-const
-#endif
-char *
+const char *
 getvar(char *vars, const char *name)
 {
 	NVRAM_RECLAIM_CHECK(name);
 	return getvar_internal(vars, name);
 }
 
-static
-#ifndef ATE_BUILD
-const
-#endif
-char *
+static const char *
 getvar_internal(char *vars, const char *name)
 {
 	char *s;
@@ -412,6 +406,15 @@ end:
 	return sz;
 }
 #endif /* BCM_BOOTLOADER */
+
+#if defined(WLC_NVRAMSIG)
+int
+getvarsig(const uint8 **sig, uint *ssize, const char **var, int *vsize, uint idx)
+{
+	NVRAM_RECLAIM_CHECK("getvarsig");
+	return nvram_get_sig(sig, ssize, var, vsize, idx);
+}
+#endif /* WLC_NVRAMSIG */
 
 #if defined(BCMNVRAMR) || defined (BCMNVRAMW)
 /* Search for token in comma separated token-string */
@@ -820,7 +823,7 @@ bcm_sm_logger_deinit(osl_t *osh, bcm_sm_log_info_t *bsli)
 /**
  * @brief Logs the state info in a given logger instance.
  *
- * @param[in] bcmli	 Pointer to logger instance
+ * @param[in] bcmli	Pointer to logger instance
  * @param[in] state      State number (supports upto 255)
  * @param[in] event      Event number (supports upto 255)
  * @param[in] call_site  Caller address
@@ -1552,7 +1555,7 @@ BCMRAMFN(bcmerrorstr)(int bcmerror)
 	/* check if someone added a bcmerror code but forgot to add errorstring */
 	STATIC_ASSERT(ABS(BCME_LAST) == (ARRAYSIZE(bcmerrorstrtable) - 1));
 
-	if (bcmerror > 0 || bcmerror < BCME_LAST) {
+	if (bcmerror > 0 || bcmerror < bcm_get_last_err()) {
 		snprintf(bcm_undeferrstr, sizeof(bcm_undeferrstr), "Undefined error %d", bcmerror);
 		return bcm_undeferrstr;
 	}
@@ -2716,11 +2719,9 @@ dll_pool_dump(dll_pool_t * dll_pool_p, dll_elem_dump elem_dump)
 	}
 }
 #endif /* BCMDBG */
-
 #endif /* BCMDRIVER */
 
 #if defined(BCMDRIVER) || defined(WL_UNITTEST)
-
 #ifndef DONGLEBUILD
 /* triggers bcm_bprintf to print to kernel log */
 bool bcm_bprintf_bypass = FALSE;
@@ -2981,7 +2982,7 @@ bcm_find_vendor_ie(const  void *tlvs, uint tlvs_len, const char *voui, uint8 *ty
 
 /* Masking few bytes of MAC address per customer in all prints/eventlogs. */
 int
-BCMRAMFN(bcm_addrmask_set)(int enable)
+bcm_addrmask_set(int enable)
 {
 #ifdef PRIVACY_MASK
 	struct ether_addr *privacy = privacy_addrmask_get();
@@ -3025,7 +3026,7 @@ bcm_addrmask_get(int *val)
 }
 
 uint64
-BCMRAMFN(bcm_ether_ntou64)(const struct ether_addr *ea)
+bcm_ether_ntou64(const struct ether_addr *ea)
 {
 	uint64 mac;
 	struct ether_addr addr;
@@ -4400,7 +4401,7 @@ static const uint32 BCMPOST_TRAP_RODATA(crc32_table)[256] = {
  * accumulating over multiple pieces.
  */
 uint32
-BCMPOSTTRAPRAMFN(hndcrc32)(const uint8 *pdata, uint nbytes, uint32 crc)
+BCMPOSTTRAPFN(hndcrc32)(const uint8 *pdata, uint nbytes, uint32 crc)
 {
 	const uint8 *pend;
 	pend = pdata + nbytes;
@@ -5101,6 +5102,9 @@ static const char *crypto_algo_names[] = {
 	"UNDEF",
 	"UNDEF",
 
+#ifdef BCMWAPI_WAI
+	"WAPI",
+#endif /* BCMWAPI_WAI */
 
 #ifndef BCMWAPI_WAI
 	"UNDEF",
@@ -5691,9 +5695,9 @@ bcm_sub_64(uint32* r_hi, uint32* r_lo, uint32 offset)
 }
 
 int
-BCMRAMFN(valid_bcmerror)(int e)
+valid_bcmerror(int e)
 {
-	return ((e <= 0) && (e >= BCME_LAST));
+	return ((e <= 0) && (e >= bcm_get_last_err()));
 }
 
 #ifdef DEBUG_COUNTER
@@ -6447,7 +6451,11 @@ BCMATTACHFN(initvars_table)(osl_t *osh, char *start, char *end, char **vars,
 
 	/* do it only when there is more than just the null string */
 	if (c > 1) {
+#if defined(BCMSDIODEV_ENABLED)
+		char *vp = MALLOC_NOPERSIST(osh, c);
+#else
 		char *vp = MALLOCZ(osh, c);
+#endif
 		ASSERT(vp != NULL);
 		if (!vp)
 			return BCME_NOMEM;

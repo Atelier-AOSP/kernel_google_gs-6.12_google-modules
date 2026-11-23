@@ -4,6 +4,8 @@
 #include <linux/trace.h>
 #include <linux/trace_events.h>
 
+#include "common.h"
+
 static const char * const pinctrl_trace_events[] = {
 	"google_gpio_direction_input",
 	"google_gpio_direction_output",
@@ -16,6 +18,8 @@ static const char * const pinctrl_trace_events[] = {
 	"google_gpio_irq_mask",
 	"google_gpio_irq_set_affinity",
 	"google_gpio_irq_unmask",
+	"google_gpio_irq_startup",
+	"google_gpio_irq_shutdown",
 	"google_gpio_set",
 	"google_pinconf_group_get",
 	"google_pinconf_group_set",
@@ -25,8 +29,6 @@ static const char * const pinctrl_trace_events[] = {
 	"google_pinctrl_runtime_resume",
 	"google_pinmux_set_mux",
 	"generic_handle_domain_irq",
-	"google_pinctrl_get_csr_pd",
-	"google_pinctrl_put_csr_pd",
 	"google_pinctrl_detach_power_domain",
 	"google_pinconf_group_set_enter",
 	"google_gpio_irq_bus_lock",
@@ -38,7 +40,7 @@ void google_pinctrl_trace_init(struct platform_device *pdev)
 {
 	struct trace_array *trace_instance;
 
-	trace_instance = trace_array_get_by_name_ext("pinctrl_google", "pinctrl");
+	trace_instance = trace_array_get_by_name("pinctrl_google", "pinctrl");
 	if (!trace_instance)
 		dev_err(&pdev->dev, "Pinctrl trace instance creation/retrieve did not succeed\n");
 

@@ -3,11 +3,16 @@
  * Copyright 2021-2024 Google LLC
  */
 
+#include <linux/bitops.h>
+#include <linux/firmware.h>
+#include <linux/log2.h>
+#include <linux/types.h>
+#include <linux/version.h>
+
 #include <linux/pcie_google_if.h>
+#include <trace/hooks/pci.h>
 #include "pcie-google.h"
 #include "pcie-designware-host-customized.h"
-
-#include <linux/version.h>
 
 #define CREATE_TRACE_POINTS
 #include "pcie_trace.h"
@@ -48,7 +53,15 @@
 #define SLAVE_STATE(x)			(((x) & (GENMASK(25, 21))) >> 21)
 #define L1SUB_STATE(x)			(((x) & (GENMASK(28, 26))) >> 26)
 #define LINK_IN_L1SUB			BIT(30)
+#define DW_PCIE_LTSSM_CFG_LINKWD_START	0x07
+#define DW_PCIE_LTSSM_CFG_LINKWD_ACEPT	0x08
+#define DW_PCIE_LTSSM_CFG_LANENUM_WAI	0x09
+#define DW_PCIE_LTSSM_CFG_LANENUM_ACEPT	0x0A
+#define DW_PCIE_LTSSM_CFG_COMPLETE	0x0B
+#define DW_PCIE_LTSSM_CFG_IDLE		0x0C
 #define DW_PCIE_LTSSM_RCVRY_LOCK	0x0D
+#define DW_PCIE_LTSSM_RCVRY_EQ0		0x20
+#define DW_PCIE_LTSSM_RCVRY_EQ3		0x23
 #define S_L1_IDLE                       0x14
 
 #define PM_CTRL_STATUS			0x2C
@@ -117,70 +130,36 @@ enum {
 #define LGA_CM_RESTORE_TIME	60
 
 static LIST_HEAD(gpcie_inst_list);
+static DEFINE_SPINLOCK(gpcie_inst_lock);
 
 #define PCIE_GEN_4_GOOGLE_ICC_BW_MB 1800
 #define PCIE_GEN_3_GOOGLE_ICC_BW_MB 900
 #define PCIE_GEN_2_GOOGLE_ICC_BW_MB 450
 #define PCIE_GEN_1_GOOGLE_ICC_BW_MB 225
 
-#define PCI_AER_CAP_SIZE 0x48
+struct pci_pwrctrl;
 
-/**
- * google_pcie_dump_region - Dumps a memory region to the kernel log.
- * @gpcie: Pointer to the google_pcie struct.
- * @name: The name of the region for logging purposes.
- * @base: The base __iomem address of the memory region.
- * @size: The size of the memory region.
- */
-static void google_pcie_dump_region(struct google_pcie *gpcie, const char *name,
-				    void __iomem *base, size_t size)
+void google_pci_pwrctrl_init(struct pci_pwrctrl *pwrctrl, struct device *dev)
 {
-	size_t size_align;
-	int i;
+}
 
-	if (!gpcie) {
-		pr_err("Invalid PCI handle for %s dump\n", name);
-		return;
-	}
-	if (!base) {
-		dev_info(gpcie->dev, "%s base not mapped\n", name);
-		return;
-	}
+int google_pci_pwrctrl_device_set_ready(struct pci_pwrctrl *pwrctrl)
+{
+	return 0;
+}
+void google_pci_pwrctrl_device_unset_ready(struct pci_pwrctrl *pwrctrl) {}
 
-	dev_info(gpcie->dev, "Dump %s regs (size: %zu):\n", name, size);
-	size_align = size & ~0xf;
-	for (i = 0; i < size_align; i += 0x10) {
-		dev_info(gpcie->dev, " [+0x%04x]: %08x %08x %08x %08x\n", i,
-			 readl(base + i),
-			 readl(base + i + 4),
-			 readl(base + i + 8),
-			 readl(base + i + 12));
-	}
-
-	if (i < size) {
-		char line_buf[100];
-		char *buf = line_buf;
-		size_t len = sizeof(line_buf);
-		int ret;
-
-		ret = scnprintf(buf, len, " [+0x%04x]:", i);
-		buf += ret;
-		len -= ret;
-
-		for (; i < size; i += 0x4) {
-			ret = scnprintf(buf, len, " %08x",
-					readl(base + i));
-			buf += ret;
-			len -= ret;
-		}
-		dev_info(gpcie->dev, "%s\n", line_buf);
-	}
+int devm_google_pci_pwrctrl_device_set_ready(struct device *dev,
+					     struct pci_pwrctrl *pwrctrl)
+{
+	return 0;
 }
 
 static void google_pcie_dump_icd(struct google_pcie *gpcie, char *where)
 {
 	u32 __iomem  *reg_ptr;
 	u32 val;
+
 
 	if (!where)
 		return;
@@ -306,6 +285,19 @@ static int google_pcie_wr_own_conf(struct pci_bus *bus, unsigned int devfn,
 	google_pcie_write_dbi(pci, pci->dbi_base, where, size, val);
 
 	return PCIBIOS_SUCCESSFUL;
+}
+
+static void google_pcie_set_l1_entrance_latency(struct google_pcie *gpcie)
+{
+	struct dw_pcie *pci = gpcie->pci;
+	u32 val;
+
+	if (gpcie->l1_entrance_latency < U32_MAX) {
+		val = google_pcie_read_dbi(pci, pci->dbi_base, PCIE_PORT_AFR, 4);
+		val = u32_replace_bits(val, gpcie->l1_entrance_latency,
+					PORT_AFR_L1_ENTRANCE_LAT_MASK);
+		google_pcie_write_dbi(pci, pci->dbi_base, PCIE_PORT_AFR, 4, val);
+	}
 }
 
 /* Dedicated ops for accessing RC's config space */
@@ -480,8 +472,16 @@ static u32 google_pcie_get_link_state(struct google_pcie *gpcie)
 	if (ltssm_state == DW_PCIE_LTSSM_L0)
 		return L0;
 
+	if (ltssm_state >= DW_PCIE_LTSSM_CFG_LINKWD_START &&
+	    ltssm_state <= DW_PCIE_LTSSM_CFG_IDLE)
+		return RECOVERY;
+
 	if (ltssm_state >= DW_PCIE_LTSSM_RCVRY_LOCK &&
 	    ltssm_state < DW_PCIE_LTSSM_L0)
+		return RECOVERY;
+
+	if (ltssm_state >= DW_PCIE_LTSSM_RCVRY_EQ0 &&
+	    ltssm_state <= DW_PCIE_LTSSM_RCVRY_EQ3)
 		return RECOVERY;
 
 	if (pm_state & LINK_IN_L0S)
@@ -545,12 +545,14 @@ static int google_pcie_host_init(struct pcie_port *pp)
 	}
 
 	google_pcie_set_l1ss_capabilities(gpcie);
+	google_pcie_set_l1_entrance_latency(gpcie);
 
 	return 0;
 }
 
 static const struct dw_pcie_host_ops google_pcie_host_ops = {
-	.host_init = google_pcie_host_init,
+	.init = google_pcie_host_init,
+	.msi_init = goog_pcie_msi_host_init,
 };
 
 static int google_pcie_link_up(struct dw_pcie *pci)
@@ -625,7 +627,7 @@ static void google_pcie_set_link_width_speed(struct google_pcie *gpcie)
 {
 	struct dw_pcie *pci = gpcie->pci;
 
-	pci->link_gen = gpcie->target_link_speed;
+	pci->max_link_speed = gpcie->target_link_speed;
 	pci->num_lanes = gpcie->target_link_width;
 
 	dev_dbg(gpcie->dev, "Setting the link speed: %d width: %d",
@@ -781,6 +783,8 @@ static const struct dw_pcie_ops google_dw_pcie_ops = {
 static struct google_pcie *google_pcie_get_handle(int num)
 {
 	struct google_pcie *gpcie = NULL;
+
+	guard(spinlock_irqsave)(&gpcie_inst_lock);
 
 	list_for_each_entry(gpcie, &gpcie_inst_list, node) {
 		if (gpcie->domain == num)
@@ -993,18 +997,6 @@ int google_pcie_get_link_stats(int num,
 }
 EXPORT_SYMBOL_GPL(google_pcie_get_link_stats);
 
-static void google_pcie_dump_aer_register(struct google_pcie *gpcie)
-{
-	struct dw_pcie *pci = gpcie->pci;
-	u32 val, i;
-
-	dev_err(pci->dev, "AER Register Dump\n");
-	for (i = 0; i < PCI_AER_CAP_SIZE; i += 0x4) {
-		val = dw_pcie_readl_dbi(pci, gpcie->aer + i);
-		dev_err(pci->dev, "Offset %#04x -> Val %#010x\n", i, val);
-	}
-}
-
 /**
  * google_pcie_dump_debug - Dump debug registers
  *
@@ -1023,20 +1015,7 @@ void google_pcie_dump_debug(int num)
 		return;
 	}
 
-	scoped_guard(spinlock_irqsave, &gpcie->power_on_lock) {
-		if (!gpcie->powered_on) {
-			dev_info(gpcie->dev, "PCIe is down\n");
-			return;
-		}
-		google_pcie_dump_region(gpcie, "sii", gpcie->sii_base, gpcie->sii_size);
-		google_pcie_dump_region(gpcie, "top", gpcie->top_base, gpcie->top_size);
-	}
-
-	/*
-	 * The AER dump is done outside this lock to prevent a deadlock, as the
-	 * underlying read functions re-acquire the same lock.
-	 */
-	google_pcie_dump_aer_register(gpcie);
+	google_pcie_create_devcoredump(gpcie);
 }
 EXPORT_SYMBOL_GPL(google_pcie_dump_debug);
 
@@ -1132,6 +1111,7 @@ int google_pcie_rc_poweron(int num)
 	}
 
 	google_pcie_set_l1ss_capabilities(gpcie);
+	google_pcie_set_l1_entrance_latency(gpcie);
 
 	pci_restore_state(pci_dev);
 
@@ -1190,7 +1170,7 @@ int google_pcie_rc_poweron(int num)
 		dev_err(gpcie->dev, "Failed to start link, giving up retries\n");
 		gpcie->link_stats.link_recovery_failure_count++;
 		ret = -EPIPE;
-		google_pcie_dump_debug(num);
+		google_pcie_create_devcoredump(gpcie);
 		goto clkreq_idle;
 	}
 
@@ -1276,9 +1256,9 @@ pm_put:
 }
 EXPORT_SYMBOL_GPL(google_pcie_rc_poweron);
 
-static void google_pcie_hot_reset(struct google_pcie *gpcie)
+void google_pcie_hot_reset(struct google_pcie *gpcie)
 {
-	u32 val = 0;
+	u32 val;
 
 	val = readl(gpcie->top_base + PCIE_RESET_STATUS);
 	val |= APP_INIT_RST;
@@ -1320,7 +1300,7 @@ int google_pcie_rc_poweroff(int num)
 	 * set to false from the cpl_timeout/link_down IRQ handler. The poweroff
 	 * is still required to assert the PERST GPIO and power down PCIe.
 	 */
-	if (!gpcie->is_link_up && !gpcie->in_link_down && !gpcie->in_cpl_timeout) {
+	if (!gpcie->is_link_up && !google_pcie_in_recovery(gpcie)) {
 		dev_err(gpcie->dev, "Link is down, quit poweroff\n");
 		mutex_unlock(&gpcie->link_lock);
 		return -EINVAL;
@@ -1362,7 +1342,7 @@ int google_pcie_rc_poweroff(int num)
 
 	gpcie->current_link_speed = 0;
 	gpcie->current_link_width = 0;
-	if (!gpcie->in_link_down && !gpcie->in_cpl_timeout) {
+	if (!google_pcie_in_recovery(gpcie)) {
 		google_pcie_send_pme_turn_off(gpcie);
 		google_pcie_wait_for_state(gpcie, L2);
 		/* Give EP some time to wind down after sending L23READY */
@@ -1370,7 +1350,7 @@ int google_pcie_rc_poweroff(int num)
 		dev_info(gpcie->dev, "Link down\n");
 		google_pcie_dump_icd(gpcie, "Link down");
 		disable_ltssm = true;
-	} else if (gpcie->in_cpl_timeout) {
+	} else if (test_bit(GPCIE_IN_CPL_TIMEOUT, &gpcie->recovery_flags)) {
 		google_pcie_hot_reset(gpcie);
 		google_pcie_check_pending_txns(gpcie);
 		dev_info(gpcie->dev, "pcie recovery: force hot reset\n");
@@ -1415,9 +1395,6 @@ int google_pcie_rc_poweroff(int num)
 	 */
 	if (ret < 0)
 		dev_err(gpcie->dev, "Failed to poweroff(put) ret %d\n", ret);
-	else if (ret > 0)
-		dev_warn(gpcie->dev, "Failed to poweroff(put), refcnt not 0, ret %d\n",
-			 ret);
 
 	if (gpcie->aux_clk)
 		clk_disable_unprepare(gpcie->aux_clk);
@@ -1436,15 +1413,17 @@ int google_pcie_rc_poweroff(int num)
 	 * When clearing these flags, balance out any IRQ-disable references we
 	 * made.
 	 */
+	/*
+	 * link_up_lock must be held to serialize against the top-half IRQ
+	 * handlers. This ensures that the handler's disable_irq_nosync()
+	 * call completes before we evaluate the flags and subsequently
+	 * call enable_irq(), preventing unbalanced IRQ depth warnings.
+	 */
 	spin_lock_irqsave(&gpcie->link_up_lock, flags);
-	if (gpcie->in_link_down) {
-		gpcie->in_link_down = false;
+	if (test_and_clear_bit(GPCIE_IN_LINK_DOWN, &gpcie->recovery_flags))
 		need_enable_link_down++;
-	}
-	if (gpcie->in_cpl_timeout) {
-		gpcie->in_cpl_timeout = false;
+	if (test_and_clear_bit(GPCIE_IN_CPL_TIMEOUT, &gpcie->recovery_flags))
 		need_enable_link_down++;
-	}
 	spin_unlock_irqrestore(&gpcie->link_up_lock, flags);
 	while (need_enable_link_down > 0) {
 		enable_irq(gpcie->link_down_irq);
@@ -1485,7 +1464,7 @@ void google_pcie_rc_prepare_for_forced_poweroff(int num)
 		return;
 	}
 
-	if (gpcie->in_cpl_timeout || gpcie->in_link_down) {
+	if (google_pcie_in_recovery(gpcie)) {
 		dev_info(gpcie->dev, "already in recovery\n");
 		spin_unlock_irqrestore(&gpcie->link_up_lock, flags);
 		return;
@@ -1495,10 +1474,10 @@ void google_pcie_rc_prepare_for_forced_poweroff(int num)
 
 	gpcie->is_link_up = false;
 
-	gpcie->in_link_down = true;
+	set_bit(GPCIE_IN_LINK_DOWN, &gpcie->recovery_flags);
 	/*
 	 * Avoid spurious link-down IRQs during error handling. We undo this
-	 * step every time we clear 'in_link_down'.
+	 * step when exiting the recovery state.
 	 */
 	disable_irq_nosync(gpcie->link_down_irq);
 
@@ -1917,6 +1896,8 @@ static irqreturn_t google_pcie_cpl_timeout_thread(int irq, void *data)
 	dev_info(gpcie->dev, "Starting cpl_timeout work\n");
 	google_pcie_dump_icd(gpcie, "cpl_timeout work");
 
+	google_pcie_create_devcoredump(gpcie);
+
 	if (gpcie->cb_func)
 		gpcie->cb_func(GPCIE_CB_CPL_TIMEOUT, gpcie->cb_priv);
 
@@ -1942,10 +1923,10 @@ static irqreturn_t google_pcie_cpl_timeout_handler(int irq, void *data)
 		return IRQ_NONE;
 	}
 
-	gpcie->link_stats.cmpl_timeout_irq_count++;
+	gpcie->link_stats.complete_timeout_irq_count++;
 
 	/* Avoid concurrent error handling */
-	if (gpcie->in_cpl_timeout || gpcie->in_link_down) {
+	if (google_pcie_in_recovery(gpcie)) {
 		spin_unlock_irqrestore(&gpcie->link_up_lock, flags);
 		return IRQ_HANDLED;
 	}
@@ -1955,10 +1936,10 @@ static irqreturn_t google_pcie_cpl_timeout_handler(int irq, void *data)
 	 * it will be set to true when the EP's recovery handler calls poweron()
 	 */
 	gpcie->is_link_up = false;
-	gpcie->in_cpl_timeout = true;
+	set_bit(GPCIE_IN_CPL_TIMEOUT, &gpcie->recovery_flags);
 	/*
 	 * Avoid spurious link-down IRQs during error handling. We undo this
-	 * step every time we clear 'in_cpl_timeout'.
+	 * step when exiting the recovery state.
 	 */
 	disable_irq_nosync(gpcie->link_down_irq);
 
@@ -1973,6 +1954,8 @@ static irqreturn_t google_pcie_link_down_thread(int irq, void *data)
 
 	dev_info(gpcie->dev, "Starting link_down thread\n");
 	google_pcie_dump_icd(gpcie, "link_down_thread");
+
+	google_pcie_create_devcoredump(gpcie);
 
 	if (gpcie->cb_func)
 		gpcie->cb_func(GPCIE_CB_LINK_DOWN, gpcie->cb_priv);
@@ -2005,7 +1988,7 @@ static irqreturn_t google_pcie_link_down_handler(int irq, void *data)
 	gpcie->link_stats.link_down_irq_count++;
 
 	/* Avoid concurrent error handling */
-	if (gpcie->in_cpl_timeout || gpcie->in_link_down) {
+	if (google_pcie_in_recovery(gpcie)) {
 		spin_unlock_irqrestore(&gpcie->link_up_lock, flags);
 		return IRQ_HANDLED;
 	}
@@ -2015,10 +1998,10 @@ static irqreturn_t google_pcie_link_down_handler(int irq, void *data)
 	 * it will be set to true when the EP's recovery handler calls poweron()
 	 */
 	gpcie->is_link_up = false;
-	gpcie->in_link_down = true;
+	set_bit(GPCIE_IN_LINK_DOWN, &gpcie->recovery_flags);
 	/*
 	 * Avoid spurious link-down IRQs during error handling. We undo this
-	 * step every time we clear 'in_link_down'.
+	 * step when exiting the recovery state.
 	 */
 	disable_irq_nosync(gpcie->link_down_irq);
 
@@ -2044,7 +2027,7 @@ bool google_pcie_is_link_down(int num)
 		pr_err("Invalid PCI handle chan %d\n", num);
 		return false;
 	}
-	return READ_ONCE(gpcie->in_link_down);
+	return test_bit(GPCIE_IN_LINK_DOWN, &gpcie->recovery_flags);
 }
 EXPORT_SYMBOL_GPL(google_pcie_is_link_down);
 
@@ -2065,7 +2048,7 @@ bool google_pcie_is_cpl_timeout(int num)
 		pr_err("Invalid PCI handle chan %d\n", num);
 		return false;
 	}
-	return READ_ONCE(gpcie->in_cpl_timeout);
+	return test_bit(GPCIE_IN_CPL_TIMEOUT, &gpcie->recovery_flags);
 }
 EXPORT_SYMBOL_GPL(google_pcie_is_cpl_timeout);
 
@@ -2245,12 +2228,12 @@ static void google_pcie_init_speed_width(struct google_pcie *gpcie, struct pci_d
 	supported_max_width = (u8) pcie_get_width_cap(pci_dev);
 
 	/*
-	 * If "max-link-speed" DT property (link_gen) is set to some value,
+	 * If "max-link-speed" DT property (max_link_speed) is set to some value,
 	 * set to minimum of max supported by HW and DT property.
 	 * If any invalid value is passed in DT, set it to max HW supported.
 	 */
-	gpcie->max_link_speed = (gpcie->pci->link_gen > 0) ?
-				 min((u8) gpcie->pci->link_gen, supported_max_speed) :
+	gpcie->max_link_speed = (gpcie->pci->max_link_speed > 0) ?
+				 min((u8) gpcie->pci->max_link_speed, supported_max_speed) :
 				 supported_max_speed;
 
 	/* Do the same for max width. DT property for max width is: "num-lanes" */
@@ -2317,245 +2300,6 @@ static void google_pcie_init_genpd(struct google_pcie *gpcie)
 	dev_pm_genpd_add_notifier(dev, &gpcie->top_nb);
 }
 
-/*
- * The algo here honor if there is any intersection of mask of
- * the existing msi vectors and the requesting msi vector. So we
- * could handle both narrow (1 bit set mask) and wide (0xffff...)
- * cases, return -EINVAL and reject the request if the result of
- * cpumask is empty, otherwise return 0 and have the calculated
- * result on the mask_to_check to pass down to the irq_chip.
- */
-static int google_pci_check_mask_compatibility(struct dw_pcie_rp *pp,
-					   unsigned long msi_irq_index,
-					   unsigned long hwirq_to_check,
-					   struct cpumask *mask_to_check)
-{
-	unsigned long end, hwirq;
-	const struct cpumask *mask;
-	unsigned int virq;
-
-	hwirq = msi_irq_index * MAX_MSI_IRQS_PER_CTRL;
-	end = hwirq + MAX_MSI_IRQS_PER_CTRL;
-	for_each_set_bit_from(hwirq, pp->msi_irq_in_use, end) {
-		if (hwirq == hwirq_to_check)
-			continue;
-		virq = irq_find_mapping(pp->irq_domain, hwirq);
-		if (!virq)
-			continue;
-		mask = irq_get_affinity_mask(virq);
-		if (!cpumask_and(mask_to_check, mask, mask_to_check))
-			return -EINVAL;
-	}
-
-	return 0;
-}
-
-static void google_pci_update_effective_affinity(struct dw_pcie_rp *pp,
-					     unsigned long msi_irq_index,
-					     const struct cpumask *effective_mask,
-					     unsigned long hwirq_to_check)
-{
-	struct irq_desc *desc_downstream;
-	unsigned int virq_downstream;
-	unsigned long end, hwirq;
-
-	/*
-	 * update all the irq_data's effective mask
-	 * bind to this msi controller, so the correct
-	 * affinity would reflect on
-	 * /proc/irq/XXX/effective_affinity
-	 */
-	hwirq = msi_irq_index * MAX_MSI_IRQS_PER_CTRL;
-	end = hwirq + MAX_MSI_IRQS_PER_CTRL;
-	for_each_set_bit_from(hwirq, pp->msi_irq_in_use, end) {
-		virq_downstream = irq_find_mapping(pp->irq_domain, hwirq);
-		if (!virq_downstream)
-			continue;
-		desc_downstream = irq_to_desc(virq_downstream);
-		irq_data_update_effective_affinity(&desc_downstream->irq_data,
-						   effective_mask);
-	}
-}
-
-static int google_pci_msi_set_affinity(struct irq_data *d,
-				   const struct cpumask *mask, bool force)
-{
-	struct dw_pcie_rp *pp = irq_data_get_irq_chip_data(d);
-	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
-	int ret;
-	int virq_parent;
-	unsigned long hwirq = d->hwirq;
-	unsigned long flags, msi_irq_index;
-	struct irq_desc *desc_parent;
-	const struct cpumask *effective_mask;
-	cpumask_var_t mask_result;
-
-	/*
-	 * The msi irq vectors are 32:1 aggregator to GIC SPI
-	 * line. so divid the hwirq by 32 to find out GIC SPI
-	 * line this msi vector map to.
-	 */
-	msi_irq_index = hwirq / MAX_MSI_IRQS_PER_CTRL;
-	if (!alloc_cpumask_var(&mask_result, GFP_ATOMIC))
-		return -ENOMEM;
-
-	/*
-	 * Loop through all possible msi vector to check if the
-	 * request one is compatible with all of them
-	 */
-	raw_spin_lock_irqsave(&pp->lock, flags);
-	cpumask_copy(mask_result, mask);
-	ret = google_pci_check_mask_compatibility(pp, msi_irq_index, hwirq, mask_result);
-	if (ret) {
-		dev_dbg(pci->dev, "Incompatible mask, request %*pbl, irq num %u\n",
-			cpumask_pr_args(mask), d->irq);
-		goto unlock;
-	}
-
-	dev_dbg(pci->dev, "Final mask, request %*pbl, irq num %u\n",
-		cpumask_pr_args(mask_result), d->irq);
-
-	virq_parent = pp->msi_irq[msi_irq_index];
-	desc_parent = irq_to_desc(virq_parent);
-	ret = desc_parent->irq_data.chip->irq_set_affinity(&desc_parent->irq_data,
-							   mask_result, force);
-
-	if (ret < 0)
-		goto unlock;
-
-	switch (ret) {
-	case IRQ_SET_MASK_OK:
-	case IRQ_SET_MASK_OK_DONE:
-		cpumask_copy(desc_parent->irq_common_data.affinity, mask);
-		fallthrough;
-	case IRQ_SET_MASK_OK_NOCOPY:
-		break;
-	}
-
-	effective_mask = irq_data_get_effective_affinity_mask(&desc_parent->irq_data);
-	google_pci_update_effective_affinity(pp, msi_irq_index, effective_mask, hwirq);
-	/*
-	 * We may need to accommodate the intersection of multiple overlapping affinity
-	 * requests, so if we're satisfying the request via a subset, leave the original
-	 * request alone. If we're moving to a non-intersecting affinity, update to use
-	 * the new affinity.
-	 */
-	if (d->irq) {
-		if (cpumask_subset(effective_mask, irq_get_affinity_mask(d->irq)))
-			ret = IRQ_SET_MASK_OK_NOCOPY;
-		else
-			ret = IRQ_SET_MASK_OK;
-	}
-
-unlock:
-	free_cpumask_var(mask_result);
-	raw_spin_unlock_irqrestore(&pp->lock, flags);
-	return ret;
-}
-
-static int google_pcie_irq_domain_alloc(struct irq_domain *domain,
-				    unsigned int virq, unsigned int nr_irqs,
-				    void *args)
-{
-	struct dw_pcie_rp *pp = domain->host_data;
-	struct google_pcie *gpcie = NULL;
-	const struct cpumask *mask;
-	unsigned long flags, index, start, size;
-	int irq, ctrl, p_irq, *msi_vec_index;
-	unsigned int num_ctrls = (pp->num_vectors / MAX_MSI_IRQS_PER_CTRL);
-
-	list_for_each_entry(gpcie, &gpcie_inst_list, node) {
-		if (&gpcie->pci->pp == pp)
-			break;
-	}
-
-	if (!gpcie)
-		return -EINVAL;
-
-	/*
-	 * All IRQs on a given controller will use the same parent interrupt,
-	 * and therefore the same CPU affinity. We try to honor any CPU spreading
-	 * requests by assigning distinct affinity masks to distinct vectors.
-	 * The algorithm here honor whoever comes first can bind the MSI controller to
-	 * its irq affinity mask, or compare its cpumask against
-	 * currently recorded to decide if binding to this MSI controller.
-	 */
-
-	msi_vec_index = kcalloc(nr_irqs, sizeof(*msi_vec_index), GFP_KERNEL);
-	if (!msi_vec_index)
-		return -ENOMEM;
-
-	raw_spin_lock_irqsave(&pp->lock, flags);
-
-	for (irq = 0; irq < nr_irqs; irq++) {
-		mask = irq_get_affinity_mask(virq + irq);
-		for (ctrl = 0; ctrl < num_ctrls; ctrl++) {
-			start = ctrl * MAX_MSI_IRQS_PER_CTRL;
-			size = start + MAX_MSI_IRQS_PER_CTRL;
-			if (find_next_bit(pp->msi_irq_in_use, size, start) >= size ||
-			    cpumask_empty(&gpcie->msi_ctrl_to_cpu[ctrl])) {
-				cpumask_copy(&gpcie->msi_ctrl_to_cpu[ctrl], mask);
-				break;
-			}
-
-			if (cpumask_equal(&gpcie->msi_ctrl_to_cpu[ctrl], mask) &&
-			    find_next_zero_bit(pp->msi_irq_in_use, size, start) < size)
-				break;
-		}
-
-		/*
-		 * No MSI controller matches. Unwind the allocation we
-		 * started.
-		 */
-		if (ctrl == num_ctrls) {
-			for (p_irq = irq - 1; p_irq >= 0; p_irq--)
-				bitmap_clear(pp->msi_irq_in_use, msi_vec_index[p_irq], 1);
-			raw_spin_unlock_irqrestore(&pp->lock, flags);
-			kfree(msi_vec_index);
-			return -ENOSPC;
-		}
-
-		index = bitmap_find_next_zero_area(pp->msi_irq_in_use,
-						   size,
-						   start,
-						   1,
-						   0);
-		bitmap_set(pp->msi_irq_in_use, index, 1);
-		msi_vec_index[irq] = index;
-	}
-
-	raw_spin_unlock_irqrestore(&pp->lock, flags);
-
-	for (irq = 0; irq < nr_irqs; irq++)
-		irq_domain_set_info(domain, virq + irq, msi_vec_index[irq],
-				    pp->msi_irq_chip,
-				    pp, handle_edge_irq,
-				    NULL, NULL);
-	kfree(msi_vec_index);
-
-	return 0;
-}
-
-static void google_pcie_irq_domain_free(struct irq_domain *domain,
-				    unsigned int virq, unsigned int nr_irqs)
-{
-	struct irq_data *d;
-	struct dw_pcie_rp *pp = domain->host_data;
-	unsigned long flags;
-
-	raw_spin_lock_irqsave(&pp->lock, flags);
-	for (int i = 0; i < nr_irqs; i++) {
-		d = irq_domain_get_irq_data(domain, virq + i);
-		bitmap_clear(pp->msi_irq_in_use, d->hwirq, 1);
-	}
-	raw_spin_unlock_irqrestore(&pp->lock, flags);
-}
-
-static const struct irq_domain_ops google_pcie_msi_domain_ops = {
-	.alloc	= google_pcie_irq_domain_alloc,
-	.free	= google_pcie_irq_domain_free,
-};
-
 static int google_pcie_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -2573,6 +2317,7 @@ static int google_pcie_probe(struct platform_device *pdev)
 	struct pcie_port *pp;
 #endif
 	int ret;
+	u32 l1_entrance_latency_us;
 	struct of_phandle_args pd_args, additional_parent_pd_args;
 
 	gpcie = devm_kzalloc(dev, sizeof(*gpcie), GFP_KERNEL);
@@ -2612,10 +2357,6 @@ static int google_pcie_probe(struct platform_device *pdev)
 
 	gpcie->sii_size = resource_size(sii_res);
 
-	gpcie->pcie_wq = create_freezable_workqueue("pcie_wq");
-	if (IS_ERR(gpcie->pcie_wq))
-		return PTR_ERR(gpcie->pcie_wq);
-
 	pci->dev = dev;
 	pci->ops = &google_dw_pcie_ops;
 	pci->pp.ops = &google_pcie_host_ops;
@@ -2627,6 +2368,14 @@ static int google_pcie_probe(struct platform_device *pdev)
 		gpcie->perst_delay_us = DEFAULT_PERST_DELAY_US;
 		dev_info(dev, "PERST delay is NOT defined...default to %u ms\n",
 			 gpcie->perst_delay_us / 1000);
+	}
+
+	if (of_property_read_u32(np, "aspm-l1-entry-delay-ns", &gpcie->l1_entrance_latency)) {
+		gpcie->l1_entrance_latency = U32_MAX;
+		dev_dbg(dev, "l1 entrance latency is NOT defined...default to MAX\n");
+	} else {
+		l1_entrance_latency_us = (gpcie->l1_entrance_latency / NSEC_PER_USEC);
+		gpcie->l1_entrance_latency = order_base_2(l1_entrance_latency_us);
 	}
 
 	platform_set_drvdata(pdev, gpcie);
@@ -2721,7 +2470,7 @@ static int google_pcie_probe(struct platform_device *pdev)
 		if (ret) {
 			dev_err(dev, "Unable to parse the power domain\n");
 			of_node_put(additional_parent_pd_args.np);
-			return ret;
+			goto remove_genpd;
 		}
 
 		ret = of_genpd_add_subdomain(&additional_parent_pd_args, &pd_args);
@@ -2730,7 +2479,7 @@ static int google_pcie_probe(struct platform_device *pdev)
 					additional_parent_pd_args.np->name);
 			of_node_put(additional_parent_pd_args.np);
 			of_node_put(pd_args.np);
-			return ret;
+			goto remove_genpd;
 		}
 		of_node_put(additional_parent_pd_args.np);
 		of_node_put(pd_args.np);
@@ -2745,6 +2494,14 @@ static int google_pcie_probe(struct platform_device *pdev)
 	if (device_property_read_u32(dev, "google,posted-rx-q-data-credits",
 				     &gpcie->posted_rx_q_credits))
 		gpcie->posted_rx_q_credits = 0;
+
+	if (gpcie->phy_sram_base) {
+		ret = request_firmware(&gpcie->phy_fw, "laguna_pcie_phy_fw.bin", gpcie->dev);
+		if (ret < 0) {
+			dev_err(gpcie->dev, "Failed to get PHY firmware: %d\n", ret);
+			goto wakeup_disable;
+		}
+	}
 
 	/*
 	 * TODO: we currently rely on the fact that the controller device can
@@ -2791,10 +2548,6 @@ static int google_pcie_probe(struct platform_device *pdev)
 
 	pp = &gpcie->pci->pp;
 	gpcie->domain = pp->bridge->bus->domain_nr;
-	pp->irq_domain->ops = &google_pcie_msi_domain_ops;
-	pp->msi_irq_chip->irq_set_affinity = google_pci_msi_set_affinity;
-	pp->msi_irq_chip->irq_unmask = goog_pci_bottom_unmask;
-	goog_setup_chained_irq_handler(pp);
 
 	power_stats_init(gpcie);
 	link_duration_update(gpcie, LINK_DURATION_INIT);
@@ -2818,7 +2571,9 @@ static int google_pcie_probe(struct platform_device *pdev)
 		goto link_state_remove;
 	}
 
-	list_add_tail(&gpcie->node, &gpcie_inst_list);
+	scoped_guard(spinlock_irqsave, &gpcie_inst_lock) {
+		list_add_tail(&gpcie->node, &gpcie_inst_list);
+	}
 
 	ret = devm_add_action_or_reset(dev, gpcie_list_del, &gpcie->node);
 	if (ret)
@@ -2836,6 +2591,8 @@ static int google_pcie_probe(struct platform_device *pdev)
 	ret = google_pcie_init_debugfs(gpcie);
 	if (ret)
 		goto put_pci_dev;
+
+	google_pcie_init_devcoredump(gpcie);
 
 	ret = devm_add_action_or_reset(dev, google_pcie_exit_debugfs, gpcie);
 	if (ret)
@@ -2863,13 +2620,19 @@ pm_disable:
 	pm_runtime_disable(dev);
 	pm_runtime_put_noidle(dev);
 	pm_runtime_set_suspended(dev);
+
+	if (gpcie->phy_fw)
+		release_firmware(gpcie->phy_fw);
+
+wakeup_disable:
 	device_set_wakeup_capable(dev, false);
+remove_genpd:
 	dev_pm_genpd_remove_notifier(dev);
 
 	return ret;
 }
 
-static int google_pcie_remove(struct platform_device *pdev)
+static void google_pcie_remove(struct platform_device *pdev)
 {
 	struct google_pcie *gpcie = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
@@ -2893,10 +2656,12 @@ static int google_pcie_remove(struct platform_device *pdev)
 	pm_runtime_disable(dev);
 	pm_runtime_put_noidle(dev);
 	pm_runtime_set_suspended(dev);
+
+	if (gpcie->phy_fw)
+		release_firmware(gpcie->phy_fw);
+
 	device_set_wakeup_capable(dev, false);
 	dev_pm_genpd_remove_notifier(dev);
-
-	return 0;
 }
 
 static const struct of_device_id google_pcie_of_match[] = {
@@ -2913,7 +2678,7 @@ static int google_pcie_runtime_suspend(struct device *dev)
 	unsigned long flags;
 	int ret;
 
-	trace_pci_suspend_start(dev_name(dev));
+	trace_pci_suspend_start(dev);
 
 	google_pcie_dump_icd(gpcie, "runtime_suspend start");
 
@@ -2939,7 +2704,7 @@ static int google_pcie_runtime_suspend(struct device *dev)
 	if (genpd->flags & GENPD_FLAG_RPM_ALWAYS_ON)
 		google_pcie_assert_resets(gpcie);
 
-	trace_pci_suspend_end(dev_name(dev));
+	trace_pci_suspend_end(dev);
 
 	google_pcie_dump_icd(gpcie, "runtime_suspend end");
 
@@ -2984,7 +2749,9 @@ static void google_pcie_patch_phy_fw(struct google_pcie *gpcie)
 {
 	int i, ret;
 	u32 val;
-	u32 size = 0;
+	u32 size;
+	const struct fw_patch_entry *phy_fw_patch;
+	size_t phy_fw_patch_size;
 
 	if (!gpcie->phy_sram_base)
 		return;
@@ -2995,14 +2762,28 @@ static void google_pcie_patch_phy_fw(struct google_pcie *gpcie)
 	if (ret)
 		return;
 
+
+	phy_fw_patch = (const struct fw_patch_entry *)gpcie->phy_fw->data;
+	phy_fw_patch_size = gpcie->phy_fw->size / sizeof(struct fw_patch_entry);
+
 	size = (phy_fw_patch_size < (gpcie->phy_sram_size / 2)) ?
 		phy_fw_patch_size : (gpcie->phy_sram_size / 2);
 
 	if (!size)
 		return;
 
-	for (i = 0; i < size; i++)
-		writew_relaxed(phy_fw_patch[i].val, gpcie->phy_sram_base + phy_fw_patch[i].addr);
+	for (i = 0; i < size; i++) {
+		u16 val = le16_to_cpu(phy_fw_patch[i].val);
+		u32 addr = le32_to_cpu(phy_fw_patch[i].addr);
+
+		if (addr + sizeof(val) > gpcie->phy_sram_size) {
+			dev_err(gpcie->dev, "PHY FW address out of range: %#x/%#zx\n",
+				addr, gpcie->phy_sram_size);
+			return;
+		}
+
+		writew_relaxed(val, gpcie->phy_sram_base + addr);
+	}
 
 	/*
 	 * Ensure all previous relaxed writes to PHY SRAM are completed and visible
@@ -3023,9 +2804,9 @@ static int google_pcie_runtime_resume(struct device *dev)
 	u32 vc_settings = FIELD_PREP(PCIE_AW_USER_VC, 1) |
 				FIELD_PREP(PCIE_AR_USER_VC, 1);
 
-	trace_pci_resume_start(dev_name(dev));
+	trace_pci_resume_start(dev);
 
-	trace_pci_reg_enable(dev_name(dev));
+	trace_pci_reg_enable(dev);
 
 	google_pcie_dump_icd(gpcie, "runtime_resume start");
 
@@ -3043,11 +2824,11 @@ static int google_pcie_runtime_resume(struct device *dev)
 	if (ret)
 		goto assert_pwr_up_rst;
 
-	trace_pci_reset_complete(dev_name(dev));
+	trace_pci_reset_complete(dev);
 
 	google_pcie_patch_phy_fw(gpcie);
 
-	trace_pci_phy_fw_write(dev_name(dev));
+	trace_pci_phy_fw_write(dev);
 
 	val = readl(gpcie->top_base + PCIE_PHY_CFG1);
 	val |= PG_MODE_EN;
@@ -3070,7 +2851,7 @@ static int google_pcie_runtime_resume(struct device *dev)
 		writel(val, gpcie->sii_base + PM_CTRL_STATUS);
 	}
 
-	trace_pci_resume_end(dev_name(dev));
+	trace_pci_resume_end(dev);
 
 	gpcie->powered_on = true;
 
@@ -3197,7 +2978,100 @@ static struct platform_driver google_pcie_driver = {
 	.remove = google_pcie_remove,
 };
 
-module_platform_driver(google_pcie_driver);
+static struct google_pcie *pci_to_gpcie(struct pci_dev *pci_dev)
+{
+	struct pci_host_bridge *host_bridge = pci_find_host_bridge(pci_dev->bus);
+	struct google_pcie *gpcie;
+
+	guard(spinlock_irqsave)(&gpcie_inst_lock);
+
+	list_for_each_entry(gpcie, &gpcie_inst_list, node) {
+		struct pci_host_bridge *bridge = gpcie->pci->pp.bridge;
+
+		if (host_bridge == bridge)
+			return gpcie;
+	}
+
+	return NULL;
+}
+
+static void google_pcie_power_manageable(void *data, struct pci_dev *pci_dev,
+					 bool *manageable)
+{
+	struct google_pcie *gpcie = pci_to_gpcie(pci_dev);
+
+	if (!gpcie)
+		return;
+
+	if (!pci_is_root_bus(pci_dev->bus))
+		return;
+
+	*manageable = true;
+}
+
+/*
+ * Keep the target state as D0 for root ports during system suspend
+ *
+ * For Google PCIe root ports, the power control isn't managed by
+ * pci_pm_* ops, but rather by the platform driver itself to ensure
+ * proper power sequencing, so we just keep the target state as D0
+ * during system suspend to avoid pci_pm_* interfering with our power
+ * management.
+ */
+static void google_pcie_choose_state(void *data, struct pci_dev *pci_dev,
+				     pci_power_t *state)
+{
+	struct google_pcie *gpcie = pci_to_gpcie(pci_dev);
+
+	if (!gpcie)
+		return;
+
+	if (!pci_is_root_bus(pci_dev->bus))
+		return;
+
+	*state = PCI_D0;
+}
+
+static void google_pcie_pm_verify_state(void *data, int *state_ret, pci_power_t *state)
+{
+	if (state_ret && state)
+		*state_ret = (*state == PCI_D3cold);
+}
+
+static int __init google_pcie_init(void)
+{
+	int ret;
+
+	ret = register_trace_android_vh_platform_pci_power_manageable(
+			google_pcie_power_manageable, NULL);
+	if (ret)
+		return ret;
+	ret = register_trace_android_vh_platform_pci_choose_state(
+			google_pcie_choose_state, NULL);
+	if (ret)
+		return ret;
+	ret = register_trace_android_vh_pci_pm_verify_state(
+			google_pcie_pm_verify_state, NULL);
+	if (ret)
+		return ret;
+
+	return platform_driver_register(&google_pcie_driver);
+}
+
+static void __exit google_pcie_exit(void)
+{
+	platform_driver_unregister(&google_pcie_driver);
+
+	unregister_trace_android_vh_pci_pm_verify_state(
+			google_pcie_pm_verify_state, NULL);
+	unregister_trace_android_vh_platform_pci_choose_state(
+			google_pcie_choose_state, NULL);
+	unregister_trace_android_vh_platform_pci_power_manageable(
+			google_pcie_power_manageable, NULL);
+}
+
+module_init(google_pcie_init);
+module_exit(google_pcie_exit);
 
 MODULE_AUTHOR("Google LLC");
 MODULE_DESCRIPTION("Google PCIe Driver");

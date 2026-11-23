@@ -5,13 +5,14 @@
  * Copyright (c) 2025, Google LLC. All rights reserved.
  */
 
-#include <linux/delay.h>
+#include <kunit/static_stub.h>
 #include <kunit/test.h>
 #include <kunit/test-bug.h>
+#include <linux/delay.h>
 
 #include "cdev_cpufreq_helper.h"
 #include "cdev_devfreq_helper.h"
-#include "cdev_helper_mock.h"
+#include "cdev_helper.h"
 
 #define CDEV_TEST_OPP_CT	3
 #define CDEV_FREQ_INIT		300000
@@ -36,38 +37,38 @@ static struct em_perf_domain *test_pd;
 static struct em_perf_state *test_pd_table;
 static struct device *fake_dev;
 
-struct devfreq *mock_cdev_get_devfreq_by_node(struct device_node *node)
+static struct devfreq *mock_cdev_get_devfreq_by_node(struct device_node *node)
 {
 	return get_devfreq_ret ? ERR_PTR(get_devfreq_ret) : test_devfreq;
 }
 
-int mock_pm_qos_add_and_register_devfreq_request(struct devfreq *devfreq,
-						 struct dev_pm_qos_request *req,
-						 enum dev_pm_qos_req_type type,
-						 s32 value)
+static int mock_google_pm_qos_add_devfreq_request(struct devfreq *devfreq,
+						  struct dev_pm_qos_request *req,
+						  enum dev_pm_qos_req_type type,
+						  s32 value)
 {
 	return qos_add_ret;
 }
 
-struct em_perf_state *mock_em_perf_state_from_pd(struct em_perf_domain *pd)
+static struct em_perf_state *mock_em_perf_state_from_pd(struct em_perf_domain *pd)
 {
 	return test_pd_table;
 }
 
-int mock_pm_qos_remove_devfreq_request(struct devfreq *devfreq,
-				       struct dev_pm_qos_request *req)
+static int mock_cdev_pm_qos_remove_devfreq_request(struct devfreq *devfreq,
+						   struct dev_pm_qos_request *req)
 {
 	remove_qos_called = true;
 	return 0;
 }
 
-int mock_dev_pm_opp_get_opp_count(struct device *dev)
+static int mock_cdev_dev_pm_opp_get_opp_count(struct device *dev)
 {
 	return fw_opp_ct_ret ? : CDEV_TEST_OPP_CT;
 }
 
-struct dev_pm_opp *mock_dev_pm_opp_find_freq_ceil(struct device *dev,
-						  unsigned long *freq)
+static struct dev_pm_opp *mock_cdev_dev_pm_opp_find_freq_ceil(struct device *dev,
+							      unsigned long *freq)
 {
 	int i = 0;
 
@@ -80,8 +81,8 @@ struct dev_pm_opp *mock_dev_pm_opp_find_freq_ceil(struct device *dev,
 	return fw_get_freq_ret ? ERR_PTR(fw_get_freq_ret) : (struct dev_pm_opp *) 0x12345678;
 }
 
-int mock_msg_tmu_get_power_table(enum hw_dev_type cdev_id, u8 idx,
-				 int *val, int *max_state_idx)
+static int mock_cdev_msg_tmu_get_power_table(enum hw_dev_type cdev_id, u8 idx,
+					     int *val, int *max_state_idx)
 {
 	idx = CDEV_TEST_OPP_CT - 1 - idx;
 	*val = opp_table[idx].power / MICROWATT_PER_MILLIWATT;
@@ -90,17 +91,26 @@ int mock_msg_tmu_get_power_table(enum hw_dev_type cdev_id, u8 idx,
 	return fw_get_power_ret;
 }
 
-struct device *mock_get_cpu_device(unsigned int cpu)
+static struct device *mock_cdev_get_cpu_device(unsigned int cpu)
 {
 	return get_cpu_dev_ret ? NULL : fake_dev;
 }
 
-unsigned long mock_dev_pm_opp_get_voltage(struct dev_pm_opp *opp)
+static unsigned long mock_cdev_dev_pm_opp_get_voltage(struct dev_pm_opp *opp)
 {
 	return CDEV_VOLT_INIT;
 }
 
-void cdev_test_init_data(void)
+static int mock_dev_pm_qos_update_request(struct dev_pm_qos_request *req, s32 new_value)
+{
+	return 0;
+}
+
+static void mock_cdev_dev_pm_opp_put(struct dev_pm_opp *opp)
+{
+}
+
+static void cdev_test_init_data(void)
 {
 	get_devfreq_ret = 0;
 	qos_add_ret = 0;
@@ -153,8 +163,7 @@ static void cdev_devfreq_register_test(struct kunit *test)
 				opp_table[i].freq);
 	}
 	KUNIT_EXPECT_PTR_EQ(test, cdev->devfreq, test_devfreq);
-	kfree(cdev->opp_table);
-	cdev->devfreq = NULL;
+	cdev_devfreq_exit(cdev);
 
 	/* Test getting power from Firmware. */
 	// No OPP count.
@@ -206,12 +215,12 @@ static void cdev_devfreq_register_test(struct kunit *test)
 				opp_table[i].freq);
 	}
 	KUNIT_EXPECT_PTR_EQ(test, cdev->devfreq, test_devfreq);
-	kfree(cdev->opp_table);
-	cdev->devfreq = NULL;
+	cdev_devfreq_exit(cdev);
 	test_devfreq->dev.parent->em_pd = test_pd;
 
 	// Add QOS req error.
 	cdev_test_init_data();
+  	cdev->devfreq = NULL;
 	qos_add_ret = -EINVAL;
 	KUNIT_EXPECT_EQ(test, __cdev_devfreq_fetch_register(cdev), qos_add_ret);
 	KUNIT_EXPECT_NULL(test, cdev->devfreq);
@@ -258,7 +267,11 @@ static void cdev_devfreq_init_test(struct kunit *test)
 						__cdev_success_cb,
 						__cdev_failure_cb),
 			0);
-	flush_delayed_work(&cdev->work);
+	cancel_delayed_work(&cdev->work);
+	/* Kunit is not able to redirect the functions in the workqueue.
+	* So running the workqueue function directly.
+	*/
+	__cdev_devfreq_fetch_work(&cdev->work.work);
 	KUNIT_EXPECT_TRUE(test, cdev_failure);
 	test_pd->nr_perf_states = CDEV_TEST_OPP_CT;
 
@@ -268,7 +281,8 @@ static void cdev_devfreq_init_test(struct kunit *test)
 						__cdev_success_cb,
 						__cdev_failure_cb),
 			0);
-	flush_delayed_work(&cdev->work);
+	cancel_delayed_work(&cdev->work);
+	__cdev_devfreq_fetch_work(&cdev->work.work);
 	KUNIT_EXPECT_TRUE(test, cdev_success);
 	cdev_devfreq_exit(cdev);
 }
@@ -381,6 +395,28 @@ static int cdev_test_init(struct kunit *test)
 
 	cdev_test_init_data();
 	test->priv = cdev;
+	kunit_activate_static_stub(test, cdev_pm_qos_add_devfreq_request,
+				   mock_google_pm_qos_add_devfreq_request);
+	kunit_activate_static_stub(test, cdev_pm_qos_remove_devfreq_request,
+				   mock_cdev_pm_qos_remove_devfreq_request);
+	kunit_activate_static_stub(test, cdev_dev_pm_qos_update_request,
+				   mock_dev_pm_qos_update_request);
+	kunit_activate_static_stub(test, cdev_get_devfreq_by_node,
+				   mock_cdev_get_devfreq_by_node);
+	kunit_activate_static_stub(test, cdev_em_perf_state_from_pd,
+				   mock_em_perf_state_from_pd);
+	kunit_activate_static_stub(test, cdev_dev_pm_opp_get_opp_count,
+				   mock_cdev_dev_pm_opp_get_opp_count);
+	kunit_activate_static_stub(test, cdev_dev_pm_opp_find_freq_ceil,
+				   mock_cdev_dev_pm_opp_find_freq_ceil);
+	kunit_activate_static_stub(test, cdev_msg_tmu_get_power_table,
+				   mock_cdev_msg_tmu_get_power_table);
+	kunit_activate_static_stub(test, cdev_get_cpu_device,
+				   mock_cdev_get_cpu_device);
+	kunit_activate_static_stub(test, cdev_dev_pm_opp_get_voltage,
+				   mock_cdev_dev_pm_opp_get_voltage);
+	kunit_activate_static_stub(test, cdev_dev_pm_opp_put,
+				   mock_cdev_dev_pm_opp_put);
 
 	return 0;
 }
@@ -392,6 +428,21 @@ static void cdev_test_suite_exit(struct kunit_suite *suite)
 	kfree(test_devfreq);
 	kfree(test_pd);
 	kfree(test_pd_table);
+}
+
+static void cdev_test_exit(struct kunit *test)
+{
+	kunit_deactivate_static_stub(test, cdev_pm_qos_add_devfreq_request);
+	kunit_deactivate_static_stub(test, cdev_pm_qos_remove_devfreq_request);
+	kunit_deactivate_static_stub(test, cdev_dev_pm_qos_update_request);
+	kunit_deactivate_static_stub(test, cdev_get_devfreq_by_node);
+	kunit_deactivate_static_stub(test, cdev_em_perf_state_from_pd);
+	kunit_deactivate_static_stub(test, cdev_dev_pm_opp_get_opp_count);
+	kunit_deactivate_static_stub(test, cdev_dev_pm_opp_find_freq_ceil);
+	kunit_deactivate_static_stub(test, cdev_msg_tmu_get_power_table);
+	kunit_deactivate_static_stub(test, cdev_get_cpu_device);
+	kunit_deactivate_static_stub(test, cdev_dev_pm_opp_get_voltage);
+	kunit_deactivate_static_stub(test, cdev_dev_pm_opp_put);
 }
 
 static int cdev_test_suite_init(struct kunit_suite *suite)
@@ -421,6 +472,7 @@ static struct kunit_suite cdev_helper_test_suite = {
 	.name = "cdev_helper_tests",
 	.test_cases = cdev_helper_test,
 	.init = cdev_test_init,
+	.exit = cdev_test_exit,
 	.suite_init = cdev_test_suite_init,
 	.suite_exit = cdev_test_suite_exit
 };

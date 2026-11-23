@@ -347,6 +347,8 @@ int slc_init_data(struct slc_data *data, struct device *dev)
 	if (IS_ERR(data->pt_handle)) {
 		ret = PTR_ERR(data->pt_handle);
 		dev_err(data->dev, "pt_client_register failed with: %d\n", ret);
+		if (ret == -ENOENT)  // gslc's probe is not completed yet
+			ret = -EPROBE_DEFER;
 		goto err_exit;
 	}
 

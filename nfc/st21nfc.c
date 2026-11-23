@@ -40,7 +40,19 @@
 #define IDLE_CHARACTER 0x7e
 #define ST21NFC_POWER_STATE_MAX 3
 #define WAKEUP_SRC_TIMEOUT		(2000)
+#define WAKEUP_SRC_TIMEOUT_SHORT	(100)
 #define EXYNOS_CLK_MASK		0x01
+
+#define CORE_SET_POWER_SUB_STATE_CMD_SIZE 4
+/* Screen off locked */
+static const uint8_t CORE_SET_POWER_SUB_STATE_3_CMD[CORE_SET_POWER_SUB_STATE_CMD_SIZE] = {
+	0x20, 0x09, 0x01, 0x03};
+/* Screen off unlocked */
+static const uint8_t CORE_SET_POWER_SUB_STATE_1_CMD[CORE_SET_POWER_SUB_STATE_CMD_SIZE] = {
+	0x20, 0x09, 0x01, 0x01};
+#define CORE_SET_CONFIG_CMD_SIZE 7
+static const uint8_t CORE_SET_CONFIG_CMD[CORE_SET_CONFIG_CMD_SIZE] = {
+	0x20, 0x02, 0x04, 0x01, 0x02, 0x01, 0x00};
 #define EXYNOS_EXTPAD_CONTROL_EN_MASK 0x00010000
 
 #define POWER_STATE_CHECK_DURATION 2000
@@ -154,6 +166,8 @@ struct st21nfc_device {
 	struct gpio_desc *gpiod_pidle;
 	/* irq_gpio polarity to be used */
 	unsigned int polarity_mode;
+	bool is_wakelock_short;
+	bool reduce_timeout;
 };
 
 /*
@@ -296,7 +310,9 @@ static irqreturn_t st21nfc_dev_irq_handler(int irq, void *dev_id)
 
 	if (device_may_wakeup(&st21nfc_dev->client->dev))
 		pm_wakeup_event(&st21nfc_dev->client->dev,
-			WAKEUP_SRC_TIMEOUT);
+				st21nfc_dev->is_wakelock_short ?
+				WAKEUP_SRC_TIMEOUT_SHORT : WAKEUP_SRC_TIMEOUT);
+	st21nfc_dev->is_wakelock_short = false;
 	st21nfc_disable_irq(st21nfc_dev);
 
 	/* Wake up waiting readers */
@@ -598,6 +614,23 @@ static ssize_t st21nfc_dev_read(struct file *filp, char __user *buf,
 	return ret;
 }
 
+static bool st21nfc_is_short_timeout_command(const uint8_t *data, size_t count)
+{
+	if (count == CORE_SET_POWER_SUB_STATE_CMD_SIZE &&
+	    !memcmp(data, CORE_SET_POWER_SUB_STATE_3_CMD, count))
+		return true;
+
+	if (count == CORE_SET_POWER_SUB_STATE_CMD_SIZE &&
+	    !memcmp(data, CORE_SET_POWER_SUB_STATE_1_CMD, count))
+		return true;
+
+	if (count == CORE_SET_CONFIG_CMD_SIZE &&
+	    !memcmp(data, CORE_SET_CONFIG_CMD, count))
+		return true;
+
+	return false;
+}
+
 static ssize_t st21nfc_dev_write(struct file *filp, const char __user *buf,
 				 size_t count, loff_t *offset)
 {
@@ -619,6 +652,12 @@ static ssize_t st21nfc_dev_write(struct file *filp, const char __user *buf,
 
 	dev_dbg(&st21nfc_dev->client->dev, "writing %zu bytes.\n", count);
 	/* Write data */
+	if (st21nfc_dev->reduce_timeout &&
+	    st21nfc_is_short_timeout_command(tmp, count)) {
+		st21nfc_dev->is_wakelock_short = true;
+	} else {
+		st21nfc_dev->is_wakelock_short = false;
+	}
 	ret = i2c_master_send(st21nfc_dev->client, tmp, count);
 	if (ret != count) {
 		dev_err(&st21nfc_dev->client->dev, "i2c_master_send returned %d\n", ret);
@@ -801,7 +840,6 @@ static unsigned int st21nfc_poll(struct file *file, poll_table *wait)
 
 static const struct file_operations st21nfc_dev_fops = {
 	.owner = THIS_MODULE,
-	.llseek = no_llseek,
 	.read = st21nfc_dev_read,
 	.write = st21nfc_dev_write,
 	.open = st21nfc_dev_open,
@@ -1030,6 +1068,11 @@ static int st21nfc_probe(struct i2c_client *client)
 			}
 			INIT_DELAYED_WORK(&(st21nfc_dev->st_delay_work), st21nfc_delay_wq);
 		}
+		if (device_property_read_bool(dev, "st,reduce-timeout")) {
+			dev_dbg(dev, "[OPTIONAL] reduce_timeout set\n");
+			st21nfc_dev->reduce_timeout = true;
+		}
+
 		/* Start the power stat in power mode idle */
 		st21nfc_dev->irq_pw_stats_idle =
 					gpiod_to_irq(st21nfc_dev->gpiod_pidle);

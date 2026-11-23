@@ -47,6 +47,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "rgxdefs_km.h"
 
 #define RGX_HEAP_SIZE_32KiB      IMG_UINT64_C(0x0000008000)
+
+/* 2MiB is the minimum heap size. This is because the MMU supports page sizes
+ * of up to 2MiB */
 #define RGX_HEAP_SIZE_2MiB       IMG_UINT64_C(0x0000200000)
 #define RGX_HEAP_SIZE_4MiB       IMG_UINT64_C(0x0000400000)
 #define RGX_HEAP_SIZE_16MiB      IMG_UINT64_C(0x0001000000)
@@ -210,7 +213,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 	/* 933 GiB to 936 GiB, size of 3 GiB : FREE **/
 
 /* 0xEA_0000_0000 - 0xEA_001F_FFFF **/
-	/* 936 GiB to 937 GiB, size of 1 GiB : FREE **/
+	/* 936 GiB to 937 GiB, size of 1 GiB : RESERVED **/
+	/* Used by RGX_UVB_SPILL_HEAP_BASE in UVB spill context
+	 * see: rgx_heap_uvb.h
+	 */
 
 /* 0xEA_4000_0000 - 0xEA_FFFF_FFFF **/
 	/* 937 GiB to 940 GiB, size of 3 GiB : FREE **/

@@ -47,7 +47,6 @@ static bool aoc_incall_hifi_support_interrupt(uint8_t mbox_index)
 static enum hrtimer_restart aoc_incall_hifi_irq_process(struct aoc_alsa_stream *alsa_stream)
 {
 	struct aoc_service_dev *dev;
-	struct snd_pcm_runtime *runtime;
 	unsigned long consumed;
 
 	if (!alsa_stream || !alsa_stream->substream || !alsa_stream->substream->runtime ||
@@ -55,9 +54,8 @@ static enum hrtimer_restart aoc_incall_hifi_irq_process(struct aoc_alsa_stream *
 		return HRTIMER_NORESTART;
 
 	dev = alsa_stream->dev;
-	runtime = alsa_stream->substream->runtime;
 
-	if (runtime->status->state != SNDRV_PCM_STATE_RUNNING)
+	if (!alsa_stream->running)
 		return HRTIMER_RESTART;
 
 	/* The number of bytes read/written should be the bytes in the buffer
@@ -254,7 +252,8 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
 		chip->incall_capture_state[0] == INCALL_CAPTURE_3MIC) {
 		alsa_stream->reused_for_voip = true;
 	} else if (rtd->dai_link->id == IDX_INCALL_CAP3_TX &&
-		chip->incall_capture_state[3] == INCALL_CAPTURE_3MIC) {
+		(chip->incall_capture_state[3] == INCALL_CAPTURE_3MIC
+		 || chip->incall_capture_state[3] == INCALL_CAPTURE_2MIC)) {
 		alsa_stream->reused_for_voip = true;
 	}
 	mutex_unlock(&chip->audio_mutex);
@@ -289,8 +288,11 @@ static int snd_aoc_pcm_close(struct snd_soc_component *component,
 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
 	struct aoc_chip *chip = alsa_stream->chip;
 	int err;
+	bool mutex_locked = true;
 
 	dev_dbg(component->dev, "name %s substream %pK", rtd->dai_link->name, substream);
+	// Wait for any active ISR to finish
+	synchronize_irq(alsa_stream->dev->irq);
 	aoc_timer_stop_sync(alsa_stream);
 	atomic_set(&alsa_stream->cancel_work_active, 1);
 	audio_free_isr(alsa_stream->dev);
@@ -303,7 +305,8 @@ static int snd_aoc_pcm_close(struct snd_soc_component *component,
 
 	if (mutex_lock_interruptible(&chip->audio_mutex)) {
 		dev_err(component->dev, "ERR: interrupted while waiting for lock\n");
-		return -EINTR;
+		mutex_locked = false;
+		/* b/480740542 don't return to cleanup the resource */
 	}
 
 	runtime = substream->runtime;
@@ -343,7 +346,8 @@ static int snd_aoc_pcm_close(struct snd_soc_component *component,
 		 */
 		teardown_voipcall(alsa_stream);
 	}
-	mutex_unlock(&chip->audio_mutex);
+	if (mutex_locked)
+		mutex_unlock(&chip->audio_mutex);
 
 	return 0;
 }

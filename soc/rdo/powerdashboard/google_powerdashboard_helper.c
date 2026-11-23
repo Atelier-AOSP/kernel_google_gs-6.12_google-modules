@@ -8,6 +8,7 @@
 #include <linux/device.h>
 
 #include "google_powerdashboard_helper.h"
+#include "soc/google/google_gtc.h"
 
 uint64_t get_ms_from_ticks(uint64_t ticks)
 {
@@ -19,6 +20,9 @@ int google_read_section(struct google_powerdashboard *pd,
 {
 	void *data_read_first, *data_read_second;
 	int ret = 0, i;
+
+	if (!powerdashboard_iface.sections.section_ptrs[section])
+		return -EFAULT;
 
 	data_read_first =
 		kzalloc(powerdashboard_iface.sections.section_sizes[section],
@@ -66,45 +70,16 @@ out:
 	return ret;
 }
 
-ssize_t google_lpcm_show(struct google_powerdashboard *pd, char *buf,
-			 int id, int lpcm_num)
-{
-	struct pd_lpcm_res *lpcm_res =
-		powerdashboard_iface.sections.lpcm_section->lpcm_residencies[id];
-	ssize_t len = 0;
-	int i, j;
-
-	for (i = 0; i < lpcm_num; ++i) {
-		len += sysfs_emit_at(buf, len, "lpcm[%d/%d]\n", i + 1,
-				     lpcm_num);
-		len += sysfs_emit_at(buf, len, "current_pf_state: %u\n",
-				     lpcm_res[i].curr_pf_state);
-		len += sysfs_emit_at(buf, len, "num_pf_states: %u\n",
-				     lpcm_res[i].num_pf_states);
-		for (j = 0; j < lpcm_res[i].num_pf_states; ++j) {
-			len += sysfs_emit_at(buf, len, "pf_state: %d\n", j);
-			len += sysfs_emit_at(buf, len, "pf_entry_count: %llu\n",
-					     lpcm_res[i]
-						     .pf_state_res[j]
-						     .entry_count);
-			len += sysfs_emit_at(buf, len,
-					     "pf_time_in_state: %llu (us)\n",
-					     lpcm_res[i]
-						     .pf_state_res[j]
-						     .time_in_state);
-			len += sysfs_emit_at(buf, len, "\n");
-		}
-	}
-	return len;
-}
-
 ssize_t google_pwrblk_show(char *buf, struct google_powerdashboard *pd,
 			   int id, int psm_num)
 {
 	struct pd_pwrblk_power_state *pb_data =
 		powerdashboard_iface.sections.pwrblk_section->pwrblk_power_states[id];
+	const struct pd_attr_str *power_state_names = powerdashboard_iface.attrs
+						      .pwrblk_power_state_names;
 	ssize_t len = 0;
 	int i, j;
+	u8 curr_power_state;
 
 	for (i = 0; i < psm_num; ++i) {
 		if (i == 0)
@@ -112,10 +87,15 @@ ssize_t google_pwrblk_show(char *buf, struct google_powerdashboard *pd,
 		else
 			len += sysfs_emit_at(buf, len, "psm[%d]\n", i - 1);
 
-		len += sysfs_emit_at(
-			buf, len, "current_power_state: %s\n\n",
-			powerdashboard_iface.attrs.pwrblk_power_state_names
-				->values[pb_data[i].curr_power_state]);
+		curr_power_state = pb_data[i].curr_power_state;
+
+		if (curr_power_state < power_state_names->count)
+			len += sysfs_emit_at(
+				buf, len, "current_power_state: %s\n\n",
+				power_state_names->values[curr_power_state]);
+		else
+			len += sysfs_emit_at(buf, len, "current_power_state: %d\n\n",
+					    (u32)curr_power_state);
 
 		for (j = 0;
 		     j <
@@ -126,7 +106,7 @@ ssize_t google_pwrblk_show(char *buf, struct google_powerdashboard *pd,
 						     .pwrblk_power_state_names
 						     ->values[j]);
 			len += sysfs_emit_at(buf, len, "entry_count: %llu\n",
-					     pb_data[i]
+					     (u64)pb_data[i]
 						     .power_state_res[j]
 						     .entry_count);
 			len += sysfs_emit_at(buf, len,

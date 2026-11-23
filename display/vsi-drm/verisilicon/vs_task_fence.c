@@ -7,8 +7,6 @@
  * https://opensource.org/licenses/MIT.
  */
 
-#include <drm/drm_device.h>
-#include <drm/drm_file.h>
 #include <linux/dma-fence.h>
 #include <linux/file.h>
 #include <linux/slab.h>

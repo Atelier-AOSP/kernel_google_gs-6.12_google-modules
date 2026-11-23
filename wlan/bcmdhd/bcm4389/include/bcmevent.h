@@ -824,7 +824,7 @@ typedef BWL_PRE_PACKED_STRUCT struct wl_event_gas {
 	uint8	fragment_id;		/* fragment id */
 	uint16	status_code;		/* status code on GAS completion */
 	uint16	data_len;		/* length of data to follow */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);	/* variable length specified by data_len */
+	uint8	data[BCM_FLEX_ARRAY];	/* variable length specified by data_len */
 } BWL_POST_PACKED_STRUCT wl_event_gas_t;
 
 /* service discovery TLV */
@@ -840,7 +840,7 @@ typedef BWL_PRE_PACKED_STRUCT struct wl_sd_tlv {
 typedef BWL_PRE_PACKED_STRUCT struct wl_event_sd {
 	uint16	channel;			/* channel */
 	uint8	count;				/* number of tlvs */
-	BCM_DECLARE_FLEX_ARRAY(wl_sd_tlv_t, tlv);	/* service discovery TLV */
+	wl_sd_tlv_t tlv[BCM_FLEX_ARRAY];	/* service discovery TLV */
 } BWL_POST_PACKED_STRUCT wl_event_sd_t;
 
 /* WLC_E_PKT_FILTER event sub-classification codes */
@@ -901,7 +901,7 @@ typedef BWL_PRE_PACKED_STRUCT struct proxd_event_data {
 					/* raw Fine Time Measurements (ftm) data */
 	uint16 ftm_unit;		/* ftm cnt resolution in picoseconds , 6250ps - default */
 	uint16 ftm_cnt;			/*  num of rtd measurments/length in the ftm buffer  */
-	BCM_DECLARE_FLEX_ARRAY(ftm_sample_t, ftm_buff);	/* 1 ... ftm_cnt  */
+	ftm_sample_t ftm_buff[BCM_FLEX_ARRAY];	/* 1 ... ftm_cnt  */
 } BWL_POST_PACKED_STRUCT wl_proxd_event_data_t;
 
 typedef BWL_PRE_PACKED_STRUCT struct proxd_event_ts_results {
@@ -911,7 +911,7 @@ typedef BWL_PRE_PACKED_STRUCT struct proxd_event_ts_results {
 	uint8  err_code;                /* error classification */
 	uint8  TOF_type;                /* one way or two way TOF */
 	uint16  ts_cnt;                 /* number of timestamp measurements */
-	BCM_DECLARE_FLEX_ARRAY(ts_sample_t, ts_buff); /* Timestamps */
+	ts_sample_t ts_buff[BCM_FLEX_ARRAY]; /* Timestamps */
 } BWL_POST_PACKED_STRUCT wl_proxd_event_ts_results_t;
 
 /* Video Traffic Interference Monitor Event */
@@ -931,7 +931,7 @@ typedef struct wl_rrm_event {
 	int16 len;
 	int16 cat;			/* Category */
 	int16 subevent;
-	BCM_DECLARE_FLEX_ARRAY(char, payload);	/* Measurement payload */
+	char payload[BCM_FLEX_ARRAY];	/* Measurement payload */
 } wl_rrm_event_t;
 
 /* WLC_E_PSTA_PRIMARY_INTF_IND event data */

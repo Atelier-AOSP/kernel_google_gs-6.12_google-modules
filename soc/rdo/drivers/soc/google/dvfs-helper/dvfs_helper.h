@@ -5,7 +5,7 @@
 #include <linux/types.h>
 
 struct dvfs_opp_info {
-	u32 freq : 14;
+	u64 freq : 14;
 	u32 supported : 1;
 	u32 resv1 : 1;
 	u32 voltage : 14;

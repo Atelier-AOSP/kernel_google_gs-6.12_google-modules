@@ -948,14 +948,11 @@ static PVRSRV_ERROR _RGXCCBMemChangeSparse(RGX_CLIENT_CCB *psClientCCB,
 	{
 		psClientCCB->pui32MappingTable[i] = ui32AllocPageCount + i;
 	}
-
 	/* Double the CCB size (CCB must be POT) by adding ui32AllocPageCount new pages */
-	eError = DeviceMemChangeSparse(psClientCCB->psClientCCBMemDesc,
-									ui32AllocPageCount,
-									psClientCCB->pui32MappingTable,
-									0,
-									NULL,
-									SPARSE_RESIZE_ALLOC);
+	eError = DeviceMemSparseAddBacking(psClientCCB->psClientCCBMemDesc,
+	                                ui32AllocPageCount,
+	                                psClientCCB->pui32MappingTable);
+
 	if (eError != PVRSRV_OK)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "RGXAcquireCCB: Failed to grow RGX client CCB (%s)",
@@ -2819,6 +2816,7 @@ void DumpStalledContextInfo(PVRSRV_RGXDEV_INFO *psDevInfo)
 			IMG_UINT32 jj;
 			IMG_UINT32 ui32NumUnsignalledUFOs = 0;
 			IMG_UINT32 ui32UnsignalledUFOVaddrs[PVRSRV_MAX_SYNCS];
+			IMG_BOOL bUnsignalledUFOsWereTruncated = IMG_FALSE;
 
 #if defined(PVRSRV_STALLED_CCB_ACTION)
 			RGXFwSharedMemCacheOpPtr(psDevInfo->psRGXFWIfFwOsData,
@@ -2868,8 +2866,18 @@ void DumpStalledContextInfo(PVRSRV_RGXDEV_INFO *psDevInfo)
 					if (ui32ReadValue != psUFOPtr[jj].ui32Value)
 					{
 						/* Add to our list to pass to pvr_sync */
-						ui32UnsignalledUFOVaddrs[ui32NumUnsignalledUFOs] = psUFOPtr[jj].puiAddrUFO.ui32Addr;
-						ui32NumUnsignalledUFOs++;
+						if (ui32NumUnsignalledUFOs < PVRSRV_MAX_SYNCS)
+						{
+							ui32UnsignalledUFOVaddrs[ui32NumUnsignalledUFOs] = psUFOPtr[jj].puiAddrUFO.ui32Addr;
+							ui32NumUnsignalledUFOs++;
+						}
+						else if (!bUnsignalledUFOsWereTruncated)
+						{
+							bUnsignalledUFOsWereTruncated = IMG_TRUE;
+							PVR_DPF((PVR_DBG_WARNING,
+							         "%s: Too many unsignalled UFOs, truncating to %d",
+							         __func__, PVRSRV_MAX_SYNCS));
+						}
 					}
 
 #if defined(PVRSRV_STALLED_CCB_ACTION) && defined(SUPPORT_FASTPATH_FENCE)

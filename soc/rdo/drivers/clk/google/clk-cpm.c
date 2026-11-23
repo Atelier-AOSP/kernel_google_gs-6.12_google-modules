@@ -20,12 +20,12 @@
 
 #include <dt-bindings/lpcm/clock.h>
 
+#include <aoss-ssr-notifier/aoss_ssr_notifier.h>
+#include <clk/clk-cpm.h>
 #include <soc/google/goog_mba_cpm_iface.h>
 
 #define MAILBOX_TIMEOUT_EMULATION_MULTIPLIER 10
-/* TODO(b/247493415): determine the right timeout value */
-#define MAILBOX_SEND_TIMEOUT_MS 3000
-#define MAILBOX_RECEIVE_TIMEOUT_MS 3000
+#define MAILBOX_SEND_TIMEOUT_MS 1000
 #define LPCM_REMOTE_CHANNEL 0x8
 #define LPCM_CMD_SET_LCM_CLK 0x2
 #define OP_ID_BITFIELD GENMASK(31, 24)
@@ -71,6 +71,10 @@ struct goog_cpm_clk {
 	unsigned long rates[MAX_RATE_NUM];
 	int nr_rates;
 	bool use_smc;
+
+	/* TODO(b/441581865) */
+	bool restore_rate_on_aoss_ssr;
+	int rate_restored_at;
 };
 
 struct goog_cpm_clk_dev_data {
@@ -78,7 +82,12 @@ struct goog_cpm_clk_dev_data {
 	struct goog_cpm_clk_mbox cpm_mbox;
 	int num_pds;
 	struct device **pd_devs;
+
+	/* TODO(b/441581865) */
+	struct notifier_block aoss_ssr_nb;
+	atomic_t aoss_ssr_epoch;
 };
+
 
 static void detach_power_domains(struct goog_cpm_clk_dev_data *dev_data,
 				 int end_idx)
@@ -263,8 +272,8 @@ static int goog_cpm_clk_send_mbox_msg_recalc_rate(struct goog_cpm_clk *cpm_clk)
 	return goog_cpm_clk_send_mba_mail(cpm_clk, RECALC_RATE_OP_ID, NULL);
 }
 
-int goog_cpm_clk_set_rate(struct clk_hw *hw, unsigned long rate,
-			  unsigned long parent_rate)
+static int goog_cpm_clk_set_rate(struct clk_hw *hw, unsigned long rate,
+				 unsigned long parent_rate)
 {
 	struct goog_cpm_clk *cpm_clk = to_goog_cpm_clk(hw);
 
@@ -273,8 +282,8 @@ int goog_cpm_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 	return goog_cpm_clk_send_mbox_msg_set_rate(cpm_clk, rate);
 }
 
-unsigned long goog_cpm_clk_recacl_rate(struct clk_hw *hw,
-				       unsigned long parent_rate)
+static unsigned long goog_cpm_clk_recacl_rate(struct clk_hw *hw,
+					      unsigned long parent_rate)
 {
 	struct goog_cpm_clk *cpm_clk = to_goog_cpm_clk(hw);
 
@@ -283,8 +292,8 @@ unsigned long goog_cpm_clk_recacl_rate(struct clk_hw *hw,
 	return goog_cpm_clk_send_mbox_msg_recalc_rate(cpm_clk);
 }
 
-long goog_cpm_clk_round_rate(struct clk_hw *hw, unsigned long rate,
-			     unsigned long *parent_rate)
+static long goog_cpm_clk_round_rate(struct clk_hw *hw, unsigned long rate,
+				    unsigned long *parent_rate)
 {
 	struct goog_cpm_clk *cpm_clk = to_goog_cpm_clk(hw);
 
@@ -294,6 +303,8 @@ long goog_cpm_clk_round_rate(struct clk_hw *hw, unsigned long rate,
 		if (cpm_clk->rates[i] >= rate)
 			return cpm_clk->rates[i];
 	}
+	if (cpm_clk->nr_rates > 0)
+		return cpm_clk->rates[cpm_clk->nr_rates - 1];
 	return -EINVAL;
 }
 
@@ -315,20 +326,63 @@ static inline unsigned long lpcm_smc(struct clk_hw *hw, bool enable)
 		return 0;
 }
 
-int goog_cpm_clk_prepare(struct clk_hw *hw)
+static int goog_cpm_clk_restore_after_aoss_ssr(struct goog_cpm_clk *cpm_clk)
 {
+	int ret;
+	int aoss_ssr_epoch;
+	unsigned long rate;
+
+	if (!cpm_clk->restore_rate_on_aoss_ssr)
+		return 0;
+
+	aoss_ssr_epoch = atomic_read_acquire(&cpm_clk->dev_data->aoss_ssr_epoch);
+
+	dev_dbg(cpm_clk->dev_data->dev,
+		"%s: lpcm_id %d, clock_id %d: rate restored at %d, aoss ssr epoch: %d\n",
+		cpm_clk->name, cpm_clk->lpcm_id, cpm_clk->clock_id,
+		cpm_clk->rate_restored_at, aoss_ssr_epoch);
+
+	if (cpm_clk->rate_restored_at >= aoss_ssr_epoch)
+		return 0;
+
+	rate = clk_hw_get_rate(&cpm_clk->hw);
+	ret = goog_cpm_clk_send_mbox_msg_set_rate(cpm_clk, rate);
+	if (!ret) {
+		cpm_clk->rate_restored_at = aoss_ssr_epoch;
+		dev_dbg(cpm_clk->dev_data->dev,
+			"%s: lpcm_id %d, clock_id %d: rate %lu restored after aoss ssr\n",
+			cpm_clk->name, cpm_clk->lpcm_id, cpm_clk->clock_id, rate);
+	} else {
+		dev_err(cpm_clk->dev_data->dev,
+			"%s: lpcm_id %d, clock_id %d: failed to restore rate %lu, ret=%d\n",
+			cpm_clk->name, cpm_clk->lpcm_id, cpm_clk->clock_id, rate, ret);
+	}
+
+	return ret;
+}
+
+static int goog_cpm_clk_prepare(struct clk_hw *hw)
+{
+	int ret;
 	struct goog_cpm_clk *cpm_clk = to_goog_cpm_clk(hw);
 
 	dev_dbg(cpm_clk->dev_data->dev, "%s: lpcm_id %d, clock_id %d: enable\n",
 		cpm_clk->name, cpm_clk->lpcm_id, cpm_clk->clock_id);
 
 	if (cpm_clk->use_smc)
-		return lpcm_smc(hw, true);
+		ret = lpcm_smc(hw, true);
 	else
-		return goog_cpm_clk_send_mbox_msg_set_gate(cpm_clk, true);
+		ret = goog_cpm_clk_send_mbox_msg_set_gate(cpm_clk, true);
+
+	if (ret)
+		return ret;
+
+	ret = goog_cpm_clk_restore_after_aoss_ssr(cpm_clk);
+
+	return ret;
 }
 
-void goog_cpm_clk_unprepare(struct clk_hw *hw)
+static void goog_cpm_clk_unprepare(struct clk_hw *hw)
 {
 	struct goog_cpm_clk *cpm_clk = to_goog_cpm_clk(hw);
 
@@ -340,7 +394,7 @@ void goog_cpm_clk_unprepare(struct clk_hw *hw)
 		goog_cpm_clk_send_mbox_msg_set_gate(cpm_clk, false);
 }
 
-int goog_cpm_clk_enable(struct clk_hw *hw)
+static int goog_cpm_clk_enable(struct clk_hw *hw)
 {
 	struct goog_cpm_clk *cpm_clk = to_goog_cpm_clk(hw);
 
@@ -353,7 +407,7 @@ int goog_cpm_clk_enable(struct clk_hw *hw)
 	return -EINVAL;
 }
 
-void goog_cpm_clk_disable(struct clk_hw *hw)
+static void goog_cpm_clk_disable(struct clk_hw *hw)
 {
 	struct goog_cpm_clk *cpm_clk = to_goog_cpm_clk(hw);
 
@@ -444,9 +498,15 @@ static int goog_cpm_clk_register_clk(struct device *dev,
 	}
 
 	cpm_clk->use_smc = of_property_read_bool(node, "use-smc");
+	cpm_clk->restore_rate_on_aoss_ssr =
+		of_property_read_bool(node, "restore-rate-on-aoss-ssr");
 
 	init.name = node->name;
-	init.flags = CLK_GET_RATE_NOCACHE;
+	if (cpm_clk->restore_rate_on_aoss_ssr)
+		dev_dbg(dev, "%s: get rate cache enabled\n", name);
+	else
+		init.flags = CLK_GET_RATE_NOCACHE;
+
 	if (goog_cpm_clk_can_adjust_clk_rate(cpm_clk))
 		init.ops = &goog_cpm_mutable_rate_clk_ops;
 	else if (cpm_clk->use_smc)
@@ -473,17 +533,18 @@ static inline void goog_cpm_clk_mbox_free(struct goog_cpm_clk_mbox *mbox)
 	cpm_iface_free_client(mbox->client);
 }
 
-static int goog_cpm_clk_controller_remove(struct platform_device *pdev)
+static void goog_cpm_clk_controller_remove(struct platform_device *pdev)
 {
 	struct goog_cpm_clk_dev_data *dev_data = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
 	struct device_node *child_node, *node = dev->of_node;
 
+	aoss_ssr_remove_notifier(&dev_data->aoss_ssr_nb);
+
 	goog_cpm_clk_mbox_free(&dev_data->cpm_mbox);
 	for_each_available_child_of_node(node, child_node)
 		of_clk_del_provider(child_node);
 	detach_power_domains(dev_data, dev_data->num_pds);
-	return 0;
 }
 
 int goog_cpm_clk_toggle_auto_gate(struct clk *clk, bool enable)
@@ -507,6 +568,28 @@ int goog_cpm_clk_toggle_qch_mode(struct clk *clk, bool enable)
 	return goog_cpm_clk_send_mba_mail(goog_cpm_clk, op_id, &param);
 }
 EXPORT_SYMBOL_GPL(goog_cpm_clk_toggle_qch_mode);
+
+static int aoss_ssr_notifier(struct notifier_block *notifier, unsigned long event, void *v)
+{
+	struct goog_cpm_clk_dev_data *dev_data =
+		container_of(notifier, struct goog_cpm_clk_dev_data, aoss_ssr_nb);
+	int epoch;
+
+	switch (event) {
+	case AOSS_SSR_PG_DOWN:
+		dev_dbg(dev_data->dev, "aoss_ssr down, epoch=%d\n",
+			 atomic_read(&dev_data->aoss_ssr_epoch));
+		break;
+
+	case AOSS_SSR_PG_UP:
+		epoch = atomic_inc_return(&dev_data->aoss_ssr_epoch);
+		dev_dbg(dev_data->dev, "aoss_ssr up, new epoch=%d\n",
+			 epoch);
+		break;
+	}
+
+	return NOTIFY_OK;
+}
 
 static int goog_cpm_clk_controller_probe(struct platform_device *pdev)
 {
@@ -532,6 +615,7 @@ static int goog_cpm_clk_controller_probe(struct platform_device *pdev)
 	ret = power_on_domains(dev_data);
 	if (ret < 0)
 		return ret;
+
 	platform_set_drvdata(pdev, dev_data);
 	for_each_available_child_of_node(node, child_node) {
 		ret = goog_cpm_clk_register_clk(dev, child_node, dev_data);
@@ -550,6 +634,10 @@ static int goog_cpm_clk_controller_probe(struct platform_device *pdev)
 			return ret;
 		}
 	}
+
+	dev_data->aoss_ssr_nb.notifier_call = aoss_ssr_notifier;
+	aoss_ssr_add_notifier(&dev_data->aoss_ssr_nb);
+
 	return ret;
 };
 

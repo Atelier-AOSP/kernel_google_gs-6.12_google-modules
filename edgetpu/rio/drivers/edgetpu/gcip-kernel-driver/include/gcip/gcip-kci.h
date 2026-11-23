@@ -8,6 +8,8 @@
 #ifndef __GCIP_KCI_H__
 #define __GCIP_KCI_H__
 
+#include <linux/atomic.h>
+#include <linux/bits.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
@@ -85,11 +87,14 @@ enum gcip_kci_code {
 	GCIP_KCI_CODE_THERMAL_CONTROL = 20,
 	GCIP_KCI_CODE_GET_USAGE_V2 = 21,
 	GCIP_KCI_CODE_SET_DEVICE_PROPERTIES = 22,
-	GCIP_KCI_CODE_FAULT_INJECTION = 23,
+	GCIP_KCI_CODE_FAULT_INJECT = 23,
 	GCIP_KCI_CODE_SET_FREQ_LIMITS = 24,
 	GCIP_KCI_CODE_DEBUG_CMD = 25,
 	GCIP_KCI_CODE_DEBUG_RESET = 26,
 	GCIP_KCI_CODE_DEBUG_INIT = 27,
+	GCIP_KCI_CODE_LOG_STATE_INFO = 28,
+	/* unused = 29, */
+	GCIP_KCI_CODE_CORESIGHT_REMOTE_CMD = 30,
 
 	GCIP_KCI_CODE_RKCI_ACK = 256,
 };
@@ -111,6 +116,7 @@ enum gcip_reverse_kci_code {
 	GCIP_RKCI_JOB_LOCKUP,
 	GCIP_RKCI_DEBUG_ASYNC_RESP,
 	GCIP_RKCI_CLIENT_INACTIVITY_TIMEOUT,
+	GCIP_RKCI_NOTIFY_EXECUTING_USER_COMMAND,
 
 	/* TODO(b/433387269): Deprecated following fields once firmware adopt the new ones. */
 	GCIP_RKCI_GENERIC_CODE_FIRST = 0x8000,
@@ -136,6 +142,10 @@ enum gcip_kci_doorbell_reason {
 	GCIP_KCI_PUSH_CMD,
 	GCIP_KCI_CONSUME_RESP,
 };
+
+/* GCIP_KCI_CODE_LOG_STATE_INFO flags values. */
+#define GCIP_KCI_LOG_STATE_INFO_ALL		(0)
+#define GCIP_KCI_LOG_STATE_INFO_SCHEDULER	(BIT(0))
 
 /* Struct to hold a circular buffer for incoming KCI responses. */
 struct gcip_reverse_kci {
@@ -225,10 +235,10 @@ struct gcip_kci_ops {
 	 */
 	bool (*is_block_off)(struct gcip_kci *kci);
 	/*
-	 * Called when a command fails to be sent.
+	 * Called when command @cmd fails to be sent, or the response times out.
 	 * Context: normal.
 	 */
-	void (*on_error)(struct gcip_kci *kci, int err);
+	void (*on_error)(struct gcip_kci *kci, void *cmd, int err);
 };
 
 struct gcip_kci {
@@ -236,6 +246,8 @@ struct gcip_kci {
 	struct device *dev;
 	/* Mailbox used by KCI. */
 	struct gcip_mailbox mailbox;
+	/* The last assigned sequence number of commands, the assignment starts from 1. */
+	atomic64_t cur_seq;
 	/* Protects cmd_queue. */
 	struct mutex cmd_queue_lock;
 	/* Protects resp_queue. */
@@ -341,7 +353,7 @@ static inline u32 gcip_kci_queue_element_size(enum gcip_mailbox_queue_type type)
 
 static inline u64 gcip_kci_get_cur_seq(struct gcip_kci *kci)
 {
-	return gcip_mailbox_get_cur_seq(&kci->mailbox);
+	return atomic64_read(&kci->cur_seq);
 }
 
 static inline struct gcip_kci_command_element *gcip_kci_get_cmd_queue(struct gcip_kci *kci)

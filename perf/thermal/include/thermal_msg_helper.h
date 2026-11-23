@@ -12,6 +12,7 @@
 
 #define THERMAL_NTC_IRQ_STATUS_BUF_LEN	2
 #define THERMAL_TMU_NR_TRIPS (8)
+#define THERMAL_TEMP_LUT_MAX_ENTRIES (24)
 
 int __msg_gen_send_req_with_status_check(union thermal_cpm_message *message);
 
@@ -42,6 +43,8 @@ int msg_tmu_set_power_table(enum hw_dev_type cdev_id, u8 idx, int val);
 int msg_tmu_get_power_table(enum hw_dev_type cdev_id, u8 idx, int *val,
 			    int *max_state_idx);
 int msg_tmu_set_polling_delay_ms(u8 tz_id, u16 delay);
+int msg_tmu_set_temp_lut(u8 tz_id, u8 temperature, u8 cdev_state, bool append);
+int msg_tmu_get_temp_lut(u8 tz_id, u8 index, u8 *temperature, u8 *cdev_state);
 
 int msg_thermal_sm_get_section_addr(u8 section, u32 *version, u32 *addr, u32 *size);
 

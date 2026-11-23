@@ -26,6 +26,7 @@
 #include <typedefs.h>
 #include <linuxver.h>
 #include <osl.h>
+#include <bcmstdlib_s.h>
 #include <bcmutils.h>
 #include <dngl_stats.h>
 #include <dhd.h>

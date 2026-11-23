@@ -634,7 +634,7 @@ wlan_objmgr_trace_ref_node_alloc(const char *func, int line)
 	}
 
 	func_node->line_head = line_node;
-	qdf_str_lcopy(func_node->func, func, WLAN_OBJMGR_TRACE_FUNC_SIZE);
+	qdf_str_scopy(func_node->func, func, WLAN_OBJMGR_TRACE_FUNC_SIZE);
 	func_node->next = NULL;
 
 	return func_node;

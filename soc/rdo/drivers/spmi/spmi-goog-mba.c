@@ -345,7 +345,6 @@ static int spmi_mba_read_cmd(struct spmi_controller *ctrl,
 #define SPMI_DEBUG_ATTRIBUTE(name, fn_read, fn_write) \
 static const struct file_operations name = {    \
 	.open   = simple_open,                  \
-	.llseek = no_llseek,                    \
 	.read   = fn_read,                      \
 	.write  = fn_write,                     \
 }
@@ -521,15 +520,13 @@ err_put_controller:
 	return err;
 }
 
-static int spmi_mba_remove(struct platform_device *pdev)
+static void spmi_mba_remove(struct platform_device *pdev)
 {
 	struct spmi_mba_info *info = platform_get_drvdata(pdev);
 	struct spmi_controller *ctrl = info->ctrl;
 
 	spmi_controller_remove(ctrl);
 	spmi_controller_put(ctrl);
-
-	return 0;
 }
 
 static const struct of_device_id spmi_mba_match_table[] = {

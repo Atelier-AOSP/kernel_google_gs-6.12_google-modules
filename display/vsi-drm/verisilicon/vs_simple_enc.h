@@ -18,6 +18,8 @@
 struct simple_encoder_priv {
 	u8 encoder_type;
 	u32 output_mode;
+	u32 max_w;
+	u32 max_h;
 };
 
 struct simple_encoder {

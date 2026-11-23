@@ -140,8 +140,9 @@ PVRSRVBridgeTLOpenStream(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (PVRSRVTL_MAX_STREAM_NAME_SIZE * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiNameInt, (const void __user *)psTLOpenStreamIN->puiName,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiNameInt,
+		     (const void __user *)psTLOpenStreamIN->puiName,
 		     PVRSRVTL_MAX_STREAM_NAME_SIZE * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psTLOpenStreamOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -469,8 +470,8 @@ PVRSRVBridgeTLDiscoverStreams(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (PVRSRVTL_MAX_STREAM_NAME_SIZE * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiNamePatternInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiNamePatternInt,
 		     (const void __user *)psTLDiscoverStreamsIN->puiNamePattern,
 		     PVRSRVTL_MAX_STREAM_NAME_SIZE * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
@@ -501,8 +502,9 @@ PVRSRVBridgeTLDiscoverStreams(IMG_UINT32 ui32DispatchTableEntry,
 	if ((puiStreamsInt) && ((psTLDiscoverStreamsIN->ui32Size * sizeof(IMG_CHAR)) > 0))
 	{
 		if (unlikely
-		    (OSCopyToUser
-		     (NULL, (void __user *)psTLDiscoverStreamsOUT->puiStreams, puiStreamsInt,
+		    (CopyToUserWrapper
+		     (NULL, ui32DispatchTableEntry,
+		      (void __user *)psTLDiscoverStreamsOUT->puiStreams, puiStreamsInt,
 		      (psTLDiscoverStreamsIN->ui32Size * sizeof(IMG_CHAR))) != PVRSRV_OK))
 		{
 			psTLDiscoverStreamsOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -714,8 +716,9 @@ PVRSRVBridgeTLWriteData(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psTLWriteDataIN->ui32Size * sizeof(IMG_BYTE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui8DataInt, (const void __user *)psTLWriteDataIN->pui8Data,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui8DataInt,
+		     (const void __user *)psTLWriteDataIN->pui8Data,
 		     psTLWriteDataIN->ui32Size * sizeof(IMG_BYTE)) != PVRSRV_OK)
 		{
 			psTLWriteDataOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;

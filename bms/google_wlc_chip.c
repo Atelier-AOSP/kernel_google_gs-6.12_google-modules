@@ -200,8 +200,11 @@ static int google_wlc_chip_get_vout(struct google_wlc_data *chgr, u32 *mv)
 	if (chgr->chip->reg_vout < 0)
 		return -EINVAL;
 	ret = chgr->chip->reg_read_adc(chgr, chgr->chip->reg_vout, &val);
-	if (ret == 0)
+	if (ret == 0) {
+		if (val > GOOGLE_WLC_READING_MAX_VOLT_MV)
+			return -EINVAL;
 		*mv = val;
+	}
 	return ret;
 }
 
@@ -213,8 +216,11 @@ static int google_wlc_chip_get_vrect(struct google_wlc_data *chgr, u32 *mv)
 	if (chgr->chip->reg_vrect < 0)
 		return -EINVAL;
 	ret = chgr->chip->reg_read_adc(chgr, chgr->chip->reg_vrect, &val);
-	if (ret == 0)
+	if (ret == 0) {
+		if (val > GOOGLE_WLC_READING_MAX_VOLT_MV)
+			return -EINVAL;
 		*mv = val;
+	}
 	return ret;
 }
 
@@ -226,8 +232,11 @@ static int google_wlc_chip_get_iout(struct google_wlc_data *chgr, u32 *ma)
 	if (chgr->chip->reg_iout < 0)
 		return -EINVAL;
 	ret = chgr->chip->reg_read_adc(chgr, chgr->chip->reg_iout, &val);
-	if (ret == 0)
+	if (ret == 0) {
+		if (val > GOOGLE_WLC_READING_MAX_IOUT_MA)
+			return -EINVAL;
 		*ma = val;
+	}
 	return ret;
 }
 
@@ -239,8 +248,11 @@ static int google_wlc_chip_get_temp(struct google_wlc_data *chgr, u32 *millic)
 	if (chgr->chip->reg_die_temp < 0)
 		return -EINVAL;
 	ret = chgr->chip->reg_read_adc(chgr, chgr->chip->reg_die_temp, &val);
-	if (ret == 0)
+	if (ret == 0) {
+		if (val > GOOGLE_WLC_READING_MAX_TEMP_C)
+			return -EINVAL;
 		*millic = C_TO_MILLIC(val);
+	}
 	return ret;
 }
 
@@ -252,8 +264,11 @@ static int google_wlc_chip_get_opfreq(struct google_wlc_data *chgr, u32 *khz)
 	if (chgr->chip->reg_op_freq < 0)
 		return -EINVAL;
 	ret = chgr->chip->reg_read_adc(chgr, chgr->chip->reg_op_freq, &val);
-	if (ret == 0)
+	if (ret == 0) {
+		if (val > GOOGLE_WLC_READING_MAX_FREQ_KHZ)
+			return -EINVAL;
 		*khz = val;
+	}
 	return ret;
 }
 
@@ -716,7 +731,7 @@ static int google_wlc_fw_reg_write_n(struct google_wlc_data *chgr, u32 reg,
 }
 
 static int google_wlc_chip_get_mpp_xid(struct google_wlc_data *chgr, u32 *device_id,
-				       u32 *mfg_rsvd_id, u32 *unique_id)
+				       u32 *mfg_rsvd_id, u32 *unique_id, u8 *product_id)
 {
 	return -EINVAL;
 }
@@ -795,6 +810,11 @@ static int google_wlc_chip_set_dynamic_mod(struct google_wlc_data *chgr)
 {
 	return -EINVAL;
 }
+
+static int google_wlc_chip_get_xce(struct google_wlc_data *chgr, s8 *xce)
+{
+	return -EINVAL;
+}
 /* Init */
 
 static int google_wlc_chip_init_funcs(struct google_wlc_data *chgr)
@@ -832,6 +852,7 @@ static int google_wlc_chip_init_funcs(struct google_wlc_data *chgr)
 	chip->reg_rf_curr_start = -1;
 	chip->reg_limit_rsn = -1;
 	chip->val_eds_stream_fwupdate = -1;
+	chip->val_default_vout = -1;
 	chip->reg_qi_id = -1;
 
 	/* Initialize default i2c functions */
@@ -901,6 +922,7 @@ static int google_wlc_chip_init_funcs(struct google_wlc_data *chgr)
 	chip->chip_get_mode_capabilities = google_wlc_chip_get_mode_capabilities;
 	chip->chip_set_dynamic_mod = google_wlc_chip_set_dynamic_mod;
 	chip->chip_set_qi_id = google_wlc_chip_set_qi_id;
+	chip->chip_get_xce = google_wlc_chip_get_xce;
 
 	/* Chip specific functions and registers. These may override the defaults */
 	switch (chgr->chip_id) {

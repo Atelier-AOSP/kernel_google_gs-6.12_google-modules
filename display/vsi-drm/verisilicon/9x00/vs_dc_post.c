@@ -20,6 +20,7 @@
 #include <drm/drm_vblank.h>
 
 #include <gs_drm/gs_drm_connector.h>
+#include <gs_drm/gs_fault_event.h>
 #include <trace/dpu_trace.h>
 
 #include "vs_crtc.h"
@@ -34,13 +35,15 @@
 #include "display_compress/vs_dc_dsc.h"
 #include "postprocess/vs_dc_histogram.h"
 #include "vs_trace.h"
+#include "vs_trace_9x00.h"
 
 #include <drm/vs_drm.h>
 #include <drm/vs_drm_fourcc.h>
 
 #define MAX_DC_WAIT_EARLIEST_PROCESS_TIME_USEC 100000
 #define MAX_FRAMES_PENDING_COUNT 2
-#define FRAME_DONE_TIMEOUT_MS 100
+// Underrun event will be emitted for almost every frame at 120 FPS. (8.33ms)
+#define UNDERRUN_LOG_RATELIMIT_MS 8
 
 static inline void update_wb_format(u32 format, struct dc_hw_fb *fb)
 {
@@ -237,6 +240,106 @@ inline u8 to_vs_display_id(struct vs_dc *dc, struct drm_crtc *crtc)
 }
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
+static void _get_u32_value_after_str(char *p, char *str, u32 size, u32 *value)
+{
+	char *cur = p;
+	int ret = 0;
+
+	cur = strstr(p, str);
+	if (cur) {
+		cur += size;
+		ret = kstrtoul(cur, 10, (unsigned long *)value);
+		if (ret) {
+			pr_err("%s: failed to kstrtoul: %d\n", __func__, ret);
+		}
+	}
+}
+
+static void vs_dc_set_display_qos(struct device *dev, struct drm_crtc *crtc,
+				  const char __user *ubuf, size_t len)
+{
+	struct vs_dc *dc = dev_get_drvdata(dev);
+	struct vs_crtc *vs_crtc = to_vs_crtc(crtc);
+	struct drm_crtc_state *state = vs_crtc->base.state;
+	struct vs_crtc_state *crtc_state = to_vs_crtc_state(state);
+	char buf[256];
+	struct vs_display_info *display_info;
+	u8 i, hw_id;
+
+	display_info = (struct vs_display_info *)&dc->hw.info->displays[vs_crtc->id];
+	hw_id = display_info->id;
+
+	if (len > sizeof(buf) - 1) {
+		pr_err("%s: input string size out of range.\n", __func__);
+		return;
+	}
+
+	if (copy_from_user(buf, ubuf, len)) {
+		pr_err("%s: copy from user failed.\n", __func__);
+		return;
+	}
+
+	for (i = 0; i < MAX_QOS_LEVLE; i++) {
+		char temp[8];
+		char temp_1[11];
+		char temp_2[11];
+
+		snprintf(temp, 8, "qosTH%d:", i);
+		snprintf(temp_1, 11, "urgentTH%d:", i);
+		snprintf(temp_2, 11, "qosValue%d:", i);
+
+		if (i < MAX_QOS_LEVLE - 1) {
+			_get_u32_value_after_str(buf, temp, 8, &crtc_state->qos.qos_threshold[i]);
+			_get_u32_value_after_str(buf, temp_1, 11,
+						 &crtc_state->qos.urgent_threshold[i]);
+		}
+
+		_get_u32_value_after_str(buf, temp_2, 11, &crtc_state->qos.qos_value[i]);
+	}
+
+	_get_u32_value_after_str(buf, "urgentHigh:", 11, &crtc_state->qos.urgent_high);
+	_get_u32_value_after_str(buf, "urgentLow:", 10, &crtc_state->qos.urgent_low);
+
+	if (display_info->histogram) {
+		_get_u32_value_after_str(buf, "histQosValue:", 13, &crtc_state->qos.hist_qos_value);
+		crtc_state->qos.hist_qos_changed = true;
+	}
+
+	crtc_state->qos.dirty = true;
+
+	/* update status to hw status */
+	memcpy(&dc->hw.display[hw_id].qos, &crtc_state->qos, sizeof(struct dc_hw_disp_qos));
+}
+
+static int vs_dc_show_display_qos_status(struct seq_file *s)
+{
+	struct drm_crtc *crtc = s->private;
+	struct vs_crtc *vs_crtc = to_vs_crtc(crtc);
+	struct vs_drm_private *priv = crtc->dev->dev_private;
+	struct vs_dc *dc = dev_get_drvdata(priv->dc_dev);
+	struct vs_crtc_state *crtc_state = to_vs_crtc_state(crtc->state);
+	struct vs_display_info *display_info;
+	u8 i;
+
+	display_info = (struct vs_display_info *)&dc->hw.info->displays[vs_crtc->id];
+	dc_hw_get_be_qos_value(&crtc_state->qos);
+
+	for (i = 0; i < MAX_QOS_LEVLE - 1; i++) {
+		seq_printf(s, "\tQOS threshold %d= [%d]\n", i, crtc_state->qos.qos_threshold[i]);
+		seq_printf(s, "\tUrgent threshold %d= [%d]\n", i,
+			   crtc_state->qos.urgent_threshold[i]);
+		seq_printf(s, "\tBE QOS value %d= [%d]\n", i, crtc_state->qos.qos_value[i]);
+	}
+	seq_printf(s, "\tBE QOS value %d= [%d]\n", i, crtc_state->qos.qos_value[i]);
+	seq_printf(s, "\tUrgent high value = [%d]\n", crtc_state->qos.urgent_high);
+	seq_printf(s, "\tUrgent low value = [%d]\n", crtc_state->qos.urgent_low);
+
+	if (display_info->histogram)
+		seq_printf(s, "\tHistogram QOS value = [%d]\n", crtc_state->qos.hist_qos_value);
+
+	return 0;
+}
+
 static int vs_dc_show_display_pattern_config(struct seq_file *s)
 {
 	struct drm_crtc *crtc = s->private;
@@ -457,6 +560,48 @@ static void vs_dc_set_display_pattern(struct drm_crtc *crtc, const char __user *
 	}
 }
 
+static int vs_dc_show_wb_qos_status(struct seq_file *s)
+{
+	struct drm_connector *connector = s->private;
+	struct drm_writeback_connector *drm_wb_connector = drm_connector_to_writeback(connector);
+	struct vs_writeback_connector_state *vs_wb_state =
+		to_vs_writeback_connector_state(drm_wb_connector->base.state);
+
+	seq_printf(s, "\tQOS value = [%d]\n", vs_wb_state->qos.qos_value);
+
+	return 0;
+}
+
+static void vs_dc_set_wb_qos(struct device *dev, struct vs_writeback_connector *vs_wb,
+			     const char __user *ubuf, size_t len)
+{
+	struct vs_dc *dc = dev_get_drvdata(dev);
+	struct vs_writeback_connector_state *vs_wb_state =
+		to_vs_writeback_connector_state(vs_wb->base.base.state);
+	char buf[256];
+	struct vs_wb_info *wb_info;
+	u8 hw_id;
+
+	wb_info = (struct vs_wb_info *)&dc->hw.info->write_back[vs_wb->id];
+	hw_id = wb_info->id;
+
+	if (len > sizeof(buf) - 1) {
+		pr_err("%s: input string size out of range.\n", __func__);
+		return;
+	}
+
+	if (copy_from_user(buf, ubuf, len)) {
+		pr_err("%s: copy from user failed.\n", __func__);
+		return;
+	}
+
+	_get_u32_value_after_str(buf, "qosValue:", 9, &vs_wb_state->qos.qos_value);
+	vs_wb_state->qos.dirty = true;
+
+	/* update status to hw status */
+	memcpy(&dc->hw.wb[hw_id].qos, &vs_wb_state->qos, sizeof(struct dc_hw_wb_qos));
+}
+
 #endif /* CONFIG_DEBUG_FS */
 
 static void vs_dc_display_set_mode(struct device *dev, struct drm_crtc *crtc,
@@ -575,6 +720,11 @@ static void dc_freq_boost_kwork(struct kthread_work *work)
 	DPU_ATRACE_END("DPU Boost_FREQ");
 }
 
+static bool is_underrun_wa_needed(struct vs_dc *dc, struct dc_hw_display *display)
+{
+	return (dc->hw.info->cid == VS_CHIP_CID_32A) && is_display_cmd_sw_trigger(display);
+}
+
 static void vs_dc_enable(struct device *dev, struct drm_crtc *crtc,
 			 struct drm_atomic_state *state)
 {
@@ -623,6 +773,8 @@ static void vs_dc_enable(struct device *dev, struct drm_crtc *crtc,
 	vs_dc_display_set_mode(dev, crtc, state);
 	spin_unlock_irqrestore(&vs_crtc->vblank_enable_lock, flags);
 	dc_hw_enable_frame_irqs(&dc->hw, vs_crtc->id, true);
+	if (!is_underrun_wa_needed(dc, &dc->hw.display[vs_crtc->id]))
+		dc_hw_enable_underrun_interrupt(&dc->hw, vs_crtc->id, true);
 
 	vs_qos_set_qos_config(dev, crtc);
 
@@ -693,6 +845,7 @@ static void vs_dc_disable(struct device *dev, struct drm_crtc *crtc,
 	bool is_vid_mode = (hw_disp->mode.output_mode & VS_OUTPUT_MODE_CMD) == 0;
 	int ret;
 	int old_te_count;
+	unsigned int framedone_timeout = vs_dc_get_framedone_timeout();
 	bool missing_fd_int = false;
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
@@ -719,7 +872,7 @@ static void vs_dc_disable(struct device *dev, struct drm_crtc *crtc,
 	ret = wait_event_timeout(vs_crtc->framedone_waitq,
 				 atomic_read(&vs_crtc->frames_pending) <= 0 &&
 					 !vs_crtc->frame_transfer_pending,
-				 msecs_to_jiffies(FRAME_DONE_TIMEOUT_MS));
+				 framedone_timeout);
 
 	if (!ret) {
 		/*
@@ -733,11 +886,12 @@ static void vs_dc_disable(struct device *dev, struct drm_crtc *crtc,
 
 	if (vs_crtc->frame_transfer_pending) {
 		vs_crtc_record_frame_timeout(vs_crtc, old_te_count, old_state,
-					     msecs_to_jiffies(FRAME_DONE_TIMEOUT_MS), true);
+					     framedone_timeout, true);
 		atomic_inc(&vs_crtc->frame_done_timeout);
 	} else if (missing_fd_int) {
 		vs_dc_update_irq_statuses(dc);
-		trace_disp_frame_done_missing(display_id, vs_crtc_state->output_id, vs_crtc);
+		trace_disp_frame_done_missing(display_id, vs_crtc_state->output_id,
+			atomic_read(&vs_crtc->frames_pending), atomic_read(&vs_crtc->te_count));
 		dev_warn(dev, "%s: frame done interrupt handler didn't run, dpu is %s\n",
 			 crtc->name, dc->enabled ? "enabled" : "disabled");
 		atomic_inc(&vs_crtc->frame_done_missing);
@@ -1573,17 +1727,18 @@ static void dc_wait_earliest_process_time(struct drm_crtc *crtc, struct drm_atom
 }
 
 /**
- * dc_wait_for_prev_commit_done_on_plane_swap() - Waits for pending frames on plane swap.
+ * dc_wait_for_prev_commit_done() - Waits for pending frames to complete.
  * @dev: The device structure.
  * @crtc: The DRM CRTC object.
  * @state: The DRM atomic state.
  *
- * This function checks if a plane is being swapped to the given CRTC. If a
- * plane swap is detected and there are frames pending on the CRTC, it waits
- * for the pending frames to complete.
+ * This function checks if a plane is being swapped or if the secure state
+ * of an active plane is being enabled. If either condition is detected and
+ * there are frames pending on the CRTC, it waits for the pending frames
+ * to complete before returning.
  */
-static void dc_wait_for_prev_commit_done_on_plane_swap(struct device *dev, struct drm_crtc *crtc,
-							struct drm_atomic_state *state)
+static void dc_wait_for_prev_commit_done(struct device *dev, struct drm_crtc *crtc,
+					 struct drm_atomic_state *state)
 {
 	int ret;
 	struct vs_dc *dc = dev_get_drvdata(dev);
@@ -1592,32 +1747,41 @@ static void dc_wait_for_prev_commit_done_on_plane_swap(struct device *dev, struc
 	const struct drm_crtc_state *old_crtc_state = drm_atomic_get_old_crtc_state(state, crtc);
 	const struct drm_crtc_state *new_crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
 	const struct vs_crtc_state *vs_new_crtc_state = to_vs_crtc_state(new_crtc_state);
+	u32 swapped_plane_mask, enabling_secure_mask;
 
-	if (old_crtc_state && vs_new_crtc_state->swapped_plane_mask &&
-	    atomic_read(&vs_crtc->frames_pending) > 0) {
-		DPU_ATRACE_BEGIN(__func__);
-		trace_disp_commit_wait_begin(display_id, old_crtc_state->plane_mask,
-					     new_crtc_state->plane_mask,
-					     vs_new_crtc_state->swapped_plane_mask,
-					     atomic_read(&vs_crtc->frames_pending));
-		dev_dbg(dev,
-			"plane_swap: wait for pending frame on display-%d, plane_mask %#x %#x, swapped_plane_mask %#x, frames_pending %d\n",
-			display_id, old_crtc_state->plane_mask, new_crtc_state->plane_mask,
-			vs_new_crtc_state->swapped_plane_mask,
-			atomic_read(&vs_crtc->frames_pending));
+	if (!old_crtc_state)
+		return;
 
-		ret = wait_event_timeout(vs_crtc->framedone_waitq,
-					 atomic_read(&vs_crtc->frames_pending) == 0,
-					 msecs_to_jiffies(100));
-		if (!ret)
-			dev_warn(dev, "plane_swap: display-%d timed out waiting for frame done\n",
-				 display_id);
-		trace_disp_commit_wait_done(display_id, old_crtc_state->plane_mask,
-					    new_crtc_state->plane_mask,
-					    vs_new_crtc_state->swapped_plane_mask,
-					    atomic_read(&vs_crtc->frames_pending));
-		DPU_ATRACE_END(__func__);
-	}
+	/* Only wait when there is a plane swap or an active plane enabling secure */
+	swapped_plane_mask = vs_new_crtc_state->swapped_plane_mask;
+	enabling_secure_mask = vs_crtc_state_active_planes_enabling_secure_mask(old_crtc_state,
+										new_crtc_state);
+	if (!(swapped_plane_mask || enabling_secure_mask))
+		return;
+
+	/* Only wait if there is at least one pending frame */
+	if (atomic_read(&vs_crtc->frames_pending) <= 0)
+		return;
+
+	DPU_ATRACE_BEGIN(__func__);
+	trace_disp_commit_wait_begin(display_id, swapped_plane_mask, enabling_secure_mask,
+				     atomic_read(&vs_crtc->frames_pending));
+
+	dev_dbg(dev,
+		"wait for pending frame on display-%d, swapped_plane_mask %#x, enabling_secure_mask %#x, frames_pending %d\n",
+		display_id, swapped_plane_mask, enabling_secure_mask,
+		atomic_read(&vs_crtc->frames_pending));
+
+	ret = wait_event_timeout(vs_crtc->framedone_waitq,
+				 atomic_read(&vs_crtc->frames_pending) == 0, msecs_to_jiffies(100));
+	if (!ret)
+		dev_warn(dev,
+			"display-%d timed out waiting for frame done (swapped_plane_mask %#x, enabling_secure_mask %#x)\n",
+			display_id, swapped_plane_mask, enabling_secure_mask);
+
+	trace_disp_commit_wait_done(display_id, swapped_plane_mask, enabling_secure_mask,
+				    atomic_read(&vs_crtc->frames_pending));
+	DPU_ATRACE_END(__func__);
 }
 
 static void vs_dc_commit(struct device *dev, struct drm_crtc *crtc, struct drm_atomic_state *state)
@@ -1660,8 +1824,11 @@ static void vs_dc_commit(struct device *dev, struct drm_crtc *crtc, struct drm_a
 	dc_hw_wb_commit(&dc->hw, display_id);
 
 	/* Program non-shadow features */
-	dc_wait_for_prev_commit_done_on_plane_swap(dev, crtc, state);
+	dc_wait_for_prev_commit_done(dev, crtc, state);
 	dc_hw_plane_commit_non_shadow(&dc->hw, display_id);
+
+	/* Only update secure bit here if it is being enabled */
+	dc_hw_plane_set_secure_bits(&dc->hw, display_id, true);
 
 	dc_hw_enable_shadow_register(&dc->hw, display_id, true);
 
@@ -1978,9 +2145,9 @@ static void vs_dc_disable_writeback_irq(struct vs_writeback_connector *wb_connec
 	u32 conn_id = wb_connector->id;
 	u32 wb_hw_id = hw->info->write_back[conn_id].id;
 
-	if (pm_runtime_get_if_in_use(hw->dev) > 0) {
+	if (dc_be_power_get_if_active(hw->dev) > 0) {
 		dc_hw_enable_wb_irqs(hw, wb_hw_id, false);
-		pm_runtime_put(hw->dev);
+		dc_be_power_put(hw->dev, false);
 	} else { /* just decrease refcnt when HW is already powered off */
 		unsigned long flags;
 
@@ -1992,11 +2159,449 @@ static void vs_dc_disable_writeback_irq(struct vs_writeback_connector *wb_connec
 	}
 }
 
+/* BE power functions */
+
+/**
+ * dc_be_power_get_if_active() - Bump up runtime PM usage counter if device active
+ * @dc_dev: Device pointer for the dc device
+ *
+ * Similar to pm_runtime_get_if_active(), this bumps up the usage count on the
+ * back-end power of the dc if it's already on (at which point it returns 1).
+ *
+ * If instead the dc is off (or in some other transitional state, i.e.
+ * suspending or resuming), does not increase the usage counter, and returns 0.
+ *
+ * If usage is increased (return value is 1), balance this call with a call to
+ * dc_be_power_put().
+ *
+ * This is useful for functions that require the DPU to be powered on to
+ * function, but don't want to initiate the power-on sequence if the DPU is off.
+ *
+ * This is a passthrough from the device pointer for the dpu to the be's device
+ * pointer, as it should manage its own power domains.
+ *
+ * Return: 1 if dc power is active, 0 if in a different state, -EINVAL if
+ *	   runtime PM is disabled for the device
+ */
+int dc_be_power_get_if_active(struct device *dc_dev)
+{
+	struct vs_dc *dc = dev_get_drvdata(dc_dev);
+	struct device *be_dev = dc->be_dev;
+	int ret;
+
+	ret = pm_runtime_get_if_active(be_dev);
+
+	if (ret > 0)
+		trace_disp_dc_be_power_get(be_dev, true, 0);
+
+	return ret;
+}
+
+int dc_be_power_get(struct device *dev, bool sync)
+{
+	struct vs_dc *dc = dev_get_drvdata(dev);
+	struct device *be_dev = dc->be_dev;
+	int ret;
+
+	DPU_ATRACE_BEGIN(__func__);
+	if (sync) {
+		ret = pm_runtime_get_sync(be_dev);
+	} else {
+		ret = pm_runtime_get(be_dev);
+		/* runtime_get might return -EINPROGRESS if there exists deferred runtime_get */
+		if (ret == -EINPROGRESS) {
+			dev_dbg(dev, "%s: %ps ignore return EINPROGRESS\n", __func__,
+				__builtin_return_address(0));
+		}
+	}
+
+	if (unlikely(ret < 0 && ret != -EINPROGRESS))
+		dev_err(dev, "%s: %ps: sync:%d ret:%d\n", __func__, __builtin_return_address(0),
+			sync, ret);
+
+	trace_disp_dc_be_power_get(be_dev, sync, ret);
+	dev_dbg(dev, "be_power_get: %ps: sync:%d power_usage_count:%d\n",
+		__builtin_return_address(0), sync, atomic_read(&be_dev->power.usage_count));
+	DPU_ATRACE_END(__func__);
+
+	return (ret == -EINPROGRESS) ? 0 : ret;
+}
+
+int dc_be_power_put(struct device *dev, bool sync)
+{
+	struct vs_dc *dc = dev_get_drvdata(dev);
+	struct device *be_dev = dc->be_dev;
+	int ret;
+
+	DPU_ATRACE_BEGIN(__func__);
+	if (sync)
+		ret = pm_runtime_put_sync(be_dev);
+	else
+		ret = pm_runtime_put(be_dev);
+
+	/* runtime_put might return -EAGAIN if there exists deferred runtime_get */
+	if (ret == -EAGAIN) {
+		dev_dbg(dev, "%s: %ps ignore return EAGAIN\n", __func__,
+			__builtin_return_address(0));
+	}
+
+	if (unlikely(ret < 0 && ret != -EAGAIN))
+		dev_err(dev, "%s: %ps: sync:%d ret:%d\n", __func__, __builtin_return_address(0),
+			sync, ret);
+
+	trace_disp_dc_be_power_put(be_dev, sync, ret);
+	dev_dbg(dev, "be_power_put: %ps: sync:%d power_usage_count:%d\n",
+		__builtin_return_address(0), sync, atomic_read(&dev->power.usage_count));
+	DPU_ATRACE_END(__func__);
+
+	return (ret == -EAGAIN) ? 0 : ret;
+}
+
+/* BE irq handling */
+
+static void dc_underrun_workaround(struct vs_dc *dc, struct drm_crtc *crtc,
+				   struct dc_hw_display *display, u8 display_id, bool enable)
+{
+	struct vs_crtc *vs_crtc = to_vs_crtc(crtc);
+
+	if (!is_underrun_wa_needed(dc, display))
+		return;
+
+	if (vs_crtc->underrun_enabled != enable) {
+		dc_hw_clear_underrun_interrupt(&dc->hw, display_id);
+		dc_hw_enable_underrun_interrupt(&dc->hw, display_id, enable);
+		vs_crtc->underrun_enabled = enable;
+		DPU_ATRACE_INT_PID_FMT(enable, vs_crtc->trace_pid, "underrun_en[%d]", display_id);
+	}
+}
+
+static void _dc_handle_underrun(struct vs_dc *dc, struct vs_crtc *vs_crtc,
+				bool cmd_mode_start_scan_now)
+{
+	struct device *dev = dc->hw.dev;
+	struct dc_hw_display *display = &dc->hw.display[vs_crtc->id];
+	u32 output_id = display->output_id;
+	unsigned long now = jiffies;
+
+	if (is_underrun_wa_needed(dc, display)) {
+		if (!vs_crtc->frame_transfer_pending) {
+			dev_dbg(dev,
+				"output_id[%d] underrun false positive, no transfer, mode:%#x\n",
+				output_id, display->mode.output_mode);
+			return;
+		}
+
+		if (!vs_crtc->ddic_cmd_mode_start_scan || cmd_mode_start_scan_now) {
+			dev_dbg(dev, "output_id[%d] underrun false positive, %s, mode:%#x\n",
+				output_id,
+				(!vs_crtc->ddic_cmd_mode_start_scan) ? "no panel scan out yet" :
+								       "panel just start scan out",
+				display->mode.output_mode);
+			return;
+		}
+	}
+
+	atomic_inc(&vs_crtc->line_underrun_count);
+	dev_dbg(dev,
+		"output_id[%d] underrun detected, mode:%#x (te count %d, line underrun count %d)\n",
+		output_id, display->mode.output_mode, atomic_read(&vs_crtc->te_count),
+		atomic_read(&vs_crtc->line_underrun_count));
+	trace_disp_dpu_line_underrun(output_id, atomic_read(&vs_crtc->frames_pending),
+				     atomic_read(&vs_crtc->te_count));
+
+	if (!time_before(now, vs_crtc->last_notify_dpu_underrun_time +
+			 msecs_to_jiffies(UNDERRUN_LOG_RATELIMIT_MS))) {
+
+		/**
+		 * TODO(b/492411195): move the non_blocking_gs_fault_event_emit call to
+		 * _vs_dc_handle_frame_done.
+		 */
+		non_blocking_gs_fault_event_emit(dev, GS_FAULT_EVENT_TYPE_DPU_UNDERRUN, 1);
+		vs_crtc->last_notify_dpu_underrun_time = now;
+		dev_dbg(dev, "Emitting DPU underrun fault event.");
+	} else {
+		dev_dbg(dev, "Skipping DPU underrun fault event emission due to rate limiting.");
+	}
+}
+
+static void _dc_handle_frame_start(struct vs_dc *dc, struct vs_crtc *vs_crtc, u8 display_id)
+{
+	struct device *dev = dc->hw.dev;
+	struct dc_hw_display *display = &dc->hw.display[display_id];
+	u8 output_id = display->output_id;
+	pid_t pid = vs_crtc->trace_pid;
+
+	/* Detect the issue where there is a frame start interrupt but no SOF trigger */
+	if (!vs_crtc->first_frame_trigger) {
+		dev_warn(
+			dev,
+			"invalid frame start event, display_id:%d output_id:%d frames_pending:%d\n",
+			display_id, output_id, atomic_read(&vs_crtc->frames_pending));
+		return;
+	}
+
+	dc_underrun_workaround(dc, &vs_crtc->base, display, display_id, true);
+	DPU_ATRACE_INT_PID_FMT(1, pid, "frame_tx[%d]", output_id);
+	trace_disp_frame_start(display_id, output_id, vs_crtc);
+	atomic_set(&vs_crtc->line_underrun_count, 0);
+	vs_crtc->frame_transfer_pending = true;
+	vs_crtc_handle_frm_start(&vs_crtc->base);
+}
+
+static void _dc_handle_frame_done(struct vs_dc *dc, struct vs_crtc *vs_crtc, u8 display_id)
+{
+	struct dc_hw_display *display = &dc->hw.display[display_id];
+	u8 output_id = display->output_id;
+	pid_t pid = vs_crtc->trace_pid;
+	unsigned int crtc_index = vs_crtc->base.index;
+
+	DPU_ATRACE_INT_PID_FMT(0, pid, "frame_tx[%d]", output_id);
+	dc_hw_display_frame_done(&dc->hw, display_id);
+	vs_crtc->ltm_hist_query_pending = false;
+	if (!atomic_dec_if_positive(&vs_crtc->frames_pending))
+		dc_underrun_workaround(dc, &vs_crtc->base, display, display_id, false);
+	DPU_ATRACE_INT_PID_FMT(atomic_read(&vs_crtc->frames_pending), pid, "frames_pending[%u]",
+			       crtc_index);
+	if (atomic_read(&vs_crtc->line_underrun_count)) {
+		trace_disp_dpu_underrun(output_id, atomic_read(&vs_crtc->frames_pending),
+					atomic_read(&vs_crtc->te_count));
+		atomic_inc(&vs_crtc->frame_underrun_count);
+	}
+	trace_disp_frame_done(display_id, output_id, vs_crtc);
+	vs_crtc->frame_transfer_pending = false;
+	atomic_inc(&vs_crtc->frame_done_count);
+	wake_up_all(&vs_crtc->framedone_waitq);
+
+	vs_crtc->needs_hw_reset = false;
+
+	vs_crtc->recovery.count = 0;
+}
+
+static void _dc_handle_te_interrupts(struct vs_dc *dc, struct vs_crtc *vs_crtc, u8 display_id,
+				     const struct dc_hw_interrupt_status *status,
+				     bool *ddic_cmd_mode_start_scan_now)
+{
+	struct dc_hw_display *display = &dc->hw.display[display_id];
+	struct drm_crtc *crtc = &vs_crtc->base;
+	u8 output_id = display->output_id;
+	u8 output_mask = BIT(output_id);
+	pid_t pid = vs_crtc->trace_pid;
+
+	if (output_mask & status->output_te_rising) {
+		int te_high_level = 1;
+		/* if seeing TE rising edge during dpu scanout, warn underrun */
+		if (vs_crtc->frame_transfer_pending) {
+			te_high_level = 2;
+			DPU_ATRACE_INT_PID_FMT(atomic_add_return(1, &vs_crtc->unexpected_te_count),
+					       pid, "unexpected_te_count[%d]", output_id);
+			dev_dbg(dc->hw.dev, "handle_te_interrupts: unexpected TE(%d)\n",
+				atomic_read(&vs_crtc->unexpected_te_count));
+		}
+		DPU_ATRACE_INT_PID_FMT(te_high_level, pid, "TE[%d]", output_id);
+		if (display->mode.v_sync_polarity) {
+			drm_crtc_handle_vblank(crtc);
+			atomic_inc(&vs_crtc->te_count);
+			vs_crtc->ddic_cmd_mode_start_scan = false;
+		} else {
+			vs_crtc->ddic_cmd_mode_start_scan = true;
+			*ddic_cmd_mode_start_scan_now = true;
+		}
+	}
+
+	if (output_mask & status->output_te_falling) {
+		DPU_ATRACE_INT_PID_FMT(0, pid, "TE[%d]", output_id);
+		if (!display->mode.v_sync_polarity) {
+			drm_crtc_handle_vblank(crtc);
+			atomic_inc(&vs_crtc->te_count);
+			vs_crtc->ddic_cmd_mode_start_scan = false;
+		} else {
+			vs_crtc->ddic_cmd_mode_start_scan = true;
+			*ddic_cmd_mode_start_scan_now = true;
+		}
+	}
+}
+
+static void _dc_handle_frame_interrupts(struct vs_dc *dc, struct vs_crtc *vs_crtc, u8 display_id,
+					const struct dc_hw_interrupt_status *status)
+{
+	struct device *dev = dc->hw.dev;
+	struct dc_hw_display *display = &dc->hw.display[display_id];
+	u8 output_id = display->output_id;
+	u8 output_mask = BIT(output_id);
+	int frm_start, frm_done;
+	bool command_mode = is_display_cmd_sw_trigger(display);
+	struct frame_irq_err_counters *err_counters = &vs_crtc->frame_irq_err_counters;
+
+	frm_start = (output_mask & status->output_frm_start) ? 1 : 0;
+	if (output_mask & status->of_output_frm_start) {
+		if (!frm_start) {
+			dev_err(dev, "invalid irq state[%u]: frm_start overflow without status\n",
+				output_id);
+			err_counters->illegal_irq_state++;
+		}
+		frm_start++;
+	}
+	frm_done = (output_mask & status->output_frm_done) ? 1 : 0;
+	if (output_mask & status->of_output_frm_done) {
+		if (!frm_done) {
+			dev_err(dev, "invalid irq state[%u]: frm_done overflow without status\n",
+				output_id);
+			err_counters->illegal_irq_state++;
+		}
+		frm_done++;
+	}
+	if ((frm_done == 2) && (frm_start == 0)) {
+		dev_err(dev, "invalid irq state[%u]: adjacent frm_done\n", output_id);
+		err_counters->illegal_irq_state++;
+	}
+	if ((frm_start == 2) && (frm_done == 0)) {
+		dev_err(dev, "invalid irq state[%u]: adjacent frm_start\n", output_id);
+		err_counters->illegal_irq_state++;
+	}
+	if ((frm_start == 2) && (frm_done == 2)) {
+		dev_warn(dev, "invalid irq state[%u]: unknown how many frame irqs missed\n",
+			 output_id);
+		err_counters->full_frame_overflow++;
+	}
+	if (command_mode && (frm_start == 2) && (frm_done == 1)) {
+		dev_warn(dev, "invalid irq state[%u]: frame started w/o waiting for prev done\n",
+			 output_id);
+		err_counters->frame_start_overflow_cmd++;
+	}
+
+	/* Log states implying large interrupt handling delays */
+	if (frm_start >= 1 && frm_done >= 1 &&
+	    (frm_start == 2 || frm_done == 2 || !vs_crtc->frame_transfer_pending)) {
+		dev_warn(
+			dev,
+			"dpu irq gap[%u]: irq handling gap larger than frame transfer duration (frm_start:%u frm_done:%u)\n",
+			output_id, frm_start, frm_done);
+		err_counters->full_frame_length_irq_gap++;
+	}
+
+	/*
+	 * Execute frame handlers based on combination of irq conditions
+	 *
+	 * This is meant to account for presumed order of events in reality,
+	 * given that simultaneous handling of these interrupts is indicative of
+	 * interrupt handling being delayed enough for the first handler to find
+	 * multiple irq bits set.
+	 */
+	if (!frm_start && !frm_done) {
+		/* no additional handling needed */
+		return;
+	} else if (frm_start > frm_done) {
+		_dc_handle_frame_start(dc, vs_crtc, display_id);
+
+		if (frm_start > 1) // unexpected frm_start overflow
+			atomic_dec_if_positive(&vs_crtc->frames_pending);
+	} else if (frm_start < frm_done) {
+		_dc_handle_frame_done(dc, vs_crtc, display_id);
+
+		if (frm_done > 1) { // frm_done overflow
+			_dc_handle_frame_start(dc, vs_crtc, display_id);
+			_dc_handle_frame_done(dc, vs_crtc, display_id);
+		}
+	} else { // frm_done == frm_start
+		if (vs_crtc->frame_transfer_pending) {
+			_dc_handle_frame_done(dc, vs_crtc, display_id);
+			_dc_handle_frame_start(dc, vs_crtc, display_id);
+		} else {
+			_dc_handle_frame_start(dc, vs_crtc, display_id);
+			_dc_handle_frame_done(dc, vs_crtc, display_id);
+		}
+	}
+}
+
+void dc_handle_per_display_interrupts(struct vs_dc *dc, const struct dc_hw_interrupt_status *status)
+{
+	struct device *dev = dc->hw.dev;
+	const struct vs_dc_info *dc_info = dc->hw.info;
+	int i;
+
+	for (i = 0; i < dc_info->display_num; i++) {
+		struct vs_crtc *vs_crtc = dc->crtc[i];
+		struct drm_crtc *crtc = &vs_crtc->base;
+		bool ddic_cmd_mode_start_scan_now = false;
+		struct dc_hw_display *display;
+		u8 display_id, display_mask;
+		u8 output_id, output_mask;
+
+		display = &dc->hw.display[i];
+		display_id = dc_info->displays[i].id;
+		display_mask = BIT(display_id);
+		output_id = display->output_id;
+		output_mask = BIT(output_id);
+
+		if (!vs_crtc)
+			continue;
+
+		/* skip disabled displays */
+		if (!display->config_status)
+			continue;
+
+		dev_dbg(dev,
+			"handle_per_display_interrupts: i=%u display_id=%u display_mask=%#x config_status=%d output_id=%u output_mask=%#x\n",
+			i, display_id, display_mask, display->config_status, output_id,
+			output_mask);
+
+		if (display->mode.output_mode & VS_OUTPUT_MODE_CMD &&
+		    !(display->mode.output_mode & VS_OUTPUT_MODE_CMD_DE_SYNC)) {
+			_dc_handle_te_interrupts(dc, vs_crtc, display_id, status,
+						 &ddic_cmd_mode_start_scan_now);
+		} else {
+			if (output_mask & status->output_frm_start) {
+				display->vblank_count++;
+				drm_crtc_handle_vblank(crtc);
+			}
+		}
+
+		/* For both frame_start and frame_done interrupts */
+		_dc_handle_frame_interrupts(dc, vs_crtc, i, status);
+
+		if (output_mask & status->output_underrun)
+			_dc_handle_underrun(dc, vs_crtc, ddic_cmd_mode_start_scan_now);
+	}
+}
+
+void dc_handle_wb_interrupts(struct vs_dc *dc, const struct dc_hw_interrupt_status *status)
+{
+	struct device *dev = dc->hw.dev;
+	const struct vs_dc_info *dc_info = dc->hw.info;
+	const struct vs_wb_info *wb_info = dc_info->write_back;
+	int i;
+
+	for (i = 0; i < dc_info->wb_num; i++) {
+		struct vs_writeback_connector *vs_wb_conn = dc->writeback[i];
+		bool wb_stall_support = wb_info[vs_wb_conn->id].wb_stall;
+
+		if ((BIT(vs_wb_conn->id) & status->wb_datalost) && !wb_stall_support) {
+			DPU_ATRACE_INSTANT_PID_FMT(current->tgid, "wb_datalost[%d]", i);
+			dev_warn(dev, "handle_wb_interrupts: data lost intr for wb%d\n",
+				 vs_wb_conn->id);
+			vs_wb_conn->frame_pending--;
+		}
+
+		if (BIT(vs_wb_conn->id) & status->wb_frm_done) {
+			DPU_ATRACE_INSTANT_PID_FMT(current->tgid, "wb_frame_done[%d]",
+						   vs_wb_conn->id);
+			dev_dbg(dev, "handle_wb_interrupts: frame done for wb%d\n", vs_wb_conn->id);
+			vs_wb_conn->frame_pending--;
+			wake_up_all(&vs_wb_conn->framedone_waitq);
+			vs_writeback_handle_vblank(vs_wb_conn);
+		}
+	}
+}
+
 const struct vs_writeback_funcs dc_writeback_funcs = {
 	.config = vs_dc_conf_writeback,
 	.disable = vs_dc_disable_writeback,
 	.check = vs_dc_check_writeback,
 	.cleanup = vs_dc_disable_writeback_irq,
+#ifdef CONFIG_DEBUG_FS
+	.show_qos = vs_dc_show_wb_qos_status,
+	.set_qos = vs_dc_set_wb_qos,
+#endif
 };
 
 const struct vs_crtc_funcs dc_crtc_funcs = {
@@ -2005,6 +2610,8 @@ const struct vs_crtc_funcs dc_crtc_funcs = {
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	.show_pattern_config = vs_dc_show_display_pattern_config,
 	.set_pattern = vs_dc_set_display_pattern,
+	.set_qos = vs_dc_set_display_qos,
+	.show_qos = vs_dc_show_display_qos_status,
 #endif /* CONFIG_DEBUG_FS */
 	.config = vs_dc_conf_display,
 	.enable_vblank = vs_dc_enable_vblank,
@@ -2026,13 +2633,15 @@ static int vs_dc_display_debugfs_init(struct device *dev, struct vs_dc *dc,
 {
 	struct dentry *dentry_display, *dentry_urgent_cmd, *dentry_urgent_vid;
 	const struct vs_display_info *display_info = &dc_info->displays[display_id];
-	struct dc_hw_display *display = &dc->hw.display[display_id];
 
 	dentry_display = debugfs_create_dir(display_info->name, dc->debugfs);
 	if (IS_ERR(dentry_display)) {
 		dev_err(dev, "could not create diplay-%d debugfs root folder\n", display_id);
 		return PTR_ERR(dentry_display);
 	}
+
+	debugfs_create_bool("override_urgent", 0664, dentry_display,
+			    &dc->urgent_override[display_id].override_urgent);
 
 	dentry_urgent_cmd = debugfs_create_dir("urgent_cmd_config", dentry_display);
 	if (IS_ERR(dentry_urgent_cmd)) {
@@ -2042,14 +2651,18 @@ static int vs_dc_display_debugfs_init(struct device *dev, struct vs_dc *dc,
 	}
 
 	debugfs_create_u32("h_margin_pct", 0664, dentry_urgent_cmd,
-			   &display->urgent_cmd_config.h_margin_pct);
+			   &dc->urgent_override[display_id].urgent_cmd_config.h_margin_pct);
 	debugfs_create_u32("v_margin_pct", 0664, dentry_urgent_cmd,
-			   &display->urgent_cmd_config.v_margin_pct);
+			   &dc->urgent_override[display_id].urgent_cmd_config.v_margin_pct);
+
 	debugfs_create_u32("delay_counter_usec", 0664, dentry_urgent_cmd,
-			   &display->urgent_cmd_config.delay_counter_usec);
+			   &dc->urgent_override[display_id].urgent_cmd_config.delay_counter_usec);
+
 	debugfs_create_u32("urgent_value", 0664, dentry_urgent_cmd,
-			   &display->urgent_cmd_config.urgent_value);
-	debugfs_create_bool("enable", 0664, dentry_urgent_cmd, &display->urgent_cmd_config.enable);
+			   &dc->urgent_override[display_id].urgent_cmd_config.urgent_value);
+
+	debugfs_create_bool("enable", 0664, dentry_urgent_cmd,
+			    &dc->urgent_override[display_id].urgent_cmd_config.enable);
 
 	dentry_urgent_vid = debugfs_create_dir("urgent_vid_config", dentry_display);
 	if (IS_ERR(dentry_urgent_vid)) {
@@ -2059,26 +2672,64 @@ static int vs_dc_display_debugfs_init(struct device *dev, struct vs_dc *dc,
 	}
 
 	debugfs_create_u32("qos_thresh_0", 0664, dentry_urgent_vid,
-			   &display->urgent_vid_config.qos_thresh_0);
+			   &dc->urgent_override[display_id].urgent_vid_config.qos_thresh_0);
+
 	debugfs_create_u32("qos_thresh_1", 0664, dentry_urgent_vid,
-			   &display->urgent_vid_config.qos_thresh_1);
+			   &dc->urgent_override[display_id].urgent_vid_config.qos_thresh_1);
+
 	debugfs_create_u32("qos_thresh_2", 0664, dentry_urgent_vid,
-			   &display->urgent_vid_config.qos_thresh_2);
+			   &dc->urgent_override[display_id].urgent_vid_config.qos_thresh_2);
+
 	debugfs_create_u32("urgent_thresh_0", 0664, dentry_urgent_vid,
-			   &display->urgent_vid_config.urgent_thresh_0);
+			   &dc->urgent_override[display_id].urgent_vid_config.urgent_thresh_0);
+
 	debugfs_create_u32("urgent_thresh_1", 0664, dentry_urgent_vid,
-			   &display->urgent_vid_config.urgent_thresh_1);
+			   &dc->urgent_override[display_id].urgent_vid_config.urgent_thresh_1);
+
 	debugfs_create_u32("urgent_thresh_2", 0664, dentry_urgent_vid,
-			   &display->urgent_vid_config.urgent_thresh_2);
+			   &dc->urgent_override[display_id].urgent_vid_config.urgent_thresh_2);
+
 	debugfs_create_u32("urgent_low_thresh", 0664, dentry_urgent_vid,
-			   &display->urgent_vid_config.urgent_low_thresh);
+			   &dc->urgent_override[display_id].urgent_vid_config.urgent_low_thresh);
+
 	debugfs_create_u32("urgent_high_thresh", 0664, dentry_urgent_vid,
-			   &display->urgent_vid_config.urgent_high_thresh);
+			   &dc->urgent_override[display_id].urgent_vid_config.urgent_high_thresh);
+
 	debugfs_create_u32("healthy_thresh", 0664, dentry_urgent_vid,
-			   &display->urgent_vid_config.healthy_thresh);
-	debugfs_create_bool("enable", 0664, dentry_urgent_vid, &display->urgent_vid_config.enable);
+			   &dc->urgent_override[display_id].urgent_vid_config.healthy_thresh);
+
+	debugfs_create_bool("enable", 0664, dentry_urgent_vid,
+			    &dc->urgent_override[display_id].urgent_vid_config.enable);
+
+	/* initialize urgent_override setting to default value */
+	if (dc_info->urgent_cmd_config) {
+		memcpy(&dc->urgent_override[display_id].urgent_cmd_config,
+		       dc_info->urgent_cmd_config, sizeof(*dc_info->urgent_cmd_config));
+	}
+
+	if (dc_info->urgent_vid_config) {
+		memcpy(&dc->urgent_override[display_id].urgent_vid_config,
+		       dc_info->urgent_vid_config, sizeof(*dc_info->urgent_vid_config));
+	}
+
+	dc->display_debugfs[display_id] = dentry_display;
 
 	return 0;
+}
+
+static void vs_dc_display_debugfs_deinit(struct vs_dc *dc)
+{
+	const struct vs_dc_info *dc_info = dc->hw.info;
+	int i;
+
+	for (i = 0; i < dc_info->display_num; i++) {
+		int hw_id = dc_info->displays[i].id;
+
+		if (dc->display_debugfs[hw_id]) {
+			debugfs_remove_recursive(dc->display_debugfs[hw_id]);
+			dc->display_debugfs[hw_id] = NULL;
+		}
+	}
 }
 #else
 static int vs_dc_display_debugfs_init(struct device *dev, struct vs_dc *dc,
@@ -2086,7 +2737,65 @@ static int vs_dc_display_debugfs_init(struct device *dev, struct vs_dc *dc,
 {
 	return 0;
 }
+
+static void vs_dc_display_debugfs_deinit(struct vs_dc *dc)
+{
+}
 #endif /* CONFIG_DEBUG_FS */
+
+/* BE irq handling */
+
+static void dc_be_handle_interrupts(struct vs_dc *dc)
+{
+	struct device *dev = dc->be_dev;
+	struct dc_hw_interrupt_status status = { 0 };
+
+	dc_hw_get_be_interrupt(&dc->hw, &status);
+
+	dev_dbg(dev,
+		"be_handle_interrupts: te_r=%#x te_f=%#x frm_start=%#x frm_done=%#x wb_frm_done=%#x be_reset_done=%d\n",
+		status.output_te_rising, status.output_te_falling, status.output_frm_start,
+		status.output_frm_done, status.wb_frm_done, status.reset_status[BE_SW_RESET]);
+
+	if (!bitmap_empty(status.be_bus_errors, DC_HW_BE_BUS_ERROR_COUNT)) {
+		dev_warn(dev, "be_handle_interrupts: be_bus_errors: %#lx\n",
+			 status.be_bus_errors[0]);
+		trace_disp_bus_err_irqs("be_bus_errors", status.be_bus_errors[0]);
+		dc->hw.be_has_bus_errors = true;
+	}
+
+	trace_disp_frame_irqs(status.output_te_rising, status.output_te_falling,
+			      status.output_frm_start, 0, status.output_frm_done,
+			      status.wb_frm_done);
+	trace_disp_frame_irqs_overflow(status.of_output_te_rising, status.of_output_te_falling,
+				       status.of_output_frm_start, 0x0, status.of_output_frm_done,
+				       status.of_wb_frm_done);
+	trace_disp_err_irqs(status.pvric_decode_err, status.output_underrun, status.wb_datalost);
+	trace_disp_reset_irqs(0, 0, 0, status.reset_status[BE_SW_RESET]);
+
+	dc_handle_per_display_interrupts(dc, &status);
+
+	if (status.wb_frm_done || status.wb_datalost)
+		dc_handle_wb_interrupts(dc, &status);
+
+	/* save reset status bits */
+	if (status.reset_status[BE_SW_RESET])
+		dc->hw.reset_status[BE_SW_RESET] = status.reset_status[BE_SW_RESET];
+}
+
+static irqreturn_t dc_be_isr(int irq, void *data)
+{
+	struct device *dev = data;
+	struct vs_dc *dc = dev_get_drvdata(dev);
+
+	spin_lock(&dc->int_lock);
+	dc_be_handle_interrupts(dc);
+	spin_unlock(&dc->int_lock);
+
+	return IRQ_HANDLED;
+}
+
+/* BE probe/bind functions */
 
 static int be_bind(struct device *dev, struct device *master, void *data)
 {
@@ -2108,11 +2817,11 @@ static int be_bind(struct device *dev, struct device *master, void *data)
 		return -ENODEV;
 	}
 
-	ret = vs_dc_power_get(priv->dc_dev, true);
+	ret = dc_be_power_get(priv->dc_dev, true);
 	if (ret < 0)
 		dev_err(dev, "%s: failed to power ON\n", __func__);
 
-	dev_set_drvdata(dev, dc);
+	dc_component_enable_irqs(dev, &dc->be_irq_info);
 
 	ret = dc_be_hw_init(&dc->hw);
 	if (ret < 0) {
@@ -2120,7 +2829,7 @@ static int be_bind(struct device *dev, struct device *master, void *data)
 		return ret;
 	}
 
-	ret = vs_dc_power_put(priv->dc_dev, true);
+	ret = dc_be_power_put(priv->dc_dev, true);
 	if (ret < 0)
 		dev_err(dev, "failed to power OFF\n");
 
@@ -2205,14 +2914,13 @@ err_cleanup_crtcs:
 
 static void be_unbind(struct device *dev, struct device *master, void *data)
 {
-	struct drm_device *drm_dev = data;
-	struct drm_crtc *drm_crtc = data;
 	struct vs_dc *dc = dev_get_drvdata(dev);
+
+	dc_component_disable_irqs(dev, &dc->be_irq_info);
 
 	dc_be_hw_deinit(&dc->hw);
 
-	drm_for_each_crtc(drm_crtc, drm_dev)
-		vs_crtc_destroy(drm_crtc);
+	vs_dc_display_debugfs_deinit(dc);
 }
 
 static const struct component_ops be_component_ops = {
@@ -2223,20 +2931,52 @@ static const struct component_ops be_component_ops = {
 static int dc_be_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct vs_dc *dc = dev_get_drvdata(dev->parent);
+	int ret;
+
+	dev_set_drvdata(dev, dc);
+	dc->be_dev = dev;
+
+	ret = dc_component_parse_irqs(dev, &dc->be_irq_info, dc_be_isr);
+	if (ret)
+		return ret;
+
+	ret = devm_pm_runtime_enable(dev);
+	if (ret)
+		dev_err(dev, "runtime pm enabled but failed to add disable action: %d\n", ret);
 
 	return component_add(dev, &be_component_ops);
 }
 
-static int dc_be_remove(struct platform_device *pdev)
+static void dc_be_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 
 	component_del(dev, &be_component_ops);
 
 	dev_set_drvdata(dev, NULL);
+}
+
+#if IS_ENABLED(CONFIG_PM_SLEEP)
+static int dc_be_pm_runtime_suspend(struct device *dev)
+{
+	trace_disp_dc_be_disable();
 
 	return 0;
 }
+
+static int dc_be_pm_runtime_resume(struct device *dev)
+{
+	trace_disp_dc_be_enable();
+
+	return 0;
+}
+
+static const struct dev_pm_ops dc_be_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
+	SET_RUNTIME_PM_OPS(dc_be_pm_runtime_suspend, dc_be_pm_runtime_resume, NULL)
+};
+#endif
 
 struct platform_driver dc_be_platform_driver = {
 	.probe = dc_be_probe,
@@ -2245,6 +2985,9 @@ struct platform_driver dc_be_platform_driver = {
 	.driver = {
 		.name = "vs-dc-be",
 		.of_match_table = of_match_ptr(be_driver_dt_match),
+#if IS_ENABLED(CONFIG_PM_SLEEP)
+		.pm = &dc_be_pm_ops,
+#endif
 	},
 };
 
@@ -2274,11 +3017,9 @@ static int wb_bind(struct device *dev, struct device *master, void *data)
 		return -ENODEV;
 	}
 
-	ret = vs_dc_power_get(priv->dc_dev, true);
+	ret = dc_be_power_get(priv->dc_dev, true);
 	if (ret < 0)
 		dev_err(dev, "%s: failed to power ON\n", __func__);
-
-	dev_set_drvdata(dev, dc);
 
 	ret = dc_wb_hw_init(&dc->hw);
 	if (ret < 0) {
@@ -2286,7 +3027,7 @@ static int wb_bind(struct device *dev, struct device *master, void *data)
 		return ret;
 	}
 
-	ret = vs_dc_power_put(priv->dc_dev, true);
+	ret = dc_be_power_put(priv->dc_dev, true);
 	if (ret < 0)
 		dev_err(dev, "failed to power OFF\n");
 
@@ -2351,10 +3092,18 @@ err_cleanup_planes:
 
 static void wb_unbind(struct device *dev, struct device *master, void *data)
 {
-	struct drm_connector *drm_connector = data;
+	struct vs_dc *dc = dev_get_drvdata(dev);
+	int i;
 
-	drm_connector_cleanup(drm_connector);
-	kfree(drm_connector);
+	if (!dc)
+		return;
+
+	for (i = 0; i < DC_WB_NUM; i++) {
+		struct vs_writeback_connector *writeback = dc->writeback[i];
+
+		if (writeback && writeback->dev == dev)
+			dc->writeback[i] = NULL;
+	}
 }
 
 static const struct component_ops wb_component_ops = {
@@ -2365,20 +3114,48 @@ static const struct component_ops wb_component_ops = {
 static int dc_wb_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct vs_dc *dc = dev_get_drvdata(dev->parent);
+	int ret;
+
+	dev_set_drvdata(dev, dc);
+	dc->wb_dev = dev;
+
+	ret = devm_pm_runtime_enable(dev);
+	if (ret)
+		dev_err(dev, "runtime pm enabled but failed to add disable action: %d\n", ret);
 
 	return component_add(dev, &wb_component_ops);
 }
 
-static int dc_wb_remove(struct platform_device *pdev)
+static void dc_wb_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 
 	component_del(dev, &wb_component_ops);
 
 	dev_set_drvdata(dev, NULL);
+}
+
+#if IS_ENABLED(CONFIG_PM_SLEEP)
+static int dc_wb_pm_runtime_suspend(struct device *dev)
+{
+	trace_disp_dc_wb_disable();
 
 	return 0;
 }
+
+static int dc_wb_pm_runtime_resume(struct device *dev)
+{
+	trace_disp_dc_wb_enable();
+
+	return 0;
+}
+
+static const struct dev_pm_ops dc_wb_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
+	SET_RUNTIME_PM_OPS(dc_wb_pm_runtime_suspend, dc_wb_pm_runtime_resume, NULL)
+};
+#endif
 
 struct platform_driver dc_wb_platform_driver = {
 	.probe = dc_wb_probe,
@@ -2387,6 +3164,9 @@ struct platform_driver dc_wb_platform_driver = {
 	.driver = {
 		.name = "vs-dc-wb",
 		.of_match_table = of_match_ptr(wb_driver_dt_match),
+#if IS_ENABLED(CONFIG_PM_SLEEP)
+		.pm = &dc_wb_pm_ops,
+#endif
 	},
 };
 

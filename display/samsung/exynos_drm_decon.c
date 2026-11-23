@@ -21,6 +21,7 @@
 #include <drm/exynos_drm.h>
 
 #include <linux/atomic.h>
+#include <linux/cleanup.h>
 #include <linux/clk.h>
 #include <linux/component.h>
 #include <linux/console.h>
@@ -119,8 +120,10 @@ void decon_dump_locked(const struct decon_device *decon, struct drm_printer *p)
 	struct drm_printer *pointer;
 
 	if (!p) {
-		printer = is_console_enabled() ?
-			drm_debug_printer("[drm]") : drm_info_printer(decon->dev);
+		printer = (is_console_enabled()
+			   ? drm_dbg_printer(decon->drm_dev, DRM_UT_DRIVER,
+					     "[drm]")
+			   : drm_info_printer(decon->dev));
 		pointer = &printer;
 	} else {
 		pointer = p;
@@ -925,8 +928,8 @@ static void decon_update_plane(struct exynos_drm_crtc *exynos_crtc,
 					exynos_plane_state->base.dst.y2);
 
 	simplified_rot = drm_rotation_simplify(plane_state->rotation,
-            DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 |
-            DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y);
+					       DRM_MODE_ROTATE_0 | DRM_MODE_ROTATE_90 |
+					       DRM_MODE_REFLECT_X | DRM_MODE_REFLECT_Y);
 
     if ((plane_state->dst.y1 <= DECON_WIN_START_TIME)
 	|| (simplified_rot & DRM_MODE_ROTATE_90)){
@@ -1890,9 +1893,11 @@ static const struct exynos_drm_crtc_ops decon_crtc_ops = {
 	.wait_for_flip_done = decon_wait_for_flip_done,
 };
 
-static int dpu_sysmmu_fault_handler(struct iommu_fault *fault, void *data)
+static int dpu_sysmmu_fault_handler(struct iommu_domain *domain,
+				    struct device *dev, unsigned long iova,
+				    int flags, void *token)
 {
-	struct decon_device *decon = data;
+	struct decon_device *decon = token;
 
 	if (!decon || !decon_is_effectively_active(decon))
 		return 0;
@@ -1943,6 +1948,7 @@ static int decon_bind(struct device *dev, struct device *master, void *data)
 	struct drm_device *drm_dev = data;
 	struct exynos_drm_private *priv = drm_to_exynos_dev(drm_dev);
 	struct drm_plane *default_plane;
+	struct iommu_domain *domain;
 	int i;
 	int ret;
 	char symlink_name_buffer[7];
@@ -1978,7 +1984,11 @@ static int decon_bind(struct device *dev, struct device *master, void *data)
 
 	priv->iommu_client = dev;
 
-	iommu_register_device_fault_handler(dev, dpu_sysmmu_fault_handler, decon);
+	domain = iommu_get_domain_for_dev(dev);
+	if (domain)
+		/* Used just for logging. */
+		iommu_set_fault_handler(domain, dpu_sysmmu_fault_handler,
+					decon);
 
 #if IS_ENABLED(CONFIG_EXYNOS_ITMON)
 	decon->itmon_nb.notifier_call = dpu_itmon_notifier;
@@ -2027,8 +2037,6 @@ static void decon_unbind(struct device *dev, struct device *master,
 #if IS_ENABLED(CONFIG_EXYNOS_ITMON)
 	itmon_notifier_chain_unregister(&decon->itmon_nb);
 #endif
-	iommu_unregister_device_fault_handler(dev);
-
 	decon_debug(decon, "%s -\n", __func__);
 }
 
@@ -2139,9 +2147,7 @@ static irqreturn_t decon_fs_irq_handler(int irq, void *dev_data)
 
 static int decon_parse_dt(struct decon_device *decon, struct device_node *np)
 {
-	struct device_node *dpp_np = NULL;
-	struct property *prop;
-	const __be32 *cur;
+	struct device_node *dpp_np __free(device_node) = NULL;
 	u32 val;
 	int ret = 0, i, count;
 	int dpp_id;
@@ -2386,8 +2392,7 @@ static int decon_parse_dt(struct decon_device *decon, struct device_node *np)
 		dpp_id = decon->dpp[i]->id;
 		decon_debug(decon, "found dpp%d\n", dpp_id);
 
-		if (dpp_np)
-			of_node_put(dpp_np);
+		of_node_put(dpp_np);
 	}
 
 	/* RCD Function */
@@ -2401,10 +2406,7 @@ static int decon_parse_dt(struct decon_device *decon, struct device_node *np)
 	else
 		decon_debug(decon, "found rcd: dpp%d\n", decon->rcd->id);
 
-	if (dpp_np)
-		of_node_put(dpp_np);
-
-	of_property_for_each_u32(np, "connector", prop, cur, val)
+	of_property_for_each_u32(np, "connector", val)
 		decon->con_type |= val;
 
 	return 0;
@@ -2440,8 +2442,10 @@ static int decon_remap_regs(struct decon_device *decon)
 	i = of_property_match_string(np, "reg-names", "sys");
 	if (of_address_to_resource(np, i, &res)) {
 		decon_err(decon, "failed to get sys resource\n");
-		goto err_main;
+		goto err_node_put;
 	}
+	of_node_put(np);
+
 	decon->regs.ss_regs = ioremap(res.start, resource_size(&res));
 	if (!decon->regs.ss_regs) {
 		decon_err(decon, "failed to map sysreg-disp address.");
@@ -2453,6 +2457,8 @@ static int decon_remap_regs(struct decon_device *decon)
 
 	return ret;
 
+err_node_put:
+	of_node_put(np);
 err_main:
 	iounmap(decon->regs.regs);
 err:
@@ -2743,21 +2749,20 @@ err:
 	return ret;
 }
 
-static int decon_remove(struct platform_device *pdev)
+static void decon_remove(struct platform_device *pdev)
 {
 	struct decon_device *decon = platform_get_drvdata(pdev);
 
 	if (decon->thread)
 		kthread_stop(decon->thread);
 
+	exynos_dqe_unregister(decon->dqe);
 	exynos_hibernation_destroy(decon->hibernation);
 
 	component_del(&pdev->dev, &decon_component_ops);
 
 	__decon_unmap_regs(decon);
 	iounmap(decon->regs.regs);
-
-	return 0;
 }
 
 #ifdef CONFIG_PM

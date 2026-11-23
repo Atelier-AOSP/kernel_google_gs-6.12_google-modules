@@ -61,12 +61,10 @@ struct gs_domain_data {
 	int *attached_policies_ids;		/* List of attached cpu policies. */
 	bool is_initialized;			/* Is this domain initilalized. */
 	bool power_off_disabled;		/* Disables powering off this power domain. */
-	atomic_t disable_count;			/* Refcount for requests to disable. */
 };
 
 /* Array containing gs_domain_data for each power domain. */
 static struct gs_domain_data *gs_domain_idle_data_arr;
-static int top_pwr_domain_id;
 
 /**
  * gs_domain_parameter_names - Container for parameter names.
@@ -131,48 +129,6 @@ static void genpd_unlock(struct generic_pm_domain *genpd)
 {
 	genpd->lock_ops->unlock(genpd);
 }
-
-static void gs_domain_c4_set_state(bool enable)
-{
-	struct gs_domain_data *genpd_data;
-	bool disabled = true;
-
-	if (!gs_domain_idle_data_arr)
-		return;
-
-	if (top_pwr_domain_id == -1)
-		return;
-
-	genpd_data = &gs_domain_idle_data_arr[top_pwr_domain_id];
-
-	if (enable) {
-		int prev_val = atomic_fetch_add_unless(&genpd_data->disable_count, -1, 0);
-		if (prev_val == 0)
-			DEV_ERR(&genpd_data->genpd->dev, "Disable counter already 0\n");
-		disabled = prev_val > 1;
-	} else
-		atomic_inc(&genpd_data->disable_count);
-
-	WRITE_ONCE(genpd_data->power_off_disabled, disabled);
-}
-
-/**
- * gs_domain_c4_enable - Enables the C4 idle state.
- */
-void gs_domain_c4_enable(void)
-{
-	gs_domain_c4_set_state(true);
-}
-EXPORT_SYMBOL_GPL(gs_domain_c4_enable);
-
-/**
- * gs_domain_c4_disable - Disables the C4 idle state.
- */
-void gs_domain_c4_disable(void)
-{
-	gs_domain_c4_set_state(false);
-}
-EXPORT_SYMBOL_GPL(gs_domain_c4_disable);
 
 /**
  * gs_genpd_state_param_show - Show function for genpd states.
@@ -404,7 +360,7 @@ static int gs_domain_idle_add_idle_states_sysfs(struct device *dev,
  *
  * Puts back notifier blocks and returns sysfs resources.
  */
-void gs_domain_idle_cleanup(struct device *dev)
+static void gs_domain_idle_cleanup(struct device *dev)
 {
 	int num_power_domains = of_get_child_count(dev->of_node);
 	int cluster_idx;
@@ -423,7 +379,6 @@ static int gs_domain_idle_driver_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev->of_node;
 	struct device_node *power_domain_np;
-	struct device_node *top_np;
 	int power_domain_idx = 0;
 	int ret = 0;
 
@@ -433,11 +388,6 @@ static int gs_domain_idle_driver_probe(struct platform_device *pdev)
 	if (!gs_domain_idle_data_arr)
 		return -ENOMEM;
 
-	top_pwr_domain_id = -1;
-	top_np = of_parse_phandle(np, "top-power-domain", 0);
-	if (!top_np)
-		DEV_ERR(dev, "top-power-domain not found");
-
 	// Probe and populate each power domain.
 	for_each_child_of_node(np, power_domain_np) {
 		struct gs_domain_data *genpd_data = &gs_domain_idle_data_arr[power_domain_idx];
@@ -445,7 +395,6 @@ static int gs_domain_idle_driver_probe(struct platform_device *pdev)
 		struct generic_pm_domain *genpd;
 
 		genpd_data->power_off_disabled = false;
-		atomic_set(&genpd_data->disable_count, 0);
 
 		// Modify the name to be representative of the power domain we are associating.
 		dev->init_name = power_domain_np->name;
@@ -505,9 +454,6 @@ static int gs_domain_idle_driver_probe(struct platform_device *pdev)
 			goto err_out;
 		}
 
-		if (top_np && power_domain_np == top_np)
-			top_pwr_domain_id = power_domain_idx;
-
 		genpd_data->is_initialized = true;
 		power_domain_idx += 1;
 	}
@@ -522,10 +468,9 @@ err_out:
 	return ret;
 }
 
-static int gs_domain_idle_driver_remove(struct platform_device *pdev)
+static void gs_domain_idle_driver_remove(struct platform_device *pdev)
 {
 	gs_domain_idle_cleanup(&pdev->dev);
-	return 0;
 }
 
 static const struct of_device_id gs_domain_idle_root_match[] = {

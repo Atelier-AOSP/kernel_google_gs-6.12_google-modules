@@ -43,13 +43,32 @@ int lwis_regulator_list_add_info(struct device *dev, struct list_head *list, con
 	return 0;
 }
 
+int lwis_regulator_list_add_info_by_set_mode(struct device *dev, struct list_head *list,
+					     const char *name)
+{
+	const char *reg_name;
+
+	if (strncmp(REG_MODE_PREFIX_FAST, name, strlen(REG_MODE_PREFIX_FAST)) == 0) {
+		reg_name = name + strlen(REG_MODE_PREFIX_FAST);
+	} else if (strncmp(REG_MODE_PREFIX_NORMAL, name, strlen(REG_MODE_PREFIX_NORMAL)) == 0) {
+		reg_name = name + strlen(REG_MODE_PREFIX_NORMAL);
+	} else if (strncmp(REG_MODE_PREFIX_IDLE, name, strlen(REG_MODE_PREFIX_IDLE)) == 0) {
+		reg_name = name + strlen(REG_MODE_PREFIX_IDLE);
+	} else if (strncmp(REG_MODE_PREFIX_STANDBY, name, strlen(REG_MODE_PREFIX_STANDBY)) == 0) {
+		reg_name = name + strlen(REG_MODE_PREFIX_STANDBY);
+	} else {
+		pr_err("Invalid regulator mode string %s\n", name);
+		return -EINVAL;
+	}
+
+	return lwis_regulator_list_add_info(dev, list, reg_name);
+}
+
 void lwis_regulator_list_free(struct list_head *list)
 {
-	struct lwis_regulator_info *reg_node;
-	struct list_head *it_node, *it_tmp;
+	struct lwis_regulator_info *reg_node, *reg_node_tmp;
 
-	list_for_each_safe(it_node, it_tmp, list) {
-		reg_node = list_entry(it_node, struct lwis_regulator_info, node);
+	list_for_each_entry_safe(reg_node, reg_node_tmp, list, node) {
 		list_del(&reg_node->node);
 		kfree(reg_node);
 	}
@@ -57,11 +76,9 @@ void lwis_regulator_list_free(struct list_head *list)
 
 struct lwis_regulator_info *lwis_regulator_get_info(struct list_head *list, const char *name)
 {
-	struct lwis_regulator_info *reg_node;
-	struct list_head *it_node, *it_tmp;
+	struct lwis_regulator_info *reg_node, *reg_node_tmp;
 
-	list_for_each_safe(it_node, it_tmp, list) {
-		reg_node = list_entry(it_node, struct lwis_regulator_info, node);
+	list_for_each_entry_safe(reg_node, reg_node_tmp, list, node) {
 		if (!strcmp(reg_node->name, name))
 			return reg_node;
 	}
@@ -84,11 +101,9 @@ int lwis_regulator_put(struct list_head *list, char *name)
 
 int lwis_regulator_put_all(struct list_head *list)
 {
-	struct lwis_regulator_info *reg_node;
-	struct list_head *it_node, *it_tmp;
+	struct lwis_regulator_info *reg_node, *reg_node_tmp;
 
-	list_for_each_safe(it_node, it_tmp, list) {
-		reg_node = list_entry(it_node, struct lwis_regulator_info, node);
+	list_for_each_entry_safe(reg_node, reg_node_tmp, list, node) {
 		devm_regulator_put(reg_node->reg);
 	}
 
@@ -152,11 +167,9 @@ int lwis_regulator_set_mode(struct list_head *list, char *name)
 
 void lwis_regulator_print(struct list_head *list)
 {
-	struct lwis_regulator_info *reg_node;
-	struct list_head *it_node, *it_tmp;
+	struct lwis_regulator_info *reg_node, *reg_node_tmp;
 
-	list_for_each_safe(it_node, it_tmp, list) {
-		reg_node = list_entry(it_node, struct lwis_regulator_info, node);
+	list_for_each_entry_safe(reg_node, reg_node_tmp, list, node) {
 		pr_info("lwis regulator: %s\n", reg_node->name);
 	}
 }

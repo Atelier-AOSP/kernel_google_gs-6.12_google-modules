@@ -3,6 +3,7 @@
 
 #include <linux/kernel.h>
 #include "cpm_tracepoint_decoder.h"
+#include "thermal_cpm_mbox.h"
 #include "thermal_tracepoints.h"
 
 union curr_state_u {
@@ -15,44 +16,24 @@ union curr_state_u {
 	uint32_t word32;
 };
 
-enum tz_id {
-	TZ_BIG = 0,
-	TZ_BIG_MID = 1,
-	TZ_MID = 2,
-	TZ_LIT = 3,
-	TZ_GPU = 4,
-	TZ_TPU = 5,
-	TZ_AUR = 6,
-	TZ_ISP = 7,
-	TZ_MEM = 8,
-	TZ_AOC = 9,
-};
-
-static const char *const tzid_string[] = {
-	[TZ_BIG] = "BIG", [TZ_BIG_MID] = "BIG_MID", [TZ_MID] = "MID",
-	[TZ_LIT] = "LIT", [TZ_GPU] = "GPU",	    [TZ_TPU] = "TPU",
-	[TZ_AUR] = "AUR", [TZ_ISP] = "ISP",	    [TZ_MEM] = "MEM",
-	[TZ_AOC] = "AOC",
-};
-
 #define CURR_STATE_STR_LEN 13
-enum tracepoint_handle curr_state_handler(const char *tp_string, u32 payload,
-					  u64 timestamp)
+static enum tracepoint_handle curr_state_handler(const char *tp_string,
+						 u32 payload, u64 timestamp)
 {
 	union curr_state_u state;
 	char clock_name[CURR_STATE_STR_LEN];
+	const char *tz_name;
 
 	state.word32 = payload;
 
-	if (state.tzid >= ARRAY_SIZE(tzid_string))
+	tz_name = thermal_cpm_mbox_get_tz_name(state.tzid);
+	if (!tz_name)
 		return CLIENT_TP_HANDLING_ERROR;
 
-	scnprintf(clock_name, sizeof(clock_name), "%s_temp",
-		  tzid_string[state.tzid]);
+	scnprintf(clock_name, sizeof(clock_name), "%s_temp", tz_name);
 	add_cpm_param_trace(clock_name, (unsigned int)state.temp, timestamp);
 
-	scnprintf(clock_name, sizeof(clock_name), "%s_cdev",
-		  tzid_string[state.tzid]);
+	scnprintf(clock_name, sizeof(clock_name), "%s_cdev", tz_name);
 	add_cpm_param_trace(clock_name, (unsigned int)state.cdev_state,
 			    timestamp);
 
@@ -68,8 +49,8 @@ struct client_tracepoint thermal_tj_pid_curr_state = {
 };
 
 #define SENSOR_STR_LEN 16
-enum tracepoint_handle thermsen_handler(const char *tp_string, u32 payload,
-					u64 timestamp)
+static enum tracepoint_handle thermsen_handler(const char *tp_string,
+					       u32 payload, u64 timestamp)
 {
 	char sensor_error_clock_name[SENSOR_STR_LEN];
 	char sensor_temp_clock_name[SENSOR_STR_LEN];
@@ -96,3 +77,5 @@ struct client_tracepoint thermal_tj_sensors = { .enabled = true,
 						.init = NULL,
 						.handler = thermsen_handler,
 						.exit = NULL };
+MODULE_LICENSE("GPL");
+

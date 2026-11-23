@@ -13,6 +13,7 @@
 #include "vs_dc_reg_be.h"
 #include "vs_dc_property.h"
 #include "vs_dc.h"
+#include "vs_dc_pre.h"
 #include "vs_trace.h"
 
 static bool data_extend_config_hw(struct dc_hw *hw, u8 hw_id, bool enable, const void *data)
@@ -120,6 +121,10 @@ static bool dma_config_check(const struct dc_hw *hw, u8 hw_id, const void *data,
 	const int32_t src_y = state->src_y >> 16;
 
 	const struct drm_vs_dma *dma = data;
+	const struct vs_dc_info *info = hw->info;
+	struct drm_framebuffer *fb = vs_plane_state->base.fb;
+
+	int ret = 0;
 
 	if ((dma->mode == VS_DMA_NORMAL) || (dma->mode == VS_DMA_ONE_ROI)) {
 		dev_err(hw->dev,
@@ -262,6 +267,19 @@ static bool dma_config_check(const struct dc_hw *hw, u8 hw_id, const void *data,
 		}
 	}
 
+	/* check roi format constraint*/
+	if (info->format_limit) {
+		if (dma->mode == VS_DMA_TWO_ROI || dma->mode == VS_DMA_EXT_LAYER_EX ||
+		    dma->mode == VS_DMA_SKIP_ROI) {
+			ret = check_roi_offset_align(fb, info, dma->in_rect.x,
+						     dma->in_rect.y);
+			ret = ret | check_format_limit(fb, info, dma->in_rect.w,
+						       dma->in_rect.h, ROI);
+
+			if (ret)
+				return false;
+		}
+	}
 	return true;
 }
 

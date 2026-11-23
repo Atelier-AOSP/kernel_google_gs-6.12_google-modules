@@ -8,7 +8,7 @@
 
 #include <linux/module.h>
 #include <linux/workqueue.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/kernel.h>
 #include <linux/io.h>
 #include <linux/err.h>
@@ -22,11 +22,14 @@
 #include <mailbox/protocols/mba/cpm/common/bcl/bcl_service.h>
 #endif
 #include <linux/debugfs.h>
+#include <gbms_storage.h>
 #include "bcl.h"
 #include "core_pmic/core_pmic_defs.h"
 #include "ifpmic/max77759/max77759_irq.h"
 #include "ifpmic/max77779/max77779_irq.h"
 #include "soc/soc_defs.h"
+
+#define GBMS_STORE_BCLS_BYTES 1
 
 #if !IS_ENABLED(CONFIG_GOOGLE_MFD_DA9188)
 static const unsigned int xclkout_source[] = {
@@ -48,11 +51,15 @@ static int get_xclk(void *data, u64 *val, int idx)
 		return 0;
 	*val = 0;
 	switch (idx) {
+#if IS_ENABLED(CONFIG_SOC_MBU)
+	case CPU1A:
+	case CPU1B:
+#elif IS_ENABLED(CONFIG_SOC_RDO) || IS_ENABLED(CONFIG_SOC_LGA)
 	case CPU0:
-#if IS_ENABLED(CONFIG_SOC_RDO) || IS_ENABLED(CONFIG_SOC_LGA)
 	case CPU1A:
 	case CPU1B:
 #else
+	case CPU0:
 	case CPU1:
 #endif
 	case CPU2:
@@ -77,7 +84,7 @@ static int set_xclk(void *data, u64 val, int idx)
 
 	switch (idx) {
 	case CPU0:
-#if IS_ENABLED(CONFIG_SOC_RDO) || IS_ENABLED(CONFIG_SOC_LGA)
+#if IS_ENABLED(CONFIG_SOC_RDO) || IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU)
 	case CPU1A:
 	case CPU1B:
 #else
@@ -109,7 +116,7 @@ static int set_cpu0clk(void *data, u64 val)
 	return set_xclk(data, val, CPU0);
 }
 
-#if IS_ENABLED(CONFIG_SOC_RDO) || IS_ENABLED(CONFIG_SOC_LGA)
+#if IS_ENABLED(CONFIG_SOC_RDO) || IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU)
 static int get_cpu1aclk(void *data, u64 *val)
 {
 	return get_xclk(data, val, CPU1A);
@@ -295,7 +302,7 @@ static int set_add_data(void *data, u64 val)
 
 
 DEFINE_SIMPLE_ATTRIBUTE(cpu0_clkout_fops, get_cpu0clk, set_cpu0clk, "0x%llx\n");
-#if IS_ENABLED(CONFIG_SOC_RDO) || IS_ENABLED(CONFIG_SOC_LGA)
+#if IS_ENABLED(CONFIG_SOC_RDO) || IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU)
 DEFINE_SIMPLE_ATTRIBUTE(cpu1a_clkout_fops, get_cpu1aclk, set_cpu1aclk, "0x%llx\n");
 DEFINE_SIMPLE_ATTRIBUTE(cpu1b_clkout_fops, get_cpu1bclk, set_cpu1bclk, "0x%llx\n");
 #else
@@ -363,7 +370,7 @@ DEFINE_SIMPLE_ATTRIBUTE(fops_sys_event_count, get_sys_evt_count, set_sys_evt_cou
 
 static int get_sys_evt_data(void *data, u64 *val)
 {
-#if IS_ENABLED(CONFIG_SOC_RDO) || IS_ENABLED(CONFIG_SOC_LGA)
+#if IS_ENABLED(CONFIG_SOC_RDO) || IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU)
 	struct bcl_device *bcl_dev = data;
 	int ret;
 	uint32_t response[] = {0, 0};
@@ -375,16 +382,41 @@ static int get_sys_evt_data(void *data, u64 *val)
 	if (ret < 0)
 		return ret;
 
-	if (response[0] > 0)
+	if (response[MB_BCL_IDX_RSP_STATUS] > 0)
 		return -EINVAL;
 
-	*val = response[1];
+	*val = response[MB_BCL_IDX_RSP_DATA];
 
 #endif
 	return 0;
 }
 DEFINE_SIMPLE_ATTRIBUTE(fops_sys_event_data, get_sys_evt_data, NULL, "0x%llx\n");
 
+static int get_bcls_val(void *data, u64 *val)
+{
+	uint32_t rd_val;
+	int ret;
+
+	ret = gbms_storage_read(GBMS_TAG_BCLS, &rd_val, GBMS_STORE_BCLS_BYTES);
+	if (ret < 0)
+		return ret;
+
+	*val = rd_val;
+
+	return 0;
+}
+
+static int set_bcls_val(void *data, u64 val)
+{
+	int ret;
+
+	ret = gbms_storage_write(GBMS_TAG_BCLS, &val, GBMS_STORE_BCLS_BYTES);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+DEFINE_SIMPLE_ATTRIBUTE(fops_bcls_val, get_bcls_val, set_bcls_val, "%#llx\n");
 
 void google_init_debugfs(struct bcl_device *bcl_dev)
 {
@@ -392,7 +424,7 @@ void google_init_debugfs(struct bcl_device *bcl_dev)
 	struct dentry *dentry_sys_evt;
 	bcl_dev->debug_entry = debugfs_create_dir("google_bcl", 0);
 	debugfs_create_file("cpu0_clk_out", 0644, bcl_dev->debug_entry, bcl_dev, &cpu0_clkout_fops);
-#if IS_ENABLED(CONFIG_SOC_RDO) || IS_ENABLED(CONFIG_SOC_LGA)
+#if IS_ENABLED(CONFIG_SOC_RDO) || IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU)
 	debugfs_create_file("cpu1a_clk_out", 0644, bcl_dev->debug_entry, bcl_dev,
 			    &cpu1a_clkout_fops);
 	debugfs_create_file("cpu1b_clk_out", 0644, bcl_dev->debug_entry, bcl_dev,
@@ -415,4 +447,6 @@ void google_init_debugfs(struct bcl_device *bcl_dev)
 	debugfs_create_file("pmic", 0644, dentry_sys_evt, bcl_dev, &fops_sys_event_pmic);
 	debugfs_create_file("count", 0644, dentry_sys_evt, bcl_dev, &fops_sys_event_count);
 	debugfs_create_file("data", 0444, dentry_sys_evt, bcl_dev, &fops_sys_event_data);
+
+	debugfs_create_file("bcls_val", 0644, bcl_dev->debug_entry, bcl_dev, &fops_bcls_val);
 }

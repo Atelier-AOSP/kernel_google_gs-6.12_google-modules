@@ -94,6 +94,18 @@ struct dta_dev {
 	struct ebu_controller *ebu;
 	dma_addr_t fifo_dma;
 	struct usb_request *req;
+	struct workqueue_struct *wq;
+	struct usb_composite_dev *cdev;
+};
+
+/**
+ * struct dta_work - the non-atomic work in dta_set_alt or disable
+ * @work: Pushed into the function's ordered workqueue
+ * @dta: Context pointer
+ */
+struct dta_work {
+	struct work_struct work;
+	struct dta_dev *dta;
 };
 
 struct dta_opts {
@@ -123,9 +135,27 @@ static void dta_complete(struct usb_ep *ep, struct usb_request *req)
 	}
 }
 
+static void dta_delayed_set_alt(struct work_struct *w)
+{
+	struct dta_dev *dta;
+	struct dta_work *dw = container_of(w, struct dta_work, work);
+
+	dta = dw->dta;
+	kfree(dw);
+
+	if (dta->ebu->enable_data(dta->ebu, dta->gadget->speed))
+		return;
+
+	if (usb_ep_queue(dta->bulk_in, dta->req, GFP_ATOMIC))
+		return;
+
+	usb_composite_setup_continue(dta->cdev);
+}
+
 static int dta_set_alt(struct usb_function *f, unsigned int intf, unsigned int alt)
 {
 	struct dta_dev *dta;
+	struct dta_work *work;
 	int ret;
 
 	dta = container_of(f, struct dta_dev, usb_func);
@@ -135,33 +165,36 @@ static int dta_set_alt(struct usb_function *f, unsigned int intf, unsigned int a
 	if (ret)
 		return ret;
 
-	/* Previous requests on bulk_in have been cancelled/dequeued */
-	ret = dta->ebu->enable_data(dta->ebu, dta->gadget->speed);
-	if (ret)
-		return ret;
-
 	ret = config_ep_by_speed(dta->gadget, f, dta->bulk_in);
 	if (ret)
 		return ret;
 
 	ret = usb_ep_enable(dta->bulk_in);
 	if (ret)
-		goto disable;
+		return ret;
 
 	dta->req = usb_ep_alloc_request(dta->bulk_in, GFP_KERNEL);
 	if (!dta->req)
 		goto disable;
+
 	dta->req->buf = NULL;
 	dta->req->length = 4096;
 	dta->req->dma = dta->fifo_dma;
+#ifdef CONFIG_USB_EP_FIFO_MODE_SUPPORT
+	dta->req->pre_mapped = 1;
+#endif
 	dta->req->complete = dta_complete;
 
 	dta->bulk_in->driver_data = dta;
-	ret = usb_ep_queue(dta->bulk_in, dta->req, GFP_ATOMIC);
-	if (ret)
+	work = kmalloc(sizeof(*work), GFP_ATOMIC);
+	if (!work)
 		goto disable;
 
-	return 0;
+	work->dta = dta;
+	INIT_WORK(&work->work, dta_delayed_set_alt);
+	queue_work(dta->wq, &work->work);
+	return USB_GADGET_DELAYED_STATUS;
+
 disable:
 	usb_ep_disable(dta->bulk_in);
 	dta->bulk_in->driver_data = NULL;
@@ -174,23 +207,22 @@ disable:
 
 static void dta_disable(struct usb_function *f)
 {
-	struct dta_dev *dta;
+	struct dta_dev *dta = container_of(f, struct dta_dev, usb_func);
 
-	dta = container_of(f, struct dta_dev, usb_func);
 	dev_dbg(&dta->gadget->dev, "DTA Disable\n");
-
 	usb_ep_disable(dta->bulk_in);
 	dta->bulk_in->driver_data = NULL;
 	if (dta->req)
 		usb_ep_free_request(dta->bulk_in, dta->req);
 
 	dta->req = NULL;
+	dta->ebu->disable_data(dta->ebu);
 }
 
 static struct ebu_controller *get_trace_source(struct device_node *usb_node)
 {
 	struct platform_device *ebu_plat;
-	struct device_node *ebu_node = of_parse_phandle(usb_node, "dta_source", 0);
+	struct device_node *ebu_node = of_parse_phandle(usb_node, "ebu", 0);
 
 	if (!ebu_node)
 		return NULL;
@@ -219,6 +251,7 @@ static int dta_bind(struct usb_configuration *c, struct usb_function *f)
 	dta_intf_desc.iInterface = us[0].id;
 
 	dta->gadget = gadget;
+	dta->cdev = c->cdev;
 	ret = usb_interface_id(c, f);
 	if (ret < 0)
 		return ret;
@@ -232,20 +265,23 @@ static int dta_bind(struct usb_configuration *c, struct usb_function *f)
 	if (!dta->ebu || !dta->ebu->get_fifo)
 		return -ENODEV;
 
-	dta->fifo_dma = dta->ebu->get_fifo(dta->ebu, 0);
+	dta->fifo_dma = dta->ebu->get_fifo(dta->ebu, EBU_TRACE_CHANNEL);
 
 	dta->bulk_in = usb_ep_autoconfig_ss(dta->gadget, &dta_ss_bulk_in_desc,
 			&dta_ss_bulk_in_comp_desc);
 	if (!dta->bulk_in)
 		return -ENODEV;
 
+#ifdef CONFIG_USB_EP_FIFO_MODE_SUPPORT
+	dta->bulk_in->fifo_mode = 1;
+#endif
 	dta_hs_bulk_in_desc.bEndpointAddress = dta_ss_bulk_in_desc.bEndpointAddress;
 
 	ret = usb_assign_descriptors(f, NULL, dta_hs_descriptors, dta_ss_descriptors, NULL);
 	if (ret)
 		return ret;
 
-	return dta->ebu->add_mapping(dta->ebu, 0, dta->bulk_in->address);
+	return dta->ebu->add_mapping(dta->ebu, EBU_TRACE_CHANNEL, dta->bulk_in->address);
 }
 
 static void dta_unbind(struct usb_configuration *c,
@@ -255,8 +291,11 @@ static void dta_unbind(struct usb_configuration *c,
 	struct dta_dev *dta = container_of(f, struct dta_dev, usb_func);
 
 	dev_dbg(&gadget->dev, "DTA Unbind\n");
+#ifdef CONFIG_USB_EP_FIFO_MODE_SUPPORT
+	dta->bulk_in->fifo_mode = 0;
+#endif
 	usb_free_all_descriptors(f);
-	dta->ebu->release_mapping(dta->ebu, 0);
+	dta->ebu->release_mapping(dta->ebu, EBU_TRACE_CHANNEL);
 }
 
 static void dta_free_instance(struct usb_function_instance *func_inst)
@@ -280,7 +319,6 @@ static struct usb_function_instance *dta_alloc_instance(void)
 static void dta_free(struct usb_function *usb_func)
 {
 	struct dta_dev *dta = container_of(usb_func, struct dta_dev, usb_func);
-
 	kfree(dta);
 }
 
@@ -294,6 +332,7 @@ static struct usb_function *dta_alloc(struct usb_function_instance *func_inst)
 	dta->usb_func.set_alt = dta_set_alt;
 	dta->usb_func.disable = dta_disable;
 	dta->usb_func.free_func = dta_free;
+	dta->wq = alloc_ordered_workqueue("google_dta", 0);
 	return &dta->usb_func;
 }
 

@@ -4,7 +4,7 @@
  *
  * Definitions subject to change without notice.
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -101,6 +101,7 @@ struct bdc_header {
 #define BDC_FLAG2_IF_SHIFT	0
 #define BDC_FLAG2_FC_FLAG	0x10	/* flag to indicate if pkt contains */
 					/* FLOW CONTROL info only */
+#define BDC_FLAG2_MONITOR       0x20    /* Monitor Frame */
 
 /* version numbers */
 #define BDC_PROTO_VER_1		1	/* Old Protocol version */

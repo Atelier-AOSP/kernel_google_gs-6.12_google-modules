@@ -513,14 +513,14 @@ typedef BWL_PRE_PACKED_STRUCT struct fms_descriptor {
 typedef BWL_PRE_PACKED_STRUCT struct nontrans_BSSID_profile_subie {
 	uint8 subie_id; /* 0 */
 	uint8 subie_len;
-	BCM_DECLARE_FLEX_ARRAY(uint8, moreie);
+	uint8 moreie[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT nontrans_BSSID_profile_subie_t;
 
 typedef BWL_PRE_PACKED_STRUCT struct multi_BSSID_ie {
 	uint8 id;
 	uint8 len;
 	uint8 maxBSSID_indicator;
-	BCM_DECLARE_FLEX_ARRAY(nontrans_BSSID_profile_subie_t, profile);
+	nontrans_BSSID_profile_subie_t profile[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT multi_BSSID_ie_t;
 
 #define DOT11_MULTIPLE_BSSID_PROFILE_SUBID 0

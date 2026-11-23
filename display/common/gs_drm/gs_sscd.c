@@ -12,7 +12,11 @@ static const struct display_sscd_version current_version = { 0, 3, "Unknown", "U
 
 static inline const char *get_common_driver_commit(void)
 {
-	return SSCD_GET_DRIVER_VERSION();
+#if IS_ENABLED(CONFIG_MODULE_SCMVERSION)
+	return THIS_MODULE->scmversion ? THIS_MODULE->scmversion : "scmversion missing";
+#else
+	return "Unknown";
+#endif
 }
 
 /**

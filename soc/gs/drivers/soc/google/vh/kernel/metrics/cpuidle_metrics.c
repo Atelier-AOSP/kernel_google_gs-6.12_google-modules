@@ -17,6 +17,8 @@
 #include <trace/events/power.h>
 #include <soc/google/cpuidle_metrics.h>
 
+#include "cpuidle_metrics.h"
+
 /* Constants for histogram bins */
 #define NUM_TARGET_BINS 8
 #define PERCENT_INCREMENT 25
@@ -79,7 +81,8 @@ void cpuidle_metrics_histogram_register(char *name, int cluster_id, s64 target_r
 		spin_unlock(&cluster_spinlocks[cluster_id]);
 		return;
 	}
-	strlcpy(all_cluster_stats[cluster_id].name, name, NAME_LEN);
+	strscpy(all_cluster_stats[cluster_id].name, name,
+		sizeof(all_cluster_stats[cluster_id].name));
 	all_cluster_stats[cluster_id].target_residency = target_residency_us;
 	all_cluster_stats[cluster_id].initialized = true;
 	spin_unlock(&cluster_spinlocks[cluster_id]);

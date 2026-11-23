@@ -71,8 +71,6 @@ struct dma_fence *pvr_exp_fence_create_with_fp_token(struct pvr_exp_fence_contex
 #endif
 
 const char *pvr_exp_fence_context_name(struct pvr_exp_fence_context *fctx);
-void pvr_exp_fence_context_value_str(struct pvr_exp_fence_context *fctx,
-				    char *str, int size);
 
 enum PVRSRV_ERROR_TAG pvr_exp_fence_assign_checkpoint(PVRSRV_FENCE fence_to_resolve,
 						      struct dma_fence *fence,

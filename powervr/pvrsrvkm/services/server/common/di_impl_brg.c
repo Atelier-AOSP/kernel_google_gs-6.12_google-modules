@@ -133,7 +133,7 @@ struct DIIB_WORK_ITEM
 
 /* ----- native callbacks interface ----------------------------------------- */
 
-static void _WriteWithRetires(void *pvNativeHandle, const IMG_CHAR *pszStr,
+static void _WriteWithRetries(void *pvNativeHandle, const IMG_CHAR *pszStr,
                               IMG_UINT uiLen)
 {
 	PVRSRV_ERROR eError;
@@ -168,7 +168,7 @@ static void _WriteWithRetires(void *pvNativeHandle, const IMG_CHAR *pszStr,
 static void _WriteData(void *pvNativeHandle, const void *pvData,
                        IMG_UINT32 uiSize)
 {
-	_WriteWithRetires(pvNativeHandle, pvData, uiSize);
+	_WriteWithRetries(pvNativeHandle, pvData, uiSize);
 }
 
 __printf(2, 0)
@@ -179,12 +179,12 @@ static void _VPrintf(void *pvNativeHandle, const IMG_CHAR *pszFmt,
 	IMG_UINT uiLen = OSVSNPrintf(pcBuffer, sizeof(pcBuffer) - 1, pszFmt, pArgs);
 	pcBuffer[uiLen] = '\0';
 
-	_WriteWithRetires(pvNativeHandle, pcBuffer, uiLen + 1);
+	_WriteWithRetries(pvNativeHandle, pcBuffer, uiLen + 1);
 }
 
 static void _Puts(void *pvNativeHandle, const IMG_CHAR *pszStr)
 {
-	_WriteWithRetires(pvNativeHandle, pszStr, OSStringLength(pszStr) + 1);
+	_WriteWithRetries(pvNativeHandle, pszStr, OSStringLength(pszStr) + 1);
 }
 
 static IMG_BOOL _HasOverflowed(void *pvNativeHandle)

@@ -220,7 +220,22 @@ PVRSRVGetDefaultPhysicalHeapKM(CONNECTION_DATA *psConnection,
                                PVRSRV_PHYS_HEAP *peHeap);
 
 /*************************************************************************/ /*!
-@Function       PVRSRVPhysHeapGetMemInfoKM
+@Function       PVRSRVPhysHeapGetMemInfoKM (Deprecated)
+@Description    Get the memory usage statistics for a given physical heap ID
+@Input          ui32PhysHeapCount      Physical Heap count
+@Input          paePhysHeapID          Array of Physical Heap ID's
+@Output         paPhysHeapMemStats     Buffer to hold the memory statistics
+@Return         PVRSRV_ERROR_NOT_SUPPORTED
+*/ /**************************************************************************/
+PVRSRV_ERROR
+PVRSRVPhysHeapGetMemInfoKM(CONNECTION_DATA *psConnection,
+                           PVRSRV_DEVICE_NODE *psDevNode,
+                           IMG_UINT32 ui32PhysHeapCount,
+                           PVRSRV_PHYS_HEAP *paePhysHeapID,
+                           PHYS_HEAP_MEM_STATS_OLD *paPhysHeapMemStats);
+
+/*************************************************************************/ /*!
+@Function       PVRSRVPhysHeapGetMemInfoKM2
 @Description    Get the memory usage statistics for a given physical heap ID
 @Input          ui32PhysHeapCount      Physical Heap count
 @Input          paePhysHeapID          Array of Physical Heap ID's
@@ -228,11 +243,11 @@ PVRSRVGetDefaultPhysicalHeapKM(CONNECTION_DATA *psConnection,
 @Return         PVRSRV_OK if successful
 */ /**************************************************************************/
 PVRSRV_ERROR
-PVRSRVPhysHeapGetMemInfoKM(CONNECTION_DATA *psConnection,
-                           PVRSRV_DEVICE_NODE *psDevNode,
-                           IMG_UINT32 ui32PhysHeapCount,
-                           PVRSRV_PHYS_HEAP *paePhysHeapID,
-                           PHYS_HEAP_MEM_STATS *paPhysHeapMemStats);
+PVRSRVPhysHeapGetMemInfoKM2(CONNECTION_DATA *psConnection,
+                            PVRSRV_DEVICE_NODE *psDevNode,
+                            IMG_UINT32 ui32PhysHeapCount,
+                            PVRSRV_PHYS_HEAP *paePhysHeapID,
+                            PHYS_HEAP_MEM_STATS *paPhysHeapMemStats);
 
 /*************************************************************************/ /*!
 @Function       PhysMemValidateParams
@@ -260,5 +275,10 @@ PhysMemValidateParams(PVRSRV_DEVICE_NODE *psDevNode,
                       IMG_PID uiPid,
                       IMG_UINT32 *puiLog2AllocPageSize,
                       IMG_DEVMEM_SIZE_T *puiSize);
+
+PVRSRV_ERROR
+PhysMemPhysHeapSelect(PVRSRV_DEVICE_NODE *psDevNode,
+                      PVRSRV_MEMALLOCFLAGS_T *puiFlags,
+                      PHYS_HEAP **ppsPhysHeap);
 
 #endif /* SRVSRV_PHYSMEM_H */

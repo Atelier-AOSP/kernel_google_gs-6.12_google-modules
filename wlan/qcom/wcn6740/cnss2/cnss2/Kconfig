@@ -97,3 +97,21 @@ config CNSS_REQ_FW_DIRECT
 	  This enables calling request_firmware_direct for firmware or
 	  configuration file to avoid 60s timeout while search file under user
 	  space failure.
+
+config WCN_GOOGLE
+    bool "CNSS2 for Google platform"
+    depends on CNSS2
+    help
+      This option is to enable CNSS2 for google platform
+
+config QCOM_RAMDUMP
+	bool "Enable SSR RAMDUMP Collection"
+	depends on CNSS2
+	help
+	  If enabled, host/fw ramdump will be collected upon SSR.
+
+config QCOM_MEMORY_DUMP_V2
+	bool "Enable memory dump V2"
+	depends on CNSS2
+	help
+	  If enabled, host/fw ramdump will be collected by V2 format.

@@ -2,7 +2,7 @@
 /*
  * GCIP Mailbox Interface.
  *
- * Copyright (C) 2022 Google LLC
+ * Copyright (C) 2022-2026 Google LLC
  */
 
 #ifndef __GCIP_MAILBOX_H__
@@ -97,6 +97,8 @@ enum gcip_mailbox_awaiter_status {
 
 /* Wrapper struct for responses consumed by a thread other than the one which sent the command. */
 struct gcip_mailbox_awaiter {
+	/* Sequence number for matching response. */
+	u64 seq;
 	/* IP-defined response. */
 	void *rsp;
 	/* The work which will be executed when the timeout occurs. */
@@ -116,6 +118,8 @@ struct gcip_mailbox_awaiter {
 	struct list_head list;
 	/* The status of the awaiter. */
 	enum gcip_mailbox_awaiter_status status;
+	/* Tag to identify the awaiter. */
+	void *tag;
 };
 
 /**
@@ -184,17 +188,17 @@ struct gcip_mailbox_awaiter_ops {
 	u32 (*get_timeout)(struct gcip_mailbox_awaiter *awaiter);
 	/**
 	 * match_response() - The operator to match the response packet.
+	 * @awaiter: The pointer to the awaiter that is being matched.
 	 * @incoming_resp: The pointer to the incoming response packet from the response queue.
-	 * @waiter_resp: The pointer to the waiter response packet passed by the user.
 	 *
-	 * If this operator is not provided, `get_resp_elem_seq` will be used to retrieve the
-	 * sequence number of the response packets; a match is confirmed if the sequence numbers are
+	 * If this operator is not provided, the sequence number in the awaiter's seq field will be
+	 * used to match the response packets; a match is confirmed if the sequence numbers are
 	 * equal.
 	 *
-	 * Context: Interrupt context.
-	 * Return: whether or not the incoming response matches the waiter response.
+	 * Context: Any context.
+	 * Return: true if the response matches the awaiter, false otherwise.
 	 */
-	bool (*match_response)(void *incoming_resp, void *waiter_resp);
+	bool (*match_response)(struct gcip_mailbox_awaiter *awaiter, void *incoming_resp);
 };
 
 /*
@@ -313,12 +317,6 @@ struct gcip_mailbox_ops {
 	 * Context: wait_list_lock.
 	 */
 	u64 (*get_resp_elem_seq)(struct gcip_mailbox *mailbox, void *resp);
-	/*
-	 * Sets the sequence number of @resp queue element.
-	 *
-	 * Context: tx_queue_lock.
-	 */
-	void (*set_resp_elem_seq)(struct gcip_mailbox *mailbox, void *resp, u64 seq);
 
 	/* Mandatory if GCIP_MAILBOX_MODE_RX_RSP and GCIP_MAILBOX_MODE_RX_CMD are both on. */
 	/**
@@ -563,6 +561,18 @@ int gcip_mailbox_send_cmd_async(struct gcip_mailbox *mailbox, void *cmd,
 bool gcip_mailbox_cancel_awaiter(struct gcip_mailbox_awaiter *awaiter);
 
 /**
+ * gcip_mailbox_cancel_awaiters_by_tag() - Cancels all the awaiters matching a tag.
+ * @mailbox: The mailbox containing the awaiters.
+ * @tag: The pointer to the tag.
+ *
+ * This function will delete all the awaiters in the wait list that match the specified @tag
+ * and cancel their timeout workers.
+ *
+ * Context: Process context. May sleep if it needs to wait for the completion of other callbacks.
+ */
+void gcip_mailbox_cancel_awaiters_by_tag(struct gcip_mailbox *mailbox, const void *tag);
+
+/**
  * gcip_mailbox_cancel_timeout_work() - Cancels the timeout work of the awaiter.
  * @awaiter: The awaiter to cancel the timeout work.
  *
@@ -588,13 +598,22 @@ void gcip_mailbox_cancel_timeout_work_sync(struct gcip_mailbox_awaiter *awaiter)
  * @mailbox: The pointer to the gcip mailbox to interact with its interfaces.
  * @resp: The pointer to the response to be filled.
  * @ops: The pointer to the awaiter operators.
+ * @tag: The pointer to the tag.
  *
  * The awaiter is expected to be released with the gcip_mailbox_awaiter_put().
  *
  * Return: 0 on success, or a negative errno otherwise.
  */
 int gcip_mailbox_awaiter_init(struct gcip_mailbox_awaiter *awaiter, struct gcip_mailbox *mailbox,
-			      void *resp, const struct gcip_mailbox_awaiter_ops *ops);
+			      void *resp, const struct gcip_mailbox_awaiter_ops *ops, void *tag);
+
+/**
+ * gcip_mailbox_awaiter_get() - Gets the reference count of the awaiter.
+ * @awaiter: The awaiter to be got.
+ *
+ * Return: The pointer to the awaiter.
+ */
+struct gcip_mailbox_awaiter *gcip_mailbox_awaiter_get(struct gcip_mailbox_awaiter *awaiter);
 
 /**
  * gcip_mailbox_awaiter_put() - Puts the reference count of the awaiter.
@@ -606,6 +625,28 @@ int gcip_mailbox_awaiter_init(struct gcip_mailbox_awaiter *awaiter, struct gcip_
  * It will call the `release_awaiter` callback when the reference count reaches 0.
  */
 void gcip_mailbox_awaiter_put(struct gcip_mailbox_awaiter *awaiter);
+
+/**
+ * gcip_mailbox_find_awaiter() - Finds the awaiter by the sequence number.
+ * @mailbox: The mailbox containing the awaiters.
+ * @seq: The sequence number of the awaiter to find.
+ *
+ * The caller has to call gcip_mailbox_awaiter_put() on the reference of the awaiter after using it.
+ *
+ * Return: The pointer to the awaiter if found or NULL otherwise.
+ */
+struct gcip_mailbox_awaiter *gcip_mailbox_find_awaiter(struct gcip_mailbox *mailbox, u64 seq);
+
+/**
+ * gcip_mailbox_awaiter_get_seq() - Returns the sequence number tracked in the awaiter.
+ * @awaiter: The pointer to the awaiter.
+ *
+ * Return: The sequence number of the awaiter.
+ */
+static inline u64 gcip_mailbox_awaiter_get_seq(struct gcip_mailbox_awaiter *awaiter)
+{
+	return awaiter->seq;
+}
 
 /**
  * gcip_mailbox_awaiter_get_ops() - Gets the pointer to the awaiter operators.

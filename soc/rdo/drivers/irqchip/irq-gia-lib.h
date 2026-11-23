@@ -66,7 +66,7 @@ struct gia_irq_latency {
  */
 struct gia_telemetry {
 	u32 *concurrency;
-	struct gia_irq_latency *irq_latencies;
+	struct gia_irq_latency **irq_latencies;
 	ktime_t start_time;
 	u32 handler_count;
 	u32 gia_handler_latency_min;
@@ -119,12 +119,13 @@ struct gia_type_data {
  * @irq_domain: IRQ domain for the GIA
  * @power_domain: GenPD handle for the GIA
  * @lock: Spinlock to synchronize register access
+ * @mask_cache: Which bits are unmasked by enable_irq for this GIA
+ * @wake_cache: Which bits are unmasked by enable_irq_wake for this GIA
  * @io_base: IOREMAP'ed address of the base of GIA
  * @virqs: Pointer to array of virqs claimed by the GIA
  * @nr_out_irq: Size of the virqs
  * @nr_irq_chips: Wide GIAs have more than 1 set of registers (referred here as irq chips)
  * @next_bank_base_offset: In case of wide GIAs, the gap between any register across 2 irq chips
- * @mask_cache: Cache (a SW copy) of mask register
  * @telemetry: Placeholder for storing all telemetry data
  * @list: Node in GIA devices' linked list
  * @gia_kobj: Handle for per GIA sysfs dir
@@ -134,8 +135,10 @@ struct gia_device_data {
 	struct device *dev;
 	const struct gia_type_data *type_data;
 	struct irq_domain *irq_domain;
-	struct device *power_domain;
 	raw_spinlock_t lock;
+	u32 *mask_cache;
+	u32 *wake_cache;
+	bool has_wake_irqs;
 
 	/* Values coming from device tree */
 	void __iomem *io_base;
@@ -143,7 +146,6 @@ struct gia_device_data {
 	int nr_out_irq;
 	u32 nr_irq_chips;
 	u32 next_bank_base_offset;
-	u32 *mask_cache;
 
 	/* Telemetry */
 	struct gia_telemetry telemetry;

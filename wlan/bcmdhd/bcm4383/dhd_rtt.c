@@ -103,7 +103,7 @@ static DEFINE_SPINLOCK(noti_list_lock);
 #define DHD_RTT_MEM DHD_LOG_MEM
 #define DHD_RTT_ERR DHD_ERROR
 
-#define FTM_IOC_BUFSZ  2048	/* ioc buffsize for our module (> BCM_XTLV_HDR_SIZE) */
+
 #define FTM_AVAIL_MAX_SLOTS		32
 #define FTM_MAX_CONFIGS 10
 #define FTM_MAX_PARAMS 25
@@ -159,27 +159,12 @@ struct rtt_noti_callback {
 	dhd_rtt_compl_noti_fn noti_fn;
 };
 
-/* bitmask indicating which command groups; */
-typedef enum {
-	FTM_SUBCMD_FLAG_METHOD	= 0x01,	/* FTM method command */
-	FTM_SUBCMD_FLAG_SESSION = 0x02,	/* FTM session command */
-	FTM_SUBCMD_FLAG_ALL = FTM_SUBCMD_FLAG_METHOD | FTM_SUBCMD_FLAG_SESSION
-} ftm_subcmd_flag_t;
-
 /* proxd ftm config-category definition */
 typedef enum {
 	FTM_CONFIG_CAT_GENERAL = 1,	/* generial configuration */
 	FTM_CONFIG_CAT_OPTIONS = 2,	/* 'config options' */
 	FTM_CONFIG_CAT_AVAIL = 3,	/* 'config avail' */
 } ftm_config_category_t;
-
-typedef struct ftm_subcmd_info {
-	int16				version;    /* FTM version (optional) */
-	char				*name;		/* cmd-name string as cmdline input */
-	wl_proxd_cmd_t		cmdid;		/* cmd-id */
-	bcm_xtlv_unpack_cbfn_t *handler;  /* cmd response handler (optional) */
-	ftm_subcmd_flag_t	cmdflag; /* CMD flag (optional)  */
-} ftm_subcmd_info_t;
 
 typedef struct ftm_config_options_info {
 	uint32 flags;				/* wl_proxd_flags_t/wl_proxd_session_flags_t */
@@ -210,21 +195,12 @@ typedef struct ftm_config_param_info {
 *   This is used to map an id (can be cmd-id, tlv-id, ....) to a text-string
 *   for debug-display or cmd-log-display
 */
-typedef struct ftm_strmap_entry {
-	int32		id;
-	char		*text;
-} ftm_strmap_entry_t;
 
 typedef struct ftm_status_map_host_entry {
 	wl_proxd_status_t proxd_status;
 	rtt_reason_t rtt_reason;
 } ftm_status_map_host_entry_t;
 
-typedef struct rtt_event_data_info {
-	wl_proxd_ftm_session_status_t *session_status;
-	rtt_mc_az_result_t *rtt_result;
-	bcm_xtlv_t *tlv;
-} rtt_event_data_info_t;
 
 static uint16
 rtt_result_ver(uint16 tlvid, const uint8 *p_data);
@@ -282,9 +258,6 @@ static int dhd_rtt_mc_az_ftm_config(dhd_pub_t *dhd, wl_proxd_session_id_t sessio
 #ifdef WL_NAN
 static void dhd_rtt_trigger_pending_targets_on_session_end(dhd_pub_t *dhd);
 #endif /* WL_NAN */
-#ifdef DHD_RTT_USE_FTM_RANGE
-static int dhd_rtt_stop_ranging(dhd_pub_t *dhd);
-#endif /* DHD_RTT_USE_FTM_RANGE */
 #endif /* WL_CFG80211 */
 static const int burst_duration_idx[]  = {0, 0, 1, 2, 4, 8, 16, 32, 64, 128, 0, 0};
 
@@ -316,31 +289,6 @@ static const ftm_status_map_host_entry_t ftm_status_map_info[] = {
 	{WL_PROXD_E_OK, RTT_STATUS_SUCCESS}
 };
 
-static const ftm_strmap_entry_t ftm_event_type_loginfo[] = {
-	/* wl_proxd_event_type_t,		text-string */
-	{ WL_PROXD_EVENT_NONE,			"none" },
-	{ WL_PROXD_EVENT_SESSION_CREATE,	"session create" },
-	{ WL_PROXD_EVENT_SESSION_START,		"session start" },
-	{ WL_PROXD_EVENT_FTM_REQ,		"FTM req" },
-	{ WL_PROXD_EVENT_BURST_START,		"burst start" },
-	{ WL_PROXD_EVENT_BURST_END,		"burst end" },
-	{ WL_PROXD_EVENT_SESSION_END,		"session end" },
-	{ WL_PROXD_EVENT_SESSION_RESTART,	"session restart" },
-	{ WL_PROXD_EVENT_BURST_RESCHED,		"burst rescheduled" },
-	{ WL_PROXD_EVENT_SESSION_DESTROY,	"session destroy" },
-	{ WL_PROXD_EVENT_RANGE_REQ,		"range request" },
-	{ WL_PROXD_EVENT_FTM_FRAME,		"FTM frame" },
-	{ WL_PROXD_EVENT_DELAY,			"delay" },
-	{ WL_PROXD_EVENT_VS_INITIATOR_RPT,	"initiator-report " }, /* rx initiator-rpt */
-	{ WL_PROXD_EVENT_RANGING,		"ranging " },
-#ifdef WL_RTT_LCI
-	{ WL_PROXD_EVENT_LCI_MEAS_REP,		"lci report" },
-	{ WL_PROXD_EVENT_CIVIC_MEAS_REP,	"civic report" },
-#endif /* WL_RTT_LCI */
-	{ WL_PROXD_EVENT_COLLECT,		"collect" },
-	{ WL_PROXD_EVENT_MF_STATS,		"mf_stats" },
-	{ WL_PROXD_EVENT_START_WAIT,		"start-wait"}
-};
 
 /*
 * session-state --> text string mapping
@@ -701,7 +649,7 @@ ftm_tmu_value_to_logstr(wl_proxd_tmu_t tmu)
 		&ftm_tmu_value_loginfo[0], ARRAYSIZE(ftm_tmu_value_loginfo));
 }
 
-static const ftm_strmap_entry_t*
+const ftm_strmap_entry_t*
 ftm_get_event_type_loginfo(wl_proxd_event_type_t	event_type)
 {
 	/* look up 'event-type' from a predefined table  */
@@ -758,7 +706,7 @@ exit:
 	return status;
 }
 
-static wl_proxd_iov_t *
+wl_proxd_iov_t *
 rtt_alloc_getset_buf(dhd_pub_t *dhd, wl_proxd_method_t method, wl_proxd_session_id_t session_id,
 	wl_proxd_cmd_t cmdid, uint16 tlvs_bufsize, uint16 *p_out_bufsize,
 	uint8 ftm_type)
@@ -1131,7 +1079,7 @@ rtt_prhex(const char *msg, const uint8 *buf, uint nbytes)
 		DHD_RTT(("%s\n", line));
 }
 
-static int
+int
 rtt_unpack_xtlv_cbfn(void *ctx, const uint8 *p_data, uint16 tlvid, uint16 len)
 {
 	int ret = BCME_OK;
@@ -1139,12 +1087,47 @@ rtt_unpack_xtlv_cbfn(void *ctx, const uint8 *p_data, uint16 tlvid, uint16 len)
 	wl_proxd_ftm_session_status_t *p_data_info = NULL;
 	uint32 chan_data_entry = 0;
 	uint16 expected_rtt_result_ver = 0;
+	rtt_event_data_info_t *rtt_event_data_info = NULL;
+	rtt_mc_az_result_t *rtt_result = NULL;
+	bcm_xtlv_t *tlv = NULL;
 
-	rtt_event_data_info_t *rtt_event_data_info = (rtt_event_data_info_t *)ctx;
-	rtt_mc_az_result_t *rtt_result = rtt_event_data_info->rtt_result;
-	bcm_xtlv_t *tlv = rtt_event_data_info->tlv;
+	if (!ctx) {
+		DHD_RTT_ERR(("rtt_unpack_xtlv_cbfn: ctx is NULL\n"));
+		return BCME_ERROR;
+	}
+
+	rtt_event_data_info = (rtt_event_data_info_t *)ctx;
+	rtt_result = rtt_event_data_info->rtt_result;
+	tlv = rtt_event_data_info->tlv;
 
 	BCM_REFERENCE(p_data_info);
+
+	if ((tlvid == WL_PROXD_TLV_ID_RTT_RESULT ||
+			tlvid == WL_PROXD_TLV_ID_RTT_RESULT_V2 ||
+			tlvid == WL_PROXD_TLV_ID_RTT_RESULT_V3 ||
+			tlvid == WL_FTM_TLV_ID_AZ_RTT_RESULT_V1 ||
+			tlvid == WL_FTM_TLV_ID_AZ_RTT_RESULT_V2 ||
+			tlvid == WL_FTM_TLV_ID_AZ_RTT_RESULT_V3) &&
+			!rtt_result) {
+		DHD_RTT_ERR(("rtt_unpack_xtlv_cbfn: rtt_result is NULL for TLV ID %d\n", tlvid));
+		return BCME_ERROR;
+	}
+
+	if ((tlvid == WL_PROXD_TLV_ID_SESSION_STATUS) &&
+		!rtt_event_data_info->session_status) {
+		DHD_RTT_ERR(("rtt_unpack_xtlv_cbfn: session_status is NULL for TLV ID %d\n",
+				tlvid));
+		return BCME_ERROR;
+	}
+
+	if ((tlvid == WL_PROXD_TLV_ID_COLLECT_DATA ||
+			tlvid == WL_PROXD_TLV_ID_LCI ||
+			tlvid == WL_PROXD_TLV_ID_CIVIC ||
+			tlvid == WL_PROXD_TLV_ID_MF_STATS_DATA) &&
+			!rtt_event_data_info->tlv) {
+		DHD_RTT_ERR(("rtt_unpack_xtlv_cbfn: tlv is NULL for TLV ID %d\n", tlvid));
+		return BCME_ERROR;
+	}
 
 	switch (tlvid) {
 	case WL_PROXD_TLV_ID_RTT_RESULT:
@@ -1152,10 +1135,6 @@ rtt_unpack_xtlv_cbfn(void *ctx, const uint8 *p_data, uint16 tlvid, uint16 len)
 	case WL_PROXD_TLV_ID_RTT_RESULT_V3:
 		DHD_RTT(("WL_PROXD_TLV_ID_RTT_RESULT\n"));
 		expected_rtt_result_ver = rtt_result_ver(tlvid, p_data);
-		if (rtt_result == NULL) {
-			ret = BCME_ERROR;
-			break;
-		}
 		switch (expected_rtt_result_ver) {
 		case WL_PROXD_RTT_RESULT_VERSION_1:
 			ret = dhd_rtt_convert_results_to_host_v1(rtt_result,
@@ -1177,10 +1156,6 @@ rtt_unpack_xtlv_cbfn(void *ctx, const uint8 *p_data, uint16 tlvid, uint16 len)
 		break;
 	case WL_PROXD_TLV_ID_SESSION_STATUS:
 		DHD_RTT(("WL_FTM_TLV_ID_SESSION_STATUS\n"));
-		if (rtt_event_data_info->session_status == NULL) {
-			ret = BCME_ERROR;
-			break;
-		}
 		ret = memcpy_s(rtt_event_data_info->session_status,
 				sizeof(wl_proxd_ftm_session_status_t), p_data, len);
 		if (ret != BCME_OK) {
@@ -1230,32 +1205,22 @@ rtt_unpack_xtlv_cbfn(void *ctx, const uint8 *p_data, uint16 tlvid, uint16 len)
 		DHD_RTT(("WL_FTM_TLV_ID_LCI, IE data=%lx, len=%d\n",
 			(unsigned long)p_data, len));
 		rtt_prhex("", p_data, len);
-		if (tlv) {
-			tlv->id = WL_PROXD_TLV_ID_LCI;
-			ret = memcpy_s(tlv->data, tlv->len, p_data, len);
-			tlv->len = len;
-			if (ret != BCME_OK) {
-				break;
-			}
-		}
-		else {
-			ret = BCME_ERROR;
+		tlv->id = WL_PROXD_TLV_ID_LCI;
+		ret = memcpy_s(tlv->data, tlv->len, p_data, len);
+		tlv->len = len;
+		if (ret != BCME_OK) {
+			break;
 		}
 		break;
 	case WL_PROXD_TLV_ID_CIVIC:
 		DHD_RTT(("WL_FTM_TLV_ID_CIVIC, IE data=%lx, len=%d\n",
 			(unsigned long)p_data, len));
 		rtt_prhex("", p_data, len);
-		if (tlv) {
-			tlv->id = WL_PROXD_TLV_ID_CIVIC;
-			tlv->len = len;
-			ret = memcpy_s(tlv->data, tlv->len, p_data, len);
-			if (ret != BCME_OK) {
-				break;
-			}
-		}
-		else {
-			ret = BCME_ERROR;
+		tlv->id = WL_PROXD_TLV_ID_CIVIC;
+		tlv->len = len;
+		ret = memcpy_s(tlv->data, tlv->len, p_data, len);
+		if (ret != BCME_OK) {
+			break;
 		}
 		break;
 #endif /* WL_RTT_LCI */
@@ -1272,6 +1237,16 @@ rtt_unpack_xtlv_cbfn(void *ctx, const uint8 *p_data, uint16 tlvid, uint16 len)
 		DHD_RTT(("WL_FTM_TLV_ID_AZ_RTT_RESULT_V3 \n"));
 		dhd_rtt_convert_az_results_to_host_v3(rtt_result, p_data, tlvid, len);
 		break;
+#ifdef WL_PMSR
+	case WL_FTM_TLV_ID_PMSR_RESULT_V1:
+		DHD_RTT(("WL_FTM_TLV_ID_PMSR_RESULT_V1 \n"));
+		if (p_data == NULL) {
+			WL_DBG(("P-data null\n"));
+			return BCME_ERROR;
+		}
+		rtt_event_data_info->pmsr_result = (wl_ftm_pmsr_result_v1_t *)p_data;
+		break;
+#endif /* WL_PMSR */
 #endif /* FTM */
 	default:
 		DHD_RTT_ERR(("> Unsupported TLV ID %d\n", tlvid));
@@ -1414,7 +1389,7 @@ rtt_handle_config_general(wl_proxd_session_id_t session_id, wl_proxd_tlv_t **p_t
 	return ret;
 }
 
-static int
+int
 dhd_rtt_ftm_enable(dhd_pub_t *dhd, bool enable)
 {
 	ftm_subcmd_info_t subcmd_info;
@@ -3103,7 +3078,6 @@ dhd_rtt_timeout(dhd_pub_t *dhd)
 	rtt_status_info_t *rtt_status;
 #ifndef DHD_DUMP_ON_RTT_TIMEOUT
 	rtt_mc_az_target_info_t *rtt_target = NULL;
-	rtt_mc_az_target_info_t *rtt_target_info = NULL;
 #ifdef WL_NAN
 	int8 idx;
 	nan_ranging_inst_t *ranging_inst = NULL;
@@ -3179,26 +3153,7 @@ dhd_rtt_timeout(dhd_pub_t *dhd)
 	} else
 #endif /* WL_NAN */
 	{
-		/* Cancel RTT for target and proceed to next target */
-		rtt_target_info = rtt_status->rtt_config.target_info;
-		if ((!rtt_target_info) ||
-				(rtt_status->cur_idx >= rtt_status->rtt_config.rtt_target_cnt)) {
-			goto exit;
-		}
-
-		/* create failure report for the uncompleted targets */
-		for (idx = 0; idx < rtt_status->rtt_config.rtt_target_cnt; idx++) {
-			if (!dhd_rtt_get_report_header(rtt_status, NULL,
-				&rtt_status->rtt_config.target_info[idx].cmn_tgt_info.addr)) {
-				rtt_target = &rtt_target_info[idx];
-				WL_ERR(("Proxd timer expired for Target: "MACDBG" \n",
-					MAC2STRDBG(&rtt_target->cmn_tgt_info.addr)));
-				dhd_rtt_create_failure_result(rtt_status,
-					&rtt_target->cmn_tgt_info.addr,
-					RTT_STATUS_FAIL_TM_TIMEOUT);
-			}
-		}
-		dhd_rtt_handle_rtt_session_end(dhd);
+		dhd_rtt_abort_legacy_ranging(dhd);
 	}
 #endif /* DHD_DUMP_ON_RTT_TIMEOUT */
 exit:
@@ -3229,6 +3184,43 @@ dhd_rtt_timeout_work(struct work_struct *work)
 	mutex_lock(&rtt_status->rtt_mutex);
 	(void) dhd_rtt_timeout(dhd);
 	mutex_unlock(&rtt_status->rtt_mutex);
+}
+
+void
+dhd_rtt_abort_legacy_ranging(dhd_pub_t *dhd)
+{
+	rtt_status_info_t *rtt_status;
+	rtt_mc_az_target_info_t *rtt_target = NULL;
+	rtt_mc_az_target_info_t *rtt_target_info = NULL;
+	int8 idx = 0;
+
+	rtt_status = GET_RTTSTATE(dhd);
+	if (!rtt_status) {
+		DHD_RTT_ERR(("abort requested but no RTT status\n"));
+		return;
+	}
+
+	if (RTT_IS_STOPPED(rtt_status)) {
+		DHD_RTT_ERR(("abort requested but no RTT request\n"));
+	}
+
+	rtt_target_info = rtt_status->rtt_config.target_info;
+	if ((!rtt_target_info) ||
+			(rtt_status->cur_idx >= rtt_status->rtt_config.rtt_target_cnt)) {
+			return;
+	}
+	for (idx = 0; idx < rtt_status->rtt_config.rtt_target_cnt; idx++) {
+		if (!dhd_rtt_get_report_header(rtt_status, NULL,
+			&rtt_status->rtt_config.target_info[idx].cmn_tgt_info.addr)) {
+			rtt_target = &rtt_target_info[idx];
+			WL_ERR(("abort existing ranging for target: "MACDBG"\n",
+				MAC2STRDBG(&rtt_target->cmn_tgt_info.addr)));
+			dhd_rtt_create_failure_result(rtt_status,
+				&rtt_target->cmn_tgt_info.addr,
+				RTT_STATUS_FAIL_TM_TIMEOUT);
+		}
+	}
+	dhd_rtt_handle_rtt_session_end(dhd);
 }
 
 static void
@@ -4079,7 +4071,7 @@ exit:
 
 #ifdef DHD_RTT_USE_FTM_RANGE
 
-static int
+int
 dhd_rtt_stop_ranging(dhd_pub_t *dhd)
 {
 	ftm_subcmd_info_t subcmd_info;
@@ -5726,7 +5718,12 @@ dhd_rtt_handle_rtt_session_end(dhd_pub_t *dhd)
 #endif
 				dhd_rtt_delete_session(dhd, rtt_target->cmn_tgt_info.sid);
 			}
-			dhd_rtt_ftm_enable(dhd, FALSE);
+#ifdef WL_PMSR
+			if (cfg->pd_wdev == NULL)
+#endif /* WL_PMSR */
+			{
+				dhd_rtt_ftm_enable(dhd, FALSE);
+			}
 		}
 		rtt_config->rtt_target_cnt = 0;
 		(void)memset_s(rtt_config->target_info, TARGET_INFO_SIZE(RTT_MAX_TARGET_CNT),
@@ -6019,6 +6016,10 @@ dhd_rtt_parse_az_result_event(wl_proxd_event_t *proxd_ev_data,
 	memset(&rtt_event_data_info, 0, sizeof(rtt_event_data_info_t));
 
 	rtt_event_data_info.rtt_result = rtt_result;
+	if (!session_status) {
+		ret = -ENOMEM;
+		goto exit;
+	}
 	rtt_event_data_info.session_status = session_status;
 	/* unpack TLVs and invokes the cbfn to print the event content TLVs */
 	ret = bcm_unpack_xtlv_buf((void *) &rtt_event_data_info,

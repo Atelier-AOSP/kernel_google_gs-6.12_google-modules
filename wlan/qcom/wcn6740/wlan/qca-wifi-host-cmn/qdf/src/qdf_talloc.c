@@ -208,7 +208,7 @@ static void qdf_talloc_meta_init(struct qdf_talloc_header *header,
 	struct qdf_talloc_trailer *trailer;
 
 	/* copy the function name to support multi-*.ko configurations */
-	qdf_str_lcopy(header->meta.func, func, sizeof(header->meta.func));
+	qdf_str_scopy(header->meta.func, func, sizeof(header->meta.func));
 	header->meta.parent = parent;
 	header->meta.line = line;
 	header->meta.size = size;

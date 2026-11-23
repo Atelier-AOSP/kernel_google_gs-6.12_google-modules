@@ -44,6 +44,7 @@ ccflags-y := \
  -I$(TOP)/kernel/drivers/staging/imgtec/fenrir \
  -I$(TOP)/kernel/drivers/staging/imgtec/plato \
  -I$(TOP)/kernel/drivers/staging/imgtec/plato/hdmi \
+ -I$(TOP)/kernel/drivers/staging/imgtec/nulldisp \
  -I$(TOP)/include/$(PVR_ARCH)/system/rgx_tc -I$(TOP)/include/system/rgx_tc \
  -I$(TOP)/include/drm \
  -I$(HWDEFS_DIR) \
@@ -87,19 +88,6 @@ else ifeq ($(SUPPORT_ION),1)
 tc-y += \
  kernel/drivers/staging/imgtec/tc/tc_ion.o \
  kernel/drivers/staging/imgtec/tc/ion_lma_heap.o
-endif
-
-drm_nulldisp-y += \
- kernel/drivers/staging/imgtec/drm_nulldisp_drv.o \
- kernel/drivers/staging/imgtec/drm_nulldisp_netlink.o \
- kernel/drivers/staging/imgtec/drm_netlink_gem.o
-
-ifeq ($(LMA),1)
-drm_nulldisp-y += \
- kernel/drivers/staging/imgtec/tc/drm_pdp_gem.o
-else
-drm_nulldisp-y += \
- kernel/drivers/staging/imgtec/drm_nulldisp_gem.o
 endif
 
 drm_pdp-y += \

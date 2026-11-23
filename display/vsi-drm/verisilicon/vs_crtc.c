@@ -10,7 +10,6 @@
 #include <linux/ktime.h>
 #include <linux/media-bus-format.h>
 #include <linux/of.h>
-#include <linux/pm_runtime.h>
 #include <linux/sched.h>
 #include <uapi/linux/sched/types.h>
 
@@ -36,8 +35,9 @@
 #include "vs_plane.h"
 #include "vs_sysfs.h"
 #include "vs_trace.h"
+/* TODO (b/479235001) remove FE power vote from crtc to remove vs_dc_pre dependency */
+#include "vs_dc_pre.h"
 
-#define FRAME_TIMEOUT msecs_to_jiffies(100)
 #define FRAME_DEFAULT_FPS 60
 
 #define VBLANK_KTHREAD_SCHED_PRIORITY 19
@@ -61,7 +61,7 @@ static inline unsigned long fps_timeout(u32 fps)
 {
 	const long frame_time_ms = DIV_ROUND_UP(MSEC_PER_SEC, fps ?: FRAME_DEFAULT_FPS);
 
-	return msecs_to_jiffies(frame_time_ms) + FRAME_TIMEOUT;
+	return msecs_to_jiffies(frame_time_ms) + vs_dc_get_framedone_timeout();
 }
 
 bool vs_display_get_crtc_scanoutpos(struct drm_device *drm_dev, unsigned int crtc_id,
@@ -341,6 +341,9 @@ static struct drm_crtc_state *vs_crtc_atomic_duplicate_state(struct drm_crtc *cr
 	state->bld_size_changed = false;
 
 	state->seamless_mode_change = false;
+#ifdef CONFIG_DEBUG_FS
+	state->qos = ori_state->qos;
+#endif
 
 	state->skip_update = true;
 
@@ -657,6 +660,14 @@ retry:
 		goto out;
 
 	for_each_new_connector_in_state(state, conn, conn_state, i) {
+		/* ensure that panel fully powers OFF on suspend */
+		if (is_gs_drm_connector_state(conn_state)) {
+			struct gs_drm_connector_state *gs_conn_state =
+				to_gs_connector_state(conn_state);
+
+			gs_conn_state->skip_force_power_on = true;
+		}
+
 		ret = drm_atomic_set_crtc_for_connector(conn_state, NULL);
 		if (ret)
 			goto out;
@@ -716,18 +727,17 @@ static int vs_crtc_debugfs_show(struct seq_file *s, void *data)
 	seq_printf(s, "\thardware reset = %d\n", atomic_read(&vs_crtc->hw_reset_count));
 
 	if (vs_crtc->funcs->get_crtc_scanout_position &&
-	    pm_runtime_get_if_in_use(vs_crtc->dc_dev) > 0) {
+	    dc_be_power_get_if_active(vs_crtc->dc_dev) > 0) {
 		u32 position;
 
 		vs_crtc->funcs->get_crtc_scanout_position(vs_crtc->dc_dev, crtc, &position);
 
 		seq_printf(s, "\tscanout_pos = %#08x\n", position);
 
-		vs_dc_power_put(vs_crtc->dc_dev, true);
+		dc_be_power_put(vs_crtc->dc_dev, true);
 	} else {
 		seq_puts(s, "\tscanout_pos = N/A\n");
 	}
-
 
 	return 0;
 }
@@ -770,10 +780,47 @@ static ssize_t vs_crtc_pattern_write(struct file *file, const char __user *ubuf,
 	return len;
 }
 
+static int vs_crtc_qos_show(struct seq_file *s, void *data)
+{
+	struct drm_crtc *crtc = s->private;
+	struct vs_crtc *vs_crtc = to_vs_crtc(crtc);
+
+	if (vs_crtc->funcs->show_qos)
+		return vs_crtc->funcs->show_qos(s);
+
+	return 0;
+}
+
+static int vs_crtc_qos_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, vs_crtc_qos_show, inode->i_private);
+}
+
+static ssize_t vs_crtc_qos_write(struct file *file, const char __user *ubuf, size_t len,
+				 loff_t *offp)
+{
+	struct seq_file *s = file->private_data;
+	struct drm_crtc *crtc = s->private;
+	struct vs_crtc *vs_crtc = to_vs_crtc(crtc);
+
+	if (vs_crtc->funcs->set_qos)
+		vs_crtc->funcs->set_qos(vs_crtc->dev, crtc, ubuf, len);
+
+	return len;
+}
+
 static const struct file_operations vs_crtc_pattern_fops = {
 	.open = vs_crtc_pattern_open,
 	.read = seq_read,
 	.write = vs_crtc_pattern_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
+static const struct file_operations vs_crtc_qos_fops = {
+	.open = vs_crtc_qos_open,
+	.read = seq_read,
+	.write = vs_crtc_qos_write,
 	.llseek = seq_lseek,
 	.release = single_release,
 };
@@ -825,6 +872,8 @@ static int vs_crtc_debugfs_init(struct drm_crtc *crtc)
 
 	debugfs_create_file("pattern", 0644, crtc->debugfs_entry, crtc, &vs_crtc_pattern_fops);
 
+	debugfs_create_file("QOS", 0644, crtc->debugfs_entry, crtc, &vs_crtc_qos_fops);
+
 	debugfs_create_file("recovery", 0644, crtc->debugfs_entry, crtc, &vs_recovery_fops);
 
 	debugfs_create_atomic_t("te_count", 0444, crtc->debugfs_entry, &vs_crtc->te_count);
@@ -864,14 +913,14 @@ static void vs_drm_vblank_enable_work_thread(struct kthread_work *work)
 	struct vs_crtc *vs_crtc = container_of(work, struct vs_crtc, vblank_enable_work);
 	unsigned long irqflags;
 
-	vs_dc_power_get(vs_crtc->dc_dev, true);
+	dc_be_power_get(vs_crtc->dc_dev, true);
 	spin_lock_irqsave(&vs_crtc->vblank_enable_lock, irqflags);
 	if (vs_crtc->vblank_enable_in_progress) {
 		vs_crtc->vblank_en = true;
 		vs_crtc->funcs->enable_vblank(vs_crtc, true);
 		vs_crtc->vblank_enable_in_progress = false;
 	} else {
-		if (vs_dc_power_put(vs_crtc->dc_dev, false) == -EINPROGRESS)
+		if (dc_be_power_put(vs_crtc->dc_dev, false) == -EINPROGRESS)
 			dev_warn(vs_crtc->dev, "crtc_enable_vblank: suspend already in progress\n");
 	}
 	spin_unlock_irqrestore(&vs_crtc->vblank_enable_lock, irqflags);
@@ -905,7 +954,7 @@ static int vs_crtc_enable_vblank(struct drm_crtc *crtc)
 
 	WARN(vs_crtc->vblank_en, "crtc_enable_vblank: vblank already enabled\n");
 
-	if (pm_runtime_get_if_active(vs_crtc->dc_dev, true) > 0) {
+	if (dc_be_power_get_if_active(vs_crtc->dc_dev) > 0) {
 		spin_lock_irqsave(&vs_crtc->vblank_enable_lock, irqflags);
 		vs_crtc->vblank_en = true;
 		vs_crtc->funcs->enable_vblank(vs_crtc, true);
@@ -944,8 +993,13 @@ static void vs_crtc_disable_vblank(struct drm_crtc *crtc)
 	} else {
 		WARN(!vs_crtc->vblank_en, "crtc_disable_vblank: vblank already disabled\n");
 		vs_crtc->vblank_en = false;
-		vs_crtc->funcs->enable_vblank(vs_crtc, false);
-		if (vs_dc_power_put(vs_crtc->dc_dev, false) == -EINPROGRESS)
+		if (dc_be_power_get_if_active(vs_crtc->dc_dev) > 0) {
+			vs_crtc->funcs->enable_vblank(vs_crtc, false);
+			dc_be_power_put(vs_crtc->dc_dev, false);
+		} else {
+			dev_warn(dev, "device is rpm suspended during vblank disable\n");
+		}
+		if (dc_be_power_put(vs_crtc->dc_dev, false) == -EINPROGRESS)
 			dev_warn(dev, "crtc_disable_vblank: suspend already in progress\n");
 	}
 	spin_unlock_irqrestore(&vs_crtc->vblank_enable_lock, irqflags);
@@ -1265,11 +1319,13 @@ void vs_crtc_record_frame_timeout(struct vs_crtc *vs_crtc, int old_te_count,
 	bool is_frame_done_error = during_disable || (frames_pending > 1);
 
 	if (is_frame_done_error) {
-		trace_disp_frame_done_timeout(display_id, vs_crtc_state->output_id, vs_crtc);
+		trace_disp_frame_done_timeout(display_id, vs_crtc_state->output_id,
+			frames_pending, new_te_count, !vs_crtc->base.state->active);
 		atomic_inc(&vs_crtc->frame_done_timeout);
 		gs_fault_event_emit(dev, GS_FAULT_EVENT_TYPE_FRAME_DONE_TIMEOUT, 1);
 	} else {
-		trace_disp_frame_start_timeout(display_id, vs_crtc_state->output_id, vs_crtc);
+		trace_disp_frame_start_timeout(display_id, vs_crtc_state->output_id,
+			frames_pending, new_te_count);
 		atomic_inc(&vs_crtc->frame_start_timeout);
 		gs_fault_event_emit(dev, GS_FAULT_EVENT_TYPE_FRAME_START_TIMEOUT, 1);
 	}
@@ -1350,7 +1406,8 @@ void vs_crtc_wait_for_flip_done(struct drm_crtc *crtc, struct drm_atomic_state *
 		vs_crtc_handle_flip_error(crtc, -ETIMEDOUT);
 	} else if (missing_fs_int) {
 		vs_dc_update_irq_statuses(dc);
-		trace_disp_frame_start_missing(display_id, vs_crtc_state->output_id, vs_crtc);
+		trace_disp_frame_start_missing(display_id, vs_crtc_state->output_id,
+			atomic_read(&vs_crtc->frames_pending), atomic_read(&vs_crtc->te_count));
 		dev_warn(dev, "%s: frame start interrupt handler didn't run, dpu is %s\n",
 			 crtc->name, dc->enabled ? "enabled" : "disabled");
 		atomic_inc(&vs_crtc->frame_start_missing);
@@ -1413,9 +1470,12 @@ static void vs_crtc_enter_power_on(struct drm_crtc *crtc, struct drm_atomic_stat
 	if (is_active_modeset) {
 		dev_dbg(dev, "active modeset, skip DPU power on\n");
 	} else {
-		ret = vs_dc_power_get(vs_crtc->dc_dev, true);
+		ret = dc_be_power_get(vs_crtc->dc_dev, true);
 		if (ret < 0)
-			dev_err(dev, "failed to power on during modeset enable\n");
+			dev_err(dev, "failed to power on BE during modeset enable\n");
+		ret = dc_fe_power_get(vs_crtc->dc_dev, true);
+		if (ret < 0)
+			dev_err(dev, "failed to power on FE during modeset enable\n");
 	}
 
 	if (vs_crtc_state->base.active_changed && is_boost_freq_enabled(vs_dc)) {
@@ -1485,9 +1545,12 @@ static void vs_crtc_enter_power_off(struct drm_crtc *crtc, struct drm_crtc_state
 		goto end;
 	}
 
-	ret = vs_dc_power_put(vs_crtc->dc_dev, true);
+	ret = dc_fe_power_put(vs_crtc->dc_dev, true);
 	if (ret < 0)
-		dev_err(dev, "failed to power off during modeset disable\n");
+		dev_err(dev, "failed to power off FE during PSR entry\n");
+	ret = dc_be_power_put(vs_crtc->dc_dev, true);
+	if (ret < 0)
+		dev_err(dev, "failed to power off BE during PSR entry\n");
 
 end:
 	DPU_ATRACE_END(__func__);
@@ -1507,9 +1570,12 @@ static void vs_crtc_enter_psr(struct drm_crtc *crtc, struct drm_crtc_state *old_
 
 	if (was_powered_off) {
 		dev_info(dev, "DPU was powered off, need to power it on\n");
-		ret = vs_dc_power_get(vs_crtc->dc_dev, true);
+		ret = dc_be_power_get(vs_crtc->dc_dev, true);
 		if (ret < 0)
-			dev_err(dev, "failed to power on during PSR entry\n");
+			dev_err(dev, "failed to power on BE during PSR entry\n");
+		ret = dc_fe_power_get(vs_crtc->dc_dev, true);
+		if (ret < 0)
+			dev_err(dev, "failed to power on FE during PSR entry\n");
 
 	} else {
 		vs_crtc_disable_pipeline(crtc, old_state);
@@ -1517,9 +1583,12 @@ static void vs_crtc_enter_psr(struct drm_crtc *crtc, struct drm_crtc_state *old_
 
 	vs_crtc_flush_vblank_event(crtc);
 
-	ret = vs_dc_power_put(vs_crtc->dc_dev, true);
+	ret = dc_fe_power_put(vs_crtc->dc_dev, true);
 	if (ret < 0)
-		dev_err(dev, "failed to power off during PSR entry\n");
+		dev_err(dev, "failed to power off FE during PSR entry\n");
+	ret = dc_be_power_put(vs_crtc->dc_dev, true);
+	if (ret < 0)
+		dev_err(dev, "failed to power off BE during PSR entry\n");
 
 	DPU_ATRACE_END(__func__);
 }
@@ -1879,11 +1948,11 @@ static int vs_crtc_atomic_check(struct drm_crtc *crtc, struct drm_atomic_state *
 	if (ret)
 		return ret;
 
+	vs_crtc_update_secure_plane_mask(crtc, crtc_state, state);
+
 	ret = vs_crtc->funcs->check(dev, crtc, crtc_state);
 	if (ret)
 		return ret;
-
-	vs_crtc_update_secure_plane_mask(crtc, crtc_state, state);
 
 	return vs_qos_check_qos_config(crtc, crtc_state);
 }
@@ -2118,16 +2187,17 @@ struct vs_crtc *vs_crtc_create(const struct dc_hw_display *display, struct drm_d
 
 	if (dc->core_devfreq) {
 		if (vs_qos_add_devfreq_request(dc, &crtc->base, DEV_PM_QOS_MIN_FREQUENCY,
-					       PM_QOS_MIN_FREQUENCY_DEFAULT_VALUE))
+				       PM_QOS_MIN_FREQUENCY_DEFAULT_VALUE))
+
 			goto err_cleanup_crtc;
 
 		crtc->core_clk = drm_property_create_range(drm_dev, 0, "CORE_CLOCK_HZ", 0,
-							   dc->core_devfreq->scaling_max_freq);
+							dc->core_devfreq->scaling_max_freq);
 		if (!crtc->core_clk)
 			goto err_cleanup_crtc;
 
 		drm_object_attach_property(&crtc->base.base, crtc->core_clk,
-					   dc->core_devfreq->scaling_min_freq);
+					dc->core_devfreq->scaling_min_freq);
 	}
 
 	if (dc->boost_fab_devfreq) {
@@ -2322,6 +2392,31 @@ bool vs_crtc_state_has_secure(const struct drm_crtc_state *crtc_state)
 	const struct vs_crtc_state *vs_state = to_vs_crtc_state(crtc_state);
 
 	return crtc_state->active && vs_state->secure_plane_mask != 0;
+}
+
+/**
+ * vs_crtc_state_active_planes_enabling_secure_mask() - CRTC active planes enabling secure state.
+ * @old_crtc_state: The old DRM CRTC state to check.
+ * @new_crtc_state: The new DRM CRTC state to check.
+ *
+ * Return: CRTC active planes with enabling secure state
+ */
+u32 vs_crtc_state_active_planes_enabling_secure_mask(const struct drm_crtc_state *old_crtc_state,
+						     const struct drm_crtc_state *new_crtc_state)
+{
+	const struct vs_crtc_state *vs_old_crtc_state = to_vs_crtc_state(old_crtc_state);
+	const struct vs_crtc_state *vs_new_crtc_state = to_vs_crtc_state(new_crtc_state);
+	u32 enabled_mask;
+	u32 secure_enabling_mask;
+
+	if (!old_crtc_state || !new_crtc_state)
+		return 0;
+
+	enabled_mask = old_crtc_state->plane_mask & new_crtc_state->plane_mask;
+	secure_enabling_mask = (~vs_old_crtc_state->secure_plane_mask &
+				vs_new_crtc_state->secure_plane_mask) & enabled_mask;
+
+	return secure_enabling_mask;
 }
 
 /**

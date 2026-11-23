@@ -15,6 +15,8 @@
 
 #define THERMAL_SM_TJ_PRESSURE_SIZE 13
 
+static int mock_cdev_to_hw_tzid_ret;
+
 struct thermal_sm_test_data {
 	struct device *fake_dev;
 	int get_addr_ret;
@@ -65,6 +67,12 @@ void mock_memcpy_toio(void __iomem *base, void *source, u32 offset, u32 size)
 	struct thermal_sm_test_data *sm_data = test->priv;
 
 	memcpy(sm_data->remap_addr + offset, source, size);
+}
+
+int mock_sm_cdev_to_hw_tzid(enum hw_dev_type cdev_id, enum hw_thermal_zone_id *hw_tzid)
+{
+	*hw_tzid = (enum hw_thermal_zone_id)cdev_id;
+	return mock_cdev_to_hw_tzid_ret;
 }
 
 static void thermal_sm_init_failure_test(struct kunit *test)
@@ -125,15 +133,14 @@ static void thermal_sm_get_tmu_cdev_state_test(struct kunit *test)
 
 	KUNIT_EXPECT_EQ(test, thermal_sm_get_tmu_cdev_state(mock_cdev_id, &cdev_state), 0);
 	KUNIT_EXPECT_EQ(test, cdev_state,
-			sm_data->cdev_states[HW_THERMAL_ZONE_BIG].cdev);
+			sm_data->cdev_states[HW_THERMAL_ZONE_0].cdev);
 
 	// invalid arg: null pointer
 	KUNIT_EXPECT_EQ(test, thermal_sm_get_tmu_cdev_state(mock_cdev_id, NULL), -EINVAL);
 
 	// invalid arg: out of range cdev
-	mock_cdev_id = -1;
+	mock_cdev_to_hw_tzid_ret = -EINVAL;
 	KUNIT_EXPECT_EQ(test, thermal_sm_get_tmu_cdev_state(mock_cdev_id, &cdev_state), -EINVAL);
-	KUNIT_EXPECT_EQ(test, thermal_sm_get_tmu_cdev_state(HW_CDEV_MAX, &cdev_state), -EINVAL);
 }
 
 static void thermal_sm_thermal_stats_test(struct kunit *test)

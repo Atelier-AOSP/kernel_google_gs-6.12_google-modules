@@ -939,7 +939,6 @@ extern int dhdpcie_bus_suspend(struct  dhd_bus *bus, bool state, bool byint);
 extern int dhdpcie_pci_suspend_resume(struct  dhd_bus *bus, bool state);
 extern uint32 dhdpcie_force_alp(struct dhd_bus *bus, bool enable);
 extern uint32 dhdpcie_set_l1_entry_time(struct dhd_bus *bus, int force_l1_entry_time);
-extern int32 dhdpcie_get_l1_entry_time(struct dhd_bus *bus);
 extern bool dhdpcie_tcm_valid(dhd_bus_t *bus);
 extern void dhdpcie_pme_active(osl_t *osh, bool enable);
 extern bool dhdpcie_pme_cap(osl_t *osh);

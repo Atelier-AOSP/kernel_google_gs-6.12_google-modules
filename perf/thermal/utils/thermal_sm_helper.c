@@ -100,7 +100,7 @@ int thermal_sm_get_tmu_cdev_state(enum hw_dev_type cdev_id, u8 *cdev_state)
 	if (!cdev_state)
 		return -EINVAL;
 
-	ret = thermal_cpm_mbox_cdev_to_tz_id(cdev_id, &tz_id);
+	ret = thermal_sm_cdev_to_hw_tzid(cdev_id, &tz_id);
 	if (ret) {
 		pr_err("%s: Invalid cdev_id: %d", __func__, cdev_id);
 		return ret;

@@ -121,6 +121,39 @@ static int fill_export_mode(struct gs_panel_mode_export *out, const struct gs_pa
 }
 
 /**
+ * gs_panel_filter_modes() - filter the panel modes to be exported to HWC
+ *
+ * @ctx: Reference to panel data
+ * @filtered_modes: output array of modes to be filled, expected to be at least
+ *		    as big as ctx->desc->modes
+ *
+ * Filters the modes in ctx->desc->modes based on the panel's is_mode_valid()
+ * callback. All valid modes are appended to filtered_modes. If the
+ * is_mode_valid() callback is not defined, no filtering will take place and
+ * filtered_modes will be filled with all modes from ctx->desc->modes.
+ *
+ * Return: the length of filtered_modes
+ */
+static size_t gs_panel_filter_modes(struct gs_panel *ctx, struct gs_panel_mode *filtered_modes)
+{
+	const struct gs_panel_mode_array *panel_modes = ctx->desc->modes;
+	size_t num_filtered_modes = 0;
+
+	for (int i = 0; i < panel_modes->num_modes; ++i) {
+		const struct gs_panel_mode pmode = panel_modes->modes[i];
+
+		if (gs_panel_has_func(ctx, is_mode_valid) &&
+		    !ctx->desc->gs_panel_func->is_mode_valid(ctx, &pmode))
+			continue;
+
+		filtered_modes[num_filtered_modes] = panel_modes->modes[i];
+		num_filtered_modes++;
+	}
+
+	return num_filtered_modes;
+}
+
+/**
  * gs_panel_get_all_modes_blob() - Gets property containing all modes
  * @gs_connector: handle for gs_drm_connector
  * @val: Blob ID (output parameter)
@@ -136,11 +169,13 @@ static int gs_panel_get_all_modes_prop(struct gs_drm_connector *gs_connector, ui
 	struct gs_panel *ctx = gs_connector_to_panel(gs_connector);
 	const struct gs_panel_desc *desc = ctx->desc;
 	struct drm_property_blob *blob = ctx->all_modes_blob;
-	u16 num_exported_modes;
+	u16 num_exported_modes, num_exported_normal_modes;
 	u8 *mode_blob_tmp;
 	struct gs_panel_mode_export_header *header;
 	int i;
 	struct gs_panel_mode_export *out_umode;
+	struct gs_panel_mode *filtered_modes;
+	size_t num_filtered_modes;
 
 	if (unlikely(!desc->modes || desc->modes->num_modes == 0))
 		return -EINVAL;
@@ -150,13 +185,28 @@ static int gs_panel_get_all_modes_prop(struct gs_drm_connector *gs_connector, ui
 		return 0;
 	}
 
-	num_exported_modes = desc->modes->num_modes;
+	if (ctx->mode_override_idx >= 0)
+		num_exported_normal_modes = 1;
+	else {
+		filtered_modes = kcalloc(desc->modes->num_modes, sizeof(struct gs_panel_mode),
+					 GFP_KERNEL);
+		if (!filtered_modes)
+			return -ENOMEM;
+
+		num_filtered_modes = gs_panel_filter_modes(ctx, filtered_modes);
+		num_exported_normal_modes = num_filtered_modes;
+	}
+
 	if (desc->lp_modes && desc->lp_modes->num_modes)
-		num_exported_modes += desc->lp_modes->num_modes;
+		num_exported_modes = num_exported_normal_modes + desc->lp_modes->num_modes;
+	else
+		num_exported_modes = num_exported_normal_modes;
 
 	mode_blob_tmp = kzalloc(EXPORTED_MODE_BLOB_SIZE(num_exported_modes), GFP_KERNEL);
-	if (!mode_blob_tmp)
+	if (!mode_blob_tmp) {
+		kfree(filtered_modes);
 		return -ENOMEM;
+	}
 	header = (struct gs_panel_mode_export_header *)(mode_blob_tmp);
 
 	/* fill out data about sizes, number of modes */
@@ -167,14 +217,21 @@ static int gs_panel_get_all_modes_prop(struct gs_drm_connector *gs_connector, ui
 	/* move mode information into temp data */
 	out_umode =
 		(struct gs_panel_mode_export *)(mode_blob_tmp + EXPORTED_MODE_OFFSET(header, 0));
-	for (i = 0; i < desc->modes->num_modes; ++i, out_umode++) {
-		const struct gs_panel_mode *pmode = &desc->modes->modes[i];
+	if (ctx->mode_override_idx >= 0) {
+		int idx = ctx->mode_override_idx;
+		const struct gs_panel_mode *pmode = &desc->modes->modes[idx];
 
 		fill_export_mode(out_umode, pmode);
+	} else {
+		for (i = 0; i < num_filtered_modes; ++i, out_umode++) {
+			const struct gs_panel_mode *pmode = &filtered_modes[i];
+
+			fill_export_mode(out_umode, pmode);
+		}
 	}
 	if (desc->lp_modes && desc->lp_modes->num_modes) {
 		out_umode = (struct gs_panel_mode_export *)(mode_blob_tmp +
-			EXPORTED_MODE_OFFSET(header, desc->modes->num_modes));
+			EXPORTED_MODE_OFFSET(header, num_exported_normal_modes));
 		for (i = 0; i < desc->lp_modes->num_modes; ++i, out_umode++) {
 			const struct gs_panel_mode *pmode = &desc->lp_modes->modes[i];
 
@@ -187,6 +244,7 @@ static int gs_panel_get_all_modes_prop(struct gs_drm_connector *gs_connector, ui
 	blob = drm_property_create_blob(gs_connector->base.dev,
 					EXPORTED_MODE_BLOB_SIZE(num_exported_modes), mode_blob_tmp);
 	kfree(mode_blob_tmp);
+	kfree(filtered_modes);
 	if (IS_ERR(blob))
 		return PTR_ERR(blob);
 
@@ -322,6 +380,7 @@ static void gs_panel_connector_print_state(struct drm_printer *p,
 	drm_printf(p, "\tpending_update_flags: 0x%x\n", state->pending_update_flags);
 	drm_printf(p, "\tdsi_errors: %*pb\n", GS_DSI_ERR_MAX, state->dsi_errors);
 	drm_printf(p, "\tpanel_errors: %*pb\n", GS_PANEL_ERR_MAX, state->panel_errors);
+	drm_printf(p, "\tpmic_errors: %*pb\n", GS_PMIC_ERR_MAX, state->pmic_errors);
 	drm_printf(p, "\tirc_support_mode: 0x%x\n", desc->irc_support_mode);
 
 	/*TODO(b/267170999): MODE*/
@@ -347,6 +406,7 @@ static void gs_panel_update_connector_state(const struct gs_drm_connector *gs_co
 	state->frame_interval_us = ctx->frame_interval_us;
 	state->trigger_dumps_for_gram_collision = ctx->trigger_dumps_for_gram_collision;
 	bitmap_copy(state->panel_errors, ctx->panel_errors, GS_PANEL_ERR_MAX);
+	bitmap_copy(state->pmic_errors, ctx->pmic_errors, GS_PMIC_ERR_MAX);
 	mutex_unlock(&ctx->mode_lock);
 }
 
@@ -408,6 +468,10 @@ static int gs_panel_connector_get_property(struct gs_drm_connector *gs_connector
 		bitmap_to_arr64(val, gs_state->panel_errors, GS_PANEL_ERR_MAX);
 		dev_dbg(ctx->dev, "gs_conn get prop: panel_errors(%*pb)\n", GS_PANEL_ERR_MAX,
 			gs_state->panel_errors);
+	} else if (property == p->pmic_errors) {
+		bitmap_to_arr64(val, gs_state->pmic_errors, GS_PMIC_ERR_MAX);
+		dev_dbg(ctx->dev, "gs_conn get prop: pmic_errors(%*pb)\n", GS_PMIC_ERR_MAX,
+			gs_state->pmic_errors);
 	} else {
 		dev_err(ctx->dev, "gs_conn get prop: unrecognized property\n");
 		return -EINVAL;
@@ -489,6 +553,9 @@ static int gs_panel_connector_set_property(struct gs_drm_connector *gs_connector
 	} else if (property == p->panel_errors) {
 		bitmap_from_u64(gs_state->panel_errors, val);
 		dev_dbg(ctx->dev, "conn_set_prop: panel_errors(%llu)\n", val);
+	} else if (property == p->pmic_errors) {
+		bitmap_from_u64(gs_state->pmic_errors, val);
+		dev_dbg(ctx->dev, "conn_set_prop: pmic_errors(%llu)\n", val);
 	} else {
 		dev_err(ctx->dev, "property not recognized within %s- \n", __func__);
 		return -EINVAL;
@@ -617,17 +684,31 @@ static int gs_panel_unregister_op_hz_notifier(struct gs_drm_connector *gs_connec
 	return blocking_notifier_chain_unregister(&ctx->op_hz_notifier_head, nb);
 }
 
+static u32 gs_panel_get_panel_id(const struct gs_drm_connector *gs_connector)
+{
+	struct gs_panel *ctx = gs_connector_to_panel(gs_connector);
+
+	return ctx->panel_id;
+}
+
+static void gs_panel_connector_early_unregister(struct gs_drm_connector *gs_connector)
+{
+	gs_panel_node_detach(gs_connector);
+}
+
 static const struct gs_drm_connector_funcs gs_drm_connector_funcs = {
 	.atomic_print_state = gs_panel_connector_print_state,
 	.atomic_get_property = gs_panel_connector_get_property,
 	.atomic_set_property = gs_panel_connector_set_property,
 	.late_register = gs_panel_connector_late_register,
+	.early_unregister = gs_panel_connector_early_unregister,
 	.get_max_mipi_datarate = gs_panel_get_max_mipi_datarate,
 	.register_op_hz_notifier = gs_panel_register_op_hz_notifier,
 	.unregister_op_hz_notifier = gs_panel_unregister_op_hz_notifier,
 	.panel_update_connector_state = gs_panel_update_connector_state,
 	.get_mipi_allowed_datarates = gs_panel_get_mipi_allowed_datarates,
 	.panel_update_dev_stat = gs_panel_update_dev_stat,
+	.get_panel_id = gs_panel_get_panel_id,
 };
 
 /* gs_drm_connector_helper_funcs */
@@ -643,7 +724,7 @@ int gs_panel_set_op_hz(struct gs_panel *ctx, unsigned int hz)
 		return -EAGAIN;
 
 	if (!gs_panel_has_func(ctx, set_op_hz))
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 
 	/*TODO(tknelms) DPU_ATRACE_BEGIN("set_op_hz");*/
 	dev_dbg(dev, "%s: set op_hz to %d\n", __func__, hz);
@@ -665,15 +746,30 @@ int gs_panel_set_op_hz(struct gs_panel *ctx, unsigned int hz)
 	if (need_update) {
 		/*TODO(b/333697598): Use async notify or work queue to notify.*/
 		PANEL_ATRACE_BEGIN("notify_op_hz");
-		blocking_notifier_call_chain(&ctx->op_hz_notifier_head, GS_PANEL_NOTIFIER_SET_OP_HZ,
-					     &ctx->op_hz);
+		notify_panel_op_hz_changed(ctx);
 		PANEL_ATRACE_END("notify_op_hz");
-		sysfs_notify(&dev->kobj, NULL, "op_hz");
 	}
 
 	/*TODO(tknelms) DPU_ATRACE_END("set_op_hz");*/
 
 	return ret;
+}
+
+enum gs_pwm_mode gs_panel_get_pwm_mode(struct gs_panel *ctx)
+{
+	enum gs_pwm_mode mode;
+
+	if (!gs_is_panel_active(ctx))
+		return -EPERM;
+
+	mutex_lock(&ctx->mode_lock);
+	if (!gs_panel_has_func(ctx, get_pwm_mode))
+		mode = ctx->pwm_mode;
+	else
+		mode = ctx->desc->gs_panel_func->get_pwm_mode(ctx);
+	mutex_unlock(&ctx->mode_lock);
+
+	return mode;
 }
 
 int gs_panel_set_pwm_mode(struct gs_panel *ctx, enum gs_pwm_mode mode)
@@ -695,12 +791,12 @@ int gs_panel_set_pwm_mode(struct gs_panel *ctx, enum gs_pwm_mode mode)
 	if (ret)
 		return ret;
 
-	sysfs_notify(&ctx->dev->kobj, NULL, "pwm_mode");
+	notify_panel_pwm_mode_changed(ctx);
 
 	return 0;
 }
 
-int gs_panel_set_panel_power_state(struct gs_panel *ctx, enum gs_panel_power_state new_state)
+static int gs_panel_set_panel_power_state(struct gs_panel *ctx, enum gs_panel_power_state new_state)
 {
 	bool mp_en = (new_state == GS_PANEL_POWER_STATE_MP);
 	if (!gs_is_panel_active(ctx))
@@ -896,7 +992,45 @@ static void gs_panel_connector_atomic_pre_commit(struct gs_drm_connector *gs_con
 	/* If panel errors cleared, propagate to panel */
 	if (!bitmap_equal(gs_new_state->panel_errors, ctx->panel_errors, GS_PANEL_ERR_MAX))
 		bitmap_copy(ctx->panel_errors, gs_new_state->panel_errors, GS_PANEL_ERR_MAX);
+	if (!bitmap_equal(gs_new_state->pmic_errors, ctx->pmic_errors, GS_PMIC_ERR_MAX))
+		bitmap_copy(ctx->pmic_errors, gs_new_state->pmic_errors, GS_PMIC_ERR_MAX);
 	mutex_unlock(&ctx->mode_lock); /*TODO(b/267170999): MODE*/
+}
+
+static bool should_schedule_detect_fault(struct gs_panel *ctx,
+					 struct gs_drm_connector_state *gs_new_state)
+{
+	ktime_t now;
+	s64 delta_ms;
+	u32 fault_detect_interval_ms;
+
+	if (!gs_panel_has_func(ctx, detect_fault))
+		return false;
+
+	if (gs_new_state->is_recovering)
+		return false;
+
+	if (!ctx->desc->fault_desc || !ctx->desc->fault_desc->detect_interval_ms)
+		return false;
+
+	if (ctx->detect_fault_work_scheduled)
+		return false;
+
+	if (!gs_is_panel_active(ctx)) {
+		dev_dbg(ctx->dev, "skip fault detection (panel is not active)\n");
+		return false;
+	}
+
+	now = ktime_get();
+	delta_ms = ktime_ms_delta(now, ctx->timestamps.last_panel_fault_check_ts);
+	fault_detect_interval_ms = ctx->desc->fault_desc->detect_interval_ms;
+	if (delta_ms < fault_detect_interval_ms && ctx->ddic_read_fail_cnt == 0) {
+		dev_dbg(ctx->dev, "skip fault detection (%lldms since last check, <%ums)\n",
+			delta_ms, fault_detect_interval_ms);
+		return false;
+	}
+
+	return true;
 }
 
 static void gs_panel_connector_atomic_commit(struct gs_drm_connector *gs_connector,
@@ -910,10 +1044,15 @@ static void gs_panel_connector_atomic_commit(struct gs_drm_connector *gs_connect
 
 	/*TODO(b/267170999): MODE*/
 	mutex_lock(&ctx->mode_lock);
+	if (gs_panel_has_func(ctx, trace_panel_settings_full))
+		ctx->desc->gs_panel_func->trace_panel_settings_full(ctx);
+	else if (gs_panel_has_func(ctx, trace_panel_settings_lite))
+		ctx->desc->gs_panel_func->trace_panel_settings_lite(ctx);
+
 	if (gs_panel_has_func(ctx, commit_done))
 		ctx->desc->gs_panel_func->commit_done(ctx);
-	if (gs_panel_has_func(ctx, detect_fault) && ctx->desc->fault_detect_interval_ms &&
-	    !ctx->detect_fault_work_scheduled) {
+	/* TODO(b/461659134): add panel specific coredump for panel errors */
+	if (should_schedule_detect_fault(ctx, gs_new_state)) {
 		struct gs_panel_background_work_data *work_data = &ctx->detect_fault_work_data;
 
 		ctx->detect_fault_work_scheduled = true;
@@ -926,6 +1065,7 @@ static void gs_panel_connector_atomic_commit(struct gs_drm_connector *gs_connect
 
 	ctx->timestamps.last_commit_ts = ktime_get();
 
+#if IS_ENABLED(CONFIG_DRM_SAMSUNG)
 	/*
 	 * TODO: Identify other kinds of errors and ensure detection is debounced
 	 *	 correctly
@@ -937,6 +1077,7 @@ static void gs_panel_connector_atomic_commit(struct gs_drm_connector *gs_connect
 		sysfs_notify(&ctx->dev->kobj, NULL, "error_count_te");
 		mutex_unlock(&ctx->mode_lock);
 	}
+#endif
 
 	if (gs_panel_has_func(ctx, refresh_ctrl) &&
 	    gs_new_state->pending_update_flags & GS_FLAG_REFRESH_CTRL_UPDATE)
@@ -1006,6 +1147,7 @@ static int gs_panel_connector_attach_properties(struct gs_panel *ctx)
 	drm_object_attach_property(obj, p->panel_errors, 0);
 	drm_object_attach_property(obj, p->all_modes, 0);
 	drm_object_attach_property(obj, p->irc_support_mode, desc->irc_support_mode);
+	drm_object_attach_property(obj, p->pmic_errors, 0);
 
 	if (desc->brightness_desc->brt_capability) {
 		ret = gs_panel_attach_brightness_capability(ctx->gs_connector,

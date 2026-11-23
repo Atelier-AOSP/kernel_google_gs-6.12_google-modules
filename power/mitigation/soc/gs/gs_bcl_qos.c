@@ -19,6 +19,7 @@
 #include <linux/mfd/samsung/s2mpg1415-register.h>
 #endif
 #include "bcl.h"
+#include "soc/soc_defs.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/bcl_exynos.h>
@@ -58,15 +59,14 @@ static int get_idx_from_zone(struct bcl_device *bcl_dev, const char *name)
 int google_bcl_parse_qos(struct bcl_device *bcl_dev)
 {
 	struct device_node *np = bcl_dev->device->of_node;
-	struct device_node *child;
-	struct device_node *p_np;
+	struct device_node *p_np __free(device_node) = NULL;
 	int idx;
 
 	/* parse qos */
 	p_np = of_get_child_by_name(np, "freq_qos");
 	if (!p_np)
 		return -EINVAL;
-	for_each_child_of_node(p_np, child) {
+	for_each_child_of_node_scoped(p_np, child) {
 		idx = get_idx_from_zone(bcl_dev, child->name);
 		if (idx < 0)
 			continue;
@@ -149,10 +149,9 @@ static void process_qos_request(struct work_struct *work)
 				continue;
 			exynos_pm_qos_update_request_async(&qos->qos_max[idx], qos->df_freq[idx]);
 		}
-		usleep_range(TIMEOUT_10000US, TIMEOUT_10000US + 100);
 		if (mutex_lock_interruptible(&bcl_dev->qos_update_lock))
 			continue;
-		list_del(&data->list);
+		list_del(pos);
 		kfree(data);
 		mutex_unlock(&bcl_dev->qos_update_lock);
 	}
@@ -162,7 +161,6 @@ static void process_qos_request(struct work_struct *work)
 void google_bcl_qos_update(struct bcl_zone *zone, int throttle_lvl)
 {
 	struct bcl_device *bcl_dev;
-	int i;
 	int cpu0_freq = INT_MAX, cpu1_freq = INT_MAX, cpu2_freq = INT_MAX;
 	int tpu_freq = INT_MAX, gpu_freq = INT_MAX;
 
@@ -177,20 +175,16 @@ void google_bcl_qos_update(struct bcl_zone *zone, int throttle_lvl)
 	if (throttle_lvl == QOS_NONE)
 		goto end_qos_update;
 
-	for (i = 0; i < TRIGGERED_SOURCE_MAX; i++) {
-		if (bcl_dev->zone[i] && bcl_dev->zone[i]->bcl_qos && zone->throttle_lvl) {
-			cpu0_freq = umin(cpu0_freq, bcl_dev->zone[i]->bcl_qos->cpu_limit[QOS_CPU0]
-					 [throttle_lvl - QOS_PARAM_OFFSET]);
-			cpu1_freq = umin(cpu1_freq, bcl_dev->zone[i]->bcl_qos->cpu_limit[QOS_CPU1]
-					 [throttle_lvl - QOS_PARAM_OFFSET]);
-			cpu2_freq = umin(cpu2_freq, bcl_dev->zone[i]->bcl_qos->cpu_limit[QOS_CPU2]
-					 [throttle_lvl - QOS_PARAM_OFFSET]);
-			tpu_freq = umin(tpu_freq, bcl_dev->zone[i]->bcl_qos->df_limit[QOS_TPU]
-					[throttle_lvl - QOS_PARAM_OFFSET]);
-			gpu_freq = umin(gpu_freq, bcl_dev->zone[i]->bcl_qos->df_limit[QOS_GPU]
-					[throttle_lvl - QOS_PARAM_OFFSET]);
-		}
-	}
+	cpu0_freq = umin(cpu0_freq, zone->bcl_qos->cpu_limit[QOS_CPU0]
+			 [zone->throttle_lvl - QOS_PARAM_OFFSET]);
+	cpu1_freq = umin(cpu1_freq, zone->bcl_qos->cpu_limit[QOS_CPU1]
+			 [zone->throttle_lvl - QOS_PARAM_OFFSET]);
+	cpu2_freq = umin(cpu2_freq, zone->bcl_qos->cpu_limit[QOS_CPU2]
+			 [zone->throttle_lvl - QOS_PARAM_OFFSET]);
+	tpu_freq = umin(tpu_freq, zone->bcl_qos->df_limit[QOS_TPU]
+			[zone->throttle_lvl - QOS_PARAM_OFFSET]);
+	gpu_freq = umin(gpu_freq, zone->bcl_qos->df_limit[QOS_GPU]
+			[zone->throttle_lvl - QOS_PARAM_OFFSET]);
 
 end_qos_update:
 	zone->bcl_qos->cpu_freq[QOS_CPU0] = cpu0_freq;
@@ -204,7 +198,8 @@ end_qos_update:
 	/* Ensure SW mitigation is enabled */
 	if (smp_load_acquire(&bcl_dev->sw_mitigation_enabled))
 		schedule_delayed_work(&bcl_dev->qos_work, 0);
-	trace_bcl_irq_trigger(zone->idx, zone->throttle_lvl, cpu0_freq, cpu1_freq, cpu2_freq,
+	trace_bcl_irq_trigger(zone->idx, zone->throttle_lvl,
+			      cpu0_freq, cpu1_freq, cpu2_freq,
 			      tpu_freq, gpu_freq, zone->bcl_stats.voltage,
 			      zone->bcl_stats.capacity);
 	trace_qos(zone->throttle_lvl, zone->devname);
@@ -265,7 +260,7 @@ void google_bcl_remove_qos(struct bcl_device *bcl_dev)
 	list_for_each_safe(pos, n, &qos_data_list) {
 		struct qos_data *data = list_entry(pos, struct qos_data, list);
 
-		list_del(&data->list);
+		list_del(pos);
 		kfree(data);
 	}
 	if (bcl_dev->qos_work.work.func != NULL)

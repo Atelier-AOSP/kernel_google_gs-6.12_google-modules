@@ -305,8 +305,9 @@ PVRSRVBridgePMRPDumpSaveToFile(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psPMRPDumpSaveToFileIN->ui32ArraySize * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiFileNameInt, (const void __user *)psPMRPDumpSaveToFileIN->puiFileName,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiFileNameInt,
+		     (const void __user *)psPMRPDumpSaveToFileIN->puiFileName,
 		     psPMRPDumpSaveToFileIN->ui32ArraySize * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psPMRPDumpSaveToFileOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -510,9 +511,9 @@ PVRSRVBridgePMRPDumpSymbolicAddr(IMG_UINT32 ui32DispatchTableEntry,
 	    ((psPMRPDumpSymbolicAddrIN->ui32MemspaceNameLen * sizeof(IMG_CHAR)) > 0))
 	{
 		if (unlikely
-		    (OSCopyToUser
-		     (NULL, (void __user *)psPMRPDumpSymbolicAddrOUT->puiMemspaceName,
-		      puiMemspaceNameInt,
+		    (CopyToUserWrapper
+		     (NULL, ui32DispatchTableEntry,
+		      (void __user *)psPMRPDumpSymbolicAddrOUT->puiMemspaceName, puiMemspaceNameInt,
 		      (psPMRPDumpSymbolicAddrIN->ui32MemspaceNameLen * sizeof(IMG_CHAR))) !=
 		     PVRSRV_OK))
 		{
@@ -527,9 +528,9 @@ PVRSRVBridgePMRPDumpSymbolicAddr(IMG_UINT32 ui32DispatchTableEntry,
 	    ((psPMRPDumpSymbolicAddrIN->ui32SymbolicAddrLen * sizeof(IMG_CHAR)) > 0))
 	{
 		if (unlikely
-		    (OSCopyToUser
-		     (NULL, (void __user *)psPMRPDumpSymbolicAddrOUT->puiSymbolicAddr,
-		      puiSymbolicAddrInt,
+		    (CopyToUserWrapper
+		     (NULL, ui32DispatchTableEntry,
+		      (void __user *)psPMRPDumpSymbolicAddrOUT->puiSymbolicAddr, puiSymbolicAddrInt,
 		      (psPMRPDumpSymbolicAddrIN->ui32SymbolicAddrLen * sizeof(IMG_CHAR))) !=
 		     PVRSRV_OK))
 		{
@@ -820,8 +821,8 @@ PVRSRVBridgeDevmemIntPDumpSaveToFileVirtual(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psDevmemIntPDumpSaveToFileVirtualIN->ui32ArraySize * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiFileNameInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiFileNameInt,
 		     (const void __user *)psDevmemIntPDumpSaveToFileVirtualIN->puiFileName,
 		     psDevmemIntPDumpSaveToFileVirtualIN->ui32ArraySize * sizeof(IMG_CHAR)) !=
 		    PVRSRV_OK)

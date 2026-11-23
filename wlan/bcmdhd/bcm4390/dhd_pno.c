@@ -2147,7 +2147,7 @@ dhd_pno_set_for_gscan(dhd_pub_t *dhd, struct dhd_pno_gscan_params *gscan_params)
 	}
 
 	gscan_param_size = sizeof(wl_pfn_gscan_cfg_t) +
-	          (num_buckets_to_fw - 1) * sizeof(wl_pfn_gscan_ch_bucket_cfg_t);
+		(num_buckets_to_fw) * sizeof(wl_pfn_gscan_ch_bucket_cfg_t);
 	pfn_gscan_cfg_t = (wl_pfn_gscan_cfg_t *) MALLOCZ(dhd->osh, gscan_param_size);
 
 	if (!pfn_gscan_cfg_t) {
@@ -4437,7 +4437,7 @@ dhd_handle_hotlist_scan_evt(dhd_pub_t *dhd, const void *event_data,
 
 		tm_spec = ktime_to_timespec64(ktime_get_boottime());
 		malloc_size = sizeof(gscan_results_cache_t) +
-			((fwcount - 1) * sizeof(wifi_gscan_result_t));
+			(fwcount * sizeof(wifi_gscan_result_t));
 		gscan_hotlist_cache =
 			(gscan_results_cache_t *)MALLOC(dhd->osh, malloc_size);
 		if (!gscan_hotlist_cache) {

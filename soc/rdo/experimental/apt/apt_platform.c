@@ -63,11 +63,11 @@ static int google_apt_platform_probe(struct platform_device *pdev)
 	return google_apt_init(apt);
 }
 
-static int google_apt_platform_remove(struct platform_device *pdev)
+static void google_apt_platform_remove(struct platform_device *pdev)
 {
 	struct google_apt *apt = platform_get_drvdata(pdev);
 
-	return google_apt_exit(apt);
+	google_apt_exit(apt);
 }
 
 static const struct of_device_id google_apt_of_match_table[] = {

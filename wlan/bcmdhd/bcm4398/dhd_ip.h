@@ -3,7 +3,7 @@
  *
  * Provides type definitions and function prototypes used to parse ip packet.
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -32,8 +32,7 @@
 #include <dhd.h>
 #endif /* DHDTCPACK_SUPPRESS || DHDTCPSYNC_FLOOD_BLK */
 
-typedef enum pkt_frag
-{
+typedef enum pkt_frag {
 	DHD_PKT_FRAG_NONE = 0,
 	DHD_PKT_FRAG_FIRST,
 	DHD_PKT_FRAG_CONT,

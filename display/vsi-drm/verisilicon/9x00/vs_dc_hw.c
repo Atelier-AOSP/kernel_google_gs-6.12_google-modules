@@ -55,6 +55,9 @@ static bool wb_busy[HW_WB_NUM] = { 0 };
 static u32 cb8to2_store_value = DCREG_WB_CROSSBAR8_TO2_ResetValue;
 u8 wb_split_id;
 extern u32 dec_pos;
+static u32 fe0_qos_value[MAX_QOS_LEVLE];
+static u32 fe1_qos_value[MAX_QOS_LEVLE];
+static u32 be_qos_value[MAX_QOS_LEVLE];
 
 /* The default horizontal scale coefficient data
  * with the filter tap of 9.
@@ -485,7 +488,7 @@ void dc_hw_save_wb_status(struct dc_hw_wb *wb)
 	}
 }
 
-void dc_hw_save_status(struct dc_hw *hw)
+void dc_hw_fe0_save_status(struct dc_hw *hw)
 {
 	u8 i = 0;
 
@@ -494,11 +497,44 @@ void dc_hw_save_status(struct dc_hw *hw)
 		return;
 	}
 
-	for (i = 0; i < hw->info->layer_num; i++) {
+	for (i = 0; i < hw->info->plane_fe0_num; ++i) {
 		if (!hw->plane[i].config_status)
 			continue;
 
 		dc_hw_save_plane_status(&hw->plane[i]);
+	}
+}
+
+void dc_hw_fe1_save_status(struct dc_hw *hw)
+{
+	u8 i = 0;
+
+	if (!hw->info) {
+		dev_err(hw->dev, "uninitialized vs_dc_info object\n");
+		return;
+	}
+
+	for (i = hw->info->plane_fe0_num; i < hw->info->plane_num; ++i) {
+		if (!hw->plane[i].config_status)
+			continue;
+
+		dc_hw_save_plane_status(&hw->plane[i]);
+	}
+}
+
+static void dc_hw_fe_save_status(struct dc_hw *hw)
+{
+	dc_hw_fe0_save_status(hw);
+	dc_hw_fe1_save_status(hw);
+}
+
+void dc_hw_be_save_status(struct dc_hw *hw)
+{
+	u8 i = 0;
+
+	if (!hw->info) {
+		dev_err(hw->dev, "uninitialized vs_dc_info object\n");
+		return;
 	}
 
 	for (i = 0; i < hw->info->display_num; i++)
@@ -510,6 +546,12 @@ void dc_hw_save_status(struct dc_hw *hw)
 
 		dc_hw_save_wb_status(&hw->wb[i]);
 	}
+}
+
+void dc_hw_save_status(struct dc_hw *hw)
+{
+	dc_hw_fe_save_status(hw);
+	dc_hw_be_save_status(hw);
 }
 #endif
 
@@ -724,37 +766,13 @@ static void dc_hw_display_urgent_init(struct dc_hw *hw, u8 hw_id)
 	const struct vs_dc_info *dc_info = hw->info;
 
 	if (dc_info->urgent_cmd_config) {
-		hw->display[hw_id].urgent_cmd_config.h_margin_pct =
-			dc_info->urgent_cmd_config->h_margin_pct;
-		hw->display[hw_id].urgent_cmd_config.v_margin_pct =
-			dc_info->urgent_cmd_config->v_margin_pct;
-		hw->display[hw_id].urgent_cmd_config.delay_counter_usec =
-			dc_info->urgent_cmd_config->delay_counter_usec;
-		hw->display[hw_id].urgent_cmd_config.urgent_value =
-			dc_info->urgent_cmd_config->urgent_value;
-		hw->display[hw_id].urgent_cmd_config.enable = dc_info->urgent_cmd_config->enable;
+		memcpy(&hw->display[hw_id].urgent_cmd_config, dc_info->urgent_cmd_config,
+		       sizeof(*dc_info->urgent_cmd_config));
 	}
 
 	if (dc_info->urgent_vid_config) {
-		hw->display[hw_id].urgent_vid_config.qos_thresh_0 =
-			dc_info->urgent_vid_config->qos_thresh_0;
-		hw->display[hw_id].urgent_vid_config.qos_thresh_1 =
-			dc_info->urgent_vid_config->qos_thresh_1;
-		hw->display[hw_id].urgent_vid_config.qos_thresh_2 =
-			dc_info->urgent_vid_config->qos_thresh_2;
-		hw->display[hw_id].urgent_vid_config.urgent_thresh_0 =
-			dc_info->urgent_vid_config->urgent_thresh_0;
-		hw->display[hw_id].urgent_vid_config.urgent_thresh_1 =
-			dc_info->urgent_vid_config->urgent_thresh_1;
-		hw->display[hw_id].urgent_vid_config.urgent_thresh_2 =
-			dc_info->urgent_vid_config->urgent_thresh_2;
-		hw->display[hw_id].urgent_vid_config.urgent_low_thresh =
-			dc_info->urgent_vid_config->urgent_low_thresh;
-		hw->display[hw_id].urgent_vid_config.urgent_high_thresh =
-			dc_info->urgent_vid_config->urgent_high_thresh;
-		hw->display[hw_id].urgent_vid_config.healthy_thresh =
-			dc_info->urgent_vid_config->healthy_thresh;
-		hw->display[hw_id].urgent_vid_config.enable = dc_info->urgent_vid_config->enable;
+		memcpy(&hw->display[hw_id].urgent_vid_config, dc_info->urgent_vid_config,
+		       sizeof(*dc_info->urgent_vid_config));
 	}
 }
 
@@ -868,10 +886,6 @@ int dc_hw_init(struct dc_hw *hw)
 	if (chip_id == VS_CHIP_ID_9400)
 		hw->rev = DC_REV_0;
 
-	mutex_init(&hw->secure_lock);
-	spin_lock_init(&hw->histogram_slock);
-	spin_lock_init(&hw->be_irq_slock);
-	spin_lock_init(&hw->output_mux_slock);
 	hw->output_mux_value = DCREG_POST_PROCESS_OUT_ResetValue;
 
 	hw->func = (struct dc_hw_funcs *)&hw_func;
@@ -980,6 +994,8 @@ void dc_hw_update_plane(struct dc_hw *hw, u8 id, struct dc_hw_fb *fb)
 	}
 
 	trace_update_hw_layer_feature_en_dirty("FB", hw_id, plane->fb.enable, plane->fb.dirty);
+	trace_update_hw_layer_feature_en_dirty("SECURE_FB", hw_id, plane->fb.secure,
+					       plane->fb.secure_dirty);
 }
 
 void dc_hw_update_plane_sram(struct dc_hw *hw, u8 id, struct dc_hw_sram_pool *sram)
@@ -1640,10 +1656,6 @@ void dc_hw_enable_vblank_irqs(struct dc_hw *hw, u8 id, bool enable)
 			case HW_OUTIF_0:
 				trace_disp_vblank_irq_enable(id, output_id, enable);
 				config = dc_read_immediate(hw, VS_SET_INTR_ADDR(BE, i, ENABLE));
-				/* underrun workaround for command mode trigger only */
-				if (!is_display_cmd_sw_trigger(&hw->display[i]))
-					config = VS_SET_FIELD(config, DCREG_BE_INTR_ENABLE_OUTPATH0,
-							      UNDERRUN, enable);
 				// TODO(b/298512663) listen for falling edge only when needed
 				config = VS_SET_FIELD(config, DCREG_BE_INTR_ENABLE_OUTPATH0,
 						      TE_RISING_EDGE, enable);
@@ -1679,10 +1691,6 @@ void dc_hw_enable_vblank_irqs(struct dc_hw *hw, u8 id, bool enable)
 			case HW_OUTIF_1:
 				trace_disp_vblank_irq_enable(id, output_id, enable);
 				config = dc_read_immediate(hw, VS_SET_INTR_ADDR(BE, i, ENABLE));
-				/* underrun workaround for command mode trigger only */
-				if (!is_display_cmd_sw_trigger(&hw->display[i]))
-					config = VS_SET_FIELD(config, DCREG_BE_INTR_ENABLE_OUTPATH1,
-							      UNDERRUN, enable);
 				// TODO(b/298512663) listen for falling edge only when needed
 				config = VS_SET_FIELD(config, DCREG_BE_INTR_ENABLE_OUTPATH1,
 						      TE_RISING_EDGE, enable);
@@ -1862,12 +1870,9 @@ static void dc_hw_clear_start_interrupt(struct dc_hw *hw, u8 id)
 	}
 }
 
-int dc_hw_get_interrupt(struct dc_hw *hw, struct dc_hw_interrupt_status *status)
+void dc_hw_get_fe0_interrupt(struct dc_hw *hw, struct dc_hw_interrupt_status *status)
 {
-	u32 fe0_status = 0, fe1_status = 0;
-	u32 be_status0 = 0, be_status1 = 0;
-	u32 be_overflow0 = 0, be_overflow1 = 0;
-	u32 i = 0;
+	u32 fe0_status = 0;
 
 	fe0_status = dc_read_immediate(hw, DCREG_FE0_INTR_STATUS_Address);
 	if (fe0_status) {
@@ -1926,6 +1931,11 @@ int dc_hw_get_interrupt(struct dc_hw *hw, struct dc_hw_interrupt_status *status)
 
 		dc_write_immediate(hw, DCREG_FE0_INTR_STATUS_Address, fe0_status);
 	}
+}
+
+void dc_hw_get_fe1_interrupt(struct dc_hw *hw, struct dc_hw_interrupt_status *status)
+{
+	u32 fe1_status = 0;
 
 	fe1_status = dc_read_immediate(hw, DCREG_FE1_INTR_STATUS_Address);
 	if (fe1_status) {
@@ -1984,6 +1994,13 @@ int dc_hw_get_interrupt(struct dc_hw *hw, struct dc_hw_interrupt_status *status)
 
 		dc_write_immediate(hw, DCREG_FE1_INTR_STATUS_Address, fe1_status);
 	}
+}
+
+void dc_hw_get_be_interrupt(struct dc_hw *hw, struct dc_hw_interrupt_status *status)
+{
+	u32 be_status0 = 0, be_status1 = 0;
+	u32 be_overflow0 = 0, be_overflow1 = 0;
+	u32 i = 0;
 
 	for (i = 0; i < 4; i++) {
 		if (hw->intr_dest & BIT(i)) {
@@ -2091,6 +2108,7 @@ int dc_hw_get_interrupt(struct dc_hw *hw, struct dc_hw_interrupt_status *status)
 		if (VS_GET_FIELD(be_status1, DCREG_BE_INTR_STATUS1, BLD_WB_FRM_DONE)) {
 			status->output_frm_done |= BIT(HW_OUTIF_4);
 			status->wb_frm_done |= BIT(HW_BLEND_WB);
+			hw->wb[HW_BLEND_WB].wb_frm_done = true;
 		}
 		if (VS_GET_FIELD(be_overflow1, DCREG_BE_INTR_OVERFLOW1, BLD_WB_FRM_DONE)) {
 			status->of_output_frm_done |= BIT(HW_OUTIF_4);
@@ -2108,12 +2126,18 @@ int dc_hw_get_interrupt(struct dc_hw *hw, struct dc_hw_interrupt_status *status)
 			status->of_output_underrun |= BIT(HW_OUTIF_3);
 
 		if (VS_GET_FIELD(be_status1, DCREG_BE_INTR_STATUS1, POST_WB0_FRM_DONE))
+		{
 			status->wb_frm_done |= BIT(HW_WB_0);
+			hw->wb[HW_WB_0].wb_frm_done = true;
+		}
 		if (VS_GET_FIELD(be_overflow1, DCREG_BE_INTR_OVERFLOW1, POST_WB0_FRM_DONE))
 			status->of_wb_frm_done |= BIT(HW_WB_0);
 
 		if (VS_GET_FIELD(be_status1, DCREG_BE_INTR_STATUS1, POST_WB1_FRM_DONE))
+		{
 			status->wb_frm_done |= BIT(HW_WB_1);
+			hw->wb[HW_WB_1].wb_frm_done = true;
+		}
 		if (VS_GET_FIELD(be_overflow1, DCREG_BE_INTR_OVERFLOW1, POST_WB1_FRM_DONE))
 			status->of_wb_frm_done |= BIT(HW_WB_1);
 
@@ -2139,6 +2163,13 @@ int dc_hw_get_interrupt(struct dc_hw *hw, struct dc_hw_interrupt_status *status)
 		if (VS_GET_FIELD(be_status1, DCREG_BE_INTR_STATUS1, AXI_WR_BUS_HANG))
 			set_bit(DC_HW_BE_BUS_ERROR_AXI_WR_BUS_HANG, status->be_bus_errors);
 	}
+}
+
+int dc_hw_get_interrupt(struct dc_hw *hw, struct dc_hw_interrupt_status *status)
+{
+	dc_hw_get_fe0_interrupt(hw, status);
+	dc_hw_get_fe1_interrupt(hw, status);
+	dc_hw_get_be_interrupt(hw, status);
 
 	return 0;
 }
@@ -2343,6 +2374,24 @@ void dc_hw_set_display_pattern(struct dc_hw *hw, u8 id, struct dc_hw_pattern *pa
 	default:
 		break;
 	}
+}
+
+void dc_hw_get_fe_qos_value(struct dc_hw_plane_qos *qos)
+{
+	u8 i;
+
+	for (i = 0; i < MAX_QOS_LEVLE; i++) {
+		qos->fe0_qos_value[i] = fe0_qos_value[i];
+		qos->fe1_qos_value[i] = fe1_qos_value[i];
+	}
+}
+
+void dc_hw_get_be_qos_value(struct dc_hw_disp_qos *qos)
+{
+	u8 i;
+
+	for (i = 0; i < MAX_QOS_LEVLE; i++)
+		qos->qos_value[i] = be_qos_value[i];
 }
 
 #endif /* CONFIG_DEBUG_FS */
@@ -3052,6 +3101,12 @@ void dc_hw_do_fe1_reset(struct dc_hw *hw)
 	}
 }
 
+static void dc_hw_do_fe_reset(struct dc_hw *hw)
+{
+	dc_hw_do_fe0_reset(hw);
+	dc_hw_do_fe1_reset(hw);
+}
+
 void dc_hw_do_be_reset(struct dc_hw *hw)
 {
 	int ret;
@@ -3113,6 +3168,30 @@ void dc_hw_do_be_reset(struct dc_hw *hw)
 	}
 }
 
+void dc_hw_do_be_reset_cleanup(struct dc_hw *hw)
+{
+	u8 i = 0;
+	unsigned long flags;
+
+	for (i = 0; i < hw->info->wb_num; i++)
+		dc_hw_config_wb_status(hw, i, false);
+
+	for (i = 0; i < hw->info->display_num; i++)
+		hw->link_node_resource[i] = 0;
+
+	cb8to2_store_value = DCREG_WB_CROSSBAR8_TO2_ResetValue;
+	spin_lock_irqsave(&hw->output_mux_slock, flags);
+	hw->output_mux_value = DCREG_POST_PROCESS_OUT_ResetValue;
+	spin_unlock_irqrestore(&hw->output_mux_slock, flags);
+}
+
+void dc_hw_do_reset(struct dc_hw *hw)
+{
+	dc_hw_do_fe_reset(hw);
+	dc_hw_do_be_reset(hw);
+	dc_hw_do_be_reset_cleanup(hw);
+}
+
 static bool dc_hw_is_layer_idle(struct dc_hw *hw, u8 hw_id)
 {
 	struct device *dev = hw->dev;
@@ -3146,46 +3225,51 @@ static bool dc_hw_is_layer_idle(struct dc_hw *hw, u8 hw_id)
 	return true;
 }
 
-bool dc_hw_fe_is_all_layers_idle(struct dc_hw *hw)
+bool dc_hw_fe0_is_all_layers_idle(struct dc_hw *hw)
 {
 	u8 i, hw_id;
-	const struct vs_plane_info *plane_info;
-	bool is_all_layers_idle = true;
 
-	for (i = 0; i < hw->info->plane_num; i++) {
-		plane_info = get_plane_info(i, hw->info);
+	if (!hw->info)
+		return true;
+
+	for (i = 0; i < hw->info->plane_fe0_num; ++i) {
+		const struct vs_plane_info *plane_info = get_plane_info(i, hw->info);
+
 		if (plane_info->rcd_plane)
 			continue;
 
 		hw_id = plane_info->id;
 		if (!dc_hw_is_layer_idle(hw, hw_id))
-			is_all_layers_idle = false;
+			return false;
 	}
 
-	return is_all_layers_idle;
+	return true;
 }
 
-void dc_hw_do_reset(struct dc_hw *hw)
+bool dc_hw_fe1_is_all_layers_idle(struct dc_hw *hw)
 {
-	u8 i = 0;
-	unsigned long flags;
+	u8 i, hw_id;
 
-	dc_hw_do_fe0_reset(hw);
+	if (!hw->info)
+		return true;
 
-	dc_hw_do_fe1_reset(hw);
+	for (i = hw->info->plane_fe0_num; i < hw->info->plane_num; ++i) {
+		const struct vs_plane_info *plane_info = get_plane_info(i, hw->info);
 
-	dc_hw_do_be_reset(hw);
+		if (plane_info->rcd_plane)
+			continue;
 
-	for (i = 0; i < hw->info->wb_num; i++)
-		dc_hw_config_wb_status(hw, i, false);
+		hw_id = plane_info->id;
+		if (!dc_hw_is_layer_idle(hw, hw_id))
+			return false;
+	}
 
-	for (i = 0; i < hw->info->display_num; i++)
-		hw->link_node_resource[i] = 0;
+	return true;
+}
 
-	cb8to2_store_value = DCREG_WB_CROSSBAR8_TO2_ResetValue;
-	spin_lock_irqsave(&hw->output_mux_slock, flags);
-	hw->output_mux_value = DCREG_POST_PROCESS_OUT_ResetValue;
-	spin_unlock_irqrestore(&hw->output_mux_slock, flags);
+bool dc_hw_fe_is_all_layers_idle(struct dc_hw *hw)
+{
+	return (dc_hw_fe0_is_all_layers_idle(hw) && dc_hw_fe1_is_all_layers_idle(hw));
 }
 
 #if IS_ENABLED(CONFIG_TZ_PROT)
@@ -3205,13 +3289,11 @@ static void toggle_secure(struct dc_hw *hw, u8 layer, bool secure)
 	}
 
 	mutex_lock(&hw->secure_lock);
-	if (test_bit(plane_info->id, hw->secured_layers_mask) == secure)
+	if (test_bit(plane_info->id, hw->secured_layers_mask) == secure) {
 		dev_warn(dev, "layer %d already has secure %d, double enable or disable",
 			 plane_info->id, secure);
-
-	if (secure)
-		set_bit(plane_info->id, hw->secured_layers_mask);
-	mutex_unlock(&hw->secure_lock);
+		goto exit;
+	}
 
 	DPU_ATRACE_BEGIN("trusty_protect_ip");
 	ret = trusty_protect_ip(&(dc->tzprot_pdev->dev), sid, secure);
@@ -3221,13 +3303,14 @@ static void toggle_secure(struct dc_hw *hw, u8 layer, bool secure)
 			__func__, sid, secure, ret);
 	DPU_ATRACE_END("trusty_protect_ip");
 
-	if (!secure) {
-		mutex_lock(&hw->secure_lock);
+	if (secure)
+		set_bit(plane_info->id, hw->secured_layers_mask);
+	else
 		clear_bit(plane_info->id, hw->secured_layers_mask);
-		mutex_unlock(&hw->secure_lock);
-	}
 
 	trace_disp_trusty_protect_ip(plane_info->id, sid, hw->secured_layers_mask, secure);
+exit:
+	mutex_unlock(&hw->secure_lock);
 }
 
 static void plane_set_secure(struct dc_hw *hw, u8 layer, struct dc_hw_fb *fb)
@@ -3889,6 +3972,51 @@ static void plane_set_sram(struct dc_hw *hw, u8 hw_id, struct dc_hw_sram_pool *s
 	sram->dirty = false;
 }
 
+static void plane_set_qos(struct dc_hw *hw, u8 hw_id, struct dc_hw_plane_qos *qos)
+{
+	u32 config = 0, config1 = 0, config2 = 0;
+	u8 i;
+
+	for (i = 0; i < MAX_QOS_LEVLE; i++) {
+		config =
+			(i == 0) ?
+				VS_SET_FIELD(config, DCREG_FE0_QOS, LEVEL0, qos->fe0_qos_value[i]) :
+			(i == 1) ?
+				VS_SET_FIELD(config, DCREG_FE0_QOS, LEVEL1, qos->fe0_qos_value[i]) :
+			(i == 2) ?
+				VS_SET_FIELD(config, DCREG_FE0_QOS, LEVEL2, qos->fe0_qos_value[i]) :
+			(i == 3) ?
+				VS_SET_FIELD(config, DCREG_FE0_QOS, LEVEL3, qos->fe0_qos_value[i]) :
+				config;
+		config1 = (i == 0) ? VS_SET_FIELD(config1, DCREG_FE1_QOS, LEVEL0,
+						  qos->fe1_qos_value[i]) :
+			  (i == 1) ? VS_SET_FIELD(config1, DCREG_FE1_QOS, LEVEL1,
+						  qos->fe1_qos_value[i]) :
+			  (i == 2) ? VS_SET_FIELD(config1, DCREG_FE1_QOS, LEVEL2,
+						  qos->fe1_qos_value[i]) :
+			  (i == 3) ? VS_SET_FIELD(config1, DCREG_FE1_QOS, LEVEL3,
+						  qos->fe1_qos_value[i]) :
+					   config1;
+		config2 = (i == 0) ? VS_SET_FIELD(config2, DCREG_LAYER0_QOS, LEVEL0,
+						  qos->plane_qos_value[i]) :
+			  (i == 1) ? VS_SET_FIELD(config2, DCREG_LAYER0_QOS, LEVEL1,
+						  qos->plane_qos_value[i]) :
+			  (i == 2) ? VS_SET_FIELD(config2, DCREG_LAYER0_QOS, LEVEL2,
+						  qos->plane_qos_value[i]) :
+			  (i == 3) ? VS_SET_FIELD(config2, DCREG_LAYER0_QOS, LEVEL3,
+						  qos->plane_qos_value[i]) :
+					   config2;
+
+		fe0_qos_value[i] = qos->fe0_qos_value[i];
+		fe1_qos_value[i] = qos->fe1_qos_value[i];
+	}
+
+	dc_write_immediate(hw, DCREG_FE0_QOS_Address, config);
+	dc_write_immediate(hw, DCREG_FE1_QOS_Address, config1);
+	dc_write_immediate(hw, VS_SET_FE_FIELD(DCREG_LAYER, hw_id, QOS_Address), config2);
+	qos->dirty = false;
+}
+
 inline void dc_hw_set_output_start(struct dc_hw *hw, u8 output_id, bool trig_enable)
 {
 	dc_write_immediate(hw, VS_SET_PANEL_FIELD(DCREG_OUTPUT, output_id, START_Address),
@@ -3935,6 +4063,8 @@ static void dc_hw_configure_cmd_urgent(struct dc_hw *hw, u8 hw_id, u8 output_id,
 				       struct dc_hw_display_mode *mode, bool force_disable)
 {
 	struct dc_hw_display *display = &hw->display[hw_id];
+	struct vs_dc *dc = dev_get_drvdata(hw->dev);
+	struct vs_dc_urgent_cmd_config *urgent_cmd_override;
 	u32 urgent_value;
 	u32 sys_counter;
 	u32 total_frame_time_us;
@@ -3944,6 +4074,12 @@ static void dc_hw_configure_cmd_urgent(struct dc_hw *hw, u8 hw_id, u8 output_id,
 
 	urgent_value =
 		dc_read(hw, VS_SET_OUTPUT_FIELD(DCREG_SH_OUTPUT, output_id, URGENT_VALUE_Address));
+
+	if (dc->urgent_override[hw_id].override_urgent) {
+		urgent_cmd_override = &dc->urgent_override[hw_id].urgent_cmd_config;
+		memcpy(&display->urgent_cmd_config, urgent_cmd_override,
+		       sizeof(*urgent_cmd_override));
+	}
 
 	if (force_disable || !display->urgent_cmd_config.enable) {
 		urgent_value = VS_SET_FIELD(urgent_value, DCREG_SH_OUTPUT0_URGENT_VALUE, VALUE, 0);
@@ -3993,6 +4129,8 @@ static void dc_hw_configure_vid_urgent(struct dc_hw *hw, u8 hw_id, u8 output_id,
 				       struct dc_hw_display_mode *mode, bool force_disable)
 {
 	struct dc_hw_display *display = &hw->display[hw_id];
+	struct vs_dc *dc = dev_get_drvdata(hw->dev);
+	struct vs_dc_urgent_vid_config *urgent_vid_override;
 	u32 urgent_value;
 	u32 qos_thresh_0, qos_thresh_1, qos_thresh_2;
 	u32 urgent_thresh_0, urgent_thresh_1, urgent_thresh_2;
@@ -4001,6 +4139,12 @@ static void dc_hw_configure_vid_urgent(struct dc_hw *hw, u8 hw_id, u8 output_id,
 
 	urgent_value =
 		dc_read(hw, VS_SET_OUTPUT_FIELD(DCREG_SH_OUTPUT, output_id, URGENT_VALUE_Address));
+
+	if (dc->urgent_override[hw_id].override_urgent) {
+		urgent_vid_override = &dc->urgent_override[hw_id].urgent_vid_config;
+		memcpy(&display->urgent_vid_config, urgent_vid_override,
+		       sizeof(*urgent_vid_override));
+	}
 
 	if (force_disable || !display->urgent_vid_config.enable) {
 		urgent_value = VS_SET_FIELD(urgent_value, DCREG_SH_OUTPUT0_URGENT_VALUE, ENABLE,
@@ -4528,6 +4672,47 @@ static void display_set_brightness_mask(struct dc_hw *hw, u8 hw_id, struct dc_hw
 	fb->dirty = false;
 }
 
+static void display_set_qos(struct dc_hw *hw, u8 hw_id, u8 output_id, struct dc_hw_disp_qos *qos)
+{
+	u8 i;
+	u32 config = 0;
+
+	for (i = 0; i < MAX_QOS_LEVLE - 1; i++) {
+		dc_write(hw,
+			 VS_SET_OUTPUT_FIELD(DCREG_SH_OUTPUT, output_id, QOS_THRESHOLD0_Address) +
+				 0x4 * i,
+			 qos->qos_threshold[i]);
+		dc_write(hw,
+			 VS_SET_OUTPUT_FIELD(DCREG_SH_OUTPUT, output_id,
+					     URGENT_THRESHOLD0_Address) +
+				 0x4 * i,
+			 qos->urgent_threshold[i]);
+		config = (i == 0) ? VS_SET_FIELD(config, DCREG_BE_QOS, LEVEL0, qos->qos_value[i]) :
+			 (i == 1) ? VS_SET_FIELD(config, DCREG_BE_QOS, LEVEL1, qos->qos_value[i]) :
+			 (i == 2) ? VS_SET_FIELD(config, DCREG_BE_QOS, LEVEL2, qos->qos_value[i]) :
+					  config;
+		be_qos_value[i] = qos->qos_value[i];
+	}
+
+	config = (i == 3) ? VS_SET_FIELD(config, DCREG_BE_QOS, LEVEL3, qos->qos_value[i]) : config;
+	be_qos_value[i] = qos->qos_value[i];
+	dc_write_immediate(hw, DCREG_BE_QOS_Address, config);
+	dc_write(hw, VS_SET_OUTPUT_FIELD(DCREG_SH_OUTPUT, output_id, URGENT_HIGH_Address),
+		 qos->urgent_high);
+	dc_write(hw, VS_SET_OUTPUT_FIELD(DCREG_SH_OUTPUT, output_id, URGENT_LOW_Address),
+		 qos->urgent_low);
+	/* Histogram QOS value set. */
+	if (qos->hist_qos_value) {
+		dc_write_immediate(hw,
+				   VS_SET_PANEL01_FIELD(DCREG_PANEL, hw_id, HIST_WB_AW_QOS_Address),
+				   VS_SET_FIELD(0, DCREG_PANEL0_HIST_WB_AW_QOS, VALUE,
+						qos->hist_qos_value));
+		qos->hist_qos_changed = false;
+	}
+
+	qos->dirty = false;
+}
+
 static void display_set_wb_pos(struct dc_hw *hw, u8 hw_id, struct dc_hw_display_wb *wb)
 {
 	u32 wb_pos = 0;
@@ -5005,7 +5190,7 @@ static void wb_ex_set_fb(struct dc_hw *hw, u8 hw_id, struct dc_hw_wb *wb)
 	fb->dirty = false;
 }
 
-static void plane_set_secure_bits(struct dc_hw *hw, u8 display_id, bool secure_bit_en)
+void dc_hw_plane_set_secure_bits(struct dc_hw *hw, u8 display_id, bool secure_bit_en)
 {
 	struct dc_hw_plane *plane;
 	u8 layer_num = hw->info->layer_num;
@@ -5020,7 +5205,7 @@ static void plane_set_secure_bits(struct dc_hw *hw, u8 display_id, bool secure_b
 		if (!plane->config_status)
 			continue;
 
-		/*
+		/**
 		 * If secure_bit_en is true, only modify secure bit to enable
 		 * If secure_bit_en is false, only modify secure bit to disable
 		 */
@@ -5028,6 +5213,20 @@ static void plane_set_secure_bits(struct dc_hw *hw, u8 display_id, bool secure_b
 		if (plane->fb.secure_dirty && plane->fb.secure == secure_bit_en)
 			plane_set_secure(hw, i, &plane->fb);
 	}
+}
+
+static void wb_set_qos(struct dc_hw *hw, u8 hw_id, struct dc_hw_wb_qos *qos)
+{
+	if (hw_id < HW_BLEND_WB)
+		dc_write_immediate(hw,
+				   VS_SET_POSTWB_FIELD(DCREG_POST_PRO_WB, hw_id, AW_QOS_Address),
+				   VS_SET_FIELD(0, DCREG_POST_PRO_WB0_AW_QOS, VALUE,
+						qos->qos_value));
+	else
+		dc_write_immediate(hw, DCREG_BLD_WB_AW_QOS_Address,
+				   VS_SET_FIELD(0, DCREG_BLD_WB_AW_QOS, VALUE, qos->qos_value));
+
+	qos->dirty = false;
 }
 
 static void plane_commit(struct dc_hw *hw, u8 display_id)
@@ -5071,6 +5270,8 @@ static void plane_commit(struct dc_hw *hw, u8 display_id)
 			plane_set_clear(hw, hw_id, &plane->clear);
 		if (plane->sram.dirty)
 			plane_set_sram(hw, hw_id, &plane->sram);
+		if (plane->qos.dirty)
+			plane_set_qos(hw, hw_id, &plane->qos);
 
 		for (j = 0; j < plane->states.num; j++) {
 			struct vs_dc_property_state *state = &plane->states.items[j];
@@ -5118,7 +5319,7 @@ static void plane_commit_non_shadow(struct dc_hw *hw, u8 display_id)
 
 void dc_hw_disable_plane_features(struct dc_hw *hw, u8 display_id)
 {
-	plane_set_secure_bits(hw, display_id, false);
+	dc_hw_plane_set_secure_bits(hw, display_id, false);
 }
 
 static void display_commit(struct dc_hw *hw, u8 display_id)
@@ -5148,6 +5349,8 @@ static void display_commit(struct dc_hw *hw, u8 display_id)
 				display->wb.wb_id = wb_split_id;
 			hw->sub_func->display_wb_pos(hw, hw_id, &display->wb);
 		}
+		if (display->qos.dirty)
+			display_set_qos(hw, hw_id, display->output_id, &display->qos);
 
 		// dc property
 		for (j = 0; j < display->states.num; j++) {
@@ -5201,6 +5404,9 @@ static void wb_commit(struct dc_hw *hw, u8 display_id)
 
 		if (wb->r2y.dirty)
 			wb_set_r2y(hw, hw_id, &wb->r2y);
+
+		if (wb->qos.dirty)
+			wb_set_qos(hw, hw_id, &wb->qos);
 
 		/* program DC properties */
 		for (j = 0; j < wb->states.num; j++) {
@@ -5263,9 +5469,6 @@ void dc_hw_display_commit(struct dc_hw *hw, u8 display_id)
 	hw->func->display_commit(hw, display_id);
 	DPU_ATRACE_END(__func__);
 
-	/* Only update secure bit here if it is being enabled */
-	plane_set_secure_bits(hw, display_id, true);
-
 	for (i = 0; i < SW_RESET_NUM; i++)
 		hw->reset_status[i] = false;
 }
@@ -5291,7 +5494,7 @@ void dc_hw_display_frame_done(struct dc_hw *hw, u8 display_id)
 void dc_hw_display_flip_done(struct dc_hw *hw, u8 display_id)
 {
 	/* Disable secure bit after frame transfer is done to prevent b/415715428 */
-	plane_set_secure_bits(hw, display_id, false);
+	dc_hw_plane_set_secure_bits(hw, display_id, false);
 	/* histogram channels + rgb */
 	vs_dc_hist_flip_done(hw, display_id);
 }
@@ -5745,7 +5948,8 @@ static void print_hw_display_blur_mask(struct seq_file *s, const struct dc_hw_fb
 }
 
 static void print_hw_display_brightness_mask(struct seq_file *s,
-					     const struct dc_hw_fb *brightness_mask, u8 indent)
+					     const struct dc_hw_fb *brightness_mask,
+					     u8 indent)
 {
 	print_tab(s, indent);
 	seq_printf(s, PRINT_NAME_WIDTH ": enable=%d, dirty=%d\n", "brightness_mask",
@@ -5753,7 +5957,8 @@ static void print_hw_display_brightness_mask(struct seq_file *s,
 }
 
 static void print_hw_display_ltm_enable(struct seq_file *s,
-					const struct dc_hw_ltm_enable *ltm_enable, u8 indent)
+					const struct dc_hw_ltm_enable *ltm_enable,
+					u8 indent)
 {
 	print_tab(s, indent);
 	seq_printf(s, PRINT_NAME_WIDTH ": enable=%d, dirty=%d\n", "ltm_enable", ltm_enable->enable,
@@ -5761,7 +5966,8 @@ static void print_hw_display_ltm_enable(struct seq_file *s,
 }
 
 static void print_hw_display_ltm_degamma(struct seq_file *s,
-					 const struct dc_hw_ltm_xgamma *ltm_degamma, u8 indent)
+					 const struct dc_hw_ltm_xgamma *ltm_degamma,
+					 u8 indent)
 {
 	print_tab(s, indent);
 	seq_printf(s, PRINT_NAME_WIDTH ": enable=%d, dirty=%d\n", "ltm_degamma",
@@ -5809,7 +6015,8 @@ static void print_hw_display_grid_size(struct seq_file *s, const struct dc_hw_lt
 }
 
 static void print_hw_display_af_filter(struct seq_file *s,
-				       const struct dc_hw_ltm_af_filter *af_filter, u8 indent)
+				       const struct dc_hw_ltm_af_filter *af_filter,
+				       u8 indent)
 {
 	print_tab(s, indent);
 	seq_printf(s, PRINT_NAME_WIDTH ": enable=%d, dirty=%d\n", "af_filter", af_filter->enable,
@@ -5849,7 +6056,8 @@ static void print_hw_display_ltm_color(struct seq_file *s, const struct dc_hw_lt
 }
 
 static void print_hw_display_ltm_dither(struct seq_file *s,
-					const struct dc_hw_ltm_dither *ltm_dither, u8 indent)
+					const struct dc_hw_ltm_dither *ltm_dither,
+					u8 indent)
 {
 	print_tab(s, indent);
 	seq_printf(s, PRINT_NAME_WIDTH ": enable=%d, dirty=%d\n", "ltm_dither", ltm_dither->enable,
@@ -5873,7 +6081,8 @@ static void print_hw_display_ltm_luma_get(struct seq_file *s,
 }
 
 static void print_hw_display_ltm_cd_set(struct seq_file *s,
-					const struct dc_hw_ltm_cd_set *ltm_cd_set, u8 indent)
+					const struct dc_hw_ltm_cd_set *ltm_cd_set,
+					u8 indent)
 {
 	print_tab(s, indent);
 	seq_printf(s, PRINT_NAME_WIDTH ": enable=%d, dirty=%d\n", "ltm_cd_set", ltm_cd_set->enable,
@@ -5881,7 +6090,8 @@ static void print_hw_display_ltm_cd_set(struct seq_file *s,
 }
 
 static void print_hw_display_ltm_cd_get(struct seq_file *s,
-					const struct dc_hw_ltm_cd_get *ltm_cd_get, u8 indent)
+					const struct dc_hw_ltm_cd_get *ltm_cd_get,
+					u8 indent)
 {
 	print_tab(s, indent);
 	seq_printf(s, PRINT_NAME_WIDTH ": enable=%d, dirty=%d\n", "ltm_cd_get", ltm_cd_get->enable,
@@ -5913,7 +6123,8 @@ static void print_hw_display_ltm_ds(struct seq_file *s, const struct dc_hw_ltm_d
 }
 
 static void print_hw_display_hw_hist_chan(struct seq_file *s,
-					  const struct dc_hw_hist_chan *hw_hist_chan, u8 indent)
+					  const struct dc_hw_hist_chan *hw_hist_chan,
+					  u8 indent)
 {
 	u8 j;
 	char name[40] = {};
@@ -5927,7 +6138,8 @@ static void print_hw_display_hw_hist_chan(struct seq_file *s,
 }
 
 static void print_hw_display_hw_hist_rgb(struct seq_file *s,
-					 const struct dc_hw_hist_rgb *hw_hist_rgb, u8 indent)
+					 const struct dc_hw_hist_rgb *hw_hist_rgb,
+					 u8 indent)
 {
 	print_tab(s, indent);
 	seq_printf(s, PRINT_NAME_WIDTH ": enable=%d, dirty=%d\n", "hw_hist_rgb",
@@ -6021,6 +6233,41 @@ static void print_hw_wb_fb(struct seq_file *s, const struct dc_hw_fb *fb, u8 ind
 	seq_printf(s, PRINT_NAME_WIDTH ": enable=%d, dirty=%d\n", "fb", fb->enable, fb->dirty);
 }
 
+static void print_hw_display_urgent(struct seq_file *s, const struct dc_hw_display *display,
+				    u8 indent)
+{
+	const struct dc_hw_display_mode *mode = &display->mode;
+
+	if (!mode->enable)
+		return;
+
+	print_tab(s, indent);
+	if (mode->output_mode & VS_OUTPUT_MODE_CMD) {
+		seq_printf(s,
+			   PRINT_NAME_WIDTH
+			   ": en=%d, h_margin=%u, v_margin=%u, delay=%u, value=%u\n",
+			   "cmd_urgent", display->urgent_cmd_config.enable,
+			   display->urgent_cmd_config.h_margin_pct,
+			   display->urgent_cmd_config.v_margin_pct,
+			   display->urgent_cmd_config.delay_counter_usec,
+			   display->urgent_cmd_config.urgent_value);
+	} else {
+		seq_printf(s,
+			   PRINT_NAME_WIDTH
+			   ": en=%d, qos=(%u %u %u), urgent=(%u %u %u), lv=(%u %u), healthy=%u\n",
+			   "vid_urgent", display->urgent_vid_config.enable,
+			   display->urgent_vid_config.qos_thresh_0,
+			   display->urgent_vid_config.qos_thresh_1,
+			   display->urgent_vid_config.qos_thresh_2,
+			   display->urgent_vid_config.urgent_thresh_0,
+			   display->urgent_vid_config.urgent_thresh_1,
+			   display->urgent_vid_config.urgent_thresh_2,
+			   display->urgent_vid_config.urgent_high_thresh,
+			   display->urgent_vid_config.urgent_low_thresh,
+			   display->urgent_vid_config.healthy_thresh);
+	}
+}
+
 static void print_display_state(struct seq_file *s, const struct dc_hw_display *display, u8 indent)
 {
 	print_hw_display_mode(s, &display->mode, indent);
@@ -6054,6 +6301,7 @@ static void print_display_state(struct seq_file *s, const struct dc_hw_display *
 	print_hw_display_hw_hist_rgb(s, &display->hw_hist_rgb, indent);
 	print_hw_states(s, &display->states, indent);
 	print_hw_display_sram_pool(s, &display->sram_pool, indent);
+	print_hw_display_urgent(s, display, indent);
 
 	print_tab(s, indent);
 	seq_printf(s, PRINT_NAME_WIDTH ": %d\n", "output_id", display->output_id);
@@ -6093,7 +6341,7 @@ static void print_wb_state(struct seq_file *s, const struct dc_hw_wb *wb, u8 ind
 	seq_printf(s, PRINT_NAME_WIDTH ": %d\n", "config_status", wb->config_status);
 }
 
-#if IS_ENABLED(CONFIG_VERISILICON_DC9400_0x32a)
+#if IS_ENABLED(CONFIG_VERISILICON_DC9400_0x32a) || IS_ENABLED(CONFIG_VERISILICON_DC9400_0x20000005)
 bool dc_hw_is_be_idle(struct dc_hw *hw)
 {
 	int ret;

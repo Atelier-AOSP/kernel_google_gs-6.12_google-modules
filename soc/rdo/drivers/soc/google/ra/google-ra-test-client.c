@@ -244,10 +244,9 @@ static int google_ra_test_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int google_ra_test_remove(struct platform_device *pdev)
+static void google_ra_test_remove(struct platform_device *pdev)
 {
 	google_ra_test_remove_debugfs(pdev);
-	return 0;
 }
 
 static const struct of_device_id google_ra_test_of_match_table[] = {

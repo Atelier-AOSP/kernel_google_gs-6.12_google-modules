@@ -51,6 +51,13 @@ ifneq ($(CONFIG_POWERVR_LGA),)
   GTC_FREQUENCY_HZ=38400000
 endif
 
+ifneq ($(CONFIG_POWERVR_MBU),)
+  PIXEL_SOC=mbu
+  BUILD_POWERVR_PIXEL=y
+  # TODO: verify as this is copied from LGA
+  GTC_FREQUENCY_HZ=38400000
+endif
+
 ifeq ($(CONFIG_POWERVR_BRINGUP_MODE),y)
   MODE_DIR=bringup
 else
@@ -85,6 +92,9 @@ ccflags-y += -include $(_pvrsrvkm_dir)/../pixel/$(PIXEL_SOC)/$(MODE_DIR)/config_
  -I$(_pvrsrvkm_dir)/services/include/$(PVR_ARCH) \
  -I$(_pvrsrvkm_dir)/services/server/devices \
  -I$(_pvrsrvkm_dir)/services/server/devices/$(PVR_ARCH) \
+ -I$(_pvrsrvkm_dir)/services/server/devices/hal/include \
+ -I$(_pvrsrvkm_dir)/services/server/devices/hal/rgx \
+ -I$(_pvrsrvkm_dir)/services/server/devices/hal/env/ree \
  -I$(_pvrsrvkm_dir)/services/server/env/linux \
  -I$(_pvrsrvkm_dir)/services/server/include \
  -I$(_pvrsrvkm_dir)/services/shared/common \
@@ -109,10 +119,10 @@ ccflags-$(BUILD_POWERVR_PIXEL)  += \
     -I$(ROOT_DIR)/private/google-modules/soc/rdo/include/ \
     -I$(ROOT_DIR)/private/google-modules/trusty/include/ \
     -I$(ROOT_DIR)/private/google-modules/soc/gs/include/ \
-    -I$(ROOT_DIR)/private/google-modules/perf/include/ \
+    -I$(ROOT_DIR)/private/google-modules/perf/infra/mbfs/include/ \
     -I$(_pvrsrvkm_dir)/../customer/pixel/include
 
-# Note: replacement for 
+# Note: replacement for
 # tmp := $(addprefix -I,$(wildcard $(srctree)/$(src)/generated/$(PVR_ARCH)/*))
 # ccflags-y += $(tmp)
 
@@ -124,6 +134,9 @@ ccflags-y += $(INTERNAL_KBUILD_CFLAGS)
 ifeq ($(PVR_BUILD_TYPE),debug)
 ccflags-y += -DDYNAMIC_DEBUG_MODULE
 endif
+
+# To enable debug logs in Pixel integration
+# ccflags-y += -DPVR_DPF_CUSTOMER_DEBUG_ON
 
 ccflags-$(CONFIG_X86) += -mno-soft-float
 
@@ -253,8 +266,8 @@ $(PVRSRV_MODNAME)-y += \
  services/server/devices/rgxinit_common.o \
  services/server/devices/$(PVR_ARCH)/rgxinit.o \
  services/server/devices/rgxbvnc.o \
- services/server/devices/rgxlayer_impl_common.o \
- services/server/devices/$(PVR_ARCH)/rgxlayer_impl.o \
+ services/server/devices/hal/env/ree/rgxhal_driver_cmn.o \
+ services/server/devices/hal/env/ree/$(PVR_ARCH)/rgxhal_driver.o \
  services/server/devices/rgxmem.o \
  services/server/devices/rgxmmuinit.o \
  services/server/devices/rgxregconfig.o \
@@ -265,7 +278,7 @@ $(PVRSRV_MODNAME)-y += \
  services/server/devices/rgxhwperf_common.o \
  services/server/devices/$(PVR_ARCH)/rgxhwperf.o \
  services/server/devices/rgxpower.o \
- services/server/devices/$(PVR_ARCH)/rgxstartstop.o \
+ services/server/devices/hal/rgx/$(PVR_ARCH)/rgxstartstop.o \
  services/server/devices/rgxtimecorr.o \
  services/server/devices/rgxcompute.o \
  services/server/devices/$(PVR_ARCH)/rgxmulticore.o \
@@ -323,6 +336,7 @@ endif
 
 
 $(PVRSRV_MODNAME)-$(BUILD_POWERVR_PIXEL) += \
+    ../customer/pixel/custom_command.o \
     ../customer/pixel/dvfs.o \
     ../pixel/dvfs.o \
     ../pixel/dvfs_governor.o \
@@ -333,6 +347,7 @@ $(PVRSRV_MODNAME)-$(BUILD_POWERVR_PIXEL) += \
     ../pixel/of.o \
     ../pixel/mba.o \
     ../pixel/physmem.o \
+    ../pixel/scheduling.o
     ../pixel/sscd.o \
     ../pixel/sysconfig.o \
 		services/system/common/env/linux/interrupt_support.o
@@ -427,7 +442,7 @@ $(PVRSRV_MODNAME)-y += services/server/common/di_impl_brg.o
 
 $(PVRSRV_MODNAME)-y += \
  services/server/devices/$(PVR_ARCH)/rgxsrvinit.o \
- services/server/devices/rgxfwimageutils.o
+ services/server/devices/hal/rgx/rgxfwimageutils.o
 ifeq ($(PVR_ARCH),rogue)
 $(PVRSRV_MODNAME)-y += \
  services/shared/devices/$(PVR_ARCH)/rgx_hwperf_table.o

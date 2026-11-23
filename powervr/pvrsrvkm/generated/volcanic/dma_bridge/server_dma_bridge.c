@@ -145,8 +145,9 @@ PVRSRVBridgeDmaTransfer(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psDmaTransferIN->ui32NumDMAs * sizeof(IMG_HANDLE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, hPMRInt2, (const void __user *)psDmaTransferIN->phPMR,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, hPMRInt2,
+		     (const void __user *)psDmaTransferIN->phPMR,
 		     psDmaTransferIN->ui32NumDMAs * sizeof(IMG_HANDLE)) != PVRSRV_OK)
 		{
 			psDmaTransferOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -163,8 +164,9 @@ PVRSRVBridgeDmaTransfer(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psDmaTransferIN->ui32NumDMAs * sizeof(IMG_UINT64) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui64AddressInt, (const void __user *)psDmaTransferIN->pui64Address,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui64AddressInt,
+		     (const void __user *)psDmaTransferIN->pui64Address,
 		     psDmaTransferIN->ui32NumDMAs * sizeof(IMG_UINT64)) != PVRSRV_OK)
 		{
 			psDmaTransferOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -182,8 +184,9 @@ PVRSRVBridgeDmaTransfer(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psDmaTransferIN->ui32NumDMAs * sizeof(IMG_DEVMEM_OFFSET_T) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiOffsetInt, (const void __user *)psDmaTransferIN->puiOffset,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiOffsetInt,
+		     (const void __user *)psDmaTransferIN->puiOffset,
 		     psDmaTransferIN->ui32NumDMAs * sizeof(IMG_DEVMEM_OFFSET_T)) != PVRSRV_OK)
 		{
 			psDmaTransferOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -200,8 +203,9 @@ PVRSRVBridgeDmaTransfer(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psDmaTransferIN->ui32NumDMAs * sizeof(IMG_DEVMEM_SIZE_T) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiSizeInt, (const void __user *)psDmaTransferIN->puiSize,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiSizeInt,
+		     (const void __user *)psDmaTransferIN->puiSize,
 		     psDmaTransferIN->ui32NumDMAs * sizeof(IMG_DEVMEM_SIZE_T)) != PVRSRV_OK)
 		{
 			psDmaTransferOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -397,8 +401,9 @@ PVRSRVBridgeDmaSparseMappingTable(IMG_UINT32 ui32DispatchTableEntry,
 	if ((pbTableInt) && ((psDmaSparseMappingTableIN->ui32SizeInPages * sizeof(IMG_BOOL)) > 0))
 	{
 		if (unlikely
-		    (OSCopyToUser
-		     (NULL, (void __user *)psDmaSparseMappingTableOUT->pbTable, pbTableInt,
+		    (CopyToUserWrapper
+		     (NULL, ui32DispatchTableEntry,
+		      (void __user *)psDmaSparseMappingTableOUT->pbTable, pbTableInt,
 		      (psDmaSparseMappingTableIN->ui32SizeInPages * sizeof(IMG_BOOL))) !=
 		     PVRSRV_OK))
 		{

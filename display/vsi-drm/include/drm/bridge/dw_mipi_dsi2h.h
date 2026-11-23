@@ -62,6 +62,7 @@ struct dw_mipi_dsi2h_plat_data {
 	unsigned int max_data_lanes;
 	unsigned int clk_type;
 	bool auto_calc_off;
+	bool hs_link_enable;
 	unsigned int ppi_width;
 	unsigned int high_speed;
 	unsigned int bta;

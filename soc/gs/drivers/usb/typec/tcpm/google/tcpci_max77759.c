@@ -68,6 +68,7 @@
 #define BCL_USB_VOTABLE		"BCL_USB"
 #define BCL_USB_VOTER		"BCL_USB_VOTER"
 #define BCL_USB_VOTE		0
+#define BCL_CHARGER_STATUS_UPDATE_DELAY_MS	1000
 
 #define MAX77759_DISABLE_TOGGLE				1
 #define MAX77759_ENABLE_TOGGLE				0
@@ -75,6 +76,7 @@
 #define MAX77759_DISABLE_TOGGLE_VOTE			1
 
 #define MAX77759_RP_MISSING_TIMEOUT_MS                 2000
+#define VBUS_DISCHARGE_TIMEOUT_MS			1000
 
 #define AICL_CHECK_MS				       10000
 
@@ -149,10 +151,9 @@ enum bcl_usb_mode {
 
 #define VOLTAGE_DP_AUX_DEFAULT_UV	3300000
 
-#define SRC_CURRENT_LIMIT_MA		0
-
 #define DISCONNECT_DEBOUNCE_MS		1200
 
+#define LOGBUFFER_SIZE				262144
 #define LOG_LVL_DEBUG				1
 #define LOG_LVL_INFO				2
 
@@ -188,10 +189,7 @@ MODULE_PARM_DESC(mode, "Android bootmode");
 
 static u32 partner_src_caps[PDO_MAX_OBJECTS];
 static unsigned int nr_partner_src_caps;
-static bool port_src_pdo_updated;
 static bool limit_src_cap_enable;
-static u32 orig_src_current;
-static unsigned int nr_orig_src_pdo;
 spinlock_t g_caps_lock;
 
 static unsigned int sink_discovery_delay_ms;
@@ -613,18 +611,14 @@ static ssize_t usb_limit_source_enable_show(struct device *dev, struct device_at
 static ssize_t usb_limit_source_enable_store(struct device *dev, struct device_attribute *attr,
 					     const char *buf, size_t count)
 {
-	struct max77759_plat *chip = max777x9_get_drvdata(dev);
 	bool enable;
 
 	if (kstrtobool(buf, &enable) < 0)
 		return -EINVAL;
 
 	spin_lock(&g_caps_lock);
-	port_src_pdo_updated = false;
 	limit_src_cap_enable = enable;
 	spin_unlock(&g_caps_lock);
-
-	tcpm_cc_change(chip->tcpci->port);
 
 	return count;
 }
@@ -673,6 +667,7 @@ static struct device_attribute *max77759_device_attrs[] = {
 	&dev_attr_usb_limit_accessory_enable,
 	&dev_attr_usb_limit_accessory_current,
 	&dev_attr_sbu_pullup,
+	/* TODO: b/482220650 remove this attribute */
 	&dev_attr_usb_limit_source_enable,
 	&dev_attr_irq_hpd_count,
 	&dev_attr_manual_disable_vbus,
@@ -691,16 +686,17 @@ EXPORT_SYMBOL_GPL(register_data_active_callback);
 
 void register_orientation_callback(void (*callback)(void *orientation_payload), void *data)
 {
-	orientation_callback = callback;
 	orientation_payload = data;
+	smp_wmb();
+	orientation_callback = callback;
 }
 EXPORT_SYMBOL_GPL(register_orientation_callback);
 
 static void ovp_operation(struct max77759_plat *chip, int operation);
-#ifdef CONFIG_GPIOLIB
+
 static int ext_bst_en_gpio_get_direction(struct gpio_chip *chip, unsigned int offset)
 {
-	return GPIOF_DIR_OUT;
+	return GPIO_LINE_DIRECTION_OUT;
 }
 
 static int ext_bst_en_gpio_get(struct gpio_chip *gpio, unsigned int offset)
@@ -763,6 +759,8 @@ static int ext_bst_en_gpio_init(struct max77759_plat *chip)
 	chip->gpio.base = -1;
 	chip->gpio.ngpio = 1;
 	chip->gpio.can_sleep = true;
+	/* balance of_node_put() in of_find_node_by_name() */
+	of_node_get(chip->dev->of_node);
 	dp = of_find_node_by_name(chip->dev->of_node, chip->gpio.label);
 	if (!dp)
 		dev_err(chip->dev, "Failed to find %s DT node", chip->gpio.label);
@@ -774,7 +772,6 @@ static int ext_bst_en_gpio_init(struct max77759_plat *chip)
 
 	return ret;
 }
-#endif
 
 static void max77759_init_regs(struct max77759_plat *chip, bool setup)
 {
@@ -863,14 +860,25 @@ static void max77759_init_regs(struct max77759_plat *chip, bool setup)
 		LOG(LOG_LVL_DEBUG, log, "TCPC_VENDOR_VCON_CTRL: update vcnilim to 300mA failed");
 }
 
-static int post_process_pd_message(struct max77759_plat *chip, struct pd_message msg)
+static void process_data_message(struct max77759_plat *chip, struct pd_message msg,
+				 unsigned int cnt)
 {
-	enum pd_ctrl_msg_type pd_type = pd_header_type_le(msg.header);
+	enum pd_data_msg_type pd_type = pd_header_type_le(msg.header);
+	u32 payload[2];
+	int i;
 
-	if (pd_type == PD_DATA_VENDOR_DEF) {
-		u32 payload[2];
-		int i;
+	switch (pd_type) {
+	case PD_DATA_SOURCE_CAP:
+		if (cnt > PDO_MAX_OBJECTS)
+			cnt = PDO_MAX_OBJECTS;
 
+		spin_lock(&g_caps_lock);
+		for (i = 0; i < cnt; i++)
+			partner_src_caps[i] = le32_to_cpu(msg.payload[i]);
+		nr_partner_src_caps = cnt;
+		spin_unlock(&g_caps_lock);
+		break;
+	case PD_DATA_VENDOR_DEF:
 		for (i = 0; i < 2; i++) {
 			payload[i] = le32_to_cpu(msg.payload[i]);
 			if ((PD_VDO_VID(payload[0]) == USB_TYPEC_DP_SID))
@@ -887,7 +895,22 @@ static int post_process_pd_message(struct max77759_plat *chip, struct pd_message
 			// sysfs_notify(&chip->dev->kobj, NULL, "irq_hpd_count");
 			kobject_uevent(&chip->dev->kobj, KOBJ_CHANGE);
 		}
+		break;
+	default:
+		break;
 	}
+}
+
+static int post_process_pd_message(struct max77759_plat *chip, struct pd_message msg)
+{
+	bool ext = le16_to_cpu(msg.header) & PD_HEADER_EXT_HDR;
+	unsigned int cnt = pd_header_cnt_le(msg.header);
+
+	if (ext)
+		return 0;
+
+	if (cnt)
+		process_data_message(chip, msg, cnt);
 
 	return 0;
 }
@@ -899,7 +922,8 @@ static int process_rx(struct max77759_plat *chip, u16 status)
 	u8 rx_buf[TCPC_RECEIVE_BUFFER_LEN];
 	int ret, payload_index;
 	u8 *rx_buf_ptr;
-	enum pd_ctrl_msg_type pd_type;
+	bool ext;
+	unsigned int cnt;
 
 	/*
 	 * READABLE_BYTE_COUNT: Indicates the number of bytes in the RX_BUF_BYTE_x registers
@@ -962,18 +986,32 @@ static int process_rx(struct max77759_plat *chip, u16 status)
 		return -EIO;
 
 	LOG(LOG_LVL_DEBUG, chip->log, "rx clear");
-	pd_type = pd_header_type_le(msg.header);
-	if (pd_type == PD_CTRL_PR_SWAP) {
-		LOG(LOG_LVL_DEBUG, chip->log, "PD_CTRL_PR_SWAP");
-		/* To prevent disconnect during PR_SWAP. */
-		ret = max77759_write16(chip->data.regmap, TCPC_VBUS_SINK_DISCONNECT_THRESH, 0);
-		/* TODO: tcpci->pr_swap = true; */
-		if (ret < 0)
-			return -EIO;
+
+	/* Parse the header */
+	ext = le16_to_cpu(msg.header) & PD_HEADER_EXT_HDR;
+	cnt = pd_header_cnt_le(msg.header);
+
+	/* Pre-process before calling to TCPM */
+
+	/* Control Message */
+	if (!ext && !cnt) {
+		enum pd_ctrl_msg_type pd_type = pd_header_type_le(msg.header);
+
+		if (pd_type == PD_CTRL_PR_SWAP) {
+			LOG(LOG_LVL_DEBUG, chip->log, "PD_CTRL_PR_SWAP");
+			/* To prevent disconnect during PR_SWAP. */
+			ret = max77759_write16(chip->data.regmap, TCPC_VBUS_SINK_DISCONNECT_THRESH,
+					       0);
+			/* TODO: tcpci->pr_swap = true; */
+			if (ret < 0)
+				return -EIO;
+		}
 	}
 
-	tcpm_pd_receive(chip->port, &msg);
+	/* Call to TCPM */
+	tcpm_pd_receive(chip->port, &msg, TCPC_TX_SOP);
 
+	/* Post-process */
 	ret = post_process_pd_message(chip, msg);
 	if (ret < 0)
 		return ret;
@@ -981,7 +1019,7 @@ static int process_rx(struct max77759_plat *chip, u16 status)
 	return 0;
 }
 
-struct max77759_compliance_warnings *init_compliance_warnings(struct max77759_plat *chip)
+static struct max77759_compliance_warnings *init_compliance_warnings(struct max77759_plat *chip)
 {
 	struct max77759_compliance_warnings *compliance_warnings;
 
@@ -1076,24 +1114,9 @@ static void enable_dp_pulse(struct max77759_plat *chip)
 		LOG(LOG_LVL_DEBUG, chip->log, "%s failed to disable dpDnMan and dpDrv", __func__);
 }
 
-static void notify_usb_data_role(struct max77759_plat *chip, enum typec_data_role typec_role,
-				 bool enable) {
-	enum usb_role role;
-	int ret;
-
-	if (enable)
-		role = typec_role == TYPEC_HOST ? USB_ROLE_HOST : USB_ROLE_DEVICE;
-	else
-		role = USB_ROLE_NONE;
-
-	/* USB data role will be re-evaluated by google-role-sw after a vote is cast. */
-	ret = gvotable_cast_vote(chip->usb_data_role_votable,
-				TCPCI_VOTER, (void *)(long) role, 1);
-
-	logbuffer_logk(chip->log, LOGLEVEL_INFO, "%s votes %s, ret = %d",
-			TCPCI_VOTER, usb_role_string(role), ret);
-
-	chip->data_active = enable;
+static inline enum usb_role typec_role_to_usb_role(enum typec_data_role typec_role)
+{
+	return typec_role == TYPEC_HOST ? USB_ROLE_HOST : USB_ROLE_DEVICE;
 }
 
 void enable_data_path_locked(struct max77759_plat *chip)
@@ -1160,7 +1183,8 @@ void enable_data_path_locked(struct max77759_plat *chip)
 				enable_dp_pulse(chip);
 		}
 
-		notify_usb_data_role(chip, chip->data_role, 1);
+		gvotable_cast_long_vote(chip->comb_role_votable, TCPCI_VOTER,
+					typec_role_to_usb_role(chip->data_role), 1);
 		chip->active_data_role = chip->data_role;
 		if (data_active_callback)
 			(*data_active_callback)(data_active_payload, chip->active_data_role, true);
@@ -1174,7 +1198,8 @@ void enable_data_path_locked(struct max77759_plat *chip)
 			return;
 		}
 
-		notify_usb_data_role(chip, chip->active_data_role, 0);
+		gvotable_cast_long_vote(chip->comb_role_votable, TCPCI_VOTER,
+					typec_role_to_usb_role(chip->active_data_role), 0);
 		if (data_active_callback)
 			(*data_active_callback)(data_active_payload, chip->active_data_role, false);
 		if  (chip->active_data_role == TYPEC_HOST) {
@@ -1196,8 +1221,10 @@ static void max777x9_bcl_usb_update(struct max77759_plat *chip, enum bcl_usb_mod
 {
 	if (!IS_ERR_OR_NULL(chip->bcl_usb_wq)) {
 		chip->bcl_usb_vote = mode;
+
+		/* Charger status update delay 1s */
 		kthread_mod_delayed_work(chip->bcl_usb_wq, &chip->bcl_usb_votable_work,
-					 msecs_to_jiffies(0));
+					 msecs_to_jiffies(BCL_CHARGER_STATUS_UPDATE_DELAY_MS));
 	}
 }
 
@@ -1451,6 +1478,13 @@ static void bcl_usb_vote_work(struct kthread_work *work)
 	}
 }
 
+static void max77759_disable_vbus_dis(struct max77759_plat *chip, const char *caller)
+{
+	LOG(LOG_LVL_DEBUG, chip->log, "%s: Disabling vbus_dis gpio", caller);
+	kthread_cancel_delayed_work_sync(&chip->vbus_dis_work);
+	gpiod_set_value_cansleep(chip->vbus_dis_gpio, 0);
+}
+
 static void check_missing_rp_work(struct kthread_work *work)
 {
 	struct max77759_plat *chip  =
@@ -1486,6 +1520,7 @@ static void check_missing_rp_work(struct kthread_work *work)
 	    !chip->compliance_warnings->missing_rp) {
 		LOG(LOG_LVL_DEBUG, chip->log,
 		    "%s: Missing or incorrect Rp partner detected. Enable WAR", __func__);
+		max77759_disable_vbus_dis(chip, __func__);
 		/* Assume DCP for missing Rp non-compliant power source */
 		val.intval = POWER_SUPPLY_USB_TYPE_DCP;
 		max77759_set_vbus(chip->tcpci, chip->tcpci->data, false, true);
@@ -1526,6 +1561,76 @@ static void check_missing_rp(struct max77759_plat *chip, bool vbus_present,
 		kthread_cancel_delayed_work_sync(&chip->check_missing_rp_work);
 		if (!(pwr_status & TCPC_POWER_STATUS_VBUS_PRES))
 			disconnect_missing_rp_partner(chip);
+	}
+}
+
+static u32 max77759_get_snk_disc_thresh_mv(struct max77759_plat *chip)
+{
+	u16 snk_disc_raw;
+	u32 snk_disc;
+	int ret;
+
+	ret = max77759_read16(chip->data.regmap, TCPC_VBUS_SINK_DISCONNECT_THRESH, &snk_disc_raw);
+	if (ret < 0) {
+		logbuffer_logk(chip->log, LOGLEVEL_WARNING,
+			       "TCPC_VBUS_SINK_DISCONNECT_THRESH read error ret=%d", ret);
+		return 0;
+	}
+
+	snk_disc = (snk_disc_raw & TCPC_VBUS_SINK_DISCONNECT_THRESH_MAX) *
+		   TCPC_VBUS_SINK_DISCONNECT_THRESH_LSB_MV;
+
+	return snk_disc;
+}
+
+static void vbus_dis_work(struct kthread_work *work)
+{
+	struct max77759_plat *chip =
+		container_of(container_of(work, struct kthread_delayed_work, work),
+			     struct max77759_plat, vbus_dis_work);
+	enum typec_cc_status cc1, cc2;
+	int live_vbus;
+	u32 snk_disc;
+	u8 pwr_ctrl;
+	int ret;
+
+	max77759_get_cc(chip, &cc1, &cc2);
+	if (!cc_open_or_toggling(cc1, cc2)) {
+		LOG(LOG_LVL_DEBUG, chip->log, "%s: CC is not open/toggling", __func__);
+		return;
+	}
+
+	ret = max77759_read8(chip->tcpci->regmap, TCPC_POWER_CTRL, &pwr_ctrl);
+	if (ret < 0) {
+		LOG(LOG_LVL_DEBUG, chip->log, "%s: TCPC_POWER_CTRL read error", __func__);
+		return;
+	}
+
+	/*
+	 * Checking auto discharge enable confirms tcpm is not in apply_rc
+	 * state (e.g. during Power Role Swap) and likely to be in an attached state.
+	 * This prevents triggering the VBUS discharge workaround during PR swap,
+	 * which could interfere with the role swap transition.
+	 */
+	if (!(pwr_ctrl & TCPC_POWER_CTRL_AUTO_DISCHARGE)) {
+		LOG(LOG_LVL_DEBUG, chip->log, "%s: auto discharge not enabled", __func__);
+		return;
+	}
+
+	snk_disc = max77759_get_snk_disc_thresh_mv(chip);
+	if (!snk_disc)
+		return;
+
+	live_vbus = max77759_get_vbus_voltage_mv(chip->dev);
+	if (live_vbus > snk_disc) {
+		LOG(LOG_LVL_DEBUG, chip->log,
+		    "Stray VBUS charge detected after disconnect (live %dmV > thresh %umV)",
+		    live_vbus, snk_disc);
+		if (!IS_ERR_OR_NULL(chip->vbus_dis_gpio) &&
+		    !gpiod_get_value_cansleep(chip->vbus_dis_gpio)) {
+			LOG(LOG_LVL_DEBUG, chip->log, "Enabling vbus_dis gpio");
+			gpiod_set_value_cansleep(chip->vbus_dis_gpio, 1);
+		}
 	}
 }
 
@@ -2056,6 +2161,7 @@ static irqreturn_t _max77759_irq_locked(struct max77759_plat *chip, u16 status,
 	bool contaminant_cc_update_handled = false, invoke_tcpm_for_cc_update = false,
 		port_clean = false;
 	unsigned int pwr_status;
+	unsigned long delay = msecs_to_jiffies(VBUS_DISCHARGE_TIMEOUT_MS);
 
 	pm_wakeup_event(chip->dev, PD_ACTIVITY_TIMEOUT_MS);
 	LOG(LOG_LVL_DEBUG, log, "TCPC_ALERT status: %#x", status);
@@ -2145,6 +2251,7 @@ static irqreturn_t _max77759_irq_locked(struct max77759_plat *chip, u16 status,
 	if (status & TCPC_ALERT_VBUS_DISCNCT) {
 		LOG(LOG_LVL_DEBUG, log, "TCPC_ALERT_VBUS_DISCNCT, %umv",
 		    max77759_get_vbus_voltage_mv(chip->client));
+		max77759_disable_vbus_dis(chip, __func__);
 		chip->vbus_present = 0;
 		LOG(LOG_LVL_DEBUG, chip->log,
 		    "[%s]: vbus_present %d", __func__, chip->vbus_present);
@@ -2227,6 +2334,17 @@ static irqreturn_t _max77759_irq_locked(struct max77759_plat *chip, u16 status,
 			 * function calls.
 			 */
 			max77759_manual_vbus_handling_on_cc_change(chip, new_cc1, new_cc2);
+			if (port_is_sink(chip->cc1, chip->cc2) && chip->attached &&
+			    cc_open_or_toggling(new_cc1, new_cc2)) {
+				LOG(LOG_LVL_DEBUG, chip->log,
+				    "CC disconnected in sink mode. Scheduling vbus_dis_work");
+				kthread_mod_delayed_work(chip->wq,
+							 &chip->vbus_dis_work,
+							 delay);
+			} else if (!cc_open_or_toggling(new_cc1, new_cc2)) {
+				max77759_disable_vbus_dis(chip, __func__);
+			}
+
 			max77759_cache_cc(chip, new_cc1, new_cc2);
 			/* Check for missing-rp non compliant power source */
 			if (!regmap_read(tcpci->regmap, TCPC_POWER_STATUS, &pwr_status)) {
@@ -2602,18 +2720,10 @@ static int max77759_usb_set_orientation(struct typec_switch_dev *sw,
 		logbuffer_logk(chip->log, LOGLEVEL_INFO,
 			       "%s setting polarity orientation switch %d",
 			       ret < 0 ? "Failed" : "Succeeded", polarity);
-
 	} else {
-		ret = extcon_set_property(chip->extcon, EXTCON_USB, EXTCON_PROP_USB_TYPEC_POLARITY,
-					  (union extcon_property_value)(int)polarity);
-		logbuffer_logk(chip->log, LOGLEVEL_INFO, "%s setting polarity USB %d",
-			       ret < 0 ? "Failed" : "Succeeded", polarity);
-
-		ret = extcon_set_property(chip->extcon, EXTCON_USB_HOST,
-					  EXTCON_PROP_USB_TYPEC_POLARITY,
-					  (union extcon_property_value)(int)polarity);
-		logbuffer_logk(chip->log, LOGLEVEL_INFO, "%s setting polarity USB_HOST %d",
-			       ret < 0 ? "Failed" : "Succeeded", polarity);
+		logbuffer_logk(chip->log, LOGLEVEL_ERR, "%s: orientation switch is missing",
+			       __func__);
+		ret = -ENODEV;
 	}
 
 	chip->polarity = polarity;
@@ -2743,7 +2853,8 @@ static int max77759_set_vbus_voltage_max_mv(struct device *dev,
 static void max77759_dump_vbus_regs(struct google_shim_tcpci *tcpci, struct max77759_plat *chip)
 {
 	u8 pwr_ctrl, pwr_status, extended_status;
-	u16 live_vbus, snk_disc_raw, snk_disc;
+	u16 live_vbus;
+	u32 snk_disc;
 	bool vsafe0v;
 	int ret;
 
@@ -2765,14 +2876,8 @@ static void max77759_dump_vbus_regs(struct google_shim_tcpci *tcpci, struct max7
 			       "[%s]: Unable to fetch extended status, ret=%d\n", __func__, ret);
 		extended_status = 0;
 	}
-	ret = max77759_read16(tcpci->regmap, TCPC_VBUS_SINK_DISCONNECT_THRESH, &snk_disc_raw);
-	if (ret < 0) {
-		logbuffer_logk(chip->log, LOGLEVEL_WARNING,
-			       "[%s]: Unable to fetch snk_disc value, ret=%d\n", __func__, ret);
-		snk_disc_raw = 0;
-	}
-	snk_disc = (snk_disc_raw & TCPC_VBUS_SINK_DISCONNECT_THRESH_MAX) *
-		   TCPC_VBUS_SINK_DISCONNECT_THRESH_LSB_MV;
+
+	snk_disc = max77759_get_snk_disc_thresh_mv(chip);
 	live_vbus = max77759_get_vbus_voltage_mv(chip->client);
 	vsafe0v = extended_status & TCPC_EXTENDED_STATUS_VSAFE0V;
 
@@ -2847,7 +2952,8 @@ static int max77759_usb_set_role(struct usb_role_switch *sw, enum usb_role role)
 
 	if (!chip->force_device_mode_on && chip->data_active && !chip->alt_path_active &&
 	    (chip->active_data_role != typec_data_role || !attached || !enable_data)) {
-		notify_usb_data_role(chip, chip->active_data_role, 0);
+		gvotable_cast_long_vote(chip->comb_role_votable, TCPCI_VOTER,
+					typec_role_to_usb_role(chip->active_data_role), 0);
 		if (data_active_callback)
 			(*data_active_callback)(data_active_payload, chip->active_data_role, false);
 
@@ -2907,25 +3013,6 @@ static int max77759_usb_set_role(struct usb_role_switch *sw, enum usb_role role)
 	return 0;
 }
 
-#if IS_ENABLED(CONFIG_TCPCI_VENDOR_HOOKS)
-static void max77759_store_partner_src_caps(void *unused,
-					    unsigned int *nr_source_caps,
-					    u32 (*source_caps)[])
-{
-	int i;
-
-	spin_lock(&g_caps_lock);
-
-	nr_partner_src_caps = *nr_source_caps > PDO_MAX_OBJECTS ?
-			      PDO_MAX_OBJECTS : *nr_source_caps;
-
-	for (i = 0; i < nr_partner_src_caps; i++)
-		partner_src_caps[i] = (*source_caps)[i];
-
-	spin_unlock(&g_caps_lock);
-}
-#endif /* CONFIG_TCPCI_VENDOR_HOOKS */
-
 /*
  * Don't call this function in interrupt context. Caller needs to free the
  * memory by calling tcpm_put_partner_src_caps.
@@ -2966,13 +3053,12 @@ void tcpm_put_partner_src_caps(u32 **src_pdo)
 }
 EXPORT_SYMBOL_GPL(tcpm_put_partner_src_caps);
 
-void max77759_bc12_is_running(struct max77759_plat *chip, bool running)
+static void max77759_bc12_is_running(struct max77759_plat *chip, bool running)
 {
 	if (chip) {
 		mutex_lock(&chip->data_path_lock);
 		chip->bc12_running = running;
-		if (!running)
-			enable_data_path_locked(chip);
+		enable_data_path_locked(chip);
 		mutex_unlock(&chip->data_path_lock);
 	}
 }
@@ -3015,8 +3101,6 @@ static void max77759_set_port_data_capable(struct device *dev,
 }
 
 static const unsigned int usbpd_extcon_cable[] = {
-	EXTCON_USB,
-	EXTCON_USB_HOST,
 	EXTCON_MECHANICAL,
 	EXTCON_NONE,
 };
@@ -3099,6 +3183,36 @@ static int max77759_toggle_disable_votable_callback(struct gvotable_election *el
 	return 0;
 }
 
+static int combined_data_role_callback(struct gvotable_election *el,
+				       const char *reason, void *value)
+{
+	struct max77759_plat *chip = gvotable_get_data(el);
+	bool tcpci_vote_enabled = false;
+	enum usb_role combined_role;
+	int tcpci_vote, pogo_vote;
+	int ret;
+
+	tcpci_vote = gvotable_get_int_vote(el, TCPCI_VOTER);
+	pogo_vote = gvotable_get_int_vote(el, POGO_VOTER);
+
+	if (pogo_vote == USB_ROLE_HOST)
+		combined_role = USB_ROLE_HOST;
+	else
+		combined_role = tcpci_vote;
+
+	ret = gvotable_cast_long_vote(chip->usb_data_role_votable, TCPCI_COMB_VOTER, combined_role,
+				      1);
+	gvotable_is_enabled(el, TCPCI_VOTER, &tcpci_vote_enabled);
+	chip->data_active = tcpci_vote_enabled;
+	logbuffer_logk(chip->log, LOGLEVEL_INFO,
+		       "%s votes %s (%d), %s votes %s, result: %s, ret = %d",
+		       TCPCI_VOTER, usb_role_string(tcpci_vote), chip->data_active,
+		       POGO_VOTER, usb_role_string(pogo_vote),
+		       usb_role_string(combined_role), ret);
+
+	return ret;
+}
+
 #ifdef CONFIG_DEBUG_FS
 static ssize_t force_device_mode_on_write(struct file *file, const char __user *ubuf, size_t count,
 					  loff_t *ppos)
@@ -3118,13 +3232,14 @@ static ssize_t force_device_mode_on_write(struct file *file, const char __user *
 	/* Tear down previous data role if needed */
 	if (((result && chip->active_data_role != TYPEC_DEVICE) ||
 	    (!result && chip->active_data_role != chip->data_role)) && chip->data_active) {
-		notify_usb_data_role(chip, chip->active_data_role, 0);
+		gvotable_cast_long_vote(chip->comb_role_votable, TCPCI_VOTER,
+					typec_role_to_usb_role(chip->active_data_role), 0);
 		if (data_active_callback)
 			(*data_active_callback)(data_active_payload, chip->active_data_role, false);
 	}
 
 	if (result && !chip->data_active) {
-		notify_usb_data_role(chip, TYPEC_DEVICE, 1);
+		gvotable_cast_long_vote(chip->comb_role_votable, TCPCI_VOTER, USB_ROLE_DEVICE, 1);
 		chip->active_data_role = TYPEC_DEVICE;
 		if (data_active_callback)
 			(*data_active_callback)(data_active_payload, chip->active_data_role, true);
@@ -3165,31 +3280,6 @@ static void max77759_tcpm_log(void *unused, const char *log, bool *bypass)
 	*bypass = true;
 }
 
-static void max77759_modify_src_caps(void *unused, unsigned int *nr_src_pdo,
-				     u32 (*src_pdo)[], bool *modified)
-{
-	spin_lock(&g_caps_lock);
-
-	if (port_src_pdo_updated) {
-		spin_unlock(&g_caps_lock);
-		return;
-	}
-
-	if (limit_src_cap_enable) {
-		(*src_pdo)[0] &= ~(PDO_CURR_MASK << PDO_FIXED_CURR_SHIFT);
-		(*src_pdo)[0] |= PDO_FIXED_CURR(SRC_CURRENT_LIMIT_MA);
-		*nr_src_pdo = 1;
-	} else {
-		(*src_pdo)[0] |= PDO_FIXED_CURR(orig_src_current);
-		*nr_src_pdo = nr_orig_src_pdo;
-	}
-
-	port_src_pdo_updated = true;
-	*modified = true;
-
-	spin_unlock(&g_caps_lock);
-}
-
 static int max77759_register_vendor_hooks(struct device *dev)
 {
 	static bool hooks_installed = 0;
@@ -3198,27 +3288,9 @@ static int max77759_register_vendor_hooks(struct device *dev)
 	if (hooks_installed)
 		return 0;
 
-	ret = register_trace_android_vh_typec_store_partner_src_caps(
-			max77759_store_partner_src_caps, NULL);
-	if (ret) {
-		dev_err(dev,
-			"register_trace_android_vh_typec_store_partner_src_caps failed ret:%d",
-			ret);
-		return ret;
-	}
-
 	ret = register_trace_android_vh_typec_tcpm_log(max77759_tcpm_log, NULL);
 	if (ret) {
 		dev_err(dev, "register_trace_android_vh_typec_tcpm_log failed ret:%d", ret);
-		return ret;
-	}
-
-	port_src_pdo_updated = true;
-	ret = register_trace_android_vh_typec_tcpm_modify_src_caps(max77759_modify_src_caps, NULL);
-	if (ret) {
-		dev_err(dev,
-			"register_trace_android_vh_typec_tcpm_modify_src_caps failed ret:%d",
-			ret);
 		return ret;
 	}
 
@@ -3429,19 +3501,20 @@ static int max77759_setup_data_notifier(struct max77759_plat *chip)
 		return ret;
 	}
 
-	extcon_set_property_capability(chip->extcon, EXTCON_USB,
-				       EXTCON_PROP_USB_TYPEC_POLARITY);
-	extcon_set_property_capability(chip->extcon, EXTCON_USB_HOST,
-				       EXTCON_PROP_USB_TYPEC_POLARITY);
-
 	orientation_sw = fwnode_typec_switch_get(dev_fwnode(chip->dev));
 	if (!IS_ERR_OR_NULL(orientation_sw)) {
 		dev_info(chip->dev, "Downstream orientation switch found \n");
+
 		chip->orientation_sw = orientation_sw;
+	} else if (!of_property_read_bool(dev_of_node(chip->dev), "phy-orientation-sw")) {
+		dev_info(chip->dev, "downstream orientation switch not expected\n");
+	} else {
+		dev_info(chip->dev, "downstream orientation switch expected but not found");
+		return -EPROBE_DEFER;
 	}
 
 	of_property_read_u32(dev_of_node(chip->dev), "conn", &conn_handle);
-	desc.fwnode = &of_find_node_by_phandle(conn_handle)->fwnode;
+	desc.fwnode = of_fwnode_handle(of_find_node_by_phandle(conn_handle));
 	desc.driver_data = chip;
 	desc.name = fwnode_get_name(dev_fwnode(chip->dev));
 	desc.set = max77759_usb_set_role;
@@ -3579,15 +3652,15 @@ static int max77759_aicl_active_cb(struct gvotable_election *el, const char *rea
 int max77759_register(struct max777x9_desc *desc, enable_otg_direct client_otg_cb)
 {
 	struct max77759_plat *chip;
-	struct device_node *dn, *ovp_dn, *conn, *regulator_dn;
+	struct device_node *dn, *ovp_dn, *regulator_dn;
 	struct device *dev;
+	struct dentry *dentry __maybe_unused;
 	const char *ovp_status;
 	char *usb_psy_name;
 	const char *ws_name_prefix = "cc_toggle-";
 	ssize_t ws_name_len;
 	char *ws_name;
 	u32 ovp_handle, regulator_handle;
-	u32 first_src_pdo = 0;
 	int ret, i;
 	u16 device_id;
 	u8 power_status, pid;
@@ -3678,12 +3751,14 @@ int max77759_register(struct max777x9_desc *desc, enable_otg_direct client_otg_c
 				devm_gpiod_get(dev, "in-switch", GPIOD_ASIS);
 			if (IS_ERR(chip->in_switch_gpio)) {
 				dev_err(dev, "in-switch-gpio not found");
+				of_node_put(ovp_dn);
 				ret = -EPROBE_DEFER;
 				goto typec_mux_put;
 			}
 			chip->in_switch_gpio_active_high =
 				gpiod_is_active_low(chip->in_switch_gpio) ? 0 : 1;
 		}
+		of_node_put(ovp_dn);
 	}
 
 	chip->sbu_mux_en_gpio = devm_gpiod_get(dev, "sbu-mux-en", GPIOD_ASIS);
@@ -3694,6 +3769,14 @@ int max77759_register(struct max777x9_desc *desc, enable_otg_direct client_otg_c
 	if (IS_ERR(chip->sbu_mux_sel_gpio)) {
 		dev_err(dev, "sbu-mux-sel-gpio not found");
 	}
+
+	chip->vbus_dis_gpio = devm_gpiod_get_optional(dev, "vbus-dis", GPIOD_OUT_LOW);
+	if (IS_ERR(chip->vbus_dis_gpio)) {
+		ret = PTR_ERR(chip->vbus_dis_gpio);
+		dev_err(dev, "Failed to get vbus-dis-gpio, ret=%d\n", ret);
+		goto typec_mux_put;
+	}
+
 	if (of_property_read_bool(dn, "bcl-usb-voting")) {
 		chip->bcl_usb_votable = gvotable_election_get_handle(BCL_USB_VOTABLE);
 		if (IS_ERR_OR_NULL(chip->bcl_usb_votable))
@@ -3756,6 +3839,15 @@ int max77759_register(struct max777x9_desc *desc, enable_otg_direct client_otg_c
 	gvotable_set_vote2str(chip->usb_throttle_votable, gvotable_v2s_int);
 	gvotable_election_set_name(chip->usb_throttle_votable, USB_THROTTLE_VOTABLE);
 
+	chip->comb_role_votable =
+		gvotable_create_int_election(NULL, NULL, combined_data_role_callback, chip);
+	if (!chip->comb_role_votable) {
+		dev_err(dev, "Failed to create combined usb role votable");
+		return -EINVAL;
+	}
+	gvotable_set_vote2str(chip->comb_role_votable, gvotable_v2s_int);
+	gvotable_election_set_name(chip->comb_role_votable, COMBINED_ROLE_VOTABLE);
+
 	/* Chip level tcpci callbacks */
 	chip->data.set_vbus = max77759_set_vbus;
 	chip->data.start_drp_toggling = max77759_start_toggling;
@@ -3779,14 +3871,14 @@ int max77759_register(struct max777x9_desc *desc, enable_otg_direct client_otg_c
 		goto typec_mux_put;
 	}
 
-	chip->log = logbuffer_register("usbpd");
+	chip->log = logbuffer_register_size("usbpd", LOGBUFFER_SIZE);
 	if (IS_ERR_OR_NULL(chip->log)) {
-		dev_err(dev, "logbuffer get failed");
+		dev_err(dev, "logbuffer_usbpd creation failed");
 		ret = PTR_ERR(chip->log);
 		goto typec_mux_put;
 	}
 
-	tcpm_log = logbuffer_register("tcpm");
+	tcpm_log = logbuffer_register_size("tcpm", LOGBUFFER_SIZE);
 	if (IS_ERR_OR_NULL(tcpm_log)) {
 		dev_err(dev, "logbuffer_tcpm creation failed");
 		ret = PTR_ERR(tcpm_log);
@@ -3826,30 +3918,6 @@ int max77759_register(struct max777x9_desc *desc, enable_otg_direct client_otg_c
 	chip->no_bc_12 = of_property_read_bool(dn, "no-bc-12");
 	chip->no_external_boost = of_property_read_bool(dn, "no-external-boost");
 	of_property_read_u32(dn, "sink-discovery-delay-ms", &sink_discovery_delay_ms);
-
-	conn = of_get_child_by_name(dn, "connector");
-	if (!conn) {
-		dev_err(dev, "connector node not present");
-		ret = -ENODEV;
-		goto teardown_bc12;
-	}
-
-	/* DRP is expected and "source-pdos" should be present in device tree */
-	nr_orig_src_pdo = of_property_count_u32_elems(conn, "source-pdos");
-	if (nr_orig_src_pdo < 0) {
-		dev_err(dev, "failed to count elems in source-pdos");
-		of_node_put(conn);
-		ret = nr_orig_src_pdo;
-		goto teardown_bc12;
-	}
-
-	ret = of_property_read_u32_index(conn, "source-pdos", 0, &first_src_pdo);
-	of_node_put(conn);
-	if (ret < 0) {
-		dev_err(dev, "failed to read the first source-pdo");
-		goto teardown_bc12;
-	}
-	orig_src_current = ((first_src_pdo >> PDO_FIXED_CURR_SHIFT) & PDO_CURR_MASK) * 10;
 
 	chip->usb_psy = power_supply_get_by_name(usb_psy_name);
 	if (IS_ERR_OR_NULL(chip->usb_psy) || !chip->usb_psy) {
@@ -3913,7 +3981,7 @@ int max77759_register(struct max777x9_desc *desc, enable_otg_direct client_otg_c
 	max77759_init_regs(chip, true);
 
 	/* Default enable on MAX77759 A1 or higher. Default enable on MAX77779 */
-	if (pid == MAX77779_PRODUCT_ID || device_id >= MAX77759_DEVICE_ID_A1) {
+	if (!(pid == MAX77759_PRODUCT_ID && device_id < MAX77759_DEVICE_ID_A1)) {
 		chip->manual_disable_vbus = of_property_read_bool(dn, "manual-disable-vbus");
 		dev_info(dev, "manual disable_vbus %u", chip->manual_disable_vbus);
 		chip->data.auto_discharge_disconnect = true;
@@ -3945,6 +4013,7 @@ int max77759_register(struct max777x9_desc *desc, enable_otg_direct client_otg_c
 	kthread_init_delayed_work(&chip->vsafe0v_work, vsafe0v_debounce_work);
 	kthread_init_delayed_work(&chip->max77759_io_error_work, max77759_io_error_work);
 	kthread_init_delayed_work(&chip->check_missing_rp_work, check_missing_rp_work);
+	kthread_init_delayed_work(&chip->vbus_dis_work, vbus_dis_work);
 	kthread_init_delayed_work(&chip->ext_bst_ovp_clear_work, ext_bst_ovp_clear_work);
 
 	/*
@@ -3988,6 +4057,10 @@ int max77759_register(struct max777x9_desc *desc, enable_otg_direct client_otg_c
 	}
 	gvotable_set_vote2str(chip->aicl_active_el, gvotable_v2s_int);
 
+	ret = ext_bst_en_gpio_init(chip);
+	if (ret)
+		goto unreg_aicl_el;
+
 	chip->tcpci = google_tcpci_shim_register_port(dev, &chip->data);
 	if (IS_ERR_OR_NULL(chip->tcpci)) {
 		dev_err(dev, "TCPCI port registration failed");
@@ -4017,17 +4090,19 @@ int max77759_register(struct max777x9_desc *desc, enable_otg_direct client_otg_c
 #ifdef CONFIG_DEBUG_FS
 	chip->dentry = debugfs_create_dir("tcpci_max77759", NULL);
 	if (IS_ERR(chip->dentry)) {
-		dev_err(dev, "TCPCI: debugfs dentry failed: %ld", PTR_ERR(chip->dentry));
-	} else {
-		debugfs_create_file("force_device_mode_on", 0644, chip->dentry, chip,
-				    &force_device_mode_on_fops);
-	}
-#endif
-
-#ifdef CONFIG_GPIOLIB
-	ret = ext_bst_en_gpio_init(chip);
-	if (ret)
+		ret = PTR_ERR(chip->dentry);
+		dev_err(dev, "TCPCI: debugfs dentry failed: %d", ret);
 		goto unregister;
+	}
+
+	dentry = debugfs_create_file("force_device_mode_on", 0644, chip->dentry, chip,
+				     &force_device_mode_on_fops);
+	if (IS_ERR(dentry)) {
+		ret = PTR_ERR(dentry);
+		dev_err(dev, "TCPCI: debugfs: failed to create force_device_mode_on file, ret=%d",
+			ret);
+		goto unregister;
+	}
 #endif
 
 	ws_name_len = strlen(ws_name_prefix) + strlen(dev_name(dev)) + 1;
@@ -4047,13 +4122,13 @@ int max77759_register(struct max777x9_desc *desc, enable_otg_direct client_otg_c
 	desc->plat = chip;
 	return 0;
 
-unregister:
 #ifdef CONFIG_DEBUG_FS
+unregister:
 	debugfs_remove_recursive(chip->dentry);
-#endif
 	for (i = 0; max77759_device_attrs[i]; i++)
 		device_remove_file(dev, max77759_device_attrs[i]);
 	google_tcpci_shim_unregister_port(chip->tcpci);
+#endif
 unreg_aicl_el:
 	gvotable_destroy_election(chip->aicl_active_el);
 unreg_notifier:
@@ -4081,11 +4156,12 @@ usbpd_unreg:
 	logbuffer_unregister(chip->log);
 typec_mux_put:
 	typec_mux_put(chip->phy_mux);
+
 	return ret;
 }
 EXPORT_SYMBOL_GPL(max77759_register);
 
-void max77759_cancel_work(struct max77759_plat *plat)
+static void max77759_cancel_work(struct max77759_plat *plat)
 {
 	kthread_cancel_work_sync(&plat->reenable_auto_ultra_low_power_mode_work);
 	kthread_cancel_work_sync(&plat->aicl_check_alarm_work);
@@ -4095,6 +4171,7 @@ void max77759_cancel_work(struct max77759_plat *plat)
 	kthread_cancel_delayed_work_sync(&plat->max77759_io_error_work);
 	kthread_cancel_delayed_work_sync(&plat->check_missing_rp_work);
 	kthread_cancel_delayed_work_sync(&plat->reset_ovp_work);
+	max77759_disable_vbus_dis(plat, __func__);
 }
 
 void max77759_unregister(struct max77759_plat *plat)
@@ -4144,6 +4221,7 @@ void max77759_shutdown(struct max77759_plat *plat)
 
 	dev_info(plat->dev, "disabling Type-C upon shutdown\n");
 	kthread_cancel_delayed_work_sync(&plat->check_missing_rp_work);
+	max77759_disable_vbus_dis(plat, __func__);
 	kthread_cancel_delayed_work_sync(&plat->icl_work);
 	if (!IS_ERR_OR_NULL(plat->bcl_usb_wq))
 		kthread_cancel_delayed_work_sync(&plat->bcl_usb_votable_work);

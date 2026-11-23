@@ -163,10 +163,13 @@ typedef struct {
 #define PCIE_SHARED2_D2H_D11_TX_STATUS	0x40000000u
 #define PCIE_SHARED2_H2D_D11_TX_STATUS	0x80000000u
 
-#define PCIE_SHARED3_CFG_TRAP_SUPPORT   0x00000001u /* special trap sig supported in config space */
-#define PCIE_SHARED3_TXDESC_ATTR_SUPPORT  0x00000002u /* txdesc.ext_flags supported */
-#define PCIE_SHARED3_TXDESC_ETH_HDR	0x00000004u /* host address will point to ethernet header */
+#define PCIE_SHARED3_CFG_TRAP_SUPPORT   0x00000001u	/* spl trap sig supported in cfg space */
+#define PCIE_SHARED3_TXDESC_ATTR_SUPPORT  0x00000002u	/* txdesc.ext_flags supported */
+#define PCIE_SHARED3_TXDESC_ETH_HDR	0x00000004u	/* host addr will point to ether header */
 #define PCIE_SHARED3_RXBUF_CMPL_CHAIN	0x00000008u	/* Chained RxCompletion support */
+#define PCIE_SHARED3_TXDESC_AMSDU	0x00000010u	/* Host A-MSDU Aggregation Support */
+
+#define PCIE_SHARED3_FW_DARDB15_TRAP	0x00000020u /* FW trap on Host writes to DB15(0xA5C) */
 
 #define PCIE_SHARED_D2H_MAGIC		0xFEDCBA09
 #define PCIE_SHARED_H2D_MAGIC		0x12345678
@@ -556,6 +559,7 @@ typedef struct {
 #define D2HMB_TRAP_IN_TRAP              D2H_DEV_TRAP_IN_TRAP
 #define D2HMB_EXT_TRAP_DATA             D2H_DEV_EXT_TRAP_DATA
 #define D2H_FWTRAP_MAC_SSSR_RDY		0x00010000u	/* MAC SSSR prepped */
+#define D2H_DEV_TRAP_CTO		0x00020000u /* FW CTO trap */
 
 /* Size of Extended Trap data Buffer */
 #define BCMPCIE_EXT_TRAP_DATA_MAXLEN  4096
@@ -588,28 +592,8 @@ typedef struct {
 					       ((r_new) > (w) || (r_new) < (r) ? FALSE : TRUE) : \
 					       ((r_new) < (r) && (r_new) > (w) ? FALSE : TRUE))
 
-#ifndef PRIV_PCIE_RING_MACROS
-/* These should be moved into pciedev.h --- */
-#define WRT_PEND(x)	((x)->wr_pending)
-#define DNGL_RING_WPTR(msgbuf)		(*((msgbuf)->tcm_rs_w_ptr)) /**< advanced by producer */
-#define BCMMSGBUF_RING_SET_W_PTR(msgbuf, a)	(DNGL_RING_WPTR(msgbuf) = (a))
-
-#define DNGL_RING_RPTR(msgbuf)		(*((msgbuf)->tcm_rs_r_ptr)) /**< advanced by consumer */
-#define BCMMSGBUF_RING_SET_R_PTR(msgbuf, a)	(DNGL_RING_RPTR(msgbuf) = (a))
-
-#define MODULO_RING_IDX(x, y)	((x) % (y)->bitmap_size)
-
-#define  RING_READ_PTR(x)	((x)->ringstate->r_offset)
-#define  RING_WRITE_PTR(x)	((x)->ringstate->w_offset)
-#define  RING_START_PTR(x)	((x)->ringmem->base_addr.low_addr)
-#define  RING_MAX_ITEM(x)	((x)->ringmem->max_item)
-#define  RING_LEN_ITEMS(x)	((x)->ringmem->len_items)
+// This is a host side macro and should be moved to the host!!!
 #define	 HOST_RING_BASE(x)	((x)->dma_buf.va)
-#define	 HOST_RING_END(x)	((uint8 *)HOST_RING_BASE((x)) + \
-					((RING_MAX_ITEM((x))-1)*RING_LEN_ITEMS((x))))
-
-#define RING_MESH(x)	(((x)->txpost_ext_cap_flags) & PCIE_SHARED2_DEV_TXPOST_EXT_TAG_CAP_MESH)
-#endif /* PRIV_PCIE_RING_MACROS */
 
 /* Trap types copied in the pciedev_shared.trap_addr */
 #define	FW_INITIATED_TRAP_TYPE	(0x1 << 7)

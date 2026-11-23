@@ -308,7 +308,7 @@ int pvr_drm_load(struct drm_device *ddev, unsigned long flags)
 	if (srv_err != PVRSRV_OK) {
 		DRM_ERROR("failed to create device node for device %p (%s)\n",
 			  ddev->dev, PVRSRVGetErrorString(srv_err));
-		if (srv_err == PVRSRV_ERROR_PROBE_DEFER)
+		if (srv_err == PVRSRV_ERROR_PROBE_DEFER || srv_err == -EPROBE_DEFER)
 			err = -EPROBE_DEFER;
 		else
 			err = -ENODEV;
@@ -514,6 +514,7 @@ static void pvr_show_fdinfo(struct seq_file *seq_file, struct file *file)
 
 const struct file_operations pvr_drm_fops = {
 	.owner			= THIS_MODULE,
+	.fop_flags		= FOP_UNSIGNED_OFFSET,
 	.open			= drm_open,
 	.release		= drm_release,
 	.unlocked_ioctl		= drm_ioctl,

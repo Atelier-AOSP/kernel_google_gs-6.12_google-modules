@@ -9,7 +9,9 @@
  * published by the Free Software Foundation.
  */
 
-#if IS_ENABLED(CONFIG_SOC_RDO) || IS_ENABLED(CONFIG_SOC_LGA)
+#if IS_ENABLED(CONFIG_SOC_MBU)
+  #include "aoc-interface-mbu.h"
+#elif IS_ENABLED(CONFIG_SOC_RDO) || IS_ENABLED(CONFIG_SOC_LGA)
   #include "aoc-interface-lga.h"
 #elif IS_ENABLED(CONFIG_SOC_ZUMA)
   #include "aoc-interface-zuma.h"

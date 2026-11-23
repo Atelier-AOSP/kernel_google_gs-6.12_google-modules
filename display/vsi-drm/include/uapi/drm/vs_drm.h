@@ -277,6 +277,9 @@ enum drm_vs_feature_cap_type {
 	VS_FEATURE_CAP_CURSOR_WIDTH,
 	VS_FEATURE_CAP_CURSOR_HEIGHT,
 	VS_FEATURE_CAP_LINEAR_YUV_ROTATION,
+	VS_FEATURE_CAP_ANY_RESOLUTION,
+	VS_FEATURE_CAP_MAX_WIDTH,
+	VS_FEATURE_CAP_MAX_HEIGHT,
 };
 
 enum drm_vs_hw_cap_type {
@@ -1080,6 +1083,11 @@ struct drm_vs_rcd_roi {
 	struct drm_vs_rect btm_roi;
 };
 
+struct drm_vs_wb_frm_done {
+	__u8 wb_id;
+	bool wb_frm_done;
+};
+
 /*
  * histogram collects the image characteristics for SW to perform various related features.
  * There are 4 independent programmable histograms: VS_HIST_CHAN_IDX_0 ~ VS_HIST_CHAN_IDX_3
@@ -1270,6 +1278,7 @@ struct drm_vs_task_fence_arg {
 #define DRM_VS_GET_FEATURE_CAP 0x05
 #define DRM_VS_GET_HW_CAP 0x07
 #define DRM_VS_GET_LTM_HIST 0x08
+#define DRM_VS_GET_WB_FRM_DONE 0x09
 #define DRM_VS_GET_HIST_BINS 0x010
 #define DRM_VS_TASK_FENCE 0x11
 
@@ -1286,6 +1295,8 @@ struct drm_vs_task_fence_arg {
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_VS_GET_HIST_BINS, struct drm_vs_hist_bins_query)
 #define DRM_IOCTL_VS_GET_LTM_HIST \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_VS_GET_LTM_HIST, struct drm_vs_ltm_histogram_data)
+#define DRM_IOCTL_VS_GET_WB_FRM_DONE \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_VS_GET_WB_FRM_DONE, struct drm_vs_wb_frm_done)
 #define DRM_IOCTL_VS_TASK_FENCE \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_VS_TASK_FENCE, struct drm_vs_task_fence_arg)
 

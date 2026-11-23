@@ -78,7 +78,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "rgxtimecorr.h"
 #include "rgx_options.h"
 #include "rgxinit.h"
-#include "rgxlayer_impl.h"
+#include "rgxhal_driver.h"
 #include "devicemem_history_server.h"
 
 #define DD_SUMMARY_INDENT  ""

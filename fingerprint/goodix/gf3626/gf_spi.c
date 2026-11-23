@@ -538,7 +538,7 @@ static long gf_ioctl_handler(struct file *filp, unsigned int cmd, unsigned long 
 
 		case GF_IOC_RESET:
 			pr_debug("%s GF_IOC_RESET\n", __func__);
-			gf_hw_reset(gf_dev, 3);
+			gf_hw_reset(gf_dev, 10);
 			break;
 
 		case GF_IOC_INPUT_KEY_EVENT:
@@ -582,7 +582,6 @@ static long gf_ioctl_handler(struct file *filp, unsigned int cmd, unsigned long 
 			}
 
 			break;
-
 		case GF_IOC_DISABLE_SPI_CLK:
 			pr_debug("%s GF_IOC_DISABLE_SPI_CLK\n", __func__);
 #ifdef AP_CONTROL_CLK
@@ -689,6 +688,7 @@ static int gf_open(struct inode *inode, struct file *filp)
 	}
 
 	if (!gf_dev->users) {
+		gf_power_on(gf_dev);
 		status = irq_setup(gf_dev);
 		if (status)
 			goto err_setup;
@@ -699,7 +699,7 @@ static int gf_open(struct inode *inode, struct file *filp)
 	nonseekable_open(inode, filp);
 	pr_info("Succeed to open device. irq = %d\n",
 		gf_dev->irq);
-	gf_hw_reset(gf_dev, 10);
+	//gf_hw_reset(gf_dev, 10);
 	gf_dev->device_available = 1;
 
 err_setup:
@@ -731,11 +731,13 @@ static int gf_release(struct inode *inode, struct file *filp)
 	gf_dev->users--;
 	if (!gf_dev->users) {
 		irq_cleanup(gf_dev);
-
-		/* power off the sensor */
-		gf_dev->device_available = 0;
-		gf_power_off(gf_dev);
 	}
+
+	if (gf_dev->device_available) {
+		gf_power_off(gf_dev);
+		gf_dev->device_available = 0;
+	}
+
 	mutex_unlock(&gf_spi_lock);
 	return status;
 }
@@ -949,7 +951,7 @@ error_dev:
 #if defined(USE_SPI_BUS)
 static int gf_remove(struct spi_device *spi)
 #elif defined(USE_PLATFORM_BUS)
-static int gf_remove(struct platform_device *pdev)
+static void gf_remove(struct platform_device *pdev)
 #endif
 {
 	struct gf_dev *gf_dev = &gf;
@@ -972,7 +974,9 @@ static int gf_remove(struct platform_device *pdev)
 	if (IS_ENABLED(USE_PLATFORM_BUS))
 		put_device(&gf_dev->spi_pinctrl_pdev->dev);
 
+#if defined(USE_SPI_BUS)
 	return 0;
+#endif
 }
 
 static const struct of_device_id gx_match_table[] = {

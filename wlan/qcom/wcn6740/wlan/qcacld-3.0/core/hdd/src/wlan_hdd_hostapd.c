@@ -4141,7 +4141,7 @@ struct hdd_adapter *hdd_wlan_create_ap_dev(struct hdd_context *hdd_ctx,
 		(int)policy_mgr_get_concurrency_mode(hdd_ctx->psoc));
 
 	/* Init the net_device structure */
-	strlcpy(dev->name, (const char *)iface_name, IFNAMSIZ);
+	strscpy(dev->name, (const char *)iface_name, IFNAMSIZ);
 
 	hdd_set_ap_ops(dev);
 
@@ -7355,7 +7355,7 @@ static int __wlan_hdd_cfg80211_change_beacon(struct wiphy *wiphy,
  */
 int wlan_hdd_cfg80211_change_beacon(struct wiphy *wiphy,
 				struct net_device *dev,
-				struct cfg80211_beacon_data *params)
+				struct cfg80211_ap_update *params)
 {
 	int errno;
 	struct osif_vdev_sync *vdev_sync;
@@ -7364,7 +7364,7 @@ int wlan_hdd_cfg80211_change_beacon(struct wiphy *wiphy,
 	if (errno)
 		return errno;
 
-	errno = __wlan_hdd_cfg80211_change_beacon(wiphy, dev, params);
+	errno = __wlan_hdd_cfg80211_change_beacon(wiphy, dev, &params->beacon);
 
 	osif_vdev_sync_op_stop(vdev_sync);
 

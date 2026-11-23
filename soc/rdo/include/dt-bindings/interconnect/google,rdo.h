@@ -3,10 +3,10 @@
 #ifndef __DT_BINDINGS_INTERCONNECT_GOOGLE_RDO_H
 #define __DT_BINDINGS_INTERCONNECT_GOOGLE_RDO_H
 
-#include "google,icc.h"
+/* clang-format off */
 
 #define GMC			0
-#define SSWRP_CPU		1
+#define SSWRP_APC		1
 #define SSWRP_DPU		2
 #define SSWRP_PCIE_0		3
 #define SSWRP_PCIE_1		4
@@ -22,7 +22,7 @@
 #define SSWRP_GSW		14
 #define SSWRP_GSA		15
 
-#define ISPFE	            0
+#define ISPFE			0
 
 #define ISPBE_TNR_ALIGN		0
 #define ISPBE_BE_BAYER_TNR	1
@@ -30,5 +30,7 @@
 
 #define GSW_GSE			0
 #define GSW_GWE			1
+
+/* clang-format on */
 
 #endif // __DT_BINDINGS_INTERCONNECT_GOOGLE_RDO_H

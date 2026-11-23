@@ -51,7 +51,8 @@ enum brcm_vendor_attr {
 	BRCM_ATTR_DRIVER_RAND_MAC	= 3,
 	BRCM_ATTR_SAE_PWE		= 4,
 	BRCM_ATTR_TD_POLICY		= 5,
-	BRCM_ATTR_DRIVER_MAX		= 6
+	BRCM_ATTR_DRIVER_KEY_PMKID	= 6,
+	BRCM_ATTR_DRIVER_MAX		= 7
 };
 
 enum brcm_wlan_vendor_features {

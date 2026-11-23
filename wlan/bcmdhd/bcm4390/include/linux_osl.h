@@ -27,6 +27,22 @@
 #include <typedefs.h>
 #include <linuxerrmap.h>
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)
+#include <linux/sched/clock.h>
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0) */
+
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+#include <linux/lockdep.h>
+
+#define OSL_LOCK_CLASS_SET(lock) \
+	do {                     \
+		static struct lock_class_key __key; \
+		lockdep_set_class(((spinlock_t *)lock), (struct lock_class_key *)&__key); \
+	} while (0)
+#else
+#define OSL_LOCK_CLASS_SET(lock) do { } while (0)
+#endif
+
 #define DECLSPEC_ALIGN(x)	__attribute__ ((aligned(x)))
 
 /* Linux Kernel: File Operations: start */
@@ -409,6 +425,8 @@ extern uint64 osl_systztime_us(void);
 #ifdef LOG_CUSTOM_PREFIX_AND_RTC
 extern char* osl_get_rtctime(void);
 #define OSL_GET_RTCTIME()	osl_get_rtctime()
+#else
+#define OSL_GET_RTCTIME()	"N/A"
 #endif /* LOG_CUSTOM_PREFIX_AND_RTC */
 
 #define OSL_LOCALTIME_NS()	osl_localtime_ns()
@@ -418,7 +436,11 @@ uint64 osl_getcycles(void);
 
 /* RTC format %02d:%02d:%02d.%06lu, LEN including the trailing null space */
 #define RTC_TIME_BUF_LEN	16u
+#ifdef CUSTOM_PREFIX_NORTCTIME
+#define printf(fmt, args...)    printk(CUSTOM_PREFIX_NORTCTIME fmt , ## args)
+#else
 #define	printf(fmt, args...)	printk(fmt , ## args)
+#endif
 #define	vprintf(fmt, ap)	vprintk(fmt, ap)
 #include <linux/kernel.h>	/* for vsn/printf's */
 #include <linux/string.h>	/* for mem*, str* */
@@ -1066,7 +1088,25 @@ typedef atomic_t osl_atomic_t;
 #endif
 #endif /* BCMDRIVER */
 
-extern void *osl_spin_lock_init(osl_t *osh);
+/*
+ * spin_lock_init() instantiates one lock class key every time this macro is
+ * expanded. Define osl_spin_lock_init() as a macro instead of a function such
+ * that each spinlock instance has its own identity. If all spinlocks would have
+ * the same identity, lockdep would report "WARNING: possible recursive locking
+ * detected" if nested locking occurs.
+ */
+#define osl_spin_lock_init(osh)							\
+	({									\
+		/* Adding 4 bytes since the sizeof(spinlock_t) could be 0 */	\
+		/* if CONFIG_SMP and CONFIG_DEBUG_SPINLOCK are not defined */	\
+		/* and this results in kernel asserts in internal builds. */	\
+		spinlock_t *lock = MALLOC((osh), sizeof(spinlock_t) + 4);	\
+										\
+		if (lock)							\
+			spin_lock_init(lock);					\
+		(void *)lock;							\
+	})
+
 extern void osl_spin_lock_deinit(osl_t *osh, void *lock);
 extern unsigned long osl_spin_lock(void *lock);
 extern void osl_spin_unlock(void *lock, unsigned long flags);
@@ -1102,9 +1142,12 @@ extern int osl_send_sig_info(int signo, int arg, struct task_struct *tsk);
 
 #if defined(LOG_CUSTOM_PREFIX_AND_RTC)
 #define OSL_PRINT_PREFIX "[%s]"LOG_CUSTOM_PREFIX_AND_RTC, OSL_GET_RTCTIME()
-#endif /* LOG_CUSTOM_PREFIX_AND_RTC */
+#elif defined(CUSTOM_PREFIX_NORTCTIME)
+#define OSL_PRINT_PREFIX CUSTOM_PREFIX_NORTCTIME
+#endif /* CUSTOM_PREFIX_NORTCTIME */
 
-#if !defined (LOG_CUSTOM_PREFIX_AND_RTC) && !defined(LOG_CUSTOM_PREFIX)
+#if !defined (LOG_CUSTOM_PREFIX_AND_RTC) && !defined(LOG_CUSTOM_PREFIX) && \
+	!defined(CUSTOM_PREFIX_NORTCTIME)
 #define OSL_PRINT(args)	\
 do {			\
 	pr_cont args;	\
@@ -1115,5 +1158,5 @@ do {					\
 	pr_cont(OSL_PRINT_PREFIX);	\
 	pr_cont args;			\
 } while (0)
-#endif /* LOG_CUSTOM_PREFIX_AND_RTC || LOG_CUSTOM_PREFIX */
+#endif /* LOG_CUSTOM_PREFIX_AND_RTC || LOG_CUSTOM_PREFIX || CUSTOM_PREFIX_NORTCTIME */
 #endif	/* _linux_osl_h_ */

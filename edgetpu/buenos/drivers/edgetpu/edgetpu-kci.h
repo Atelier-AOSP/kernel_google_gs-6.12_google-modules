@@ -1,9 +1,9 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Kernel Control Interface, implements the protocol between AP kernel and TPU
  * firmware.
  *
- * Copyright (C) 2019 Google, Inc.
+ * Copyright (C) 2019-2026 Google LLC
  */
 #ifndef __EDGETPU_KCI_H__
 #define __EDGETPU_KCI_H__
@@ -41,6 +41,13 @@ struct edgetpu_kci {
 	struct gcip_memory cmd_queue_mem;
 	/* Response queue buffer */
 	struct gcip_memory resp_queue_mem;
+	/*
+	 * State of KCI and active commands counter:
+	 * -1: Disabled (new KCI commands are rejected).
+	 *  0: Enabled and idle (no active KCI commands).
+	 * >0: Enabled and busy (value is the number of active KCI commands).
+	 */
+	atomic_t active_cmds;
 };
 
 /* VII response element */
@@ -142,8 +149,7 @@ int edgetpu_kci_reinit(struct edgetpu_kci *etkci);
 /*
  * Releases resources allocated by @kci.
  *
- * Note: must invoke this function after the interrupt of mailbox disabled and
- * before free the mailbox pointer.
+ * Note: must invoke this function after KCI is disabled and before the mailbox pointer is freed.
  */
 void edgetpu_kci_release(struct edgetpu_dev *etdev, struct edgetpu_kci *etkci);
 
@@ -232,6 +238,26 @@ int edgetpu_kci_close_device(struct edgetpu_kci *etkci, u32 mailbox_map);
 
 /* Cancel work queues or wait until they're done */
 void edgetpu_kci_cancel_work_queues(struct edgetpu_kci *etkci);
+
+/**
+ * edgetpu_kci_enable() - Enable KCI to accept new commands.
+ * @etkci: KCI object to enable.
+ *
+ * Transitions the KCI state from disabled (-1) to enabled/idle (0) and registers the mailbox
+ * interrupt handler.
+ */
+void edgetpu_kci_enable(struct edgetpu_kci *etkci);
+
+/**
+ * edgetpu_kci_disable() - Disable KCI and cancel work queues.
+ * @etkci: KCI object to disable.
+ *
+ * Transitions the KCI state from enabled/idle (0) to disabled (-1) if there are no active
+ * commands. Unregisters the mailbox interrupt handler and cancels pending work queues.
+ *
+ * Return: 0 on success, -EBUSY if KCI is busy with active commands.
+ */
+int edgetpu_kci_disable(struct edgetpu_kci *etkci);
 
 /*
  * Notify the firmware about throttling and the corresponding power level.

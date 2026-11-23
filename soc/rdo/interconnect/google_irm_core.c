@@ -9,10 +9,11 @@
 #include <linux/spinlock.h>
 
 #include <dt-bindings/interconnect/google,icc.h>
+#include <interconnect/google_irm_api.h>
 #include <interconnect/interconnect-google.h>
-#include <mailbox/protocols/mba/cpm/common/service_ids.h>
+#include <mailbox/protocols/mba/apc/common/service_ids.h>
 
-#include "google_icc_internal.h"
+#include "google_icc_vote.h"
 #include "google_irm.h"
 #include "google_irm_debugfs.h"
 #include "google_irm_idx_internal.h"
@@ -53,7 +54,7 @@ static void irm_mbox_rx_process(struct irm_dev *irm_dev, u32 payload[])
 		if (payload[1] & BIT(idx)) {
 			client_id = irm_dev->client_map[idx];
 			client = &irm_dev->client[client_id];
-			if (client->type & GOOGLE_ICC_UPDATE_SYNC)
+			if (client->sync_type & GOOGLE_ICC_UPDATE_SYNC)
 				complete(&client->cpm_done);
 		}
 	}
@@ -75,7 +76,7 @@ static int irm_initialize_mailbox(struct device *dev, struct irm_mbox *mbox)
 	int ret;
 	struct irm_dev *irm_dev = container_of(mbox, struct irm_dev, mbox);
 
-	mbox->client = cpm_iface_request_client(dev, CPM_COMMON_LPCM_SERVICE,
+	mbox->client = cpm_iface_request_client(dev, APC_COMMON_SERVICE_ID_MIPM,
 						irm_mbox_rx_callback, irm_dev);
 	if (IS_ERR(mbox->client)) {
 		ret = PTR_ERR(mbox->client);
@@ -108,16 +109,14 @@ static inline int irm_dvfs_req_trig(struct irm_dev *irm_dev, struct irm_client *
 	/* write DVFS_TRIG_EN = 1 */
 	addr = client->base + DVFS_REQ_TRIG;
 	ret = regmap_write(irm_dev->regmap, addr, DVFS_TRIG_EN);
-
 	if (ret) {
 		dev_err(irm_dev->dev, "write [%u] failed, ret = %d\n", addr, ret);
-		goto out;
+		return ret;
 	}
 
 	trace_google_irm_event(TPS("irm vote write DVFS_TRIG_EN = 1"), goog_gtc_get_counter());
 
-out:
-	return ret;
+	return 0;
 }
 
 static u32 __clamp_value(u64 input, u32 max_val)
@@ -129,123 +128,142 @@ static u32 __clamp_value(u64 input, u32 max_val)
 	return result;
 }
 
-static void irm_vote_reg_write(struct irm_dev *irm_dev, u32 id, u32 irm_type,
-			       const struct icc_vote *vote)
+static int irm_vote_reg_write(struct irm_dev *irm_dev, u32 id,
+			      enum icc_type_id icc_type,
+			      const struct icc_vote *vote)
 {
 	const struct icc_vote_block *block_r = NULL, *block_w = NULL;
 	struct irm_client *client = &irm_dev->client[id];
 	u32 base, offset, addr, write_val;
-	size_t type;
 	int ret;
 
+	/* TODO: b/403584451 - delete this when things are settled */
+#if !IS_ENABLED(CONFIG_SOC_LGA)
+	if (WARN_ON_ONCE(icc_type == ICC_TYPE_GSLC)) {
+		dev_err(irm_dev->dev,
+			"No GSLC irm registers on this platform!");
+		return -EINVAL;
+	}
+#endif
+
 	base = client->base;
-	offset = (irm_type & IRM_TYPE_GSLC) ? GSLC_OFFSET : GMC_OFFSET;
+	offset = (icc_type == ICC_TYPE_GSLC) ? GSLC_OFFSET : GMC_OFFSET;
 
 	addr = base + DVFS_REQ_TRIG;
-	if (poll_until_zero(irm_dev, addr))
-		return;
-
-	type = (irm_type & IRM_TYPE_GSLC) ? ICC_TYPE_GSLC : ICC_TYPE_GMC;
+	ret = poll_until_zero(irm_dev, addr);
+	if (ret) {
+		dev_err(irm_dev->dev,
+			"Trig uncleared, skipping IRM write for client %d, icc_type %s\n", id,
+			(icc_type == ICC_TYPE_GSLC) ? "GSLC" : "GMC");
+		return ret;
+	}
 
 	/* write IRM settings */
-	block_r = &vote->block[type][ICC_READ];
-	block_w = &vote->block[type][ICC_WRITE];
+	block_r = &vote->block[icc_type][ICC_READ];
+	block_w = &vote->block[icc_type][ICC_WRITE];
 
 	/* read avg_bw */
-	addr = base + offset + DVFS_REQ_RD_BW_AVG;
+	addr = base + offset + DVFS_REQ_RD_BW_AVG_GMC;
 	write_val = __clamp_value(block_r->avg_bw, BW_MASK);
 	ret = regmap_write(irm_dev->regmap, addr, write_val);
-
 	if (ret) {
 		dev_err(irm_dev->dev, "write [%u] failed, ret = %d\n", addr, ret);
-		return;
+		return ret;
 	}
 
 	/* write avg_bw */
-	addr = base + offset + DVFS_REQ_WR_BW_AVG;
+	addr = base + offset + DVFS_REQ_WR_BW_AVG_GMC;
 	write_val = __clamp_value(block_w->avg_bw, BW_MASK);
 	ret = regmap_write(irm_dev->regmap, addr, write_val);
-
 	if (ret) {
 		dev_err(irm_dev->dev, "write [%u] failed, ret = %d\n", addr, ret);
-		return;
+		return ret;
 	}
 
 	/* read rt_bw */
-	addr = base + offset + DVFS_REQ_RD_BW_VCDIST;
+	addr = base + offset + DVFS_REQ_RD_BW_RT_GMC;
 	write_val = __clamp_value(block_r->rt_bw, BW_MASK);
 	ret = regmap_write(irm_dev->regmap, addr, write_val);
-
 	if (ret) {
 		dev_err(irm_dev->dev, "write [%u] failed, ret = %d\n", addr, ret);
-		return;
+		return ret;
 	}
 
 	/* write rt_bw */
-	addr = base + offset + DVFS_REQ_WR_BW_VCDIST;
+	addr = base + offset + DVFS_REQ_WR_BW_RT_GMC;
 	write_val = __clamp_value(block_w->rt_bw, BW_MASK);
 	ret = regmap_write(irm_dev->regmap, addr, write_val);
-
 	if (ret) {
 		dev_err(irm_dev->dev, "write [%u] failed, ret = %d\n", addr, ret);
-		return;
+		return ret;
 	}
 
 	/* read peak_bw */
-	addr = base + offset + DVFS_REQ_RD_BW_PEAK;
+	addr = base + offset + DVFS_REQ_RD_BW_PEAK_GMC;
 	write_val = __clamp_value(block_r->peak_bw, BW_MASK);
 	ret = regmap_write(irm_dev->regmap, addr, write_val);
-
 	if (ret) {
 		dev_err(irm_dev->dev, "write [%u] failed, ret = %d\n", addr, ret);
-		return;
+		return ret;
 	}
 
 	/* write peak_bw */
-	addr = base + offset + DVFS_REQ_WR_BW_PEAK;
+	addr = base + offset + DVFS_REQ_WR_BW_PEAK_GMC;
 	write_val = __clamp_value(block_w->peak_bw, BW_MASK);
 	ret = regmap_write(irm_dev->regmap, addr, write_val);
-
 	if (ret) {
 		dev_err(irm_dev->dev, "write [%u] failed, ret = %d\n", addr, ret);
-		return;
+		return ret;
 	}
 
 	/* read latency */
 	if (block_r->latency != U32_MAX) {
-		addr = base + offset + DVFS_REQ_LATENCY;
+		addr = base + offset + DVFS_REQ_LATENCY_GMC;
 		write_val = __clamp_value(block_r->latency, LATENCY_LTV_MAX_VAL);
 		ret = regmap_write(irm_dev->regmap, addr, write_val);
-
 		if (ret) {
 			dev_err(irm_dev->dev, "write [%u] failed, ret = %d\n", addr, ret);
-			return;
+			return ret;
 		}
 	}
 
 	/* read LTV */
-	if (irm_type & IRM_TYPE_GSLC) {
+	if (icc_type == ICC_TYPE_GSLC) {
 		if (block_r->ltv != U32_MAX) {
-			addr = base + offset + DVFS_REQ_LTV;
+			addr = base + offset + DVFS_REQ_MIN_CLAMP_GMC;
 			write_val = __clamp_value(block_r->ltv, LATENCY_LTV_MAX_VAL);
 			ret = regmap_write(irm_dev->regmap, addr, write_val);
-
 			if (ret) {
 				dev_err(irm_dev->dev, "write [%u] failed, ret = %d\n", addr, ret);
-				return;
+				return ret;
 			}
 		}
 	}
+
+	return 0;
 }
 
-void irm_vote_restore(struct irm_dev *irm_dev, u8 id)
+int irm_vote_commit(struct irm_dev *irm_dev, u8 id)
 {
+	int ret;
 	struct irm_client *client = &irm_dev->client[id];
 
-	irm_vote_reg_write(irm_dev, id, IRM_TYPE_GMC, &client->vote_backup);
-	irm_vote_reg_write(irm_dev, id, IRM_TYPE_GSLC, &client->vote_backup);
+	if (client->irm_type & IRM_TYPE_GMC) {
+		ret = irm_vote_reg_write(irm_dev, id, ICC_TYPE_GMC,
+					 &client->vote_backup);
+		if (ret)
+			return ret;
+	}
+#if IS_ENABLED(CONFIG_SOC_LGA)
+	if (client->irm_type & IRM_TYPE_GSLC) {
+		ret = irm_vote_reg_write(irm_dev, id, ICC_TYPE_GSLC,
+					 &client->vote_backup);
+		if (ret)
+			return ret;
+	}
+#endif
 
-	irm_dvfs_req_trig(irm_dev, client);
+	return irm_dvfs_req_trig(irm_dev, client);
 }
 
 static void irm_vote_save_block(struct icc_vote_block *backup_block,
@@ -265,29 +283,37 @@ static void irm_vote_save_block(struct icc_vote_block *backup_block,
 	}
 }
 
-static void irm_vote_save_type(struct irm_client *client, u32 irm_type,
+static void irm_vote_save_type(struct irm_client *client,
+			       enum icc_type_id icc_type,
 			       const struct icc_vote *vote)
 {
 	const struct icc_vote_block *block;
 	struct icc_vote_block *backup_block;
-	size_t type, rw;
-
-	type = (irm_type & IRM_TYPE_GSLC) ? ICC_TYPE_GSLC : ICC_TYPE_GMC;
+	size_t rw;
 
 	for (rw = ICC_READ; rw < NUM_ICC_RW; rw++) {
-		backup_block = &client->vote_backup.block[type][rw];
-		block = &vote->block[type][rw];
+		backup_block = &client->vote_backup.block[icc_type][rw];
+		block = &vote->block[icc_type][rw];
 		irm_vote_save_block(backup_block, block);
 	}
 }
 
-static void irm_vote_save(struct irm_dev *irm_dev, u32 id, u32 irm_type,
+static void irm_vote_save(struct irm_dev *irm_dev, u32 id, u32 _irm_type,
 			  const struct icc_vote *vote)
 {
-	if (irm_type & IRM_TYPE_GMC)
-		irm_vote_save_type(&irm_dev->client[id], IRM_TYPE_GMC, vote);
-	if (irm_type & IRM_TYPE_GSLC)
-		irm_vote_save_type(&irm_dev->client[id], IRM_TYPE_GSLC, vote);
+	struct irm_client *client = &irm_dev->client[id];
+
+	/*
+	 * Ideally, for consistency, irm_type should be configured in the Device Tree, mirroring
+	 * the configuration of sync_type. Currently, irm_type is configured by parameter attr in
+	 * _irm_vote(), which is staticly determined by DEFINE_GNODE().
+	 */
+	client->irm_type = _irm_type;
+
+	if (_irm_type & IRM_TYPE_GMC)
+		irm_vote_save_type(client, ICC_TYPE_GMC, vote);
+	if (_irm_type & IRM_TYPE_GSLC)
+		irm_vote_save_type(client, ICC_TYPE_GSLC, vote);
 }
 
 static int irm_vote_wait_for_cpm_ack(struct device *dev, struct irm_client *client, u32 id)
@@ -306,9 +332,10 @@ static int irm_vote_wait_for_cpm_ack(struct device *dev, struct irm_client *clie
 	return ret;
 }
 
-static int irm_vote(struct irm_dev *irm_dev, u32 attr, const struct icc_vote *vote)
+static int _irm_vote(struct irm_dev *irm_dev, u32 attr,
+		     const struct icc_vote *vote)
 {
-	u32 id, irm_type;
+	u32 id, _irm_type;
 	struct irm_dbg_client *dbg_client;
 	struct irm_client *client;
 	int ret = 0;
@@ -316,7 +343,7 @@ static int irm_vote(struct irm_dev *irm_dev, u32 attr, const struct icc_vote *vo
 	trace_google_irm_event(TPS("irm vote begin"), goog_gtc_get_counter());
 
 	id = attr & IRM_IDX_MASK;
-	irm_type = attr & IRM_GMC_GSLC_MASK;
+	_irm_type = attr & IRM_GMC_GSLC_MASK;
 
 	if (id >= IRM_IDX_NUM) {
 		dev_err(irm_dev->dev, "invalid IRM id %u\n", id);
@@ -329,34 +356,30 @@ static int irm_vote(struct irm_dev *irm_dev, u32 attr, const struct icc_vote *vo
 		goto out;
 	}
 
-	if (vote->prop == 0)
+	if (vote->vote_sync_type == 0)
 		goto out;
 
 	dbg_client = &irm_dev->dbg->client[id];
 	client = &irm_dev->client[id];
 
-	if (!(vote->prop & client->type)) {
+	if (!(vote->vote_sync_type & client->sync_type)) {
 		ret = -GOOGLE_ICC_ERR_INVALID_UPDATE_TYPE;
 		goto out;
 	}
 
 	mutex_lock(&client->mutex);
 
-	irm_vote_save(irm_dev, id, irm_type, vote);
+	irm_vote_save(irm_dev, id, _irm_type, vote);
 
 	if (!dbg_client->ctl) {
-		if (irm_type & IRM_TYPE_GMC)
-			irm_vote_reg_write(irm_dev, id, IRM_TYPE_GMC, vote);
-		if (irm_type & IRM_TYPE_GSLC)
-			irm_vote_reg_write(irm_dev, id, IRM_TYPE_GSLC, vote);
-
-		ret = irm_dvfs_req_trig(irm_dev, client);
+		ret = irm_vote_commit(irm_dev, id);
 		if (ret) {
-			dev_err(irm_dev->dev, "irm_dvfs_req_trig() failed: %d\n", ret);
+			dev_err(irm_dev->dev, "irm_vote_commit() failed: %d\n",
+				ret);
 			goto out_unlock;
 		}
 
-		if (vote->prop & GOOGLE_ICC_UPDATE_SYNC)
+		if (vote->vote_sync_type & GOOGLE_ICC_UPDATE_SYNC)
 			ret = irm_vote_wait_for_cpm_ack(irm_dev->dev, client, id);
 	}
 
@@ -369,7 +392,7 @@ out:
 }
 
 static struct irm_dev_ops __irm_dev_ops = {
-	.vote = irm_vote,
+	.irm_vote = _irm_vote,
 };
 
 u32 irm_register_read(struct device *dev, u32 client_idx, u32 reg_offset)
@@ -542,7 +565,7 @@ static int google_irm_platform_probe(struct platform_device *pdev)
 
 		index = NF_IRM_CLIENT_PROP * idx + IRM_CLIENT_PROP_TYPE;
 		ret = of_property_read_u32_index(np, "client-prop",
-						 index, &client->type);
+						 index, &client->sync_type);
 		if (ret) {
 			dev_err(dev, "Read %s property index %u failed, ret = %d\n",
 				"client-prop", index, ret);
@@ -599,15 +622,13 @@ static inline void irm_mbox_free(struct irm_mbox *mbox)
 	cpm_iface_free_client(mbox->client);
 }
 
-static int google_irm_platform_remove(struct platform_device *pdev)
+static void google_irm_platform_remove(struct platform_device *pdev)
 {
 	struct irm_dev *irm_dev = platform_get_drvdata(pdev);
 
 	irm_device = NULL;
 	irm_remove_debugfs(irm_dev);
 	irm_mbox_free(&irm_dev->mbox);
-
-	return 0;
 }
 
 static const struct of_device_id google_irm_of_match_table[] = {

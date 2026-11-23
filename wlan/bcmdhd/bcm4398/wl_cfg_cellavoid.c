@@ -1,7 +1,7 @@
 /*
  * Cellular channel avoidance implementation
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -80,6 +80,15 @@
 
 #define CSA_MAX_RETRY_CNT		20u
 
+#define UNII2C_132	132u
+#define UNII2C_136	136u
+#define UNII2C_140	140u
+#define UNII2C_144	144u
+#define IS_UNII2C_CHANNEL(channel)	((channel == UNII2C_132) || \
+	(channel == UNII2C_136) || \
+	(channel == UNII2C_140) || \
+	(channel == UNII2C_144))
+
 typedef enum cellavoid_ch_state {
 	CELLAVOID_STATE_CH_UNSAFE = 0,
 	CELLAVOID_STATE_CH_SAFE = 1
@@ -149,6 +158,37 @@ static int wl_cellavoid_restore_txpwrcap(struct bcm_cfg80211 *cfg,
 static void wl_cellavoid_do_csa_work(struct work_struct *work);
 static void wl_cellavoid_free_csa_info_list(wl_cellavoid_info_t *cellavoid_info);
 static int wl_cellavoid_set_cell_channels(struct bcm_cfg80211 *cfg, wl_cellavoid_param_t *param);
+
+bool
+wl_cellavoid_supported(struct bcm_cfg80211 *cfg)
+{
+	s32 err;
+	u8 buf_param[WLC_IOCTL_SMLEN] = {0};
+	u8 buf_resp[WLC_IOCTL_SMLEN] = {0};
+	bcm_iov_buf_t *iov_buf = (bcm_iov_buf_t *)buf_param;
+	bcm_iov_buf_t *iov_resp = NULL;
+	uint16 version = 0;
+
+	iov_buf->id = htod16(WL_CELL_AVOID_SUBCMD_VER);
+
+	err = wldev_iovar_getbuf(bcmcfg_to_prmry_ndev(cfg), "cellavoid",
+			iov_buf, sizeof(bcm_iov_buf_t), buf_resp, WLC_IOCTL_SMLEN, NULL);
+	if (err == BCME_UNSUPPORTED) {
+		WL_ERR(("get ver failed, err %d\n", err));
+		return FALSE;
+	}
+	iov_resp = (bcm_iov_buf_t *)buf_resp;
+	version = *(uint16 *)iov_resp->data;
+	if (version != WL_CELL_AVOID_IOV_VERSION_1) {
+		WL_ERR(("version mismatch, version present:%d expected %d\n",
+				version, WL_CELL_AVOID_IOV_VERSION_1));
+		return FALSE;
+	}
+
+	cfg->cfg80211_features |= CFG80211_FEAT_LTE_CHANAVOID;
+	WL_INFORM_MEM(("ver %d\n", version));
+	return TRUE;
+}
 
 /* Initialize context */
 int
@@ -309,6 +349,10 @@ wl_cellavoid_free_csa_info(void *cai, struct net_device *ndev)
 	wl_cellavoid_csa_info_t *csa_info, *next;
 	wl_cellavoid_info_t *cellavoid_info = cai;
 
+	if (!cellavoid_info) {
+		return;
+	}
+
 	GCC_DIAGNOSTIC_PUSH_SUPPRESS_CAST();
 	list_for_each_entry_safe(csa_info, next, &cellavoid_info->csa_info_list, list) {
 		GCC_DIAGNOSTIC_POP();
@@ -385,6 +429,9 @@ wl_cellavoid_do_csa_work(struct work_struct *work)
 	GCC_DIAGNOSTIC_POP();
 
 	cellavoid_info = cfg->cellavoid_info;
+	if (!cellavoid_info) {
+		return;
+	}
 
 	mutex_lock(&cellavoid_info->sync);
 
@@ -544,41 +591,12 @@ wl_cellavoid_get_chan_info(wl_cellavoid_info_t *cellavoid_info, chanspec_t chans
 	return CELLAVOID_STATE_CH_SAFE;
 }
 
-static cellavoid_ch_state_t
-wl_cellavoid_get_chan_info_overlap(wl_cellavoid_info_t *cellavoid_info, chanspec_t chanspec)
-{
-	wl_cellavoid_chan_info_t *chan_info, *next;
-
-	GCC_DIAGNOSTIC_PUSH_SUPPRESS_CAST();
-	list_for_each_entry_safe(chan_info, next, &cellavoid_info->cell_chan_info_list, list) {
-		GCC_DIAGNOSTIC_POP();
-		if (wf_chspec_overlap(chan_info->chanspec, chanspec)) {
-			return CELLAVOID_STATE_CH_UNSAFE;
-		}
-	}
-
-	return CELLAVOID_STATE_CH_SAFE;
-}
-
 bool
 wl_cellavoid_is_safe(void *cai, chanspec_t chanspec)
 {
 	wl_cellavoid_info_t *cellavoid_info = cai;
 
 	if (wl_cellavoid_get_chan_info(cellavoid_info, chanspec) == CELLAVOID_STATE_CH_UNSAFE) {
-		return FALSE;
-	} else {
-		return TRUE;
-	}
-}
-
-bool
-wl_cellavoid_is_safe_overlap(void *cai, chanspec_t chanspec)
-{
-	wl_cellavoid_info_t *cellavoid_info = cai;
-
-	if (wl_cellavoid_get_chan_info_overlap(cellavoid_info, chanspec)
-			== CELLAVOID_STATE_CH_UNSAFE) {
 		return FALSE;
 	} else {
 		return TRUE;
@@ -603,6 +621,11 @@ wl_cellavoid_mandatory_isset(void *cai, enum nl80211_iftype type)
 				mandatory = TRUE;
 			}
 			break;
+		case NL80211_IFTYPE_NAN:
+			if (cellavoid_info->mandatory_flag & WL_CELL_AVOID_NAN) {
+				mandatory = TRUE;
+			}
+			break;
 
 		default:
 			break;
@@ -611,21 +634,23 @@ wl_cellavoid_mandatory_isset(void *cai, enum nl80211_iftype type)
 }
 
 wifi_interface_mode
-wl_cellavoid_mandatory_to_usable_channel_filter(void *cai)
+wl_cellavoid_mandatory_to_usable_channel_filter(void *cai, chanspec_t chanspec)
 {
 	wifi_interface_mode mode = 0;
 	wl_cellavoid_info_t *cellavoid_info = cai;
-
-	if (cellavoid_info->mandatory_flag & WL_CELL_AVOID_WIFI_DIRECT) {
-		mode |= ((1U << WIFI_INTERFACE_P2P_GO) | (1U << WIFI_INTERFACE_P2P_CLIENT));
+	mutex_lock(&cellavoid_info->sync);
+	if (!wl_cellavoid_is_safe(cellavoid_info, chanspec)) {
+		if (cellavoid_info->mandatory_flag & WL_CELL_AVOID_WIFI_DIRECT) {
+			mode |= ((1U << WIFI_INTERFACE_P2P_GO) | (1U << WIFI_INTERFACE_P2P_CLIENT));
+		}
+		if (cellavoid_info->mandatory_flag & WL_CELL_AVOID_SOFTAP) {
+			mode |= (1U << WIFI_INTERFACE_SOFTAP);
+		}
+		if (cellavoid_info->mandatory_flag & WL_CELL_AVOID_NAN) {
+			mode |= (1U << WIFI_INTERFACE_NAN);
+		}
 	}
-	if (cellavoid_info->mandatory_flag & WL_CELL_AVOID_SOFTAP) {
-		mode |= (1U << WIFI_INTERFACE_SOFTAP);
-	}
-	if (cellavoid_info->mandatory_flag & WL_CELL_AVOID_NAN) {
-		mode |= (1U << WIFI_INTERFACE_NAN);
-	}
-
+	mutex_unlock(&cellavoid_info->sync);
 	return mode;
 }
 
@@ -715,9 +740,10 @@ wl_cellavoid_sort_chan_info_list(wl_cellavoid_info_t *cellavoid_info)
 /* Dump function, shows chanspec/pwrcap item both in the unsafe channel list (cellular channel list)
  * and safe channel list (avail channel list)
  */
-static void
-wl_cellavoid_dump_chan_info_list(wl_cellavoid_info_t *cellavoid_info)
+void
+wl_cellavoid_dump_chan_info_list(struct bcm_cfg80211 *cfg)
 {
+	wl_cellavoid_info_t *cellavoid_info = cfg->cellavoid_info;
 	wl_cellavoid_chan_info_t *chan_info, *next;
 	char chanspec_str[CHANSPEC_STR_LEN];
 
@@ -725,7 +751,7 @@ wl_cellavoid_dump_chan_info_list(wl_cellavoid_info_t *cellavoid_info)
 	list_for_each_entry_safe(chan_info, next, &cellavoid_info->cell_chan_info_list, list) {
 		GCC_DIAGNOSTIC_POP();
 		wf_chspec_ntoa(chan_info->chanspec, chanspec_str);
-		WL_MEM(("Cellular : chanspec %s(%x), pwrcap %d\n",
+		WL_INFORM_MEM(("Cellular : chanspec %s(%x), pwrcap %d\n",
 			chanspec_str, chan_info->chanspec, chan_info->pwr_cap));
 	}
 
@@ -733,7 +759,7 @@ wl_cellavoid_dump_chan_info_list(wl_cellavoid_info_t *cellavoid_info)
 	list_for_each_entry_safe(chan_info, next, &cellavoid_info->avail_chan_info_list, list) {
 		GCC_DIAGNOSTIC_POP();
 		wf_chspec_ntoa(chan_info->chanspec, chanspec_str);
-		WL_MEM(("Avail : chanspec %s(%x), pwrcap %d\n",
+		WL_INFORM_MEM(("Avail : chanspec %s(%x), pwrcap %d\n",
 			chanspec_str, chan_info->chanspec, chan_info->pwr_cap));
 	}
 
@@ -768,7 +794,7 @@ wl_cellavoid_alloc_avail_chan_list_band(wl_cellavoid_info_t *cellavoid_info,
 	struct ieee80211_channel *channel;
 	wl_cellavoid_chan_info_t *chan_info = NULL;
 	int i, j;
-	uint16 bandwidth[] = {WL_CHANSPEC_BW_40, WL_CHANSPEC_BW_80};
+	uint16 bandwidth[] = {WL_CHANSPEC_BW_40, WL_CHANSPEC_BW_80, WL_CHANSPEC_BW_160};
 	uint8 ctlchan;
 	chanspec_band_t band;
 	chanspec_t chanspec = INVCHANSPEC;
@@ -799,6 +825,11 @@ wl_cellavoid_alloc_avail_chan_list_band(wl_cellavoid_info_t *cellavoid_info,
 			band = CHSPEC_BAND(chan_info->chanspec);
 			ASSERT(band == WL_CHANSPEC_BAND_5G);
 			for (j = 0; j < (sizeof(bandwidth) / sizeof(uint16)); j++) {
+				/* UNII-2C channels can use upto 80MHz BW */
+				if (IS_UNII2C_CHANNEL(ctlchan) &&
+					(bandwidth[j] == WL_CHANSPEC_BW_160)) {
+					continue;
+				}
 #ifdef WL_BW320MHZ
 				chanspec = wf_create_chspec_from_primary(ctlchan,
 					bandwidth[j], band, 0);
@@ -1056,6 +1087,7 @@ wl_cellavoid_apply_txpwrcap(struct bcm_cfg80211 *cfg, wl_cellavoid_info_t *cella
 		WL_ERR(("fail to set txpwrcap ret : %d\n", ret));
 	}
 
+	MFREE(cfg->osh, iov_buf, total_size);
 	return ret;
 }
 
@@ -1142,6 +1174,13 @@ wl_cellavoid_find_chinfo_sameband(wl_cellavoid_info_t *cellavoid_info,
 	GCC_DIAGNOSTIC_PUSH_SUPPRESS_CAST();
 	list_for_each_entry_safe(chan_info, next, &cellavoid_info->avail_chan_info_list, list) {
 		GCC_DIAGNOSTIC_POP();
+
+		/* Skip 5G bw160 channels */
+		if (CHSPEC_IS5G(chan_info->chanspec) &&
+			(CHSPEC_BW(chan_info->chanspec) == WL_CHANSPEC_BW_160)) {
+			continue;
+		}
+
 		if (CHSPEC_TO_WLC_BAND(chan_info->chanspec) ==
 			CHSPEC_TO_WLC_BAND(chanspec)) {
 			ret = chan_info;
@@ -1156,13 +1195,20 @@ wl_cellavoid_find_chinfo_sameband(wl_cellavoid_info_t *cellavoid_info,
 		goto exit;
 	}
 
-	/* If it's not found and mandatory flag is zero,
+	/* If it's not found and mandatory flag is zeo,
 	 * Find the current chanspec from cellular channel list(unsafe list)
 	 * This is to reduce the number of channel switch trial
 	 */
 	GCC_DIAGNOSTIC_PUSH_SUPPRESS_CAST();
 	list_for_each_entry_safe(chan_info, next, &cellavoid_info->cell_chan_info_list, list) {
 		GCC_DIAGNOSTIC_POP();
+
+		/* Skip 5G bw160 channels */
+		if (CHSPEC_IS5G(chan_info->chanspec) &&
+			(CHSPEC_BW(chan_info->chanspec) == WL_CHANSPEC_BW_160)) {
+			continue;
+		}
+
 		if (chan_info->chanspec == chanspec) {
 			ret = chan_info;
 			WL_INFORM_MEM(("chanspec %x found in cellular list\n",
@@ -1195,20 +1241,22 @@ wl_cellavoid_find_chinfo_fromchspec(wl_cellavoid_info_t *cellavoid_info,
 	GCC_DIAGNOSTIC_PUSH_SUPPRESS_CAST();
 	list_for_each_entry_safe(chan_info, next, &cellavoid_info->avail_chan_info_list, list) {
 		GCC_DIAGNOSTIC_POP();
+
+		/* Skip 5G bw160 channels */
+		if (CHSPEC_IS5G(chan_info->chanspec) &&
+			(CHSPEC_BW(chan_info->chanspec) == WL_CHANSPEC_BW_160)) {
+			continue;
+		}
+
 		/* List is always sorted to come wide bw comes first,
 		 * so the first one is the widest one
 		 */
 		if (wf_chspec_ctlchan(chan_info->chanspec) == wf_chspec_ctlchan(chanspec)) {
-			/* check the overlap for 5G band only */
-			if (CHSPEC_IS2G(chan_info->chanspec) ||
-					wl_cellavoid_is_safe_overlap(cellavoid_info,
-					chan_info->chanspec)) {
-				ret = chan_info;
-				WL_INFORM_MEM(("ctrl channel %d (0x%x) found in avail list\n",
-					wf_chspec_ctlchan(chan_info->chanspec),
-					chan_info->chanspec));
-				goto exit;
-			}
+			ret = chan_info;
+			WL_INFORM_MEM(("ctrl channel %d (0x%x) found in avail list\n",
+				wf_chspec_ctlchan(chan_info->chanspec),
+				chan_info->chanspec));
+			goto exit;
 		}
 	}
 
@@ -1231,6 +1279,13 @@ wl_cellavoid_find_chinfo_fromchspec(wl_cellavoid_info_t *cellavoid_info,
 	GCC_DIAGNOSTIC_PUSH_SUPPRESS_CAST();
 	list_for_each_entry_safe(chan_info, next, &cellavoid_info->cell_chan_info_list, list) {
 		GCC_DIAGNOSTIC_POP();
+
+		/* Skip 5G bw160 channels */
+		if (CHSPEC_IS5G(chan_info->chanspec) &&
+			(CHSPEC_BW(chan_info->chanspec) == WL_CHANSPEC_BW_160)) {
+			continue;
+		}
+
 		/* List is always sorted to come wide bw comes first,
 		 * so the first one is the widest one
 		 */
@@ -1260,6 +1315,13 @@ wl_cellavoid_find_chinfo_fromband(wl_cellavoid_info_t *cellavoid_info, int band)
 	GCC_DIAGNOSTIC_PUSH_SUPPRESS_CAST();
 	list_for_each_entry_safe(chan_info, next, &cellavoid_info->avail_chan_info_list, list) {
 		GCC_DIAGNOSTIC_POP();
+
+		/* Skip 5G bw160 channels */
+		if (CHSPEC_IS5G(chan_info->chanspec) &&
+			(CHSPEC_BW(chan_info->chanspec) == WL_CHANSPEC_BW_160)) {
+			continue;
+		}
+
 		if (CHSPEC_TO_WLC_BAND(chan_info->chanspec) == band) {
 			ret = chan_info;
 			WL_INFORM_MEM(("chanspec %x found in avail list\n", chan_info->chanspec));
@@ -1273,12 +1335,19 @@ wl_cellavoid_find_chinfo_fromband(wl_cellavoid_info_t *cellavoid_info, int band)
 		goto exit;
 	}
 
-	/* If it's not found and mandatory flag is zeo,
+	/* If it's not found and mandatory flag is zero,
 	 * pick up the chanspec from cellular channel list(unsafe list)
 	 */
 	GCC_DIAGNOSTIC_PUSH_SUPPRESS_CAST();
 	list_for_each_entry_safe(chan_info, next, &cellavoid_info->cell_chan_info_list, list) {
 		GCC_DIAGNOSTIC_POP();
+
+		/* Skip 5G bw160 channels */
+		if (CHSPEC_IS5G(chan_info->chanspec) &&
+			(CHSPEC_BW(chan_info->chanspec) == WL_CHANSPEC_BW_160)) {
+			continue;
+		}
+
 		if (CHSPEC_TO_WLC_BAND(chan_info->chanspec) == band) {
 			ret = chan_info;
 			WL_INFORM_MEM(("chanspec %x found in cellular list\n",
@@ -1331,7 +1400,7 @@ wl_cellavoid_find_widechspec_fromchspec(void *cai, chanspec_t chanspec, struct n
 
 static wl_cellavoid_chan_info_t *
 wl_cellavoid_find_ap_chan_info(struct bcm_cfg80211 *cfg, struct net_device *ndev,
-	chanspec_t ap_chspec, u8 ap_cnt, int* csa_target_band)
+	chanspec_t ap_chspec, u8 ap_cnt, int *csa_target_band)
 {
 	wl_cellavoid_info_t *cai = cfg->cellavoid_info;
 	int i, ap_band, sta_band = WLC_BAND_INVALID;
@@ -1376,11 +1445,13 @@ wl_cellavoid_find_ap_chan_info(struct bcm_cfg80211 *cfg, struct net_device *ndev
 		mlo_sta = TRUE;
 		(void)memset_s(sta_chanspecs, sizeof(sta_chanspecs),
 			INVCHANSPEC, sizeof(sta_chanspecs));
+
 		for (i = 0; i < mld_netinfo->mlinfo.num_links; i++) {
 			/* Go through STA links and retrieve band+channel information */
 			sta_chspec = mld_netinfo->mlinfo.links[i].chspec;
 			sta_bands |= sta_band = CHSPEC_TO_WLC_BAND(CHSPEC_BAND(sta_chspec));
 			sta_chanspecs[sta_band] = sta_chspec;
+
 			if (mld_netinfo->mlinfo.links[i].link_idx == 0) {
 				WL_INFORM_MEM(("mlo_sta primary chanspec 0x%x\n", sta_chspec));
 			} else {
@@ -1393,7 +1464,7 @@ wl_cellavoid_find_ap_chan_info(struct bcm_cfg80211 *cfg, struct net_device *ndev
 		sta_chspec = wl_cfg80211_get_sta_chanspec(cfg);
 		if (sta_chspec) {
 			WL_INFORM_MEM(("sta chanspec 0x%x\n", sta_chspec));
-				sta_band = CHSPEC_TO_WLC_BAND(sta_chspec);
+			sta_band = CHSPEC_TO_WLC_BAND(sta_chspec);
 		}
 	}
 
@@ -1418,16 +1489,16 @@ wl_cellavoid_find_ap_chan_info(struct bcm_cfg80211 *cfg, struct net_device *ndev
 			if ((sta_bands & csa_band) && (wf_chspec_valid(sta_chanspecs[csa_band]))) {
 				/* Check if AP can move to the another mlo link */
 				WL_INFORM_MEM(("Try ap/mlo_sta scc on csa_band(%d), "
-					"sta_chanspec 0x%x\n",
-					csa_band, sta_chanspecs[csa_band]));
+						"sta_chanspec 0x%x\n",
+						csa_band, sta_chanspecs[csa_band]));
 				chan_info = wl_cellavoid_find_chinfo_fromchspec(cai,
 						sta_chanspecs[csa_band], ndev);
 			} else {
 				/* No STA in csa_band */
 				WL_INFORM_MEM(("Try finding a channel on csa_band(%d)\n",
-						csa_band));
+					csa_band));
 				chan_info = wl_cellavoid_find_chinfo_fromband(cai,
-						csa_band);
+					csa_band);
 			}
 		}
 	} else
@@ -1436,10 +1507,10 @@ wl_cellavoid_find_ap_chan_info(struct bcm_cfg80211 *cfg, struct net_device *ndev
 		/* Same band CSA first */
 		if (csa_band & ap_band) {
 			if (sta_band == ap_band) {
-				/* SCC in this core */
-				WL_INFORM_MEM(("STA in the same core, band %d\n", sta_band));
-				chan_info = wl_cellavoid_find_chinfo_fromchspec(cai,
-						sta_chspec, ndev);
+			/* SCC in this core */
+			WL_INFORM_MEM(("STA in the same core, band %d\n", sta_band));
+			chan_info = wl_cellavoid_find_chinfo_fromchspec(cai,
+					sta_chspec, ndev);
 			} else {
 				/* No STA in this core */
 				WL_INFORM_MEM(("No STA in the same core, band %d\n",
@@ -1454,12 +1525,12 @@ wl_cellavoid_find_ap_chan_info(struct bcm_cfg80211 *cfg, struct net_device *ndev
 		if (chan_info == NULL && csa_band != 0) {
 			if (csa_band == sta_band) {
 				/* STA in the another core,
-				 * so check STA chanspec is available to use Skip DFS case
-				 */
+				* so check STA chanspec is available to use Skip DFS case
+				*/
 				WL_INFORM_MEM(("STA in the another core. band %d\n", csa_band));
 				if (!wl_is_chanspec_restricted(cfg, sta_chspec)) {
 					chan_info = wl_cellavoid_find_chinfo_fromchspec(cai,
-						sta_chspec, ndev);
+							sta_chspec, ndev);
 				}
 			} else {
 				/* No STA in another core */
@@ -1475,6 +1546,12 @@ wl_cellavoid_find_ap_chan_info(struct bcm_cfg80211 *cfg, struct net_device *ndev
 		/* Update csa_target_band */
 		*csa_target_band = CHSPEC_TO_WLC_BAND(chan_info->chanspec);
 	}
+#ifdef WL_CELLULAR_CHAN_AVOID_DUMP
+	else {
+		WL_ERR(("No channel found. dump safe/avail list:\n"));
+		wl_cellavoid_dump_chan_info_list(cfg);
+	}
+#endif /* WL_CELLULAR_CHAN_AVOID_DUMP */
 
 	return chan_info;
 }
@@ -1508,7 +1585,11 @@ wl_cellavoid_handle_apsta_concurrency(struct bcm_cfg80211 *cfg)
 	}
 
 	/* Check whether AP and STA is already operational */
-	wl_get_ap_chanspecs(cfg, &ap_oper_data);
+	ret = wl_get_ap_chanspecs(cfg, &ap_oper_data);
+	if (ret != BCME_OK) {
+		WL_ERR(("Failed to get ap chanspec, ret: %d\n", ret));
+		return ret;
+	}
 
 	(void)memset_s(ap_chanspecs, sizeof(ap_chanspecs),
 		INVCHANSPEC, sizeof(ap_chanspecs));
@@ -1570,15 +1651,20 @@ wl_cellavoid_handle_apsta_concurrency(struct bcm_cfg80211 *cfg)
 			} else {
 				WL_INFORM_MEM(("AP %s is not allowed to work, cur chanspec %x\n",
 					ndev->name, ap_chspec));
-
-				if ((bssidx = wl_get_bssidx_by_wdev(cfg,
-						ndev->ieee80211_ptr)) < 0) {
+				bssidx = wl_get_bssidx_by_wdev(cfg,
+						ndev->ieee80211_ptr);
+				if (bssidx < 0) {
 					WL_ERR(("find bss index from wdev(%p) failed\n",
 						ndev->ieee80211_ptr));
 				} else {
 					WL_INFORM_MEM(("AP %s down to prevent beaconing\n",
 						ndev->name));
 					wl_cfg80211_bss_up(cfg, ndev, bssidx, 0);
+
+					if (delayed_work_pending(&cfg->ap_work)) {
+						dhd_cancel_delayed_work_sync(&cfg->ap_work);
+						WL_DBG(("cancelled ap_work\n"));
+					}
 				}
 			}
 		}
@@ -1711,11 +1797,13 @@ wl_cellavoid_set_cell_channels(struct bcm_cfg80211 *cfg, wl_cellavoid_param_t *p
 		param_band = param->chan_param[i].chspec_band;
 		param_bw = param->chan_param[i].chspec_bw;
 
+#ifdef CELLAVOID_LIMIT_TXPWRCAP_BW160
 		if (wf_valid_160MHz_center_chan(param_ch, param_band)) {
 			WL_INFORM_MEM(("160MHz channel is not supported ch : %d band %x\n",
 				param_ch, param_band));
 			continue;
 		}
+#endif /* CELLAVOID_LIMIT_TXPWRCAP_BW160 */
 
 		bzero(chspecs, sizeof(chspecs));
 
@@ -1732,6 +1820,7 @@ wl_cellavoid_set_cell_channels(struct bcm_cfg80211 *cfg, wl_cellavoid_param_t *p
 				WL_ERR(("invalid chanspec\n"));
 				continue;
 			}
+
 			/* Find chanspecs in the safe channel list(avail channel list)
 			 * If the chanspec exists, detach the channel item
 			 * from the safe channel list(avail channel list)
@@ -1755,7 +1844,7 @@ wl_cellavoid_set_cell_channels(struct bcm_cfg80211 *cfg, wl_cellavoid_param_t *p
 	wl_cellavoid_sort_chan_info_list(cellavoid_info);
 
 #ifdef WL_CELLULAR_CHAN_AVOID_DUMP
-	wl_cellavoid_dump_chan_info_list(cellavoid_info);
+	wl_cellavoid_dump_chan_info_list(cfg);
 #endif /* WL_CELLULAR_CHAN_AVOID_DUMP */
 
 	/* Perform actions needs to be done (AP->CSA)
@@ -1832,6 +1921,8 @@ wl_cfgvendor_cellavoid_set_cell_channels(struct wiphy *wiphy,
 	wl_cellavoid_chan_param_t* cur_chan_param = NULL;
 	const struct nlattr *iter, *iter1, *iter2;
 	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
+	u8 chan_cnt = 0;
+	u32 malloc_size = 0;
 
 	BCM_REFERENCE(wdev);
 
@@ -1845,13 +1936,24 @@ wl_cfgvendor_cellavoid_set_cell_channels(struct wiphy *wiphy,
 		type = nla_type(iter);
 		switch (type) {
 		case CELLAVOID_ATTRIBUTE_CNT:
-			param.chan_cnt = nla_get_u8(iter);
-			if (param.chan_cnt > CELLAVOID_MAX_CH) {
+			chan_cnt = nla_get_u8(iter);
+			if (chan_cnt > CELLAVOID_MAX_CH) {
 				err = -EINVAL;
 				goto exit;
 			}
+			break;
+		case CELLAVOID_ATTRIBUTE_MANDATORY:
+			param.mandatory = nla_get_u32(iter);
+			break;
+		case CELLAVOID_ATTRIBUTE_CONFIG:
+			if (!chan_cnt || (chan_cnt > CELLAVOID_MAX_CH)) {
+				err = -EINVAL;
+				goto exit;
+			}
+			malloc_size = chan_cnt * sizeof(wl_cellavoid_chan_param_t);
+			param.chan_cnt = chan_cnt;
 			param.chan_param = (wl_cellavoid_chan_param_t *)MALLOCZ(cfg->osh,
-					sizeof(wl_cellavoid_chan_param_t) * param.chan_cnt);
+				malloc_size);
 			if (param.chan_param == NULL) {
 				WL_ERR(("failed to allocate target param for (%d)\n",
 					param.chan_cnt));
@@ -1859,20 +1961,10 @@ wl_cfgvendor_cellavoid_set_cell_channels(struct wiphy *wiphy,
 				goto exit;
 			}
 
-			break;
-		case CELLAVOID_ATTRIBUTE_MANDATORY:
-			param.mandatory = nla_get_u32(iter);
-			break;
-		case CELLAVOID_ATTRIBUTE_CONFIG:
-			if (param.chan_param == NULL) {
-				WL_ERR(("chan_param is NULL (%d)\n", param.chan_cnt));
-				err = -ENOMEM;
-				goto exit;
-			}
 			cur_chan_param = param.chan_param;
 			nla_for_each_nested(iter1, iter, rem1) {
-				if ((uint8 *)cur_chan_param >= ((uint8 *)param.chan_param +
-					sizeof(wl_cellavoid_chan_param_t) * param.chan_cnt)) {
+				if ((uint8 *)cur_chan_param >=
+					((uint8 *)param.chan_param + malloc_size)) {
 					WL_ERR(("increased addr is over its max size\n"));
 					err = -EINVAL;
 					goto exit;
@@ -1880,23 +1972,23 @@ wl_cfgvendor_cellavoid_set_cell_channels(struct wiphy *wiphy,
 				nla_for_each_nested(iter2, iter1, rem2) {
 					type = nla_type(iter2);
 					switch (type) {
-						case CELLAVOID_ATTRIBUTE_BAND:
-							cur_chan_param->band = nla_get_u32(iter2);
-							break;
-						case CELLAVOID_ATTRIBUTE_CHANNEL:
-							cur_chan_param->center_channel =
-								nla_get_u32(iter2);
-							break;
-						case CELLAVOID_ATTRIBUTE_PWRCAP:
-							err = wl_cellavoid_is_pwrcap_valid(cfg,
-								nla_get_u32(iter2), &pwrcap);
-							if (err == BCME_OK) {
-								cur_chan_param->pwr_cap = pwrcap;
-							} else {
-								WL_ERR(("pwr_cap is not valid\n"));
-								goto exit;
-							}
-							break;
+					case CELLAVOID_ATTRIBUTE_BAND:
+						cur_chan_param->band = nla_get_u32(iter2);
+						break;
+					case CELLAVOID_ATTRIBUTE_CHANNEL:
+						cur_chan_param->center_channel =
+							nla_get_u32(iter2);
+						break;
+					case CELLAVOID_ATTRIBUTE_PWRCAP:
+						err = wl_cellavoid_is_pwrcap_valid(cfg,
+							nla_get_u32(iter2), &pwrcap);
+						if (err == BCME_OK) {
+							cur_chan_param->pwr_cap = pwrcap;
+						} else {
+							WL_ERR(("pwr_cap is not valid\n"));
+							goto exit;
+						}
+						break;
 					}
 				}
 				WL_DBG_MEM(("CELLAVOID PARAM - BAND:%d CHAN:%d PWR_CAP:%d\n",
@@ -1922,8 +2014,7 @@ wl_cfgvendor_cellavoid_set_cell_channels(struct wiphy *wiphy,
 exit:
 	/* free the config param table */
 	if (param.chan_param) {
-		MFREE(cfg->osh, param.chan_param,
-			sizeof(wl_cellavoid_chan_param_t) * param.chan_cnt);
+		MFREE(cfg->osh, param.chan_param, malloc_size);
 	}
 	return err;
 }

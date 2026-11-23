@@ -158,7 +158,6 @@ static ssize_t google_eusb2_dump_all_registers(struct file *file, char __user *u
 static const struct file_operations dump_all_registers_on_fops = {
 	.read	= google_eusb2_dump_all_registers,
 	.open	= simple_open,
-	.llseek	= no_llseek,
 };
 #endif
 
@@ -365,6 +364,27 @@ static int google_eusb2_repeater_role_switch_set(struct usb_role_switch *sw, enu
 
 }
 
+static void google_eusb2_repeater_set_default_role(struct google_eusb2_repeater_plat *chip)
+{
+	enum usb_role role;
+	const char *str;
+	int ret;
+
+	ret = device_property_read_string(chip->dev, "role-switch-default-mode", &str);
+	if (ret < 0)
+		return;
+
+	if (strcmp(str, "host") == 0)
+		role = USB_ROLE_HOST;
+	else if (strcmp(str, "device") == 0)
+		role = USB_ROLE_DEVICE;
+	else
+		role = USB_ROLE_NONE;
+
+	dev_info(chip->dev, "%s: %s\n", __func__, usb_role_string(role));
+	google_eusb2_repeater_role_switch_set(chip->role_sw, role);
+}
+
 static int google_eusb2_repeater_setup_role_switch(struct google_eusb2_repeater_plat *chip)
 {
 	struct usb_role_switch_desc eusb_role_switch = {0};
@@ -374,8 +394,11 @@ static int google_eusb2_repeater_setup_role_switch(struct google_eusb2_repeater_
 	eusb_role_switch.driver_data = chip;
 	eusb_role_switch.allow_userspace_control = true;
 	chip->role_sw = usb_role_switch_register(chip->dev, &eusb_role_switch);
+	if (IS_ERR_OR_NULL(chip->role_sw))
+		return PTR_ERR_OR_ZERO(chip->role_sw);
 
-	return PTR_ERR_OR_ZERO(chip->role_sw);
+	google_eusb2_repeater_set_default_role(chip);
+	return 0;
 }
 
 static int google_eusb2_repeater_setup_regulator_volt(struct google_eusb2_repeater_plat *chip,

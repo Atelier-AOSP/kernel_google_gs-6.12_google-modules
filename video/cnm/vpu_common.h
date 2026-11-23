@@ -11,5 +11,6 @@
 #include "vpu_priv.h"
 
 void vpu_update_system_state(struct vpu_core *core);
+void vpu_send_fw_cmd_locked(struct vpu_core *core, const struct vpu_fw_cmd *fw_cmd);
 
 #endif

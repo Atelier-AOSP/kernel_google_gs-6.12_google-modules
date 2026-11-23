@@ -67,7 +67,7 @@ typedef enum _WRAP_EXT_MEM_TYPE_
 	WRAP_TYPE_NULL = 0,
 	WRAP_TYPE_GET_USER_PAGES,
 #if defined(SUPPORT_LINUX_WRAP_EXTMEM_PAGE_TABLE_WALK)
-	WRAP_TYPE_FIND_VMA
+	WRAP_TYPE_FIND_PHYS_FROM_VIRT
 #endif
 } WRAP_EXT_MEM_TYPE;
 
@@ -97,13 +97,5 @@ typedef struct _PMR_WRAP_DATA_
 	IMG_BOOL bWrite;
 
 } PMR_WRAP_DATA;
-
-#if defined(SUPPORT_LINUX_WRAP_EXTMEM_PAGE_TABLE_WALK)
-/* Find the VMA to a given CPU virtual address and do a
- * page table walk to find the corresponding pfns */
-PVRSRV_ERROR _TryFindVMA(IMG_DEVMEM_SIZE_T uiSize,
-                            uintptr_t pvCpuVAddr,
-                            PMR_WRAP_DATA *psPrivData);
-#endif
 
 #endif /* SRVSRV_PHYSMEM_EXTEMEM_WRAP_H */

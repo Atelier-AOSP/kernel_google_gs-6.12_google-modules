@@ -88,9 +88,16 @@ extern "C" {
 #define DRM_FORMAT_MOD_VS_DEC_TILE_4X4 0x33
 #define DRM_FORMAT_MOD_VS_DEC_TILE_8X8_UNIT2X2 0x34
 #define DRM_FORMAT_MOD_VS_DEC_TILE_8X4_UNIT2X2 0x35
+#define DRM_FORMAT_MOD_VS_DEC_TILE_8X8_SUPERTILE_X 0x36
+#define DRM_FORMAT_MOD_VS_DEC_TILE_32X8_YUVSP8X8 0x37
+#define DRM_FORMAT_MOD_VS_DEC_TILE_32X4_YUVSP8X8 0x38
+#define DRM_FORMAT_MOD_VS_DEC_TILE_16X8_YUVSP8X8 0x39
+#define DRM_FORMAT_MOD_VS_DEC_TILE_16X4_YUVSP8X8 0x3A
 
-#define DRM_FORMAT_MOD_VS_DEC_ALIGN_32 (0x01 << 6)
-#define DRM_FORMAT_MOD_VS_DEC_ALIGN_64 (0x01 << 7)
+#define DRM_FORMAT_MOD_VS_DEC_ALIGN_SHIFT 6
+#define DRM_FORMAT_MOD_VS_DEC_ALIGN_MASK ((__u64)0x03 << 6)
+#define DRM_FORMAT_MOD_VS_DEC_ALIGN_32 0x00
+#define DRM_FORMAT_MOD_VS_DEC_ALIGN_64 0x01
 
 #define DRM_FORMAT_MOD_VS_DEC_LOSSY (0x01 << 8)
 #define DRM_FORMAT_MOD_VS_DEC_LOSSLESS (0x01 << 9)
@@ -100,7 +107,7 @@ extern "C" {
 #define DRM_FORMAT_MOD_VS_DECNANO_HV_SAMPLE (0x03 << 10)
 
 #define fourcc_mod_vs_dec_code(tile, align) \
-	fourcc_mod_vs_code(DRM_FORMAT_MOD_VS_TYPE_COMPRESSED, ((tile) | (align)))
+	fourcc_mod_vs_code(DRM_FORMAT_MOD_VS_TYPE_COMPRESSED, ((tile) | (align << DRM_FORMAT_MOD_VS_DEC_ALIGN_SHIFT)))
 
 #define fourcc_mod_vs_pvric_code(tile, lossy) \
 	fourcc_mod_vs_code(DRM_FORMAT_MOD_VS_TYPE_PVRIC, ((tile) | (lossy)))
@@ -133,10 +140,18 @@ extern "C" {
 #define DRM_FORMAT_MOD_VS_TILE_16X16 0x25
 #define DRM_FORMAT_MOD_VS_TILE_8X8_UNIT2X2 0x26
 #define DRM_FORMAT_MOD_VS_TILE_8X4_UNIT2X2 0x27
+#define DRM_FORMAT_MOD_VS_TILE_32X8_A 0x28
+#define DRM_FORMAT_MOD_VS_TILE_8X8_SUPERTILE_X 0x29
+#define DRM_FORMAT_MOD_VS_TILE_32X8_YUVSP8X8 0x2A
+#define DRM_FORMAT_MOD_VS_TILE_16X8_YUVSP8X8 0x2B
 
 #define fourcc_mod_vs_norm_code(tile) fourcc_mod_vs_code(DRM_FORMAT_MOD_VS_TYPE_NORMAL, (tile))
 
 #define fourcc_mod_vs_custom_code(tile) fourcc_mod_vs_code(DRM_FORMAT_MOD_VS_TYPE_CUSTOM, (tile))
+
+#ifndef DRM_FORMAT_MOD_VIVANTE_SUPER_TILED_FC
+#define DRM_FORMAT_MOD_VIVANTE_SUPER_TILED_FC fourcc_mod_code(VIVANTE, 5)
+#endif
 
 #if defined(__cplusplus)
 }

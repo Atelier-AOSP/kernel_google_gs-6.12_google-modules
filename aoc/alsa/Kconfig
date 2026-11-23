@@ -5,7 +5,7 @@
 
 config AOC_ALSA_USB
 	bool "AoC ALSA USB audio support"
-	depends on AOC_DRIVER
+	depends on AOC_DRIVER && USB_XHCI_SIDEBAND
 	help
 		Say yes here to support USB audio
 
@@ -23,3 +23,13 @@ config AOC_ALSA_INCALL_CAP_3
 	default n
 	help
 		Say yes here to support incall capture stream 3
+
+config AOC_ALSA_IAMF
+	bool "AoC ALSA audio capture 5 for IAMF support"
+	depends on AOC_DRIVER
+	default n
+	help
+		Say yes here to enable support for capturing audio stream 5,
+		which is dedicated to the Immersive Audio Model and Format (IAMF).
+		This option allows the AoC ALSA driver to handle audio capture for
+		IAMF applications.

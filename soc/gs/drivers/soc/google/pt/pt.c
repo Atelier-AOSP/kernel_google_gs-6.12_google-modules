@@ -533,38 +533,6 @@ static void pt_handle_sysctl_unregister(struct pt_handle *handle)
 	kfree(handle->sysctl_table);
 }
 
-void pt_global_disable(struct pt_global *global)
-{
-	void *data;
-	int property_index;
-	unsigned long flags;
-
-	if (!global->driver)
-		return;
-
-	spin_lock_irqsave(&global->driver->lock, flags);
-
-	if (global->ptid == PT_PTID_INVALID)
-		goto out_unlock;
-
-	data = global->driver->data;
-	property_index = global->property_index;
-	global->ptid = global->driver->ops->alloc(data,
-						  property_index,
-						  NULL,
-						  pt_resize_internal_nop);
-	if (global->ptid == PT_PTID_INVALID)
-		goto out_unlock;
-
-	global->driver->ops->disable(data, global->ptid);
-	global->driver->ops->free(data, global->ptid);
-	global->ptid = PT_PTID_INVALID;
-	global->pbha = PT_PTID_INVALID;
-
-out_unlock:
-	spin_unlock_irqrestore(&global->driver->lock, flags);
-}
-
 static void pt_global_enable(struct pt_global *global)
 {
 	void *data;
@@ -854,10 +822,8 @@ struct pt_driver *pt_driver_register(struct device_node *node,
 	struct pt_driver *driver;
 	int cnt = 0;
 	size_t size;
-	struct device_node *child;
 
-	for (child = of_get_next_child(node, NULL); child;
-	     child = of_get_next_child(node, child)) {
+	for_each_child_of_node_scoped(node, child) {
 		int size;
 
 		if (!of_get_property(child, "id_size_priority", &size))
@@ -882,8 +848,7 @@ struct pt_driver *pt_driver_register(struct device_node *node,
 	driver->properties->cnt = cnt;
 
 	cnt = 0;
-	for (child = of_get_next_child(node, NULL); child;
-		child = of_get_next_child(node, child)) {
+	for_each_child_of_node_scoped(node, child) {
 		int size;
 
 		if (!of_get_property(child, "id_size_priority", &size))
@@ -1097,7 +1062,7 @@ static void pt_testfct(const char *name)
 
 }
 
-static int pt_sysctl_command(struct ctl_table *ctl, int write,
+static int pt_sysctl_command(const struct ctl_table *ctl, int write,
 		void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	int ret;

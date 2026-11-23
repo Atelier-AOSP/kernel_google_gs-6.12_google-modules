@@ -15,6 +15,8 @@
 #include <linux/of_gpio.h>
 #include <linux/of_graph.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
+#include <linux/unaligned.h>
 #include <linux/version.h>
 #include <drm/drm_mipi_dsi.h>
 #include <drm/drm_probe_helper.h>
@@ -29,6 +31,19 @@
 #include "gs_drm/gs_fault_event.h"
 #include "gs_panel_internal.h"
 #include "gs_panel/gs_panel_funcs_defaults.h"
+
+/* PARAMETERS */
+/**
+ * @override_mode - Optionally limits available modes to a single mode.
+ * Possible values:
+ * * "" or "0": No change in behavior
+ * * "1": Limit exported drm modes to the preferred mode
+ * * "<mode_name>": Limit exported drm_modes to the named mode, if it exists.
+ *                  If mode is not found, equivalent to "0"
+ */
+static char override_mode[DRM_DISPLAY_MODE_LEN] = { '\0' };
+module_param_string(override_mode, override_mode, sizeof(override_mode), 0644);
+MODULE_PARM_DESC(override_mode, "mode name to override and limit mode export to single mode");
 
 /* CONSTANTS */
 
@@ -59,13 +74,24 @@ static const char *gs_panel_get_gpio_name(enum gs_panel_gpio_names gpio)
 		[DISP_ENABLE_GPIO] = "enable",
 		[DISP_VDDD_GPIO] = "vddd",
 		[DISP_TOUT_GPIO] = "tout",
+		[DISP_TP_RESET_GPIO] = "tpreset",
 		[DISP_ERR_FG_GPIO] = "err_fg",
+		[DISP_PMIC_IRQ_GPIO] = "pmic_irq",
 	};
 
 	if (gpio >= MAX_DISP_GPIO)
 		return NULL;
 
 	return names[gpio];
+}
+
+static int _gs_panel_gpio_set(struct gs_panel *ctx, enum gs_panel_gpio_names gpio, bool value,
+			      const char *gpio_name)
+{
+	gpiod_set_value_cansleep(ctx->gpio.gpiod[gpio], value);
+	PANEL_ATRACE_INT_PID(gpio_name, value, ctx->trace_pid);
+
+	return 0;
 }
 
 int gs_panel_gpio_set(struct gs_panel *ctx, enum gs_panel_gpio_names gpio, bool value)
@@ -81,12 +107,23 @@ int gs_panel_gpio_set(struct gs_panel *ctx, enum gs_panel_gpio_names gpio, bool 
 		return -EPERM;
 	}
 
-	gpiod_set_value_cansleep(ctx->gpio.gpiod[gpio], value);
-	PANEL_ATRACE_INT(gpio_name, value);
-
-	return 0;
+	return _gs_panel_gpio_set(ctx, gpio, value, gpio_name);
 }
 EXPORT_SYMBOL_GPL(gs_panel_gpio_set);
+
+int gs_panel_gpio_set_optional(struct gs_panel *ctx, enum gs_panel_gpio_names gpio, bool value)
+{
+	const char *gpio_name = gs_panel_get_gpio_name(gpio);
+
+	if (gpio >= MAX_DISP_GPIO) {
+		dev_err(ctx->dev, "gs_panel_gpio_set: Invalid gpio: %d\n", gpio);
+		return -EINVAL;
+	} else if (!IS_ERR_OR_NULL(ctx->gpio.gpiod[gpio])) {
+		return _gs_panel_gpio_set(ctx, gpio, value, gpio_name);
+	}
+	return 0;
+}
+EXPORT_SYMBOL_GPL(gs_panel_gpio_set_optional);
 
 static int gs_panel_gpio_get(struct gs_panel *ctx, enum gs_panel_gpio_names gpio)
 {
@@ -168,53 +205,78 @@ static int gs_panel_parse_gpios(struct gs_panel *ctx)
 {
 	struct device *dev = ctx->dev;
 	struct gs_panel_gpio *gpio = &ctx->gpio;
+	struct gpio_desc *desc;
+	int i;
 
-	dev_dbg(dev, "%s +\n", __func__);
+	/* gpio config table - add new gpio here */
+	static const struct gs_panel_gpio_config configs[] = {
+		{
+			.id = DISP_RESET_GPIO,
+			.flag = GPIOD_ASIS,
+			.mandatory = true
+		},
+		{
+			.id = DISP_TP_RESET_GPIO,
+			.flag = GPIOD_ASIS,
+			.mandatory = false
+		},
+		{
+			.id = DISP_ENABLE_GPIO,
+			.flag = GPIOD_OUT_LOW,
+			.mandatory = false
+		},
+		{
+			.id = DISP_VDDD_GPIO,
+			.flag = GPIOD_OUT_HIGH,
+			.mandatory = false
+		},
+		{
+			.id = DISP_TOUT_GPIO,
+			.flag = GPIOD_ASIS,
+			.mandatory = false
+		},
+		{
+			.id = DISP_ERR_FG_GPIO,
+			.flag = GPIOD_ASIS,
+			.mandatory = false
+		},
+		{
+			.id = DISP_PMIC_IRQ_GPIO,
+			.flag = GPIOD_ASIS,
+			.mandatory = false
+		},
+	};
 
-	gpio->gpiod[DISP_RESET_GPIO] =
-		devm_gpiod_get_optional(dev, gs_panel_get_gpio_name(DISP_RESET_GPIO), GPIOD_ASIS);
-	if (gpio->gpiod[DISP_RESET_GPIO] == NULL) {
-		dev_warn(dev, "no reset gpio found\n");
-	} else if (IS_ERR(gpio->gpiod[DISP_RESET_GPIO])) {
-		dev_err(dev, "failed to get reset-gpios %ld\n",
-			PTR_ERR(gpio->gpiod[DISP_RESET_GPIO]));
-		return PTR_ERR(gpio->gpiod[DISP_RESET_GPIO]);
+	dev_dbg(dev, "parse panel gpios +\n");
+
+	for (i = 0; i < ARRAY_SIZE(configs); i++) {
+		const struct gs_panel_gpio_config *cfg = &configs[i];
+		const char *name = gs_panel_get_gpio_name(cfg->id);
+
+		desc = devm_gpiod_get_optional(dev, name, cfg->flag);
+		if (desc == NULL) {
+			if (cfg->mandatory)
+				dev_warn(dev, "no %s gpio found\n", name);
+			else
+				dev_dbg(dev, "no %s gpio found\n", name);
+
+			gpio->gpiod[cfg->id] = NULL;
+			continue;
+		}
+		if (IS_ERR(desc)) {
+			if (cfg->mandatory) {
+				dev_err(dev, "failed to get %s gpio (%pe)\n", name, desc);
+				return PTR_ERR(desc);
+			}
+
+			dev_warn(dev, "failed to get %s gpio (%pe)\n", name, desc);
+			gpio->gpiod[cfg->id] = NULL;
+			continue;
+		}
+		gpio->gpiod[cfg->id] = desc;
 	}
 
-	gpio->gpiod[DISP_ENABLE_GPIO] = devm_gpiod_get_optional(
-		dev, gs_panel_get_gpio_name(DISP_ENABLE_GPIO), GPIOD_OUT_LOW);
-	if (gpio->gpiod[DISP_ENABLE_GPIO] == NULL) {
-		dev_dbg(dev, "no enable gpio found\n");
-	} else if (IS_ERR(gpio->gpiod[DISP_ENABLE_GPIO])) {
-		dev_warn(dev, "failed to get enable-gpio %ld\n",
-			 PTR_ERR(gpio->gpiod[DISP_ENABLE_GPIO]));
-		gpio->gpiod[DISP_ENABLE_GPIO] = NULL;
-	}
-
-	gpio->gpiod[DISP_VDDD_GPIO] = devm_gpiod_get_optional(
-		dev, gs_panel_get_gpio_name(DISP_VDDD_GPIO), GPIOD_OUT_HIGH);
-	if (IS_ERR(gpio->gpiod[DISP_VDDD_GPIO]))
-		gpio->gpiod[DISP_VDDD_GPIO] = NULL;
-
-	gpio->gpiod[DISP_TOUT_GPIO] =
-		devm_gpiod_get_optional(dev, gs_panel_get_gpio_name(DISP_TOUT_GPIO), GPIOD_ASIS);
-	if (gpio->gpiod[DISP_TOUT_GPIO] == NULL) {
-		dev_dbg(dev, "no tout gpio found\n");
-	} else if (IS_ERR(gpio->gpiod[DISP_TOUT_GPIO])) {
-		dev_err(dev, "failed to get tout-gpios %ld for te2\n",
-			PTR_ERR(gpio->gpiod[DISP_TOUT_GPIO]));
-	}
-
-	/* TODO (b/406039453): restructure with lookup table or macro */
-	gpio->gpiod[DISP_ERR_FG_GPIO] =
-		devm_gpiod_get_optional(dev, gs_panel_get_gpio_name(DISP_ERR_FG_GPIO), GPIOD_ASIS);
-	if (gpio->gpiod[DISP_ERR_FG_GPIO] == NULL)
-		dev_dbg(dev, "no err_fg gpio found\n");
-	else if (IS_ERR(gpio->gpiod[DISP_ERR_FG_GPIO]))
-		dev_err(dev, "failed to get err_fg-gpios %ld\n",
-			PTR_ERR(gpio->gpiod[DISP_ERR_FG_GPIO]));
-
-	dev_dbg(dev, "%s -\n", __func__);
+	dev_dbg(dev, "parse panel gpios -\n");
 	return 0;
 }
 
@@ -428,11 +490,11 @@ static int gs_panel_of_parse_backlight(struct gs_panel *ctx)
 static int _gs_panel_read_extinfo(struct gs_panel *ctx)
 {
 	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
-	char buf[EXT_INFO_SIZE];
+	u8 buf[EXT_INFO_SIZE];
 	int i, ret;
 
-	/* extinfo already set, skip reading */
-	if (ctx->panel_extinfo[0] != '\0')
+	/* panel_id already set, skip reading */
+	if (ctx->panel_id != PANEL_ID_INVALID_VALUE)
 		return 0;
 
 	for (i = 0; i < EXT_INFO_SIZE; i++) {
@@ -443,7 +505,8 @@ static int _gs_panel_read_extinfo(struct gs_panel *ctx)
 			return ret;
 		}
 	}
-	bin2hex(ctx->panel_extinfo, buf, EXT_INFO_SIZE);
+	/* Convert 4 raw extended info byte-registers into little-endian 32-bit panel_id */
+	ctx->panel_id = get_unaligned_le32(buf);
 
 	return 0;
 }
@@ -497,6 +560,34 @@ const struct gs_panel_mode *gs_panel_get_mode(struct gs_panel *ctx,
 	return NULL;
 }
 EXPORT_SYMBOL_GPL(gs_panel_get_mode);
+
+static int gs_panel_get_mode_override_idx(struct gs_panel *ctx)
+{
+	int i;
+	bool search_preferred = false;
+	struct drm_display_mode mode;
+
+	/* parse parameter for no-behavior-change and search-preferred cases */
+	if (override_mode[0] == '\0')
+		return -1;
+	else if (override_mode[0] == '0' && override_mode[1] == '\0')
+		return -1;
+	else if (override_mode[0] == '1' && override_mode[1] == '\0')
+		search_preferred = true;
+
+	/* search for either preferred mode or name-match mode */
+	for_each_display_mode(i, mode, ctx) {
+		if (search_preferred) {
+			if (mode.type & DRM_MODE_TYPE_PREFERRED)
+				return i;
+		} else {
+			if (!strncmp(mode.name, override_mode, DRM_DISPLAY_MODE_LEN))
+				return i;
+		}
+	}
+
+	return -1;
+}
 
 /* TE2 */
 
@@ -1757,6 +1848,9 @@ static void gs_panel_update_panel_rev_bitmask(struct gs_panel *ctx, u32 rev_id)
 	case PANEL_REVID_PROTO1:
 		rev_bitmask = PANEL_REV_PROTO1;
 		break;
+	case PANEL_REVID_PROTO1_0_1:
+		rev_bitmask = PANEL_REV_PROTO1_0_1;
+		break;
 	case PANEL_REVID_PROTO1_1:
 		rev_bitmask = PANEL_REV_PROTO1_1;
 		break;
@@ -1821,16 +1915,13 @@ int gs_panel_first_enable_helper(struct gs_panel *ctx)
 
 	ctx->trace_pid = current->tgid;
 	if (ctx->panel_rev_id.id == 0) {
-		u32 id;
-
-		if (kstrtou32(ctx->panel_extinfo, 16, &id)) {
+		if (ctx->panel_id == PANEL_ID_INVALID_VALUE) {
 			dev_warn(dev, "failed to get panel extinfo, default to latest\n");
 			ctx->panel_rev_id.id = PANEL_REVID_LATEST;
 		} else if (gs_panel_has_func(ctx, get_panel_rev)) {
-			/* reverse here to match the id order read from bootloader */
-			funcs->get_panel_rev(ctx, swab32(id));
+			funcs->get_panel_rev(ctx, ctx->panel_id);
 		} else {
-			gs_panel_get_panel_rev_full(ctx, swab32(id));
+			gs_panel_get_panel_rev_full(ctx, ctx->panel_id);
 		}
 		gs_panel_update_panel_rev_bitmask(ctx, ctx->panel_rev_id.id);
 	}
@@ -1962,68 +2053,6 @@ static int gs_panel_init_backlight(struct gs_panel *ctx)
 	return 0;
 }
 
-static irqreturn_t gs_panel_te2_irq_handler(int irq, void *dev_data)
-{
-	struct gs_panel *ctx = dev_data;
-
-	if (!ctx)
-		return IRQ_HANDLED;
-
-	/* Add a toggle to have a better visual effect of TE2 pulse in trace. */
-	PANEL_ATRACE_INT_PID("TE2_rising", 1, ctx->trace_pid);
-	PANEL_ATRACE_INT_PID("TE2_rising", 0, ctx->trace_pid);
-
-	return IRQ_HANDLED;
-}
-
-static void gs_panel_request_te2_irq(struct gs_panel *ctx)
-{
-	struct platform_device *pdev = container_of(ctx->dev, struct platform_device, dev);
-	int irq = gpiod_to_irq(ctx->gpio.gpiod[DISP_TOUT_GPIO]);
-
-	if (irq < 0) {
-		dev_warn(ctx->dev, "failed to get irq for tout-gpios (%d)\n", irq);
-		return;
-	}
-
-	irq_set_status_flags(irq, IRQ_DISABLE_UNLAZY);
-	/* *
-	 * Rising edge interrupt may disappear if it's very close to falling edge interrupt.
-	 * Only request eihter rising or falling to avoid misleading behavior in trace.
-	 */
-	if (!devm_request_irq(ctx->dev, irq, gs_panel_te2_irq_handler,
-			      IRQF_TRIGGER_RISING, pdev->name, ctx)) {
-		ctx->te2.irq = irq;
-		dev_dbg(ctx->dev, "te2 irq is requested successfully (%s)\n", pdev->name);
-	} else {
-		dev_warn(ctx->dev, "failed to request irq for te2\n");
-	}
-}
-
-void gs_panel_enable_te2_irq(struct gs_panel *ctx, bool enable)
-{
-	if (!ctx->gpio.gpiod[DISP_TOUT_GPIO]) {
-		dev_info(ctx->dev, "no tout-gpios specified, skip irq request\n");
-		return;
-	}
-
-	dev_info(ctx->dev, "te2 irq: en %d, ref %d\n", enable, atomic_read(&ctx->te2.irq_ref));
-
-	if (enable) {
-		if (atomic_inc_return(&ctx->te2.irq_ref) == 1)
-			gs_panel_request_te2_irq(ctx);
-	} else {
-		int ret = atomic_dec_if_positive(&ctx->te2.irq_ref);
-
-		if (!ret) {
-			disable_irq_nosync(ctx->te2.irq);
-			devm_free_irq(ctx->dev, ctx->te2.irq, ctx);
-			ctx->te2.irq = -1;
-		} else if (ret < 0) {
-			dev_warn(ctx->dev, "unexpected te2 irq_ref (%d)\n", ret);
-		}
-	}
-}
 
 static void gs_panel_init_te2(struct gs_panel *ctx)
 {
@@ -2138,7 +2167,7 @@ void gs_panel_refresh_ctrl_work(struct kthread_work *work)
 	mutex_unlock(&ctx->mode_lock);
 }
 
-u32 gs_panel_get_refresh_ctrl_delay(struct gs_panel *ctx, ktime_t frame_start_ts)
+static u32 gs_panel_get_refresh_ctrl_delay(struct gs_panel *ctx, ktime_t frame_start_ts)
 {
 	/* TODO(b/325151831): Adjust transfer time based on scan out speed */
 	u32 delay_us = FRAME_TX_US - ((ktime_get() - frame_start_ts) / 1000);
@@ -2192,40 +2221,25 @@ void gs_panel_detect_fault_work(struct kthread_work *work)
 	struct gs_panel *ctx = container_of(work, struct gs_panel, detect_fault_work_data.work);
 	struct device *dev = ctx->dev;
 	int bit;
-	ktime_t now;
-	s64 delta_ms;
-	u32 fault_detect_interval_ms = ctx->desc->fault_detect_interval_ms;
+	bool err_fg_state = false;
 
 	mutex_lock(&ctx->mode_lock);
-	if (!gs_is_panel_active(ctx)) {
-		dev_dbg(dev, "skip fault detection (panel is not active)\n");
-		goto exit;
-	}
 
-	/* If err_fg is supported, check fault only when it's high */
+	/* Check GRAM collision only when it's high */
 	if (ctx->err_fg_irq >= 0) {
 		unsigned long flags = 0;
-		bool err_fg_state;
 
 		spin_lock_irqsave(&ctx->spinlock_err_fg, flags);
 		err_fg_state = ctx->err_fg_state;
 		spin_unlock_irqrestore(&ctx->spinlock_err_fg, flags);
-		if (!err_fg_state)
-			goto exit;
-	}
-
-	/* Check elapsed interval against minimum */
-	now = ktime_get();
-	delta_ms = ktime_ms_delta(now, ctx->timestamps.last_panel_fault_check_ts);
-	if (delta_ms < fault_detect_interval_ms && ctx->ddic_read_fail_cnt == 0) {
-		dev_dbg(dev, "skip fault detection (%lldms since last check, <%ums)\n", delta_ms,
-			fault_detect_interval_ms);
-		goto exit;
 	}
 
 	bitmap_zero(ctx->panel_errors, GS_PANEL_ERR_MAX);
 	/* Read fault registers */
-	ctx->detect_fault_work_ret = ctx->desc->gs_panel_func->detect_fault(ctx);
+	ctx->detect_fault_work_ret =
+		ctx->desc->gs_panel_func->detect_fault(ctx, ctx->desc->fault_desc, err_fg_state);
+	if (ctx->detect_fault_work_ret)
+		goto exit;
 
 	/* Count raw panel errors (unmasked) for statistics */
 	for_each_set_bit(bit, ctx->panel_errors, GS_PANEL_ERR_MAX) {
@@ -2233,66 +2247,36 @@ void gs_panel_detect_fault_work(struct kthread_work *work)
 	}
 
 	if (unlikely(GS_PANEL_ERR_MAX > 64)) {
-		dev_warn(ctx->dev, "panel_errors size (%u) > 64, skip mask\n", GS_PANEL_ERR_MAX);
+		dev_warn(dev, "panel_errors size (%u) > 64, skip mask\n", GS_PANEL_ERR_MAX);
 	} else {
 		DECLARE_BITMAP(mask, 64);
 
-		bitmap_from_u64(mask, ctx->desc->panel_errors_mask);
+		bitmap_from_u64(mask, ctx->desc->fault_desc->panel_errors_mask);
 		bitmap_and(ctx->panel_errors, ctx->panel_errors, mask, GS_PANEL_ERR_MAX);
 	}
-
 	trace_panel_errors(ctx->gs_connector->panel_index, ctx->panel_errors);
+
 	if (test_bit(GS_PANEL_ERR_GRAM_COLLISION, ctx->panel_errors)) {
 		trace_gram_collision(ctx->gs_connector->panel_index, ctx->gram_collision_count);
-		gs_fault_event_emit(ctx->dev, GS_FAULT_EVENT_TYPE_DDIC_UNDERRUN, 1);
+		gs_fault_event_emit(dev, GS_FAULT_EVENT_TYPE_DDIC_UNDERRUN, 1);
 	}
 
 	if (!bitmap_empty(ctx->panel_errors, GS_PANEL_ERR_MAX))
-		gs_fault_event_emit(ctx->dev, GS_FAULT_EVENT_TYPE_PANEL_ERROR,
+		gs_fault_event_emit(dev, GS_FAULT_EVENT_TYPE_PANEL_ERROR,
 				    ctx->panel_errors[0]);
 
+	if (!bitmap_empty(ctx->pmic_errors, GS_PMIC_ERR_MAX))
+		gs_fault_event_emit(dev, GS_FAULT_EVENT_TYPE_PMIC_ERROR,
+				    ctx->pmic_errors[0]);
+
 	/* Update last fault check timestamp */
-	ctx->timestamps.last_panel_fault_check_ts = now;
+	ctx->timestamps.last_panel_fault_check_ts = ktime_get();
 
 exit:
 	mutex_unlock(&ctx->mode_lock);
 	ctx->detect_fault_work_scheduled = false;
 }
 
-static irqreturn_t gs_panel_err_fg_irq_handler(int irq, void *dev_data)
-{
-	struct gs_panel *ctx = dev_data;
-	unsigned long flags = 0;
-	int val;
-
-	if (!ctx)
-		return IRQ_HANDLED;
-
-	val = gpiod_get_raw_value(ctx->gpio.gpiod[DISP_ERR_FG_GPIO]);
-	if (val >= 0) {
-		PANEL_ATRACE_INT_PID("ERR_FG", val, ctx->trace_pid);
-		spin_lock_irqsave(&ctx->spinlock_err_fg, flags);
-		ctx->err_fg_state = val;
-		spin_unlock_irqrestore(&ctx->spinlock_err_fg, flags);
-	}
-
-	return IRQ_HANDLED;
-}
-
-static void gs_panel_init_gpio_irq_handlers(struct gs_panel *ctx)
-{
-	struct device *dev = ctx->dev;
-
-	/* err_fg irq for error reports from DDIC */
-	ctx->err_fg_irq = gpiod_to_irq(ctx->gpio.gpiod[DISP_ERR_FG_GPIO]);
-	if (ctx->err_fg_irq < 0)
-		dev_dbg(dev, "unable to get irq for err_fg-gpios (%d)\n", ctx->err_fg_irq);
-	else if (!devm_request_irq(dev, ctx->err_fg_irq, gs_panel_err_fg_irq_handler,
-				   IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING, "err_fg", ctx))
-		dev_info(dev, "err_fg irq is requested successfully\n");
-	else
-		dev_warn(dev, "failed to request irq for err_fg\n");
-}
 
 int gs_dsi_panel_common_init(struct mipi_dsi_device *dsi, struct gs_panel *ctx)
 {
@@ -2328,16 +2312,16 @@ int gs_dsi_panel_common_init(struct mipi_dsi_device *dsi, struct gs_panel *ctx)
 	}
 
 	/* Get panel_rev from bootloader */
-	if (ctx->gs_connector->panel_id != INVALID_PANEL_ID) {
-		u32 id = ctx->gs_connector->panel_id;
-
-		bin2hex(ctx->panel_extinfo, &id, EXT_INFO_SIZE);
+	if (ctx->gs_connector->panel_id != PANEL_ID_INVALID_VALUE) {
+		ctx->panel_id = ctx->gs_connector->panel_id;
 
 		if (gs_panel_has_func(ctx, get_panel_rev))
-			ctx->desc->gs_panel_func->get_panel_rev(ctx, id);
+			ctx->desc->gs_panel_func->get_panel_rev(ctx, ctx->panel_id);
 		gs_panel_update_panel_rev_bitmask(ctx, ctx->panel_rev_id.id);
-	} else
+	} else {
+		ctx->panel_id = PANEL_ID_INVALID_VALUE;
 		dev_dbg(ctx->dev, "Invalid panel id passed from bootloader");
+	}
 
 	/* Get panel_serial_number from bootloader */
 	if (!strcmp(ctx->panel_serial_number, "")) {
@@ -2386,11 +2370,18 @@ int gs_dsi_panel_common_init(struct mipi_dsi_device *dsi, struct gs_panel *ctx)
 					      gs_panel_refresh_ctrl_work);
 	}
 
-	if (gs_panel_has_func(ctx, detect_fault))
+	if (gs_panel_has_func(ctx, detect_fault) && ctx->desc->fault_desc) {
+		struct task_struct *fault_thread;
+
 		gs_panel_init_background_work(ctx, &ctx->detect_fault_work_data,
 					      "detect_fault_kthread",
 					      DETECT_FAULT_KTHREAD_SCHED_PRIORITY,
 					      gs_panel_detect_fault_work);
+
+		fault_thread = ctx->detect_fault_work_data.thread;
+		if (!IS_ERR_OR_NULL(fault_thread))
+			set_cpus_allowed_ptr(fault_thread, cpumask_of(0));
+	}
 
 	/* Vrefresh */
 	if (ctx->desc->modes) {
@@ -2408,6 +2399,9 @@ int gs_dsi_panel_common_init(struct mipi_dsi_device *dsi, struct gs_panel *ctx)
 				ctx->peak_bts_fps = bts_fps;
 		}
 	}
+
+	/* Mode override */
+	ctx->mode_override_idx = gs_panel_get_mode_override_idx(ctx);
 
 	/* Idle work */
 	ctx->idle_data.panel_idle_enabled = gs_panel_has_func(ctx, set_self_refresh);
@@ -2441,6 +2435,8 @@ int gs_dsi_panel_common_init(struct mipi_dsi_device *dsi, struct gs_panel *ctx)
 	/*TODO(b/267170999): all*/
 	mutex_init(&ctx->mode_lock);
 	mutex_init(&ctx->bl_state_lock);
+
+	spin_lock_init(&ctx->spinlock_err_fg);
 
 	/* Initialize panel */
 	drm_panel_init(&ctx->base, dev, ctx->desc->panel_func, DRM_MODE_CONNECTOR_DSI);
@@ -2527,23 +2523,19 @@ static void _gs_dsi_panel_common_remove(struct mipi_dsi_device *dsi)
 	devm_backlight_device_unregister(ctx->dev, ctx->bl);
 }
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0))
 void gs_dsi_panel_common_remove(struct mipi_dsi_device *dsi)
 {
 	_gs_dsi_panel_common_remove(dsi);
 }
-#else
-int gs_dsi_panel_common_remove(struct mipi_dsi_device *dsi)
-{
-	_gs_dsi_panel_common_remove(dsi);
-	return 0;
-}
-#endif
 EXPORT_SYMBOL_GPL(gs_dsi_panel_common_remove);
 
 /* DRM panel funcs */
 
-void _gs_panel_reset_helper(struct gs_panel *ctx)
+/**
+ * gs_panel_reset_gpio_sequence_helper() - Implementation of default reset sequence
+ * @ctx: handle for gs_panel
+ */
+static void gs_panel_reset_gpio_sequence_helper(struct gs_panel *ctx)
 {
 	int delay;
 	struct device *dev = ctx->dev;
@@ -2580,6 +2572,14 @@ void _gs_panel_reset_helper(struct gs_panel *ctx)
 
 	dev_dbg(dev, "%s -\n", __func__);
 	PANEL_ATRACE_END("gs_panel_reset_helper");
+}
+
+static void _gs_panel_reset_helper(struct gs_panel *ctx)
+{
+	if (gs_panel_has_func(ctx, run_reset_gpio_sequence))
+		ctx->desc->gs_panel_func->run_reset_gpio_sequence(ctx);
+	else
+		gs_panel_reset_gpio_sequence_helper(ctx);
 }
 
 void gs_panel_reset_helper(struct gs_panel *ctx)
@@ -2808,11 +2808,12 @@ EXPORT_SYMBOL_GPL(panel_calc_linear_luminance);
 int gs_dcs_set_brightness(struct gs_panel *ctx, u16 br)
 {
 	struct mipi_dsi_device *dsi = to_mipi_dsi_device(ctx->dev);
+	int panel_index = ctx->gs_connector->panel_index;
 	u8 cmd[3] = {
 		MIPI_DCS_SET_DISPLAY_BRIGHTNESS, br & 0xff, br >> 8
 	};
 
-	trace_dsi_tx(MIPI_DSI_DCS_LONG_WRITE, cmd, sizeof(cmd), true, 0);
+	trace_dsi_tx(panel_index, MIPI_DSI_DCS_LONG_WRITE, cmd, sizeof(cmd), true, 0);
 	return mipi_dsi_dcs_set_display_brightness(dsi, br);
 }
 EXPORT_SYMBOL_GPL(gs_dcs_set_brightness);

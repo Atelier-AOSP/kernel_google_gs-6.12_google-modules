@@ -209,6 +209,10 @@ static const struct mfd_cell max77779_pmic_devs[] = {
 		.name = "max77779-pmic-sgpio",
 		.of_compatible = "max77779-pmic-sgpio",
 	},
+	{
+		.name = "max77779-vdroop",
+		.of_compatible = "max77779-vdroop",
+	},
 };
 
 /*

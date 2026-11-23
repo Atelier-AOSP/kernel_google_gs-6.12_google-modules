@@ -3407,7 +3407,7 @@ static int cs35l45_activate_ctl(struct cs35l45_private *cs35l45,
 	else
 		snprintf(name, SNDRV_CTL_ELEM_ID_NAME_MAXLEN, "%s", ctl_name);
 
-	kcontrol = snd_soc_card_get_kcontrol_locked(component->card, name);
+	kcontrol = snd_soc_card_get_kcontrol(component->card, name);
 	if (!kcontrol) {
 		dev_err(cs35l45->dev, "Can't find kcontrol %s\n", name);
 		return -EINVAL;

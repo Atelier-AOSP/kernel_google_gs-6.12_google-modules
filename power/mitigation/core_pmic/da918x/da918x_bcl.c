@@ -7,14 +7,15 @@
 #include "da9188_limits.h"
 #include "da9189_limits.h"
 #include <kunit/visibility.h>
+#include <linux/gpio/consumer.h>
 #include <linux/iio/iio.h>
-#include <linux/of_gpio.h>
 #include <linux/types.h>
 #include <mailbox/protocols/mba/cpm/common/pmic/pmic_service.h>
 #include <mailbox/protocols/mba/cpm/common/bcl/bcl_service.h>
 #include <google_odpm.h>
 
 #include "core_pmic_defs.h"
+#include "da918x.h"
 
 #define BYTES_IN_UINT64 (sizeof(uint64_t))
 #define SYS_EVT_ONE_BYTE 1
@@ -93,43 +94,117 @@ VISIBLE_IF_KUNIT int convert_pre_ocp_lvl(int value, int idx, u32 *output)
 }
 EXPORT_SYMBOL_IF_KUNIT(convert_pre_ocp_lvl);
 
-static int retrieve_pre_ocp_lvl(int idx, u16 reg)
+static int retrieve_pre_ocp_lvl(struct bcl_device *bcl_dev, int idx, u16 reg,
+				enum PRE_OCP_RANGE range)
 {
+	int step;
+	int limit;
+	int offset = (range == SOFT_RANGE) ? SOFT_POCP_OFFSET : 0;
+
 	switch (idx) {
 	case PRE_OCP_CPU1:
-		return DA9188_PRE_OCP_B3M_LIMIT - reg * PRE_OCP_STEP;
 	case SOFT_PRE_OCP_CPU1:
-		return DA9188_PRE_OCP_B3M_LIMIT - (reg + SOFT_POCP_OFFSET) * PRE_OCP_STEP;
+		limit = DA9188_PRE_OCP_B3M_LIMIT;
+		step = PRE_OCP_STEP;
+		break;
 	case PRE_OCP_CPU2:
-		return DA9188_PRE_OCP_B2M_LIMIT - reg * PRE_OCP_STEP;
 	case SOFT_PRE_OCP_CPU2:
-		return DA9188_PRE_OCP_B2M_LIMIT - (reg + SOFT_POCP_OFFSET) * PRE_OCP_STEP;
+		limit = DA9188_PRE_OCP_B2M_LIMIT;
+		step = PRE_OCP_STEP;
+		break;
 	case PRE_OCP_GPU:
-		return DA9189_PRE_OCP_B2S_LIMIT - reg * PRE_OCP_STEP;
 	case SOFT_PRE_OCP_GPU:
-		return DA9189_PRE_OCP_B2S_LIMIT - (reg + SOFT_POCP_OFFSET) * PRE_OCP_STEP;
+		limit = DA9189_PRE_OCP_B2S_LIMIT;
+		step = PRE_OCP_STEP;
+		break;
 	case PRE_OCP_AUR:
-		return DA9188_PRE_OCP_B5M_LIMIT - reg * PRE_OCP_STEP;
 	case SOFT_PRE_OCP_AUR:
-		return DA9188_PRE_OCP_B5M_LIMIT - (reg + SOFT_POCP_OFFSET) * PRE_OCP_STEP;
+		limit = DA9188_PRE_OCP_B5M_LIMIT;
+		step = PRE_OCP_AUR_STEP;
+		break;
 	case PRE_OCP_MM:
-		return DA9189_PRE_OCP_B1S_LIMIT - reg * PRE_OCP_STEP;
 	case SOFT_PRE_OCP_MM:
-		return DA9189_PRE_OCP_B1S_LIMIT - (reg + SOFT_POCP_OFFSET) * PRE_OCP_STEP;
+		limit = DA9189_PRE_OCP_B1S_LIMIT;
+		step = PRE_OCP_MM_STEP;
+		break;
 	case PRE_OCP_INFRA:
-		return DA9189_PRE_OCP_B9S_LIMIT - reg * PRE_OCP_STEP;
 	case SOFT_PRE_OCP_INFRA:
-		return DA9189_PRE_OCP_B9S_LIMIT - (reg + SOFT_POCP_OFFSET) * PRE_OCP_STEP;
+		limit = DA9189_PRE_OCP_B9S_LIMIT;
+		step = PRE_OCP_INFRA_STEP;
+		break;
 	case PRE_OCP_INFRA_GPU:
-		return DA9189_PRE_OCP_B10S_LIMIT - reg * PRE_OCP_STEP;
 	case SOFT_PRE_OCP_INFRA_GPU:
-		return DA9189_PRE_OCP_B10S_LIMIT - (reg + SOFT_POCP_OFFSET) * PRE_OCP_STEP;
+		limit = DA9189_PRE_OCP_B10S_LIMIT;
+		step = PRE_OCP_INFRA_STEP;
+		break;
 	case PRE_OCP_TPU:
-		return DA9188_PRE_OCP_B7M_LIMIT - reg * PRE_OCP_TPU_STEP;
 	case SOFT_PRE_OCP_TPU:
-		return DA9188_PRE_OCP_B7M_LIMIT - (reg + SOFT_TPU_POCP_OFFSET) * PRE_OCP_TPU_STEP;
+		limit = DA9188_PRE_OCP_B7M_LIMIT;
+		step = PRE_OCP_TPU_STEP;
+		break;
+	default:
+		return -EINVAL;
 	};
-	return 0;
+
+	return limit - ((reg + 1 + offset) * step);
+}
+
+static u16 retrieve_pre_ocp_conf4_addr(int idx)
+{
+	switch (idx) {
+	case SOFT_PRE_OCP_CPU1:
+	case PRE_OCP_CPU1:
+		return DA9188_B3M_CONF4;
+	case SOFT_PRE_OCP_CPU2:
+	case PRE_OCP_CPU2:
+		return DA9188_B2M_CONF4;
+	case SOFT_PRE_OCP_AUR:
+	case PRE_OCP_AUR:
+		return DA9188_B5M_CONF4;
+	case SOFT_PRE_OCP_TPU:
+	case PRE_OCP_TPU:
+		return DA9188_B7M_CONF4;
+	case SOFT_PRE_OCP_GPU:
+	case PRE_OCP_GPU:
+		return DA9189_B2S_CONF4;
+	case SOFT_PRE_OCP_MM:
+	case PRE_OCP_MM:
+		return DA9189_B1S_CONF4;
+	case SOFT_PRE_OCP_INFRA:
+	case PRE_OCP_INFRA:
+		return DA9189_B9S_CONF4;
+	case SOFT_PRE_OCP_INFRA_GPU:
+	case PRE_OCP_INFRA_GPU:
+		return DA9189_B10S_CONF4;
+	default:
+		return 0;
+	}
+}
+
+static enum PRE_OCP_TYPE retrieve_pre_ocp_type(int idx)
+{
+	switch (idx) {
+	case SOFT_PRE_OCP_CPU1:
+	case SOFT_PRE_OCP_CPU2:
+	case SOFT_PRE_OCP_AUR:
+	case SOFT_PRE_OCP_TPU:
+	case SOFT_PRE_OCP_GPU:
+	case SOFT_PRE_OCP_MM:
+	case SOFT_PRE_OCP_INFRA:
+	case SOFT_PRE_OCP_INFRA_GPU:
+		return SOFT_PRE_OCP;
+	case PRE_OCP_CPU1:
+	case PRE_OCP_CPU2:
+	case PRE_OCP_AUR:
+	case PRE_OCP_TPU:
+	case PRE_OCP_GPU:
+	case PRE_OCP_MM:
+	case PRE_OCP_INFRA:
+	case PRE_OCP_INFRA_GPU:
+		return NORMAL_PRE_OCP;
+	default:
+		return 0;
+	}
 }
 
 static u16 retrieve_pre_ocp_addr(int idx, int *pmic)
@@ -188,13 +263,40 @@ static u16 retrieve_pre_ocp_addr(int idx, int *pmic)
 	}
 }
 
-int google_bcl_core_pmic_get_pre_ocp(struct bcl_device *bcl_dev, int idx)
+static enum PRE_OCP_RANGE retrieve_pre_ocp_range(struct bcl_device *bcl_dev,
+						 int idx, int pmic)
+{
+	int ret;
+	struct mailbox_data req_data, resp_data;
+	enum PRE_OCP_TYPE type = retrieve_pre_ocp_type(idx);
+	u32 mask = (type == SOFT_PRE_OCP) ? SOFT_PRE_OCP_RANGE_MASK :
+					    PRE_OCP_RANGE_MASK;
+	u16 addr = retrieve_pre_ocp_conf4_addr(idx);
+
+	req_data.data[0] = pmic;
+	req_data.data[1] = 1; /* Only read 1 byte. */
+	ret = da9188_mfd_mbox_send_req_blocking_read(
+		bcl_dev->device, &bcl_dev->pmic_mbox, bcl_dev->remote_pmic_ch,
+		MB_PMIC_TARGET_REGISTER, MB_REG_CMD_GET_PMIC_REG_BURST, addr,
+		req_data, &resp_data);
+	if (unlikely(ret))
+		return ret;
+
+	if (resp_data.data[0] & mask)
+		return SOFT_RANGE;
+	else
+		return NORMAL_RANGE;
+}
+
+static int google_bcl_core_pmic_get_pre_ocp(struct bcl_device *bcl_dev, int idx)
 {
 	int ret;
 	struct mailbox_data req_data, resp_data;
 	u16 value;
 	int pmic;
 	u16 addr = retrieve_pre_ocp_addr(idx, &pmic);
+	enum PRE_OCP_TYPE type = retrieve_pre_ocp_type(idx);
+	enum PRE_OCP_RANGE range = retrieve_pre_ocp_range(bcl_dev, idx, pmic);
 
 	req_data.data[0] = pmic;
 	req_data.data[1] = 1; /* Only read 1 byte. */
@@ -207,16 +309,23 @@ int google_bcl_core_pmic_get_pre_ocp(struct bcl_device *bcl_dev, int idx)
 						     &resp_data);
 	if (unlikely(ret))
 		return ret;
-	value = (u16)resp_data.data[0] >> 4;
-	return retrieve_pre_ocp_lvl(idx, value);
+
+	value = (u16)resp_data.data[0];
+
+	if (type == NORMAL_PRE_OCP)
+		value >>= 4;
+
+	value &= PRE_OCP_THRESH_MASK;
+	return retrieve_pre_ocp_lvl(bcl_dev, idx, value, range);
 }
 
-u8 core_pmic_get_scratch_pad(struct bcl_device *bcl_dev)
+int core_pmic_get_scratch_pad(struct bcl_device *bcl_dev, u8 *value)
 {
 	uint32_t response[] = {0, 0};
 
 	google_bcl_cpm_send_cmd(bcl_dev, MB_BCL_CMD_GET_SCRATCH, 0, 0, 0, response);
-	return (u8)response[1];
+	*value = (u8)response[MB_BCL_IDX_RSP_DATA];
+	return 0;
 }
 
 void core_pmic_set_scratch_pad(struct bcl_device *bcl_dev, u8 value)
@@ -228,7 +337,13 @@ void core_pmic_set_scratch_pad(struct bcl_device *bcl_dev, u8 value)
 		dev_err(bcl_dev->device, "Cannot set scratchpad\n");
 }
 
-int google_bcl_core_pmic_set_pre_ocp(struct bcl_device *bcl_dev, int value, int idx)
+int get_scratch_value(struct bcl_device *bcl_dev, bool is_usb_plugged, u8 *value)
+{
+	*value = is_usb_plugged ? 1 : 0;
+	return 0;
+}
+
+static int google_bcl_core_pmic_set_pre_ocp(struct bcl_device *bcl_dev, int value, int idx)
 {
 	int ret;
 	struct mailbox_data req_data;
@@ -250,7 +365,7 @@ int google_bcl_core_pmic_set_pre_ocp(struct bcl_device *bcl_dev, int value, int 
 
 }
 
-int google_bcl_core_pmic_set_pre_ocp_deb(struct bcl_device *bcl_dev, u8 value, int idx)
+static int google_bcl_core_pmic_set_pre_ocp_deb(struct bcl_device *bcl_dev, u8 value, int idx)
 {
 	struct mailbox_data req_data;
 	int pmic;
@@ -393,10 +508,11 @@ uint32_t core_pmic_get_cpm_cached_sys_evt(struct bcl_device *bcl_dev)
 		if (ret < 0)
 			return ret;
 
-		if (response[0] > 0)
+		if (response[MB_BCL_IDX_RSP_STATUS] > 0)
 			return -EINVAL;
 
-		bcl_dev->cpm_cached_sys_evt_main[i] = response[1] & SYS_EVT_RD_MASK;
+		bcl_dev->cpm_cached_sys_evt_main[i] =
+			response[MB_BCL_IDX_RSP_DATA] & SYS_EVT_RD_MASK;
 		if (bcl_dev->cpm_cached_sys_evt_main[i] != 0)
 			dev_info(bcl_dev->device, "SYS_EVENT_%d_MAIN: %#x\n", i,
 				 bcl_dev->cpm_cached_sys_evt_main[i]);
@@ -410,10 +526,11 @@ uint32_t core_pmic_get_cpm_cached_sys_evt(struct bcl_device *bcl_dev)
 		if (ret < 0)
 			return ret;
 
-		if (response[0] > 0)
+		if (response[MB_BCL_IDX_RSP_STATUS] > 0)
 			return -EINVAL;
 
-		bcl_dev->cpm_cached_sys_evt_sub[i] = response[1] & SYS_EVT_RD_MASK;
+		bcl_dev->cpm_cached_sys_evt_sub[i] =
+			response[MB_BCL_IDX_RSP_DATA] & SYS_EVT_RD_MASK;
 		if (bcl_dev->cpm_cached_sys_evt_sub[i] != 0)
 			dev_info(bcl_dev->device, "SYS_EVENT_%d_SUB: %#x\n", i,
 				 bcl_dev->cpm_cached_sys_evt_sub[i]);
@@ -456,7 +573,8 @@ static void google_bcl_setup_main_odpm(struct work_struct *work)
 	dev_info(bcl_dev->device, "odpm iio retrieved\n");
 }
 
-int read_sys_evt_cache(struct bcl_device *bcl_dev, int addr, int pmic, void *data, size_t len)
+static int read_sys_evt_cache(struct bcl_device *bcl_dev, int addr, int pmic, void *data,
+			      size_t len)
 {
 	switch (pmic) {
 	case SYS_EVT_MAIN:
@@ -472,7 +590,7 @@ int read_sys_evt_cache(struct bcl_device *bcl_dev, int addr, int pmic, void *dat
 	return 0;
 }
 
-int read_sys_evt(struct bcl_device *bcl_dev, int addr, int pmic, void *data, size_t len)
+static int read_sys_evt(struct bcl_device *bcl_dev, int addr, int pmic, void *data, size_t len)
 {
 	int ret;
 	int i;
@@ -487,10 +605,10 @@ int read_sys_evt(struct bcl_device *bcl_dev, int addr, int pmic, void *data, siz
 		if (ret < 0)
 			return ret;
 
-		if (response[0] > 0)
+		if (response[MB_BCL_IDX_RSP_STATUS] > 0)
 			return -EINVAL;
 
-		*p++ = response[1] & SYS_EVT_RD_MASK;
+		*p++ = response[MB_BCL_IDX_RSP_DATA] & SYS_EVT_RD_MASK;
 	}
 	return 0;
 }
@@ -789,7 +907,8 @@ int core_pmic_mbox_request(struct bcl_device *bcl_dev)
 
 int core_pmic_main_setup(struct bcl_device *bcl_dev, struct platform_device *pdev)
 {
-	int ret, pre_uvlo_pin, i, read;
+	struct gpio_desc *pre_uvlo_pin;
+	int ret, i, read;
 	u32 pre_uvlo;
 	u32 flag;
 	struct device_node *np = bcl_dev->device->of_node;
@@ -829,7 +948,7 @@ int core_pmic_main_setup(struct bcl_device *bcl_dev, struct platform_device *pde
 		of_node_put(p_np);
 	}
 
-	pre_uvlo_pin = of_get_named_gpio(np, "gpio,uvlo", 0);
+	pre_uvlo_pin = devm_gpiod_get(bcl_dev->device, "uvlo", GPIOD_ASIS);
 	pre_uvlo = platform_get_irq_byname(pdev, "pre_uvlo");
 
 	flag = IRQF_ONESHOT | IRQF_NO_AUTOEN | IRQF_TRIGGER_RISING;
@@ -994,15 +1113,15 @@ u16 core_pmic_main_store_uvlo(struct bcl_device *bcl_dev, unsigned int val, size
 	return size;
 }
 
-int core_pmic_main_get_ocp_lvl(struct bcl_device *bcl_dev, u64 *val, u8 addr, u16 limit, u16 step)
+int core_pmic_main_get_ocp_lvl(struct bcl_device *bcl_dev, u64 *val, u8 id, u16 limit, u16 step)
 {
-	return get_ocp_lvl(bcl_dev, val, addr);
+	return get_ocp_lvl(bcl_dev, val, id);
 }
 
-int core_pmic_main_set_ocp_lvl(struct bcl_device *bcl_dev, u64 val, u8 addr,
-			       u16 llimit, u16 ulimit, u16 step, u8 id)
+int core_pmic_main_set_ocp_lvl(struct bcl_device *bcl_dev, u64 val, u8 id,
+			       u16 llimit, u16 ulimit, u16 step)
 {
-	return set_ocp_lvl(bcl_dev, val, addr);
+	return set_ocp_lvl(bcl_dev, val, id);
 }
 
 static int _core_pmic_read_register(struct bcl_device *bcl_dev, u16 reg, u8 *value, bool is_meter,
@@ -1203,7 +1322,7 @@ int read_pre_ocp_bckup(struct bcl_device *bcl_dev, int *pre_ocp_bckup, int rail)
 	return 0;
 }
 
-int read_odpm_ch_type(struct bcl_device *bcl_dev, u16 *type, int pmic, int channel)
+static int read_odpm_ch_type(struct bcl_device *bcl_dev, u16 *type, int pmic, int channel)
 {
 	int ret;
 	u16 addr;
@@ -1232,7 +1351,7 @@ int read_odpm_ch_type(struct bcl_device *bcl_dev, u16 *type, int pmic, int chann
 	return ret;
 }
 
-int read_odpm_int_select_ch(struct bcl_device *bcl_dev, int pmic, int channel, u16 *int_sel)
+static int read_odpm_int_select_ch(struct bcl_device *bcl_dev, int pmic, int channel, u16 *int_sel)
 {
 	int ret;
 	u16 addr;
@@ -1352,17 +1471,15 @@ void core_pmic_teardown(struct bcl_device *bcl_dev)
 		da9188_mfd_mbox_release(&bcl_dev->pmic_mbox);
 }
 
-
-uint32_t _core_pmic_read_pwrwarn(struct bcl_device *bcl_dev, int pwrwarn_idx, int cmd)
+static uint32_t _core_pmic_read_pwrwarn(struct bcl_device *bcl_dev, int pwrwarn_idx, int cmd)
 {
 	uint32_t response[] = {0, 0};
 
-	google_bcl_cpm_send_cmd(bcl_dev, cmd, pwrwarn_idx,
-				0, 0, response);
-	if (response[0] > 0)
+	google_bcl_cpm_send_cmd(bcl_dev, cmd, pwrwarn_idx, 0, 0, response);
+	if (response[MB_BCL_IDX_RSP_STATUS] > 0)
 		return -EINVAL;
 
-	return response[1];
+	return response[MB_BCL_IDX_RSP_DATA];
 }
 
 uint32_t core_pmic_read_main_pwrwarn(struct bcl_device *bcl_dev, int pwrwarn_idx)
@@ -1380,10 +1497,11 @@ uint32_t core_pmic_get_pre_evt_cnt(struct bcl_device *bcl_dev, int zone_idx)
 	uint32_t response[] = {0, 0};
 
 	google_bcl_cpm_send_cmd(bcl_dev, MB_BCL_CMD_GET_PRE_EVT_COUNT, 0, 0, zone_idx, response);
-	if (response[0] > 0)
+
+	if (response[MB_BCL_IDX_RSP_STATUS] > 0)
 		return -EINVAL;
 
-	return response[1];
+	return response[MB_BCL_IDX_RSP_DATA];
 }
 
 u64 settings_to_current(struct bcl_device *bcl_dev, int pmic, int idx, u32 setting)
@@ -1448,4 +1566,14 @@ u64 settings_to_current(struct bcl_device *bcl_dev, int pmic, int idx, u32 setti
 	res = (u64)setting * resolution;
 
 	return res;
+}
+
+int core_pmic_sub_get_ocp_lvl(struct bcl_device *bcl_dev, u64 *val, u8 id, u16 limit, u16 step)
+{
+	return 0;
+}
+int core_pmic_sub_set_ocp_lvl(struct bcl_device *bcl_dev, u64 val, u8 id,
+			       u16 llimit, u16 ulimit, u16 step)
+{
+	return 0;
 }

@@ -89,7 +89,8 @@ int lwis_initialize_transaction_fences(struct lwis_client *client,
 
 bool lwis_triggered_by_condition(struct lwis_transaction *transaction);
 
-bool lwis_event_triggered_condition_ready(struct lwis_transaction *transaction,
+bool lwis_event_triggered_condition_ready(struct lwis_device *lwis_dev,
+					  struct lwis_transaction *transaction,
 					  struct lwis_transaction *weak_transaction,
 					  int64_t event_id, int64_t event_counter);
 

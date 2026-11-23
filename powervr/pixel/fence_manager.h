@@ -35,6 +35,7 @@ fence_manager_iif_retire(struct pixel_gpu_device *pixel_dev,
 static __maybe_unused union pixel_rgxfwif_iif_handle fence_manager_extract_iif(
 	struct pixel_gpu_device *pixel_dev, struct dma_fence *fence)
 {
-	return {0};
+	union pixel_rgxfwif_iif_handle handle = {0};
+	return handle;
 }
 #endif /* IS_ENABLED(CONFIG_POWERVR_PIXEL_IIF) */

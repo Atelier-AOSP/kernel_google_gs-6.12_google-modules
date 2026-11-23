@@ -299,7 +299,6 @@ PVRSRV_ERROR FWCommonContextAllocate(CONNECTION_DATA *psConnection,
 	{
 		RGXSetMetaDMAAddress(&psFWCommonContext->sCCBMetaDMAAddr,
 							 psServerCommonContext->psClientCCBMemDesc,
-							 &psFWCommonContext->psCCB,
 							 0);
 	}
 #endif

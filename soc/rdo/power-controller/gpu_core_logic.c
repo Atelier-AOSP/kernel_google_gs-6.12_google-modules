@@ -273,6 +273,8 @@ int gpu_core_logic_on(struct device *dev, struct gpu_core_logic_pd *pd)
 	case GPU_DTS_VERSION_2:
 		ret = power_on_seq_v2(dev, pd);
 		break;
+	case GPU_DTS_VERSION_3:
+		break;
 	default:
 		ret = -EINVAL;
 		break;
@@ -319,7 +321,7 @@ static int power_off_seq_v2(struct device *dev, struct gpu_core_logic_pd *pd)
 
 int gpu_core_logic_off(struct device *dev, struct gpu_core_logic_pd *pd)
 {
-	int ret;
+	int ret = 0;
 
 	switch (pd->gpu_dts_version) {
 	case GPU_DTS_VERSION_1:
@@ -327,6 +329,8 @@ int gpu_core_logic_off(struct device *dev, struct gpu_core_logic_pd *pd)
 		break;
 	case GPU_DTS_VERSION_2:
 		ret = power_off_seq_v2(dev, pd);
+		break;
+	case GPU_DTS_VERSION_3:
 		break;
 	default:
 		ret = -EINVAL;

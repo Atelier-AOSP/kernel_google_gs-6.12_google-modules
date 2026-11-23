@@ -94,7 +94,7 @@ typedef volatile struct hndoobr_reg {
 	uint32 topintdestsel[4];                /* 0x30 - 0x3c */
 	uint32 topextrsrcmap[4];                /* 0x40 - 0x4c */
 	uint32 reserved2[44];                   /* 0x50 - 0xfc */
-	hndoobr_percore_reg_t percore_reg[1];   /* 0x100 */
+	hndoobr_percore_reg_t percore_reg[];    /* 0x100 */
 } hndoobr_reg_t;
 
 /*

@@ -367,7 +367,7 @@ typedef struct gscan_results_cache {
 	uint8  tot_count;
 	uint8  tot_consumed;
 	uint32 scan_ch_bucket;
-	wifi_gscan_result_t results[1];
+	wifi_gscan_result_t results[BCM_FLEX_ARRAY];
 } gscan_results_cache_t;
 
 typedef struct dhd_pno_gscan_capabilities {
@@ -437,7 +437,7 @@ struct bssid_t {
 typedef struct gscan_hotlist_scan_params {
 	uint16 lost_ap_window; /* number of scans to declare LOST */
 	uint16 nbssid;   /* number of bssids  */
-	struct bssid_t bssid[1];  /* n bssids to follow */
+	struct bssid_t bssid[BCM_FLEX_ARRAY];  /* n bssids to follow */
 } gscan_hotlist_scan_params_t;
 
 #endif /* GSCAN_SUPPORT || DHD_GET_VALID_CHANNELS */

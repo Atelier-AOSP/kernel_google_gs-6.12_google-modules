@@ -8,6 +8,7 @@
 
 #include <ap-pmic/da9188.h>
 #include <mailbox/protocols/mba/cpm/common/pmic/pmic_service.h>
+#include <soc/google/goog_cpm_service_ids.h>
 
 /* Defined as da9188_gpio_ids in CPM */
 #define DA9188_NUM_PHYSICAL_PINS 19
@@ -98,13 +99,7 @@ static int da9188_vgpio_probe(struct platform_device *pdev)
 
 	priv->dev = dev;
 	platform_set_drvdata(pdev, priv);
-
-	ret = of_property_read_u32(dev->of_node, "mba-dest-channel",
-				   &priv->mb_dest_channel);
-	if (ret < 0) {
-		dev_err(dev, "Failed to read mba-dest-channel.\n");
-		return ret;
-	}
+	priv->mb_dest_channel = CPM_COMMON_PMIC_SERVICE;
 
 	ret = da9188_mfd_mbox_request(dev, &priv->mbox);
 	if (ret < 0)
@@ -131,16 +126,14 @@ free_mbox:
 	return ret;
 }
 
-static int da9188_vgpio_remove(struct platform_device *pdev)
+static void da9188_vgpio_remove(struct platform_device *pdev)
 {
 	struct da9188_vgpio_ctrl *priv = platform_get_drvdata(pdev);
 
 	if (IS_ERR_OR_NULL(priv))
-		return 0;
+		return;
 
 	da9188_mfd_mbox_release(&priv->mbox);
-
-	return 0;
 }
 
 static const struct platform_device_id da9188_vgpio_id[] = {

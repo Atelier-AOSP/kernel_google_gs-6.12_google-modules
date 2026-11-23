@@ -86,7 +86,7 @@
 #include <linux/pm_runtime.h>
 #endif /* DHD_PCIE_NATIVE_RUNTIMEPM */
 
-#if defined(DEBUGGER) || defined (DHD_DSCOPE)
+#if defined(DEBUGGER) || defined(DHD_DSCOPE)
 #include <debugger.h>
 #endif /* DEBUGGER || DHD_DSCOPE */
 
@@ -831,6 +831,7 @@ dhd_init_pwr_req_lock(dhd_bus_t *bus)
 {
 	if (!bus->pwr_req_lock) {
 		bus->pwr_req_lock = osl_spin_lock_init(bus->osh);
+		OSL_LOCK_CLASS_SET(bus->pwr_req_lock);
 	}
 }
 
@@ -860,6 +861,7 @@ dhd_init_dongle_ds_lock(dhd_bus_t *bus)
 {
 	if (!bus->dongle_ds_lock) {
 		bus->dongle_ds_lock = osl_spin_lock_init(bus->osh);
+		OSL_LOCK_CLASS_SET(bus->dongle_ds_lock);
 	}
 }
 
@@ -1248,10 +1250,6 @@ dhdpcie_quirks_before_dongle_attach(dhd_bus_t *bus)
 		DHD_ERROR(("%s chipid=0x%x\n", __FUNCTION__, chipid));
 		return BCME_ERROR;
 	}
-
-#if defined(BCMSUP_4WAY_HANDSHAKE)
-	dhd_initilize_idsup(chipid);
-#endif /* BCMSUP_4WAY_HANDSHAKE */
 	return BCME_OK;
 }
 
@@ -1886,16 +1884,7 @@ dhdpcie_bus_isr(dhd_bus_t *bus)
 			break;
 		}
 
-		/*
-		 * For MSI case, skip reading chip intstatus as
-		 * well as cfg intstatus (for CTO) from ISR.
-		 * The cfg intstatus will be read in DPC.
-		 */
-		if (bus->d2h_intr_method == PCIE_MSI) {
-			/* For MSI, as intstatus is cleared by firmware, no need to read */
-			goto skip_intstatus_read;
-		}
-
+#ifdef DHD_CHECK_CTO_FROM_ISR
 		if (PCIECTO_ENAB(bus)) {
 			if (dhdpcie_check_for_cto(bus) != BCME_OK) {
 				/* Disable further PCIe interrupts */
@@ -1904,6 +1893,17 @@ dhdpcie_bus_isr(dhd_bus_t *bus)
 #endif
 				break;
 			}
+		}
+#endif /* DHD_CHECK_CTO_FROM_ISR */
+
+		/*
+		 * For MSI case, skip reading chip intstatus as
+		 * well as cfg intstatus (for CTO) from ISR.
+		 * The cfg intstatus will be read in DPC.
+		 */
+		if (bus->d2h_intr_method == PCIE_MSI) {
+			/* For MSI, as intstatus is cleared by firmware, no need to read */
+			goto skip_intstatus_read;
 		}
 
 		intstatus = dhdpcie_bus_intstatus(bus);
@@ -2602,6 +2602,20 @@ dhdpcie_chip_specific_init(dhd_bus_t *bus, uint chipid)
 	}
 }
 
+#ifdef DHD_DEFER_L1SS_ENABLE_IN_RESUME
+static void dhd_l1ss_work_handler(struct work_struct *work)
+{
+	dhd_plat_l1ss_ctrl(1);
+}
+
+void dhd_schedule_l1ss_enable(dhd_pub_t *dhdp)
+{
+	dhd_bus_t *bus = dhdp->bus;
+
+	schedule_work(&bus->l1ss_enable_work);
+}
+#endif /* DHD_DEFER_L1SS_ENABLE_IN_RESUME */
+
 static bool
 dhdpcie_dongle_attach(dhd_bus_t *bus)
 {
@@ -3074,7 +3088,9 @@ dhdpcie_dongle_attach(dhd_bus_t *bus)
 				DAR_PCIE_PWR_CTRL((bus->sih)->buscorerev), TRUE);
 		}
 	}
-
+#ifdef DHD_DEFER_L1SS_ENABLE_IN_RESUME
+	INIT_WORK(&bus->l1ss_enable_work, dhd_l1ss_work_handler);
+#endif /* DHD_DEFER_L1SS_ENABLE_IN_RESUME */
 	DHD_TRACE(("%s: EXIT: SUCCESS\n", __FUNCTION__));
 
 	return 0;
@@ -3451,6 +3467,7 @@ dhd_init_bus_lp_state_lock(dhd_bus_t *bus)
 {
 	if (!bus->bus_lp_state_lock) {
 		bus->bus_lp_state_lock = osl_spin_lock_init(bus->osh);
+		OSL_LOCK_CLASS_SET(bus->bus_lp_state_lock);
 	}
 }
 
@@ -3468,6 +3485,7 @@ dhd_init_backplane_access_lock(dhd_bus_t *bus)
 {
 	if (!bus->backplane_access_lock) {
 		bus->backplane_access_lock = osl_spin_lock_init(bus->osh);
+		OSL_LOCK_CLASS_SET(bus->backplane_access_lock);
 	}
 }
 
@@ -3501,7 +3519,7 @@ dhdpcie_bus_release(dhd_bus_t *bus)
 		ASSERT(osh);
 
 		if (bus->dhd) {
-#if defined(DEBUGGER) || defined (DHD_DSCOPE)
+#if defined(DEBUGGER) || defined(DHD_DSCOPE)
 			debugger_close();
 #endif /* DEBUGGER || DHD_DSCOPE */
 			dhdpcie_advertise_bus_cleanup(bus->dhd);
@@ -3543,6 +3561,10 @@ dhdpcie_bus_release(dhd_bus_t *bus)
 			 */
 			dhd_detach(bus->dhd);
 			dhdpcie_bus_release_dongle(bus, osh, dongle_isolation, TRUE);
+#ifdef DHD_DEFER_L1SS_ENABLE_IN_RESUME
+			DHD_PRINT(("%s: Cancel L1SS enable work\n", __func__));
+			cancel_work_sync(&bus->l1ss_enable_work);
+#endif /* DHD_DEFER_L1SS_ENABLE_IN_RESUME */
 #if defined(__linux__)
 			BCM_REFERENCE(bcmerror);
 #ifdef BOARD_STB
@@ -5061,6 +5083,7 @@ dhdpcie_get_link_state(dhd_bus_t *bus)
 		goto exit;
 	}
 
+	DHD_PRINT(("%s: Check cfg bar registers\n", __FUNCTION__));
 	/* check for pcie link down and link reset */
 	base_addr0 = dhd_pcie_config_read(bus, PCI_CFG_BAR0, sizeof(uint32));
 	base_addr1 = dhd_pcie_config_read(bus, PCI_CFG_BAR1, sizeof(uint32));
@@ -5076,25 +5099,11 @@ dhdpcie_get_link_state(dhd_bus_t *bus)
 		dhd_bus_set_linkdown(bus->dhd, TRUE);
 		goto exit;
 	}
-	if ((base_addr0 == PCI_CFG_BAR0_RESET_VAL) || (base_addr1 == PCI_CFG_BAR1_RESET_VAL)) {
-		DHD_PRINT(("%s: pcie link reset: config space base_addr0=0x%x, base_addr1=0x%x\n",
-			__FUNCTION__, base_addr0, base_addr1));
-		ret = dhdpcie_config_restore(bus, TRUE);
-		if (ret == BCME_OK) {
-			DHD_PRINT(("%s set link to DHD_PCIE_ALL_GOOD state\n", __FUNCTION__));
-			dhd_bus_reset_link_state(bus->dhd);
-		} else {
-			DHD_ERROR(("%s failed to restore config space after link reset\n",
-				__FUNCTION__));
-#ifdef SUPPORT_LINKDOWN_RECOVERY
-#ifdef CONFIG_ARCH_MSM
-			bus->no_cfg_restore = 1;
-#endif /* CONFIG_ARCH_MSM */
-#endif /* SUPPORT_LINKDOWN_RECOVERY */
-			dhd_bus_set_linkdown(bus->dhd, TRUE);
-			goto exit;
-		}
-
+	if (base_addr0 == PCI_CFG_BAR0_RESET_VAL) {
+		DHD_PRINT(("%s: pcie link reset: config space base_addr0=0x%xn",
+			__FUNCTION__, base_addr0));
+		link_state = DHD_PCIE_LINK_RESET;
+		goto exit;
 	}
 
 	origidx = si_coreidx(bus->sih);
@@ -5688,7 +5697,7 @@ dhdpcie_read_dnglbp(dhd_bus_t *bus, int src, int src_size, uint8 *obuf)
 {
 	int read_size;
 	int ret = BCME_OK;
-#if defined(BOARD_HIKEY) || defined (BOARD_STB)
+#if defined(BOARD_HIKEY) || defined(BOARD_STB)
 	unsigned long flags_bus;
 #endif /* BOARD_HIKEY || BOARD_STB */
 	uint32 *sharea_addr = 0;
@@ -5697,12 +5706,12 @@ dhdpcie_read_dnglbp(dhd_bus_t *bus, int src, int src_size, uint8 *obuf)
 
 	while (src_size > 0) {
 		read_size = MIN(MEMBLOCK, src_size);
-#if defined(BOARD_HIKEY) || defined (BOARD_STB)
+#if defined(BOARD_HIKEY) || defined(BOARD_STB)
 		/* Hold BUS_LP_STATE_LOCK to avoid simultaneous bus access */
 		DHD_BUS_LP_STATE_LOCK(bus->bus_lp_state_lock, flags_bus);
 #endif /* BOARD_HIKEY || BOARD_STB */
 		ret = dhdpcie_bus_membytes(bus, FALSE, DHD_PCIE_MEM_BAR1, src, obuf, read_size);
-#if defined(BOARD_HIKEY) || defined (BOARD_STB)
+#if defined(BOARD_HIKEY) || defined(BOARD_STB)
 		DHD_BUS_LP_STATE_UNLOCK(bus->bus_lp_state_lock, flags_bus);
 #endif /* BOARD_HIKEY  || BOARD_STB */
 		if (ret) {
@@ -5825,9 +5834,9 @@ dhdpcie_get_mem_dump(dhd_bus_t *bus)
 	int start = 0;
 	uint8 *p_buf = NULL;
 
-#if defined(DHD_FILE_DUMP_EVENT) && defined(DHD_FW_COREDUMP)
+#if (defined(DHD_FILE_DUMP_EVENT) || defined(DHD_DMPD) && defined(DHD_FW_COREDUMP))
 	dhd_dongledump_status_t dump_status;
-#endif /* DHD_FILE_DUMP_EVENT && DHD_FW_COREDUMP */
+#endif /* (DHD_FILE_DUMP_EVENT || DHD_DMPD) && DHD_FW_COREDUMP */
 
 	DHD_PRINT(("%s: enter\n", __FUNCTION__));
 	if (!bus) {
@@ -5880,12 +5889,12 @@ dhdpcie_get_mem_dump(dhd_bus_t *bus)
 		goto exit;
 	}
 
-#if defined(DHD_FILE_DUMP_EVENT) && defined(DHD_FW_COREDUMP)
+#if (defined(DHD_FILE_DUMP_EVENT) || defined(DHD_DMPD) && defined(DHD_FW_COREDUMP))
 	dump_status = dhd_get_dump_status(bus->dhd);
 	if (dump_status != DUMP_IN_PROGRESS) {
 		dhd_set_dump_status(bus->dhd, DUMP_IN_PROGRESS);
 	}
-#endif /* DHD_FILE_DUMP_EVENT && DHD_FW_COREDUMP */
+#endif /* (DHD_FILE_DUMP_EVENT || DHD_DMPD) && DHD_FW_COREDUMP */
 
 	ret = dhdpcie_read_dnglbp(bus, start, size, p_buf);
 	if (ret) {
@@ -5893,11 +5902,11 @@ dhdpcie_get_mem_dump(dhd_bus_t *bus)
 	}
 
 exit:
-#if defined(DHD_FILE_DUMP_EVENT) && defined(DHD_FW_COREDUMP)
+#if (defined(DHD_FILE_DUMP_EVENT) || defined(DHD_DMPD) && defined(DHD_FW_COREDUMP))
 	if (ret != BCME_OK) {
 		dhd_set_dump_status(bus->dhd, DUMP_FAILURE);
 	}
-#endif /* DHD_FILE_DUMP_EVENT && DHD_FW_COREDUMP */
+#endif /* (DHD_FILE_DUMP_EVENT || DHD_DMPD) && DHD_FW_COREDUMP */
 
 	return ret;
 }
@@ -6614,7 +6623,11 @@ BCMFASTPATH(dhd_bus_schedule_queue)(struct dhd_bus  *bus, uint16 flow_id, bool t
 			/* Attempt to transfer packet over flow ring */
 			/* ifidx is wrong */
 			++cnt;
+#ifdef GOOGLE_DAL_CORE
+			ret = platform_bus_tx((void *)bus->dhd, txp, ifidx);
+#else
 			ret = dhd_prot_txdata(bus->dhd, txp, ifidx);
+#endif /* GOOGLE_DAL_CORE */
 			if (ret != BCME_OK) { /* may not have resources in flow ring */
 				DHD_INFO(("%s: Reinserrt %d\n", __FUNCTION__, ret));
 #ifdef AGG_H2D_DB
@@ -6960,6 +6973,7 @@ dhd_init_bar1_switch_lock(dhd_bus_t *bus)
 {
 	if (bus->bar1_switch_enab && !bus->bar1_switch_lock) {
 		bus->bar1_switch_lock = osl_spin_lock_init(bus->osh);
+		OSL_LOCK_CLASS_SET(bus->bar1_switch_lock);
 	}
 }
 
@@ -6977,6 +6991,7 @@ dhd_init_bar2_switch_lock(dhd_bus_t *bus)
 {
 	if (!bus->bar2_switch_lock) {
 		bus->bar2_switch_lock = osl_spin_lock_init(bus->osh);
+		OSL_LOCK_CLASS_SET(bus->bar2_switch_lock);
 	}
 }
 
@@ -7738,6 +7753,23 @@ dhd_bus_cmn_readshared(dhd_bus_t *bus, void *data, uint8 type, uint16 ringid)
 		addr = DHD_PCIE_SHARED_MEMBER_ADDR(bus, host_scb_size);
 		*(uint32 *)data = LTOH32(dhdpcie_bus_rtcm32(bus, DHD_PCIE_MEM_BAR1, addr));
 		break;
+
+#ifdef GOOGLE_DAL_CORE
+	case RING_BUF_ADDR:
+		addr = DHD_RING_MEM_MEMBER_ADDR(bus, ringid, base_addr);
+		*(uint32 *)data = LTOH32(dhdpcie_bus_rtcm32(bus, DHD_PCIE_MEM_BAR1, addr));
+		break;
+
+	case RING_ITEM_LEN:
+		addr = DHD_RING_MEM_MEMBER_ADDR(bus, ringid, len_items);
+		*(uint16 *)data = LTOH16(dhdpcie_bus_rtcm16(bus, DHD_PCIE_MEM_BAR1, addr));
+		break;
+
+	case RING_MAX_ITEMS:
+		addr = DHD_RING_MEM_MEMBER_ADDR(bus, ringid, max_item);
+		*(uint16 *)data = LTOH16(dhdpcie_bus_rtcm16(bus, DHD_PCIE_MEM_BAR1, addr));
+		break;
+#endif /* GOOGLE_DAL_CORE */
 
 	default:
 		break;
@@ -9278,12 +9310,7 @@ dhdpcie_bus_doiovar(dhd_bus_t *bus, const bcm_iovar_t *vi, uint32 actionid, cons
 			DHD_GENERAL_LOCK(bus->dhd, flags);
 			DHD_BUS_BUSY_SET_SUSPEND_IN_PROGRESS(bus->dhd);
 			DHD_GENERAL_UNLOCK(bus->dhd, flags);
-#ifdef DHD_PCIE_NATIVE_RUNTIMEPM
 			dhdpcie_bus_suspend(bus, TRUE, TRUE);
-#else
-			dhdpcie_bus_suspend(bus, TRUE);
-#endif /* DHD_PCIE_NATIVE_RUNTIMEPM */
-
 			DHD_GENERAL_LOCK(bus->dhd, flags);
 			DHD_BUS_BUSY_CLEAR_SUSPEND_IN_PROGRESS(bus->dhd);
 			dhd_os_busbusy_wake(bus->dhd);
@@ -9294,7 +9321,7 @@ dhdpcie_bus_doiovar(dhd_bus_t *bus, const bcm_iovar_t *vi, uint32 actionid, cons
 			DHD_BUS_BUSY_SET_RESUME_IN_PROGRESS(bus->dhd);
 			DHD_GENERAL_UNLOCK(bus->dhd, flags);
 
-			dhdpcie_bus_suspend(bus, FALSE);
+			dhdpcie_bus_suspend(bus, FALSE, FALSE);
 
 			DHD_GENERAL_LOCK(bus->dhd, flags);
 			DHD_BUS_BUSY_CLEAR_RESUME_IN_PROGRESS(bus->dhd);
@@ -9622,13 +9649,6 @@ dhdpcie_bus_doiovar(dhd_bus_t *bus, const bcm_iovar_t *vi, uint32 actionid, cons
 
 	case IOV_SVAL(IOV_RX_METADATALEN):
 #if !(defined(BCM_ROUTER_DHD))
-		/* Reject negative values */
-		if (int_val < 0) {
-			bcmerror = BCME_BADARG;
-			break;
-		}
-
-		/* Enforce upper bound */
 		if (int_val > 64) {
 			bcmerror = BCME_BUFTOOLONG;
 			break;
@@ -9670,13 +9690,6 @@ dhdpcie_bus_doiovar(dhd_bus_t *bus, const bcm_iovar_t *vi, uint32 actionid, cons
 
 	case IOV_SVAL(IOV_TX_METADATALEN):
 #if !(defined(BCM_ROUTER_DHD))
-		/* Reject negative values */
-		if (int_val < 0) {
-			bcmerror = BCME_BADARG;
-			break;
-		}
-
-		/* Enforce upper bound */
 		if (int_val > 64) {
 			bcmerror = BCME_BUFTOOLONG;
 			break;
@@ -10849,8 +10862,8 @@ dhd_recover_timeout_by_scheduling_dpc(struct dhd_bus *bus)
 
 	if (dhd_prot_check_pending_ctrl_cmpls(bus->dhd)) {
 		if (bus->rot_consec_retry < DHD_MAX_ROT_RETRY_COUNT) {
-			DHD_PRINT(("##### %s: scheduling dpc again : retry_cnt - %d #####\n",
-				__FUNCTION__, bus->rot_dpc_sched_count));
+			DHD_PRINT(("## %s: scheduling dpc again: rot_consec_retry:%d %d ##\n",
+				__FUNCTION__, bus->rot_consec_retry, bus->rot_dpc_sched_count));
 			dhd_pcie_intr_count_dump(bus->dhd);
 			dhd_print_tasklet_status(bus->dhd);
 			dhd_prot_ctrl_info_print(bus->dhd);
@@ -10859,8 +10872,8 @@ dhd_recover_timeout_by_scheduling_dpc(struct dhd_bus *bus)
 			bus->rot_dpc_sched_count++;
 			bus->rot_consec_retry++;
 		} else {
-			DHD_ERROR(("%s: ROT MAX RETRY reached : %d",
-				__FUNCTION__, bus->rot_dpc_sched_count));
+			DHD_ERROR(("%s: ROT MAX RETRY(%d) reached : %d",
+				__FUNCTION__, DHD_MAX_ROT_RETRY_COUNT, bus->rot_consec_retry));
 		}
 	} else {
 		DHD_PRINT(("%s: no pend items in CtrlCpl ring\n",
@@ -10872,12 +10885,88 @@ exit:
 }
 #endif /* DHD_RECOVER_TIMEOUT */
 
+void
+dhdpcie_restore_dongle_d0(struct dhd_bus *bus)
+{
+	unsigned long flags;
+
+	if (bus->dhd->dhd_watchdog_ms_backup) {
+		DHD_PRINT(("%s: Enabling wdtick\n", __FUNCTION__));
+		dhd_os_wd_timer(bus->dhd, bus->dhd->dhd_watchdog_ms_backup);
+	}
+
+	/*
+	 * Dongle still thinks that it has to be in D3 state until
+	 * it gets a D0 Inform, but we are backing off from suspend.
+	 * Ensure that Dongle is brought back to D0.
+	 *
+	 * Bringing back Dongle from D3 Ack state to D0 state is a
+	 * 2 step process. Dongle would want to know that D0 Inform
+	 * would be sent as a MB interrupt to bring it out of D3 Ack
+	 * state to D0 state. So we have to send both this message.
+	 */
+
+	/* Clear wait_for_d3_ack to send D0_INFORM or host_ready */
+	bus->wait_for_d3_ack = 0;
+
+	DHD_SET_BUS_NOT_IN_LPS(bus);
+#ifdef PCIE_INB_DW
+	if (INBAND_DW_ENAB(bus)) {
+		DHD_BUS_INB_DW_LOCK(bus->inb_lock, flags);
+		/* Since suspend has failed due to wakelock is held,
+		 * update the DS state to DW_DEVICE_HOST_WAKE_WAIT.
+		 * So that host sends the DS-ACK for DS-REQ.
+		 */
+		DHD_PRINT(("Suspend failed due to wakelock is held, "
+		 "set inband dw state to DW_DEVICE_HOST_WAKE_WAIT\n"));
+		dhdpcie_bus_set_pcie_inband_dw_state(bus, DW_DEVICE_HOST_WAKE_WAIT);
+		dhd_bus_ds_trace(bus, 0, TRUE, dhdpcie_bus_get_pcie_inband_dw_state(bus),
+			__FUNCTION__);
+		bus->skip_ds_ack = FALSE;
+		DHD_BUS_INB_DW_UNLOCK(bus->inb_lock, flags);
+	}
+#endif /* PCIE_INB_DW */
+
+	/* Enable back the intmask which was cleared in DPC
+	 * after getting D3_ACK.
+	 */
+	dhdpcie_bus_intr_enable(bus);
+	bus->dngl_intmask_enable_count++;
+
+	if (bus->use_d0_inform) {
+		DHD_OS_WAKE_LOCK_WAIVE(bus->dhd);
+		dhdpcie_send_mb_data(bus, (H2D_HOST_D0_INFORM_IN_USE | H2D_HOST_D0_INFORM),
+			__FUNCTION__);
+		DHD_OS_WAKE_LOCK_RESTORE(bus->dhd);
+	}
+	/* ring doorbell 1 (hostready) */
+	dhd_bus_hostready(bus);
+
+	DHD_GENERAL_LOCK(bus->dhd, flags);
+	bus->dhd->busstate = DHD_BUS_DATA;
+	/* resume all interface network queue. */
+	dhd_bus_start_queue(bus);
+	DHD_GENERAL_UNLOCK(bus->dhd, flags);
+
+	return;
+}
+
+/**
+ * dhdpcie_bus_suspend - Suspend or resume the PCIe bus for the DHD (Dongle Host Driver).
+ * @bus:    Pointer to the DHD PCIe bus context structure.
+ * @state:  Boolean indicating requested power state: TRUE for suspend, FALSE for resume.
+ * @byint:  Boolean indicating if the suspend was triggered by an interrupt
+ * 	(only used when DHD_PCIE_NATIVE_RUNTIMEPM is enabled).
+ *
+ * Return:
+ *   0 on success,
+ *   Negative error code or BCME_ERROR on failure,
+ *   -EBUSY if the bus is busy,
+ *   -EIO if the dongle is in reset state,
+ *   -ETIMEDOUT if D3 acknowledgment times out.
+ */
 int
-#ifdef DHD_PCIE_NATIVE_RUNTIMEPM
 dhdpcie_bus_suspend(struct dhd_bus *bus, bool state, bool byint)
-#else
-dhdpcie_bus_suspend(struct dhd_bus *bus, bool state)
-#endif /* DHD_PCIE_NATIVE_RUNTIMEPM */
 {
 	int timeleft = 0;
 	int rc = 0, ret = BCME_OK;
@@ -10887,6 +10976,9 @@ dhdpcie_bus_suspend(struct dhd_bus *bus, bool state)
 	uint32 d2h_mb_data = 0;
 	uint32 zero = 0;
 #endif /* DHD_PCIE_NATIVE_RUNTIMEPM */
+#if IS_ENABLED(CONFIG_SOC_LGA)
+	uint32 base_addr0;
+#endif /* CONFIG_SOC_LGA */
 
 	if (bus->dhd == NULL) {
 		DHD_ERROR(("bus not inited\n"));
@@ -10924,6 +11016,11 @@ dhdpcie_bus_suspend(struct dhd_bus *bus, bool state)
 		DHD_ERROR(("Bus is already in RESUME state.\n"));
 		return BCME_OK;
 	}
+#if IS_ENABLED(CONFIG_SOC_LGA)
+	DHD_PRINT(("%s: .. ", __FUNCTION__));
+	base_addr0 = dhd_pcie_config_read(bus, 0x10, sizeof(uint32));
+	DHD_PRINT(("base_addr0=0x%x\n", base_addr0));
+#endif /* CONFIG_SOC_LGA */
 
 	if (state) {
 
@@ -10937,6 +11034,20 @@ dhdpcie_bus_suspend(struct dhd_bus *bus, bool state)
 				__FUNCTION__, state));
 			return BCME_ERROR;
 		}
+
+#ifdef GOOGLE_DAL_CORE
+		if (!platform_bus_check_suspend()) {
+			/*
+			 * Return 0 to continue host suspend. i.e., host will suspend with link on.
+			 * The link on/off control will pass to offload engine. Hence, we need sync
+			 * back the latest pci status from offloand engine at some time before the
+			 * dhd driver starts its pci resume callback.
+			 *
+			 * TODO - power down RC by removing the vote.
+			 */
+			return ret;
+		}
+#endif /* GOOGLE_DAL_CORE */
 
 		/* Suspend */
 		DHD_RPM(("%s: Entering suspend state\n", __FUNCTION__));
@@ -11052,10 +11163,6 @@ dhdpcie_bus_suspend(struct dhd_bus *bus, bool state)
 		 */
 #ifdef PCIE_INB_DW
 		if (INBAND_DW_ENAB(bus)) {
-#if IS_ENABLED(CONFIG_SOC_LGA)
-			DHD_ERROR(("d3_inform:send\n"));
-			dhd_plat_check_msi();
-#endif
 			DHD_BUS_INB_DW_LOCK(bus->inb_lock, flags);
 			DHD_RPM(("%s: Before D3_INFORM inband_dw_state:%d\n",
 				__FUNCTION__, dhdpcie_bus_get_pcie_inband_dw_state(bus)));
@@ -11127,71 +11234,10 @@ dhdpcie_bus_suspend(struct dhd_bus *bus, bool state)
 
 #ifdef OEM_ANDROID
 			if (active) {
-				DHD_ERROR(("%s():Suspend failed because of wakelock"
+				DHD_ERROR(("%s():Suspend failed because of wakelock "
 					"restoring Dongle to D0\n", __FUNCTION__));
-
-				if (bus->dhd->dhd_watchdog_ms_backup) {
-					DHD_PRINT(("%s: Enabling wdtick due to wakelock active\n",
-						__FUNCTION__));
-					dhd_os_wd_timer(bus->dhd,
-						bus->dhd->dhd_watchdog_ms_backup);
-				}
-
-				/*
-				 * Dongle still thinks that it has to be in D3 state until
-				 * it gets a D0 Inform, but we are backing off from suspend.
-				 * Ensure that Dongle is brought back to D0.
-				 *
-				 * Bringing back Dongle from D3 Ack state to D0 state is a
-				 * 2 step process. Dongle would want to know that D0 Inform
-				 * would be sent as a MB interrupt to bring it out of D3 Ack
-				 * state to D0 state. So we have to send both this message.
-				 */
-
-				/* Clear wait_for_d3_ack to send D0_INFORM or host_ready */
-				bus->wait_for_d3_ack = 0;
-
-				DHD_SET_BUS_NOT_IN_LPS(bus);
-#ifdef PCIE_INB_DW
-				if (INBAND_DW_ENAB(bus)) {
-					DHD_BUS_INB_DW_LOCK(bus->inb_lock, flags);
-					/* Since suspend has failed due to wakelock is held,
-					 * update the DS state to DW_DEVICE_HOST_WAKE_WAIT.
-					 * So that host sends the DS-ACK for DS-REQ.
-					 */
-					DHD_PRINT(("Suspend failed due to wakelock is held, "
-					 "set inband dw state to DW_DEVICE_HOST_WAKE_WAIT\n"));
-					dhdpcie_bus_set_pcie_inband_dw_state(bus,
-						DW_DEVICE_HOST_WAKE_WAIT);
-					dhd_bus_ds_trace(bus, 0, TRUE,
-						dhdpcie_bus_get_pcie_inband_dw_state(bus),
-						__FUNCTION__);
-					bus->skip_ds_ack = FALSE;
-					DHD_BUS_INB_DW_UNLOCK(bus->inb_lock, flags);
-				}
-#endif /* PCIE_INB_DW */
-
-				/* Enable back the intmask which was cleared in DPC
-				 * after getting D3_ACK.
-				 */
-				dhdpcie_bus_intr_enable(bus);
-				bus->dngl_intmask_enable_count++;
-
-				if (bus->use_d0_inform) {
-					DHD_OS_WAKE_LOCK_WAIVE(bus->dhd);
-					dhdpcie_send_mb_data(bus,
-						(H2D_HOST_D0_INFORM_IN_USE | H2D_HOST_D0_INFORM),
-						__FUNCTION__);
-					DHD_OS_WAKE_LOCK_RESTORE(bus->dhd);
-				}
-				/* ring doorbell 1 (hostready) */
-				dhd_bus_hostready(bus);
-
-				DHD_GENERAL_LOCK(bus->dhd, flags);
-				bus->dhd->busstate = DHD_BUS_DATA;
-				/* resume all interface network queue. */
-				dhd_bus_start_queue(bus);
-				DHD_GENERAL_UNLOCK(bus->dhd, flags);
+				/* Restore dongle back to D0 */
+				dhdpcie_restore_dongle_d0(bus);
 				rc = BCME_ERROR;
 			} else {
 				/* Actual Suspend after no wakelock */
@@ -11288,7 +11334,12 @@ dhdpcie_bus_suspend(struct dhd_bus *bus, bool state)
 				}
 				DHD_INFO(("Doing the D3\n"));
 				rc = dhdpcie_pci_suspend_resume(bus, state);
-				if (!rc) {
+				if (rc < 0) {
+					DHD_ERROR(("%s: suspend failed, restoring dongle to D0\n",
+						__FUNCTION__));
+					/* Restore dongle back to D0 */
+					dhdpcie_restore_dongle_d0(bus);
+				} else {
 					bus->last_suspend_end_time = OSL_LOCALTIME_NS();
 				}
 				DHD_INFO(("FLR, lpm_mode %d, lpm_force_flr %d, fwsupport %d\n",
@@ -11456,7 +11507,6 @@ dhdpcie_bus_suspend(struct dhd_bus *bus, bool state)
 		/* Resume */
 		DHD_RPM(("%s: Entering resume state\n", __FUNCTION__));
 		bus->last_resume_start_time = OSL_LOCALTIME_NS();
-
 		/**
 		 * PCIE2_BAR0_CORE2_WIN gets reset after D3 cold.
 		 * si_backplane_access(function to read/write backplane)
@@ -11581,6 +11631,9 @@ dhdpcie_bus_suspend(struct dhd_bus *bus, bool state)
 		/* Update TCM rd index for EDL ring */
 		DHD_EDL_RING_TCM_RD_UPDATE(bus->dhd);
 
+#ifdef GOOGLE_DAL_CORE
+		platform_bus_notify_resume();
+#endif /* GOOGLE_DAL_CORE */
 	}
 	return rc;
 
@@ -11607,12 +11660,8 @@ fail:
 int dhd_bus_suspend(dhd_pub_t *dhd)
 {
 	int ret;
-#ifdef DHD_PCIE_NATIVE_RUNTIMEPM
 	/* TODO: Check whether the arguments are correct */
 	ret = dhdpcie_bus_suspend(dhd->bus, TRUE, BUS_SUSPEND);
-#else
-	ret = dhdpcie_bus_suspend(dhd->bus, BUS_SUSPEND);
-#endif
 	return ret;
 }
 
@@ -11621,12 +11670,7 @@ int dhd_bus_resume(dhd_pub_t *dhd, int stage)
 	int ret;
 	BCM_REFERENCE(stage);
 
-#ifdef DHD_PCIE_NATIVE_RUNTIMEPM
-	/* TODO: Check whether the arguments are correct */
 	ret = dhdpcie_bus_suspend(dhd->bus, FALSE, BUS_RESUME);
-#else
-	ret = dhdpcie_bus_suspend(dhd->bus, BUS_RESUME);
-#endif
 	return ret;
 }
 
@@ -13440,11 +13484,6 @@ sched_axi:
 }
 #endif /* DNGL_AXI_ERROR_LOGGING */
 
-/* Limit TX flowring processing time per DPC pass to avoid hard lockup. */
-#ifndef DHD_TXFLOWRINGS_DPC_BUDGET_NSEC
-#define DHD_TXFLOWRINGS_DPC_BUDGET_NSEC 200000ULL      /* 200 usec */
-#endif /* !DHD_TXFLOWRINGS_DPC_BUDGET_NSEC */
-
 /**
  * Brings transmit packets on all flow rings closer to the dongle, by moving (a subset) from their
  * flow queue to their flow ring.
@@ -13458,8 +13497,6 @@ dhd_update_txflowrings(dhd_pub_t *dhd)
 	struct dhd_bus *bus = dhd->bus;
 	int count = 0;
 	bool more = FALSE;
-	uint64 start_ts = OSL_LOCALTIME_NS();
-	uint64 now_ts;
 
 	if (dhd_query_bus_erros(dhd)) {
 		return more;
@@ -13494,18 +13531,8 @@ dhd_update_txflowrings(dhd_pub_t *dhd)
 		/* Ensure that the flowring node has valid contents */
 		ASSERT(flow_ring_node->prot_info != NULL);
 
-		more |= dhd_prot_update_txflowring(dhd, flow_ring_node->flowid,
+		more = dhd_prot_update_txflowring(dhd, flow_ring_node->flowid,
 			flow_ring_node->prot_info);
-
-		now_ts = OSL_LOCALTIME_NS();
-		if ((now_ts - start_ts) >= DHD_TXFLOWRINGS_DPC_BUDGET_NSEC) {
-			DHD_INFO(("%s: txflowring budget hit (%llu nsec), rescheduling\n",
-				__FUNCTION__,
-				(unsigned long long)DHD_TXFLOWRINGS_DPC_BUDGET_NSEC));
-			/* Keep DPC reschedule path active for remaining rings/packets. */
-			more = TRUE;
-			break;
-		}
 	}
 	DHD_FLOWRING_LIST_UNLOCK(bus->dhd->flowring_list_lock, flags);
 
@@ -14087,6 +14114,7 @@ BCMFASTPATH(dhd_bus_dpc)(struct dhd_bus *bus)
 		}
 	}
 
+#ifndef DHD_CHECK_CTO_FROM_ISR
 	/* For MSI case, check for CTO vi cfg INTSTATUS from DPC for non rescheduled case,
 	 * to avoid more time in ISR.
 	 */
@@ -14095,7 +14123,7 @@ BCMFASTPATH(dhd_bus_dpc)(struct dhd_bus *bus)
 			return 0;
 		}
 	}
-
+#endif /* DHD_CHECK_CTO_FROM_ISR */
 	DHD_GENERAL_LOCK(bus->dhd, flags);
 	/* Check for only DHD_BUS_DOWN and not for DHD_BUS_DOWN_IN_PROGRESS
 	 * to avoid IOCTL Resumed On timeout when ioctl is waiting for response
@@ -14493,6 +14521,9 @@ dhd_bus_handle_mb_data(dhd_bus_t *bus, uint32 d2h_mb_data, const char *context)
 	if (d2h_mb_data & D2HMB_DS_HOST_SLEEP_EXIT_ACK)  {
 		/* what should we do */
 		DHD_PRINT(("D2H_MB_DATA: D0 ACK\n"));
+#ifdef DHD_DEFER_L1SS_ENABLE_IN_RESUME
+		dhd_schedule_l1ss_enable(bus->dhd);
+#endif /* DHD_DEFER_L1SS_ENABLE_IN_RESUME */
 #ifdef PCIE_INB_DW
 		if (INBAND_DW_ENAB(bus)) {
 			DHD_BUS_INB_DW_LOCK(bus->inb_lock, flags);
@@ -14809,8 +14840,11 @@ dhdpci_bus_read_frames(dhd_bus_t *bus)
 #ifdef DHD_HP2P
 	more |= dhd_prot_process_msgbuf_txcpl(bus->dhd, DHD_HP2P_RING, &txcpl_items);
 #endif /* DHD_HP2P */
-	more |= dhd_prot_process_msgbuf_txcpl(bus->dhd, DHD_REGULAR_RING,
-			&txcpl_items);
+#ifdef GOOGLE_DAL_CORE
+	more |= platform_bus_tx_cpl((void *)bus->dhd, &txcpl_items);
+#else
+	more |= dhd_prot_process_msgbuf_txcpl(bus->dhd, DHD_REGULAR_RING, &txcpl_items);
+#endif /* GOOGLE_DAL_CORE */
 	bus->last_process_txcpl_time = OSL_LOCALTIME_NS();
 
 	bus->tx_cpl_time_usec =
@@ -14826,7 +14860,11 @@ dhdpci_bus_read_frames(dhd_bus_t *bus)
 #ifdef DHD_MESH
 	more |= dhd_prot_process_msgbuf_rxcpl(bus->dhd, DHD_MESH_RING, &rxcpl_items);
 #endif /* DHD_MESH */
+#ifdef GOOGLE_DAL_CORE
+	more |= platform_bus_rx(bus->dhd, &rxcpl_items);
+#else
 	more |= dhd_prot_process_msgbuf_rxcpl(bus->dhd, DHD_REGULAR_RING, &rxcpl_items);
+#endif /* GOOGLE_DAL_CORE */
 	bus->last_process_rxcpl_time = OSL_LOCALTIME_NS();
 
 	bus->rx_cpl_post_time_usec =
@@ -14915,6 +14953,24 @@ dhdpci_bus_read_frames(dhd_bus_t *bus)
 	dhdpci_bus_rte_log_time_sync_poll(bus);
 #endif /* DHD_H2D_LOG_TIME_SYNC */
 
+#if defined(DHD_WAKE_STATUS)
+	/* Check if host was woken up by any packets */
+	if (dhd_bus_get_bus_wake(bus->dhd) > 0) {
+		/*
+		 * If wake is due to Rx packets,
+		 * pktwake info will be printed and cleared from dhd_rx_frame()
+		 */
+		DHD_PRINT(("#### dhdpcie_host_wake: rxcpl:%d ctrlcpl:%d txcpl:%d evtlog:%d ####\n",
+			rxcpl_items, ctrlcpl_items, txcpl_items, evtlog_items));
+
+		dhd_bus_set_get_bus_wake(bus->dhd, 0);
+
+		if (rxcpl_items > 0) {
+			/* Request packet dump for first Rx packet */
+			dhd_bus_set_get_bus_wake_pkt_dump(bus->dhd, 1);
+		}
+	}
+#endif /* DHD_WAKE_STATUS */
 	return more;
 }
 
@@ -15533,7 +15589,7 @@ dhdpcie_readshared(dhd_bus_t *bus)
 				D2H_DMA_INDX_RD_BUF, bus->max_completion_rings);
 
 			if ((dma_indx_wr_buf != BCME_OK) || (dma_indx_rd_buf != BCME_OK)) {
-				DHD_ERROR(("%s: Failed to allocate memory for dma'ing h2d indices"
+				DHD_ERROR(("%s: Failed to allocate memory for dma'ing h2d indices "
 						"Host will use w/r indices in TCM\n",
 						__FUNCTION__));
 				bus->dhd->dma_h2d_ring_upd_support = FALSE;
@@ -15548,7 +15604,7 @@ dhdpcie_readshared(dhd_bus_t *bus)
 				H2D_DMA_INDX_RD_BUF, bus->max_submission_rings);
 
 			if ((dma_indx_wr_buf != BCME_OK) || (dma_indx_rd_buf != BCME_OK)) {
-				DHD_ERROR(("%s: Failed to allocate memory for dma'ing d2h indices"
+				DHD_ERROR(("%s: Failed to allocate memory for dma'ing d2h indices "
 						"Host will use w/r indices in TCM\n",
 						__FUNCTION__));
 				bus->dhd->dma_d2h_ring_upd_support = FALSE;
@@ -16194,6 +16250,7 @@ int dhd_bus_init(dhd_pub_t *dhdp, bool enforce_mutex)
 	/* Initialize the lock to serialize Device Wake Inband activities */
 	if (!bus->inb_lock) {
 		bus->inb_lock = osl_spin_lock_init(bus->dhd->osh);
+		OSL_LOCK_CLASS_SET(bus->inb_lock);
 	}
 #endif
 
@@ -17032,7 +17089,7 @@ dhd_bus_release_dongle(struct dhd_bus *bus)
 		ASSERT(osh);
 
 		if (bus->dhd) {
-#if defined(DEBUGGER) || defined (DHD_DSCOPE)
+#if defined(DEBUGGER) || defined(DHD_DSCOPE)
 			debugger_close();
 #endif /* DEBUGGER || DHD_DSCOPE */
 

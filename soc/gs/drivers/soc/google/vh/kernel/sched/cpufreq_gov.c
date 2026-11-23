@@ -20,16 +20,18 @@
 
 #include <soc/google/exynos_pm_qos.h>
 
+#include <perf/core/gs_governor_dsulat.h>
+#include <perf/core/gs_governor_memlat.h>
 #if IS_ENABLED(CONFIG_SOC_GS101) || IS_ENABLED(CONFIG_SOC_GS201) || IS_ENABLED(CONFIG_SOC_ZUMA)
 #include <performance/gs_perf_mon/gs_perf_mon.h>
 #else
 #include <perf/core/gs_perf_mon.h>
 #endif
-#include "../../../../../devfreq/google/governor_memlat.h"
+#include "governor_memlat.h"
 #include "sched_priv.h"
 
 #if IS_ENABLED(CONFIG_PIXEL_EM)
-#include "../../include/pixel_em.h"
+#include "pixel_em.h"
 #endif
 
 #define IOWAIT_BOOST_MIN	(SCHED_CAPACITY_SCALE / 8)
@@ -168,13 +170,47 @@ void reset_scaling_freq(int cpu)
 		sg_cpu->sg_policy->scaling_freq_max = UINT_MAX;
 	}
 }
-EXPORT_SYMBOL_GPL(reset_scaling_freq);
 #endif
+
+static __always_inline
+unsigned long uclamp_rq_util_with(struct rq *rq, unsigned long util,
+				  struct task_struct *p)
+{
+	unsigned long min_util = 0;
+	unsigned long max_util = 0;
+
+	if (!static_branch_likely(&sched_uclamp_used))
+		return util;
+
+	if (p) {
+		min_util = uclamp_eff_value(p, UCLAMP_MIN);
+		max_util = uclamp_eff_value(p, UCLAMP_MAX);
+
+		/*
+		 * Ignore last runnable task's max clamp, as this task will
+		 * reset it. Similarly, no need to read the rq's min clamp.
+		 */
+		if (uclamp_rq_is_idle(rq))
+			goto out;
+	}
+
+	min_util = max_t(unsigned long, min_util, uclamp_rq_get(rq, UCLAMP_MIN));
+	max_util = max_t(unsigned long, max_util, uclamp_rq_get(rq, UCLAMP_MAX));
+out:
+	/*
+	 * Since CPU's {min,max}_util clamps are MAX aggregated considering
+	 * RUNNABLE tasks with _different_ clamps, we can end up with an
+	 * inversion. Fix it now when the clamps are applied.
+	 */
+	if (unlikely(min_util >= max_util))
+		return min_util;
+
+	return clamp(util, min_util, max_util);
+}
 
 static inline bool sugov_em_profile_changed(struct sugov_policy *sg_policy)
 {
 #if IS_ENABLED(CONFIG_PIXEL_EM)
-	struct pixel_em_profile **profile_ptr_snapshot;
 	struct pixel_em_profile *profile;
 	bool ret = false;
 
@@ -183,11 +219,9 @@ static inline bool sugov_em_profile_changed(struct sugov_policy *sg_policy)
 		ret = true;
 	}
 
-	profile_ptr_snapshot = READ_ONCE(vendor_sched_pixel_em_profile);
-	if (!profile_ptr_snapshot)
+	profile = get_em_profile();
+	if (!profile)
 		goto out;
-
-	profile = READ_ONCE(*profile_ptr_snapshot);
 
 	if (sg_policy->em_profile != profile) {
 		sg_policy->em_profile = profile;
@@ -206,19 +240,12 @@ sugov_calc_freq_response_ms(struct sugov_policy *sg_policy)
 	unsigned long cap = arch_scale_cpu_capacity(cpu);
 
 #if IS_ENABLED(CONFIG_PIXEL_EM)
-	struct pixel_em_profile **profile_ptr_snapshot;
-	struct pixel_em_profile *profile;
+	struct pixel_em_cluster *cluster = get_em_cluster(cpu);
 
-	profile_ptr_snapshot = READ_ONCE(vendor_sched_pixel_em_profile);
-	if (!profile_ptr_snapshot)
-		goto out;
-
-	profile = READ_ONCE(*profile_ptr_snapshot);
-	if (profile) {
-		struct pixel_em_cluster *cluster = profile->cpu_to_cluster[cpu];
+	if (cluster) {
 		struct pixel_em_opp *sec_max_opp;
 
-		if (!cluster || !cluster->num_opps)
+		if (!cluster->num_opps)
 			goto out;
 
 		if (static_branch_likely(&use_em_for_freq_mapping) || cluster->num_opps < 2) {
@@ -284,7 +311,7 @@ static inline void sugov_update_response_time_mult(struct sugov_policy *sg_polic
 		mult = freq_response_time_ms * SCHED_CAPACITY_SCALE;
 		mult /=	response_time_ms;
 	} else {
-		unsigned int cpu_cap = capacity_orig_of(cpumask_any(sg_policy->policy->cpus));
+		unsigned int cpu_cap = arch_scale_cpu_capacity(cpumask_any(sg_policy->policy->cpus));
 		unsigned int new_cap = approximate_util_avg(0, response_time_ms * USEC_PER_MSEC);
 		mult = cpu_cap * SCHED_CAPACITY_SCALE;
 		mult /= new_cap;
@@ -319,7 +346,7 @@ apply_dvfs_headroom(unsigned long util, int cpu, bool tapered)
 	}
 
 	if (tapered && static_branch_unlikely(&tapered_dvfs_headroom_enable)) {
-		unsigned long capacity = capacity_orig_of(cpu);
+		unsigned long capacity = arch_scale_cpu_capacity(cpu);
 		unsigned long headroom;
 
 		if (util >= capacity)
@@ -437,8 +464,8 @@ void update_uclamp_stats(int cpu, u64 time)
 	struct uclamp_stats *stats = &per_cpu(uclamp_stats, cpu);
 	s64 delta_ns = time - stats->last_update_time;
 	struct rq *rq = cpu_rq(cpu);
-	unsigned long cpu_util = min(capacity_orig_of(cpu), cpu_util_cfs(rq) + cpu_util_rt(rq));
-	unsigned long cpu_util_max_clamped = min(capacity_orig_of(cpu), cpu_util_cfs_group_mod(cpu) +
+	unsigned long cpu_util = min(arch_scale_cpu_capacity(cpu), cpu_util_cfs(rq) + cpu_util_rt(rq));
+	unsigned long cpu_util_max_clamped = min(arch_scale_cpu_capacity(cpu), cpu_util_cfs_group_mod(cpu) +
 						 cpu_util_rt(rq));
 	unsigned int uclamp_min = READ_ONCE(rq->uclamp[UCLAMP_MIN].value);
 	unsigned int uclamp_max = READ_ONCE(rq->uclamp[UCLAMP_MAX].value);
@@ -631,33 +658,27 @@ static inline void get_scaling_target_and_freq(int cpu, unsigned int next_freq, 
 				 unsigned int *scaling_freq, enum constraint_type *type)
 {
 #if IS_ENABLED(CONFIG_PIXEL_EM)
-	struct pixel_em_profile **profile_ptr_snapshot;
+	struct pixel_em_cluster *cluster = get_em_cluster(cpu);
 
-	profile_ptr_snapshot = READ_ONCE(vendor_sched_pixel_em_profile);
-	if (profile_ptr_snapshot) {
-		struct pixel_em_profile *profile = READ_ONCE(*profile_ptr_snapshot);
+	if (cluster) {
+		struct pixel_em_opp *opp;
+		int i;
 
-		if (profile) {
-			struct pixel_em_cluster *cluster = profile->cpu_to_cluster[cpu];
-			struct pixel_em_opp *opp;
-			int i;
-
-			if (cluster->frequency_scaling_target != -1 &&
-			    cluster->frequency_scaling_table) {
-				*target_cpu = cluster->frequency_scaling_target;
-				*type = cluster->constraint_type;
-			} else {
-				return;
-			}
-
-			for (i = 0; i < cluster->num_opps; i++) {
-				opp = &cluster->opps[i];
-				if (opp->freq >= next_freq)
-					break;
-			}
-
-			*scaling_freq = opp->scaling_freq;
+		if (cluster->frequency_scaling_target != -1 &&
+		    cluster->frequency_scaling_table) {
+			*target_cpu = cluster->frequency_scaling_target;
+			*type = cluster->constraint_type;
+		} else {
+			return;
 		}
+
+		for (i = 0; i < cluster->num_opps; i++) {
+			opp = &cluster->opps[i];
+			if (opp->freq >= next_freq)
+				break;
+		}
+
+		*scaling_freq = opp->scaling_freq;
 	}
 #endif
 }
@@ -1249,6 +1270,12 @@ sugov_update_shared(struct update_util_data *hook, u64 time, unsigned int flags)
 			cpufreq_driver_fast_switch(sg_cpu->sg_policy->policy, next_f);
 		else
 			sugov_deferred_update(sg_cpu->sg_policy);
+
+		if (static_branch_likely(&dsulat_fast_switch_enable))
+			gs_governor_dsulat_cpufreq_update(sg_cpu->sg_policy->policy, next_f);
+
+		if (static_branch_likely(&memlat_fast_switch_enable))
+			gs_governor_memlat_cpufreq_update(sg_cpu->sg_policy->policy, next_f);
 
 		if (sugov_em_profile_changed(sg_cpu->sg_policy))
 			sugov_update_response_time_mult(sg_cpu->sg_policy, true);

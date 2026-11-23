@@ -21,6 +21,7 @@
 #include <linux/pm_qos.h>
 #include <perf/core/google_pm_qos.h>
 #include "bcl.h"
+#include "soc/soc_defs.h"
 #define CREATE_TRACE_POINTS
 
 struct qos_data {
@@ -58,8 +59,7 @@ int google_bcl_setup_qos_device(struct bcl_device *bcl_dev, enum non_cpu_qos_dev
 {
 	struct device_node *np = bcl_dev->device->of_node;
 	struct device_node *df_node;
-	struct device_node *p_np;
-	struct device_node *child;
+	struct device_node *p_np __free(device_node) = NULL;
 	int idx, ret;
 	struct qos_throttle_limit *throttle;
 
@@ -71,7 +71,7 @@ int google_bcl_setup_qos_device(struct bcl_device *bcl_dev, enum non_cpu_qos_dev
 		dev_err(bcl_dev->device, "devfreq_index %d not found\n", qidx);
 		return -ENODEV;
 	}
-	for_each_child_of_node(p_np, child) {
+	for_each_child_of_node_scoped(p_np, child) {
 		idx = get_idx_from_zone(bcl_dev, child->name);
 		if (idx < 0)
 			continue;
@@ -108,6 +108,13 @@ void google_bcl_setup_qos_work(struct work_struct *work)
 {
 	int idx;
 	struct bcl_device *bcl_dev = container_of(work, struct bcl_device, init_qos_work.work);
+	/*
+	 * The software mitigation should be initialized and enabled
+	 * since QOS initialization is much slower than bcl probe.
+	 */
+	if (!smp_load_acquire(&bcl_dev->sw_mitigation_enabled)) {
+		goto retry;
+	}
 
 	for (idx = 0; idx < NON_CPU_CORES_MAX; idx++) {
 		if (google_bcl_setup_qos_device(bcl_dev, idx) != 0)
@@ -127,15 +134,14 @@ retry:
 int google_bcl_parse_qos(struct bcl_device *bcl_dev)
 {
 	struct device_node *np = bcl_dev->device->of_node;
-	struct device_node *child;
-	struct device_node *p_np;
+	struct device_node *p_np __free(device_node) = NULL;
 	int idx;
 
 	/* parse qos */
 	p_np = of_get_child_by_name(np, "freq_qos");
 	if (!p_np)
 		return -EINVAL;
-	for_each_child_of_node(p_np, child) {
+	for_each_child_of_node_scoped(p_np, child) {
 		idx = get_idx_from_zone(bcl_dev, child->name);
 		if (idx < 0)
 			continue;
@@ -236,7 +242,6 @@ static void process_qos_request(struct work_struct *work)
 			if (qos->df[idx])
 				dev_pm_qos_update_request(&qos->qos_max[idx], qos->df_freq[idx]);
 		}
-		usleep_range(TIMEOUT_10000US, TIMEOUT_10000US + 100);
 		if (mutex_lock_interruptible(&bcl_dev->qos_update_lock))
 			continue;
 		list_del(&data->list);
@@ -364,6 +369,8 @@ void google_bcl_remove_qos(struct bcl_device *bcl_dev)
 	mutex_destroy(&bcl_dev->qos_update_lock);
 	if (bcl_dev->init_qos_work.work.func != NULL)
 		cancel_delayed_work_sync(&bcl_dev->init_qos_work);
+	if (bcl_dev->mailbox_init_work.work.func != NULL)
+		cancel_delayed_work(&bcl_dev->mailbox_init_work);
 }
 
 int google_bcl_setup_qos(struct bcl_device *bcl_dev)

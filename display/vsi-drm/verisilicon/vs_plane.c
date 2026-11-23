@@ -3,19 +3,21 @@
  * Copyright (C) 2020 VeriSilicon Holdings Co., Ltd.
  */
 #include <linux/bitops.h>
+#include <linux/debugfs.h>
 #include <linux/file.h>
+#include <linux/seq_file.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_blend.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_file.h>
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_plane_helper.h>
 #include <drm/drm_print.h>
 
-#include <drm/vs_drm.h>
-
+#include <drm/vs_drm_fourcc.h>
 #include "vs_crtc.h"
 #include "vs_fb.h"
 #include "vs_gem.h"
@@ -23,6 +25,8 @@
 #include "vs_dc_info.h"
 #include "vs_dc_drm_property.h"
 #include "vs_trace.h"
+
+#define fourcc_mod_vs_get_type(val) (((val) & DRM_FORMAT_MOD_VS_TYPE_MASK) >> 53)
 
 static void vs_plane_atomic_destroy_state(struct drm_plane *plane, struct drm_plane_state *state)
 {
@@ -161,6 +165,10 @@ static struct drm_plane_state *vs_plane_atomic_duplicate_state(struct drm_plane 
 
 	_vs_plane_duplicate_blob(state, ori_state);
 	memcpy(&state->status, &ori_state->status, sizeof(ori_state->status));
+
+#ifdef CONFIG_DEBUG_FS
+	state->qos = ori_state->qos;
+#endif
 
 	/* dc properties */
 	vs_dc_duplicate_drm_properties(state->drm_states, ori_state->drm_states,
@@ -380,6 +388,43 @@ static ssize_t vs_plane_pattern_write(struct file *file, const char __user *ubuf
 	return len;
 }
 
+static int vs_plane_qos_show(struct seq_file *s, void *data)
+{
+	struct drm_plane *plane = s->private;
+	struct vs_plane *vs_plane = to_vs_plane(plane);
+
+	if (vs_plane->funcs->show_qos)
+		return vs_plane->funcs->show_qos(s);
+
+	return 0;
+}
+
+static int vs_plane_qos_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, vs_plane_qos_show, inode->i_private);
+}
+
+static ssize_t vs_plane_qos_write(struct file *file, const char __user *ubuf, size_t len,
+				  loff_t *offp)
+{
+	struct seq_file *s = file->private_data;
+	struct drm_plane *plane = s->private;
+	struct vs_plane *vs_plane = to_vs_plane(plane);
+
+	if (vs_plane->funcs->set_qos)
+		vs_plane->funcs->set_qos(vs_plane->base.dev->dev, vs_plane, ubuf, len);
+
+	return len;
+}
+
+static const struct file_operations vs_plane_qos_fops = {
+	.open = vs_plane_qos_open,
+	.read = seq_read,
+	.write = vs_plane_qos_write,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 static const struct file_operations vs_plane_pattern_fops = {
 	.open = vs_plane_pattern_open,
 	.read = seq_read,
@@ -403,6 +448,7 @@ static int vs_plane_debugfs_init(struct drm_plane *plane)
 
 	debugfs_create_file("pattern", 0644, vs_plane->debugfs_entry, plane,
 			    &vs_plane_pattern_fops);
+	debugfs_create_file("QOS", 0644, vs_plane->debugfs_entry, plane, &vs_plane_qos_fops);
 
 	return 0;
 }
@@ -525,9 +571,8 @@ static void vs_plane_atomic_update(struct drm_plane *plane, struct drm_atomic_st
 
 	num_planes = vs_get_plane_number(fb);
 
-	for (i = 0; i < num_planes; i++) {
+	for (i = 0; i < num_planes; i++)
 		vs_plane->dma_addr[i] = vs_fb_get_dma_addr(fb, i);
-	}
 
 	plane_state->status.src = drm_plane_state_src(state);
 	plane_state->status.dest = drm_plane_state_dest(state);
@@ -537,8 +582,9 @@ static void vs_plane_atomic_update(struct drm_plane *plane, struct drm_atomic_st
 static void vs_plane_atomic_disable(struct drm_plane *plane, struct drm_atomic_state *atomic_state)
 {
 	struct vs_plane *vs_plane = to_vs_plane(plane);
+	struct vs_drm_private *priv = plane->dev->dev_private;
 
-	vs_plane->funcs->disable(vs_plane->dev, vs_plane);
+	vs_plane->funcs->disable(priv->dc_dev, vs_plane);
 }
 
 static int vs_plane_prepare_fb(struct drm_plane *plane, struct drm_plane_state *state)

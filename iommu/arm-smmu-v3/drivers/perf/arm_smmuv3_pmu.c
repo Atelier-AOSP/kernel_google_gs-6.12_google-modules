@@ -48,8 +48,10 @@
 #include <linux/list.h>
 #include <linux/msi.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/perf_event.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/smp.h>
 #include <linux/sysfs.h>
 #include <linux/types.h>
@@ -87,6 +89,11 @@
 #define SMMU_PMCG_IRQ_CFG0              0xE58
 #define SMMU_PMCG_IRQ_CFG1              0xE60
 #define SMMU_PMCG_IRQ_CFG2              0xE64
+
+#define SMMU_PMCG_CIDR0                 0xFF0
+#define SMMU_PMCG_CIDR1                 0xFF4
+#define SMMU_PMCG_CIDR2                 0xFF8
+#define SMMU_PMCG_CIDR3                 0xFFC
 
 /* IMP-DEF ID registers */
 #define SMMU_PMCG_PIDR0                 0xFE0
@@ -431,6 +438,17 @@ static int smmu_pmu_event_init(struct perf_event *event)
 			return -EINVAL;
 	}
 
+	/*
+	 * Ensure all events are on the same cpu so all events are in the
+	 * same cpu context, to avoid races on pmu_enable etc.
+	 */
+	event->cpu = smmu_pmu->on_cpu;
+
+	hwc->idx = -1;
+
+	if (event->group_leader == event)
+		return 0;
+
 	for_each_sibling_event(sibling, event->group_leader) {
 		if (is_software_event(sibling))
 			continue;
@@ -441,14 +459,6 @@ static int smmu_pmu_event_init(struct perf_event *event)
 		if (++group_num_events > smmu_pmu->num_counters)
 			return -EINVAL;
 	}
-
-	hwc->idx = -1;
-
-	/*
-	 * Ensure all events are on the same cpu so all events are in the
-	 * same cpu context, to avoid races on pmu_enable etc.
-	 */
-	event->cpu = smmu_pmu->on_cpu;
 
 	return 0;
 }
@@ -576,6 +586,74 @@ static struct attribute *smmu_pmu_events[] = {
 	NULL
 };
 
+static struct attribute *smmu_pmu_mmu700_tcu_events[] = {
+	SMMU_EVENT_ATTR(cycles, 0),
+	SMMU_EVENT_ATTR(transaction, 1),
+	SMMU_EVENT_ATTR(tlb_miss, 2),
+	SMMU_EVENT_ATTR(config_cache_miss, 3),
+	SMMU_EVENT_ATTR(trans_table_walk_access, 4),
+	SMMU_EVENT_ATTR(config_struct_access, 5),
+	SMMU_EVENT_ATTR(pcie_ats_trans_rq, 6),
+	SMMU_EVENT_ATTR(s1l0wc_lookup, 0x80),
+	SMMU_EVENT_ATTR(s1l0wc_miss, 0x81),
+	SMMU_EVENT_ATTR(s1l1wc_lookup, 0x82),
+	SMMU_EVENT_ATTR(s1l1wc_miss, 0x83),
+	SMMU_EVENT_ATTR(s1l2wc_lookup, 0x84),
+	SMMU_EVENT_ATTR(s1l2wc_miss, 0x85),
+	SMMU_EVENT_ATTR(s1l3wc_lookup, 0x86),
+	SMMU_EVENT_ATTR(s1l3wc_miss, 0x87),
+	SMMU_EVENT_ATTR(s2l0wc_lookup, 0x88),
+	SMMU_EVENT_ATTR(s2l0wc_miss, 0x89),
+	SMMU_EVENT_ATTR(s2l1wc_lookup, 0x8a),
+	SMMU_EVENT_ATTR(s2l1wc_miss, 0x8b),
+	SMMU_EVENT_ATTR(s2l2wc_lookup, 0x8c),
+	SMMU_EVENT_ATTR(s2l2wc_miss, 0x8d),
+	SMMU_EVENT_ATTR(s2l3wc_lookup, 0x8e),
+	SMMU_EVENT_ATTR(s2l3wc_miss, 0x8f),
+	SMMU_EVENT_ATTR(wc_read, 0x90),
+	SMMU_EVENT_ATTR(buffered_xlation, 0x91),
+	SMMU_EVENT_ATTR(cc_lookup, 0x92),
+	SMMU_EVENT_ATTR(cc_read, 0x93),
+	SMMU_EVENT_ATTR(cc_miss, 0x94),
+	SMMU_EVENT_ATTR(speculative_xlation, 0xa0),
+	NULL
+};
+
+static struct attribute *smmu_pmu_mmu700_tbu_events[] = {
+	SMMU_EVENT_ATTR(cycles, 0),
+	SMMU_EVENT_ATTR(transaction, 1),
+	SMMU_EVENT_ATTR(tlb_miss, 2),
+	SMMU_EVENT_ATTR(pcie_ats_trans_passed, 7),
+	SMMU_EVENT_ATTR(mtlb_lookup, 0x80),
+	SMMU_EVENT_ATTR(mtlb_miss, 0x81),
+	SMMU_EVENT_ATTR(mtlb_read, 0x82),
+	SMMU_EVENT_ATTR(utlb_lookup, 0x83),
+	SMMU_EVENT_ATTR(utlb_miss, 0x84),
+	SMMU_EVENT_ATTR(xlation_slots_full, 0x85),
+	SMMU_EVENT_ATTR(no_xlation_tokens, 0x86),
+	SMMU_EVENT_ATTR(write_buf_full, 0x87),
+	SMMU_EVENT_ATTR(dcmo_downgrade, 0x8b),
+	SMMU_EVENT_ATTR(stash_fail, 0x8c),
+	SMMU_EVENT_ATTR(fixed_burst_termination, 0x8d),
+	SMMU_EVENT_ATTR(lti_port_0_slots_full, 0xd0),
+	SMMU_EVENT_ATTR(lti_port_1_slots_full, 0xd1),
+	SMMU_EVENT_ATTR(lti_port_2_slots_full, 0xd2),
+	SMMU_EVENT_ATTR(lti_port_3_slots_full, 0xd3),
+	SMMU_EVENT_ATTR(lti_port_4_slots_full, 0xd4),
+	SMMU_EVENT_ATTR(lti_port_5_slots_full, 0xd5),
+	SMMU_EVENT_ATTR(lti_port_6_slots_full, 0xd6),
+	SMMU_EVENT_ATTR(lti_port_7_slots_full, 0xd7),
+	SMMU_EVENT_ATTR(lti_port_0_no_xlation_tokens, 0xe0),
+	SMMU_EVENT_ATTR(lti_port_1_no_xlation_tokens, 0xe1),
+	SMMU_EVENT_ATTR(lti_port_2_no_xlation_tokens, 0xe2),
+	SMMU_EVENT_ATTR(lti_port_3_no_xlation_tokens, 0xe3),
+	SMMU_EVENT_ATTR(lti_port_4_no_xlation_tokens, 0xe4),
+	SMMU_EVENT_ATTR(lti_port_5_no_xlation_tokens, 0xe5),
+	SMMU_EVENT_ATTR(lti_port_6_no_xlation_tokens, 0xe6),
+	SMMU_EVENT_ATTR(lti_port_7_no_xlation_tokens, 0xe7),
+	NULL
+};
+
 static umode_t smmu_pmu_event_is_visible(struct kobject *kobj,
 					 struct attribute *attr, int unused)
 {
@@ -585,7 +663,8 @@ static umode_t smmu_pmu_event_is_visible(struct kobject *kobj,
 
 	pmu_attr = container_of(attr, struct perf_pmu_events_attr, attr.attr);
 
-	if (test_bit(pmu_attr->id, smmu_pmu->supported_events))
+	if (pmu_attr->id >= SMMU_PMCG_ARCH_MAX_EVENTS ||
+	    test_bit(pmu_attr->id, smmu_pmu->supported_events))
 		return attr->mode;
 
 	return 0;
@@ -594,6 +673,18 @@ static umode_t smmu_pmu_event_is_visible(struct kobject *kobj,
 static const struct attribute_group smmu_pmu_events_group = {
 	.name = "events",
 	.attrs = smmu_pmu_events,
+	.is_visible = smmu_pmu_event_is_visible,
+};
+
+static const struct attribute_group smmu_pmu_mmu700_tcu_events_group = {
+	.name = "events",
+	.attrs = smmu_pmu_mmu700_tcu_events,
+	.is_visible = smmu_pmu_event_is_visible,
+};
+
+static const struct attribute_group smmu_pmu_mmu700_tbu_events_group = {
+	.name = "events",
+	.attrs = smmu_pmu_mmu700_tbu_events,
 	.is_visible = smmu_pmu_event_is_visible,
 };
 
@@ -658,6 +749,22 @@ static const struct attribute_group *smmu_pmu_attr_grps[] = {
 	NULL
 };
 
+static const struct attribute_group *smmu_pmu_mmu700_tcu_attr_grps[] __maybe_unused = {
+	&smmu_pmu_cpumask_group,
+	&smmu_pmu_mmu700_tcu_events_group,
+	&smmu_pmu_format_group,
+	&smmu_pmu_identifier_group,
+	NULL
+};
+
+static const struct attribute_group *smmu_pmu_mmu700_tbu_attr_grps[] __maybe_unused = {
+	&smmu_pmu_cpumask_group,
+	&smmu_pmu_mmu700_tbu_events_group,
+	&smmu_pmu_format_group,
+	&smmu_pmu_identifier_group,
+	NULL
+};
+
 /*
  * Generic device handlers
  */
@@ -716,7 +823,7 @@ static void smmu_pmu_free_msis(void *data)
 {
 	struct device *dev = data;
 
-	platform_msi_domain_free_irqs(dev);
+	platform_device_msi_free_irqs_all(dev);
 }
 
 static void smmu_pmu_write_msi_msg(struct msi_desc *desc, struct msi_msg *msg)
@@ -746,7 +853,7 @@ static void smmu_pmu_setup_msi(struct smmu_pmu *pmu)
 	if (!(readl(pmu->reg_base + SMMU_PMCG_CFGR) & SMMU_PMCG_CFGR_MSI))
 		return;
 
-	ret = platform_msi_domain_alloc_irqs(dev, 1, smmu_pmu_write_msi_msg);
+	ret = platform_device_msi_init_and_alloc_irqs(dev, 1, smmu_pmu_write_msi_msg);
 	if (ret) {
 		dev_warn(dev, "failed to allocate MSIs\n");
 		return;
@@ -841,6 +948,8 @@ static void smmu_pmu_get_iidr(struct smmu_pmu *smmu_pmu)
 	smmu_pmu->iidr = iidr;
 }
 
+static const struct of_device_id smmu_pmu_of_match[];
+
 static int smmu_pmu_probe(struct platform_device *pdev)
 {
 	struct smmu_pmu *smmu_pmu;
@@ -850,6 +959,11 @@ static int smmu_pmu_probe(struct platform_device *pdev)
 	int irq, err;
 	char *name;
 	struct device *dev = &pdev->dev;
+	const struct of_device_id *of_id;
+
+	of_id = of_match_device(smmu_pmu_of_match, dev);
+	if (!of_id)
+		return -EINVAL;
 
 	smmu_pmu = devm_kzalloc(dev, sizeof(*smmu_pmu), GFP_KERNEL);
 	if (!smmu_pmu)
@@ -860,6 +974,7 @@ static int smmu_pmu_probe(struct platform_device *pdev)
 
 	smmu_pmu->pmu = (struct pmu) {
 		.module		= THIS_MODULE,
+		.parent		= &pdev->dev,
 		.task_ctx_nr    = perf_invalid_context,
 		.pmu_enable	= smmu_pmu_enable,
 		.pmu_disable	= smmu_pmu_disable,
@@ -869,7 +984,7 @@ static int smmu_pmu_probe(struct platform_device *pdev)
 		.start		= smmu_pmu_event_start,
 		.stop		= smmu_pmu_event_stop,
 		.read		= smmu_pmu_event_read,
-		.attr_groups	= smmu_pmu_attr_grps,
+		.attr_groups	= (const struct attribute_group **)of_id->data,
 		.capabilities	= PERF_PMU_CAP_NO_EXCLUDE,
 	};
 
@@ -914,8 +1029,7 @@ static int smmu_pmu_probe(struct platform_device *pdev)
 
 	smmu_pmu_get_iidr(smmu_pmu);
 
-	name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "smmuv3_pmcg_%llx",
-			      (res_0->start) >> SMMU_PMCG_PA_SHIFT);
+	name = devm_kasprintf(&pdev->dev, GFP_KERNEL, "%pOFn", dev->of_node);
 	if (!name) {
 		dev_err(dev, "Create name failed, PMU @%pa\n", &res_0->start);
 		return -EINVAL;
@@ -958,6 +1072,8 @@ static int smmu_pmu_probe(struct platform_device *pdev)
 		 smmu_pmu->global_filter ? "Global(Counter0)" :
 		 "Individual");
 
+	pm_runtime_enable(dev);
+
 	return 0;
 
 out_unregister:
@@ -965,26 +1081,29 @@ out_unregister:
 	return err;
 }
 
-static int smmu_pmu_remove(struct platform_device *pdev)
+static void smmu_pmu_remove(struct platform_device *pdev)
 {
 	struct smmu_pmu *smmu_pmu = platform_get_drvdata(pdev);
 
 	perf_pmu_unregister(&smmu_pmu->pmu);
 	cpuhp_state_remove_instance_nocalls(cpuhp_state_num, &smmu_pmu->node);
-
-	return 0;
+	pm_runtime_disable(smmu_pmu->dev);
 }
 
 static void smmu_pmu_shutdown(struct platform_device *pdev)
 {
 	struct smmu_pmu *smmu_pmu = platform_get_drvdata(pdev);
 
+	pm_runtime_get_sync(smmu_pmu->dev);
 	smmu_pmu_disable(&smmu_pmu->pmu);
+	pm_runtime_put_sync(smmu_pmu->dev);
 }
 
 #ifdef CONFIG_OF
 static const struct of_device_id smmu_pmu_of_match[] = {
-	{ .compatible = "arm,smmu-v3-pmcg" },
+	{ .compatible = "arm,smmu-v3-pmcg", .data = smmu_pmu_attr_grps},
+	{ .compatible = "arm,mmu-700-tcu-pmcg", .data = smmu_pmu_mmu700_tcu_attr_grps},
+	{ .compatible = "arm,mmu-700-tbu-pmcg", .data = smmu_pmu_mmu700_tbu_attr_grps},
 	{}
 };
 MODULE_DEVICE_TABLE(of, smmu_pmu_of_match);
@@ -997,7 +1116,7 @@ static struct platform_driver smmu_pmu_driver = {
 		.suppress_bind_attrs = true,
 	},
 	.probe = smmu_pmu_probe,
-	.remove = smmu_pmu_remove,
+	.remove_new = smmu_pmu_remove,
 	.shutdown = smmu_pmu_shutdown,
 };
 

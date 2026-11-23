@@ -6,11 +6,13 @@
 #include <linux/err.h>
 #include <linux/module.h>
 #include <linux/delay.h>
+#include <linux/string.h>
 #include <net/netlink.h>
 #include <net/genetlink.h>
 
 #include "main.h"
 #include "debug.h"
+#include "genl.h"
 
 #define CNSS_GENL_FAMILY_NAME "cnss-genl"
 #define CNSS_GENL_MCAST_GROUP_NAME "cnss-genl-grp"
@@ -96,9 +98,9 @@ static int cnss_genl_send_data(u8 type, char *file_name, u32 total_size,
 		    type, file_name, total_size, seg_id, end, data_len);
 
 	if (!file_name)
-		strlcpy(filename, "default", sizeof(filename));
+		strscpy(filename, "default", sizeof(filename));
 	else
-		strlcpy(filename, file_name, sizeof(filename));
+		strscpy(filename, file_name, sizeof(filename));
 
 	skb = genlmsg_new(NLMSG_HDRLEN +
 			  nla_total_size(sizeof(type)) +

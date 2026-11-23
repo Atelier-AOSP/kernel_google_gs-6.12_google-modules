@@ -22,7 +22,11 @@ int mock_msg_tmu_set_trip_type(u8 tz_id, u8 *type, int num_type);
 int mock_msg_tmu_set_polling_delay_ms(u8 tz_id, u16 delay_ms);
 int mock_msg_tmu_set_gov_select(u8 tz_id, u8 gov_select);
 int mock_msg_tmu_get_temp(u8 tz_id, u8 *temperature);
-int mock_thermal_zone_get_trip(struct thermal_zone_device *tzd, int idx, struct thermal_trip *trip);
+int mock_msg_tmu_set_temp_lut(u8 tz_id, u8 temperature, u8 cdev_state, bool append);
+int mock_msg_tmu_get_temp_lut(u8 tz_id, u8 index, u8 *temperature, u8 *cdev_state);
+int mock_thermal_zone_for_each_trip(struct thermal_zone_device *tzd,
+				    int (*cb)(struct thermal_trip *, void *),
+				    void *data);
 int mock_msg_tmu_get_trip_counter_snapshot(u8 tz_id);
 int mock_thermal_sm_initialize_section(struct device *dev, enum thermal_sm_section section);
 int mock_thermal_sm_get_tmu_trip_counter(struct thermal_sm_trip_counter_data *data);
@@ -67,8 +71,17 @@ static inline int mock_msg_tmu_get_temp(u8 tz_id, u8 *temperature)
 {
 	return -EOPNOTSUPP;
 }
-static inline int mock_thermal_zone_get_trip(struct thermal_zone_device *tzd, int idx,
-					     struct thermal_trip *trip)
+static inline int mock_msg_tmu_set_temp_lut(u8 tz_id, u8 temperature, u8 cdev_state, bool append)
+{
+	return -EOPNOTSUPP;
+}
+static inline int mock_msg_tmu_get_temp_lut(u8 tz_id, u8 index, u8 *temperature, u8 *cdev_state)
+{
+	return -EOPNOTSUPP;
+}
+static inline int mock_thermal_zone_for_each_trip(struct thermal_zone_device *tzd,
+						  int (*cb)(struct thermal_trip *, void *),
+						  void *data)
 {
 	return -EOPNOTSUPP;
 }
@@ -177,13 +190,32 @@ static inline int tmu_get_temp(u8 tz_id, u8 *temperature)
 #endif
 }
 
-static inline int get_thermal_zone_trip(struct thermal_zone_device *tzd, int idx,
-					struct thermal_trip *trip)
+static inline int tmu_set_temp_lut(u8 tz_id, u8 temperature, u8 cdev_state, bool append)
 {
 #if IS_ENABLED(CONFIG_GOOGLE_THERMAL_HELPER_KUNIT_TEST)
-	return mock_thermal_zone_get_trip(tzd, idx, trip);
+	return mock_msg_tmu_set_temp_lut(tz_id, temperature, cdev_state, append);
 #else
-	return __thermal_zone_get_trip(tzd, idx, trip);
+	return msg_tmu_set_temp_lut(tz_id, temperature, cdev_state, append);
+#endif
+}
+
+static inline int tmu_get_temp_lut(u8 tz_id, u8 index, u8 *temperature, u8 *cdev_state)
+{
+#if IS_ENABLED(CONFIG_GOOGLE_THERMAL_HELPER_KUNIT_TEST)
+	return mock_msg_tmu_get_temp_lut(tz_id, index, temperature, cdev_state);
+#else
+	return msg_tmu_get_temp_lut(tz_id, index, temperature, cdev_state);
+#endif
+}
+
+static inline int for_each_thermal_zone_trip(struct thermal_zone_device *tzd,
+					     int (*cb)(struct thermal_trip *, void *),
+					     void *data)
+{
+#if IS_ENABLED(CONFIG_GOOGLE_THERMAL_HELPER_KUNIT_TEST)
+	return mock_thermal_zone_for_each_trip(tzd, cb, data);
+#else
+	return thermal_zone_for_each_trip(tzd, cb, data);
 #endif
 }
 

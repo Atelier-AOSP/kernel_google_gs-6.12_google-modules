@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
+#include <linux/minmax.h>
 #include <linux/module.h>
-#include <linux/rtc.h>
 #include <linux/rwlock.h>
 #include <linux/suspend.h>
 #include <linux/timekeeping.h>
 
 #include <soc/google/google_gtc.h>
 #include <soc/google/google_timestamp_sync.h>
+
+#define TIMESTAMP_SYNC_BUFFER_SIZE 10
 
 /**
  * struct timestamp_sync_snapshot - Structure to store time snapshots.
@@ -23,31 +25,37 @@
 struct timestamp_sync_snapshot {
 	u64 gtc_tick;
 	struct system_time_snapshot systime_snapshot;
+};
+
+struct timestamp_sync_ring_buffer {
 	rwlock_t lock;
+	struct timestamp_sync_snapshot buffer[TIMESTAMP_SYNC_BUFFER_SIZE];
+	unsigned int latest_idx;
+	unsigned int count;
 };
 
-static struct timestamp_sync_snapshot timestamp_snapshot;
-
-struct timestamp_snapshot_data {
-	struct rtc_time tm;
-	long tv_nsec;
-	u64 gtc_sec;
-	u64 gtc_nsec;
-};
+static struct timestamp_sync_ring_buffer ts_buffer;
 
 u64 goog_gtc_ticks_to_boottime(u64 gtc_tick)
 {
 	u64 gtc_nsec_offset;
 	u64 snapshot_gtc_tick;
 	ktime_t snapshot_boot;
+	struct timestamp_sync_snapshot temp_snapshot;
 	unsigned long flags;
 
-	read_lock_irqsave(&timestamp_snapshot.lock, flags);
+	read_lock_irqsave(&ts_buffer.lock, flags);
 
-	snapshot_gtc_tick = timestamp_snapshot.gtc_tick;
-	snapshot_boot = timestamp_snapshot.systime_snapshot.boot;
+	if (ts_buffer.count == 0) {
+		read_unlock_irqrestore(&ts_buffer.lock, flags);
+		return 0;
+	}
+	temp_snapshot = ts_buffer.buffer[ts_buffer.latest_idx];
 
-	read_unlock_irqrestore(&timestamp_snapshot.lock, flags);
+	read_unlock_irqrestore(&ts_buffer.lock, flags);
+
+	snapshot_gtc_tick = temp_snapshot.gtc_tick;
+	snapshot_boot = temp_snapshot.systime_snapshot.boot;
 
 	/*
 	 * Addressing negative GTC offset handling:
@@ -72,12 +80,17 @@ u64 goog_gtc_ticks_to_boottime(u64 gtc_tick)
 }
 EXPORT_SYMBOL_GPL(goog_gtc_ticks_to_boottime);
 
-static void timestamp_sync_snapshot_update(struct timestamp_sync_snapshot *snapshot)
+void goog_timestamp_sync_snapshot_update(void)
 {
 	u64 gtc_tick_before, gtc_tick_after;
 	unsigned long flags;
+	unsigned int next_idx;
+	struct timestamp_sync_snapshot *snapshot;
 
-	write_lock_irqsave(&snapshot->lock, flags);
+	write_lock_irqsave(&ts_buffer.lock, flags);
+
+	next_idx = (ts_buffer.latest_idx + 1) % TIMESTAMP_SYNC_BUFFER_SIZE;
+	snapshot = &ts_buffer.buffer[next_idx];
 
 	/*
 	 * We take two readings of GTC counter value and averaging them to
@@ -90,41 +103,101 @@ static void timestamp_sync_snapshot_update(struct timestamp_sync_snapshot *snaps
 
 	snapshot->gtc_tick = (gtc_tick_before + gtc_tick_after) >> 1;
 
-	write_unlock_irqrestore(&snapshot->lock, flags);
-}
+	ts_buffer.latest_idx = next_idx;
+	if (ts_buffer.count < TIMESTAMP_SYNC_BUFFER_SIZE)
+		ts_buffer.count++;
 
-static struct timestamp_snapshot_data
-timestamp_sync_snapshot_get(struct timestamp_sync_snapshot *snapshot)
+	write_unlock_irqrestore(&ts_buffer.lock, flags);
+}
+EXPORT_SYMBOL_GPL(goog_timestamp_sync_snapshot_update);
+
+static void __timestamp_sync_snapshot_to_data(const struct timestamp_sync_snapshot *snapshot,
+					      struct timestamp_snapshot_data *data)
 {
 	struct timespec64 ts;
-	unsigned long flags;
 	u64 local_gtc_nsec;
-	struct timestamp_snapshot_data data;
-
-	read_lock_irqsave(&snapshot->lock, flags);
 
 	/* rtc_ktime_to_tm isn't used here because it rounds up the nanosecond portion */
 	ts = ktime_to_timespec64(snapshot->systime_snapshot.real);
-
 	local_gtc_nsec = goog_gtc_ticks_to_ns(snapshot->gtc_tick);
 
-	read_unlock_irqrestore(&snapshot->lock, flags);
+	rtc_time64_to_tm(ts.tv_sec, &data->tm);
+	data->tv_nsec = ts.tv_nsec;
 
-	rtc_time64_to_tm(ts.tv_sec, &data.tm);
-	data.tv_nsec = ts.tv_nsec;
-
-	data.gtc_sec = div64_u64_rem(local_gtc_nsec, NSEC_PER_SEC, &data.gtc_nsec);
-
-	return data;
+	data->gtc_sec = div64_u64_rem(local_gtc_nsec, NSEC_PER_SEC, &data->gtc_nsec);
+	data->mono_raw = snapshot->systime_snapshot.raw;
 }
+
+int goog_timestamp_sync_get_nth_snapshot(unsigned int n, struct timestamp_snapshot_data *data)
+{
+	unsigned long flags;
+	struct timestamp_sync_snapshot temp_snapshot;
+	unsigned int index;
+
+	read_lock_irqsave(&ts_buffer.lock, flags);
+
+	if (n >= ts_buffer.count) {
+		read_unlock_irqrestore(&ts_buffer.lock, flags);
+		return -EINVAL;
+	}
+
+	index = (ts_buffer.latest_idx + TIMESTAMP_SYNC_BUFFER_SIZE - n) %
+		TIMESTAMP_SYNC_BUFFER_SIZE;
+	temp_snapshot = ts_buffer.buffer[index];
+
+	read_unlock_irqrestore(&ts_buffer.lock, flags);
+
+	__timestamp_sync_snapshot_to_data(&temp_snapshot, data);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(goog_timestamp_sync_get_nth_snapshot);
+
+int goog_timestamp_sync_get_all_snapshots(struct timestamp_snapshot_data *data_array,
+					  unsigned int array_size)
+{
+	unsigned long flags;
+	unsigned int i, count_to_copy, src_idx;
+	struct timestamp_sync_snapshot local_snapshots[TIMESTAMP_SYNC_BUFFER_SIZE];
+
+	if (!data_array || array_size == 0)
+		return 0;
+
+	read_lock_irqsave(&ts_buffer.lock, flags);
+
+	count_to_copy = min(ts_buffer.count, array_size);
+	if (count_to_copy == 0) {
+		read_unlock_irqrestore(&ts_buffer.lock, flags);
+		return 0;
+	}
+
+	src_idx = ts_buffer.latest_idx;
+	for (i = 0; i < count_to_copy; ++i) {
+		local_snapshots[i] = ts_buffer.buffer[src_idx];
+		src_idx = src_idx ? src_idx - 1 : TIMESTAMP_SYNC_BUFFER_SIZE - 1;
+	}
+
+	read_unlock_irqrestore(&ts_buffer.lock, flags);
+
+	for (i = 0; i < count_to_copy; ++i)
+		__timestamp_sync_snapshot_to_data(&local_snapshots[i], &data_array[i]);
+
+	return count_to_copy;
+}
+EXPORT_SYMBOL_GPL(goog_timestamp_sync_get_all_snapshots);
 
 static void timestamp_sync_suspend_snapshot(char *annotation)
 {
 	struct timestamp_snapshot_data data;
+	int err;
 
-	timestamp_sync_snapshot_update(&timestamp_snapshot);
+	goog_timestamp_sync_snapshot_update();
 
-	data = timestamp_sync_snapshot_get(&timestamp_snapshot);
+	err = goog_timestamp_sync_get_nth_snapshot(0, &data);
+	if (unlikely(err)) {
+		pr_err("Fail to get timestamp sync snapshot. err:%d\n", err);
+		return;
+	}
 
 	pr_info("PM: suspend %s %d-%02d-%02d %02d:%02d:%02d.%09lu UTC, GTC: %llu.%llu\n",
 		annotation, data.tm.tm_year + 1900, data.tm.tm_mon + 1, data.tm.tm_mday,
@@ -157,11 +230,16 @@ static struct notifier_block timestamp_sync_pm_notifier_block = {
 static int __init timestamp_sync_init(void)
 {
 	struct timestamp_snapshot_data data;
+	int err;
 
-	rwlock_init(&timestamp_snapshot.lock);
-	timestamp_sync_snapshot_update(&timestamp_snapshot);
+	rwlock_init(&ts_buffer.lock);
 
-	data = timestamp_sync_snapshot_get(&timestamp_snapshot);
+	goog_timestamp_sync_snapshot_update();
+	err = goog_timestamp_sync_get_nth_snapshot(0, &data);
+	if (unlikely(err)) {
+		pr_err("Fail to get timestamp sync snapshot. err:%d\n", err);
+		return err;
+	}
 
 	pr_info("%s: kernel initialized timestamp: %d-%02d-%02d %02d:%02d:%02d.%09lu UTC, GTC: %llu.%llu\n",
 		__func__, data.tm.tm_year + 1900, data.tm.tm_mon + 1, data.tm.tm_mday,

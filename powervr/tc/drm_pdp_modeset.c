@@ -165,7 +165,13 @@ pdp_framebuffer_init(struct pdp_drm_private *dev_priv,
 	fb = to_drm_framebuffer(pdp_fb);
 	pdp_fb->obj[0] = obj;
 
-	drm_helper_mode_fill_fb_struct(dev_priv->dev, fb, mode_cmd);
+	drm_helper_mode_fill_fb_struct(dev_priv->dev, fb,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0))
+	                               drm_get_format_info(dev_priv->dev,
+	                                                   mode_cmd->pixel_format,
+	                                                   mode_cmd->modifier[0]),
+#endif
+	                               mode_cmd);
 
 	return drm_framebuffer_init(dev_priv->dev, fb, &pdp_framebuffer_funcs);
 }
@@ -193,6 +199,9 @@ int pdp_modeset_validate_init(struct pdp_drm_private *dev_priv,
 static struct drm_framebuffer *
 pdp_fb_create(struct drm_device *dev,
 			struct drm_file *file,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0))
+			const struct drm_format_info *info,
+#endif
 			const struct drm_mode_fb_cmd2 *mode_cmd)
 {
 	struct drm_framebuffer *fb;
@@ -202,7 +211,11 @@ pdp_fb_create(struct drm_device *dev,
 	if (err)
 		return ERR_PTR(err);
 
-	fb = drm_gem_fb_create(dev, file, mode_cmd);
+	fb = drm_gem_fb_create(dev, file,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0))
+	                       info,
+#endif
+	                       mode_cmd);
 	if (IS_ERR(fb))
 		goto out;
 

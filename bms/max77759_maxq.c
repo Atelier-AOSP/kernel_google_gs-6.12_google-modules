@@ -69,14 +69,13 @@
 #define SUFG_ADDR				8
 #define RSOC_ADDR				10
 #define AAWC_ADDR				12
+#define AATD_ADDR				16
 #define WLFW_ADDR				22
-#define QI22_ADDR				26
 #define RS_TAG_LENGTH				4
 #define SU_TAG_LENGTH				1
 #define RSOC_TAG_LENGTH				2
-#define AAWC_TAG_LENGTH				4
+#define AACC_TAG_LENGTH				4
 #define WLFW_TAG_LENGTH				4
-#define QI22_TAG_LENGTH				4
 #define RS_TAG_OFFSET_ADDR			0
 #define RS_TAG_OFFSET_LENGTH			1
 #define RS_TAG_OFFSET_DATA			2
@@ -341,13 +340,13 @@ static int maxq_rs_read(struct max77759_maxq *maxq, gbms_tag_t tag, u8 *data)
 		len = RSOC_TAG_LENGTH;
 	} else if (tag == GBMS_TAG_AAWC) {
 		buff[RS_TAG_OFFSET_ADDR] = AAWC_ADDR;
-		len = AAWC_TAG_LENGTH;
+		len = AACC_TAG_LENGTH;
+	} else if (tag == GBMS_TAG_AATD) {
+		buff[RS_TAG_OFFSET_ADDR] = AATD_ADDR;
+		len = AACC_TAG_LENGTH;
 	} else if (tag == GBMS_TAG_WLFW) {
 		buff[RS_TAG_OFFSET_ADDR] = WLFW_ADDR;
 		len = WLFW_TAG_LENGTH;
-	} else if (tag == GBMS_TAG_QI22) {
-		buff[RS_TAG_OFFSET_ADDR] = QI22_ADDR;
-		len = QI22_TAG_LENGTH;
 	} else {
 		return -EINVAL;
 	}
@@ -382,13 +381,13 @@ static int maxq_rs_write(struct max77759_maxq *maxq, gbms_tag_t tag, u8 *data)
 		len = RSOC_TAG_LENGTH;
 	} else if (tag == GBMS_TAG_AAWC) {
 		buff[RS_TAG_OFFSET_ADDR] = AAWC_ADDR;
-		len = AAWC_TAG_LENGTH;
+		len = AACC_TAG_LENGTH;
+	} else if (tag == GBMS_TAG_AATD) {
+		buff[RS_TAG_OFFSET_ADDR] = AATD_ADDR;
+		len = AACC_TAG_LENGTH;
 	} else if (tag == GBMS_TAG_WLFW) {
 		buff[RS_TAG_OFFSET_ADDR] = WLFW_ADDR;
 		len = WLFW_TAG_LENGTH;
-	} else if (tag == GBMS_TAG_QI22) {
-		buff[RS_TAG_OFFSET_ADDR] = QI22_ADDR;
-		len = QI22_TAG_LENGTH;
 	} else {
 		return -EINVAL;
 	}
@@ -435,13 +434,13 @@ static int maxq_storage_read(gbms_tag_t tag, void *buff, size_t size,
 			return -EINVAL;
 		ret = maxq_rs_read(maxq, tag, buff);
 		break;
-	case GBMS_TAG_QI22:
-		if (size && size > QI22_TAG_LENGTH)
+	case GBMS_TAG_AAWC:
+		if (size && size > AACC_TAG_LENGTH)
 			return -EINVAL;
 		ret = maxq_rs_read(maxq, tag, buff);
 		break;
-	case GBMS_TAG_AAWC:
-		if (size && size > AAWC_TAG_LENGTH)
+	case GBMS_TAG_AATD:
+		if (size && size > AACC_TAG_LENGTH)
 			return -EINVAL;
 		ret = maxq_rs_read(maxq, tag, buff);
 		break;
@@ -486,13 +485,13 @@ static int maxq_storage_write(gbms_tag_t tag, const void *buff, size_t size,
 			return -EINVAL;
 		ret = maxq_rs_write(maxq, tag, (void *)buff);
 		break;
-	case GBMS_TAG_QI22:
-		if (size && size > QI22_TAG_LENGTH)
+	case GBMS_TAG_AAWC:
+		if (size && size > AACC_TAG_LENGTH)
 			return -EINVAL;
 		ret = maxq_rs_write(maxq, tag, (void *)buff);
 		break;
-	case GBMS_TAG_AAWC:
-		if (size && size > AAWC_TAG_LENGTH)
+	case GBMS_TAG_AATD:
+		if (size && size > AACC_TAG_LENGTH)
 			return -EINVAL;
 		ret = maxq_rs_write(maxq, tag, (void *)buff);
 		break;

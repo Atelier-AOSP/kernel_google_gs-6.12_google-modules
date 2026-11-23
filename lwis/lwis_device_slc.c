@@ -5,6 +5,8 @@
  * Copyright (c) 2018 Google, LLC
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME "-slc: " fmt
+
 #include "lwis_device_slc.h"
 #include "lwis_ioreg.h"
 
@@ -32,10 +34,8 @@ static const struct file_operations pt_file_ops = {
 };
 
 static int lwis_slc_disable(struct lwis_device *lwis_dev);
-static int lwis_slc_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
-				int access_size);
-static int lwis_slc_register_io_locked(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
-				       int access_size);
+static int lwis_slc_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entry);
+static int lwis_slc_register_io_locked(struct lwis_device *lwis_dev, struct lwis_io_entry *entry);
 
 static struct lwis_device_subclass_operations slc_vops = {
 	.register_io = lwis_slc_register_io,
@@ -79,32 +79,30 @@ static int lwis_slc_disable(struct lwis_device *lwis_dev)
 	return 0;
 }
 
-static int lwis_slc_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
-				int access_size)
+static int lwis_slc_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entry)
 {
 	struct lwis_ioreg_device *ioreg_dev =
 		container_of(lwis_dev, struct lwis_ioreg_device, base_dev);
-	lwis_save_register_io_info(lwis_dev, entry, access_size);
-	return lwis_ioreg_io_entry_rw(ioreg_dev, entry, access_size);
+	lwis_save_register_io_info(lwis_dev, entry);
+	return lwis_ioreg_io_entry_rw(ioreg_dev, entry);
 }
 
-static int lwis_slc_register_io_locked(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
-				       int access_size)
+static int lwis_slc_register_io_locked(struct lwis_device *lwis_dev, struct lwis_io_entry *entry)
 {
 	struct lwis_ioreg_device *ioreg_dev =
 		container_of(lwis_dev, struct lwis_ioreg_device, base_dev);
-	lwis_save_register_io_info(lwis_dev, entry, access_size);
-	return lwis_ioreg_io_entry_rw_locked(ioreg_dev, entry, access_size);
+	lwis_save_register_io_info(lwis_dev, entry);
+	return lwis_ioreg_io_entry_rw_locked(ioreg_dev, entry);
 }
 
 static void print_logs_for_pt_matching_failure(struct lwis_slc_device *slc_dev,
-					       size_t requested_size_in_kb)
+					       uint64_t requested_size_in_kb)
 {
 	int i;
 
 	dev_err(slc_dev->io_dev.base_dev.dev,
-		"Failed to find valid partition, largest size supported is %zuKB, asking for %zuKB\n",
-		slc_dev->pt[slc_dev->num_pt - 1].size_kb, requested_size_in_kb);
+		"Failed to find valid partition, largest size supported is %zuKB, asking for %lluKB\n",
+		slc_dev->pt[slc_dev->num_pt - 1].size_kb, (unsigned long long)requested_size_in_kb);
 	for (i = 0; i < slc_dev->num_pt; i++) {
 		dev_err(slc_dev->io_dev.base_dev.dev, "Partition[%d]: size %zuKB is %s\n", i,
 			slc_dev->pt[i].size_kb,
@@ -320,6 +318,8 @@ static int lwis_slc_device_setup(struct lwis_slc_device *slc_dev)
 		ret = PTR_ERR(slc_dev->partition_handle);
 		dev_err(slc_dev->io_dev.base_dev.dev, "Failed to register PT client (%d)\n", ret);
 		slc_dev->partition_handle = NULL;
+		if (ret == -ENOENT)  // gslc's probe is not completed yet
+			ret = -EPROBE_DEFER;
 		return ret;
 	}
 
@@ -370,7 +370,7 @@ static int lwis_slc_device_probe(struct platform_device *plat_dev)
 	return 0;
 }
 
-static int lwis_slc_device_remove(struct platform_device *plat_dev)
+static void lwis_slc_device_remove(struct platform_device *plat_dev)
 {
 	struct lwis_device *lwis_dev = container_of(&plat_dev, struct lwis_device, plat_dev);
 	struct lwis_ioreg_device *ioreg_dev =
@@ -380,7 +380,7 @@ static int lwis_slc_device_remove(struct platform_device *plat_dev)
 	if (slc_dev->partition_handle)
 		pt_client_unregister(slc_dev->partition_handle);
 
-	return 0;
+	return;
 }
 
 #if IS_ENABLED(CONFIG_OF)

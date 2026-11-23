@@ -17,6 +17,7 @@
 
 #include <ap-pmic/da9188.h>
 #include <mailbox/protocols/mba/cpm/common/pmic/pmic_service.h>
+#include <soc/google/goog_cpm_service_ids.h>
 
 /* DA9188, DA9189 Regulator IDs */
 enum da9188_regulator_ids {
@@ -115,43 +116,48 @@ const int da9188_num_regulators = DA9188_REGL_LDO28M - DA9188_REGL_BUCK1M + 1;
 /* 13 bucks, 1 buck-boost, 28 ldos */
 const int da9189_num_regulators = DA9188_REGL_LDO28S - DA9188_REGL_BUCK1S + 1;
 
+#define REGULATOR_BUCK_DESC(_name, _id, _min, _step)           \
+	{                                                      \
+		.name = (#_name),                              \
+		.of_match = of_match_ptr(#_name),              \
+		.regulators_node = of_match_ptr("regulators"), \
+		.ops = &pmic_buck_reg_ops,                     \
+		.type = REGULATOR_VOLTAGE,                     \
+		.id = (_id),                                   \
+		.owner = THIS_MODULE,                          \
+		.n_voltages = 256,                             \
+		.min_uV = (_min),                              \
+		.uV_step = (_step),                            \
+		.of_map_mode = pmic_reg_map_buck_mode,         \
+	}
+
+#define REGULATOR_LDO_DESC(_name, _id, _ops, _min, _step)      \
+	{                                                      \
+		.name = (#_name),                              \
+		.of_match = of_match_ptr(#_name),              \
+		.regulators_node = of_match_ptr("regulators"), \
+		.ops = &(_ops),                                \
+		.type = REGULATOR_VOLTAGE,                     \
+		.id = (_id),                                   \
+		.owner = THIS_MODULE,                          \
+		.n_voltages = 256,                             \
+		.min_uV = (_min),                              \
+		.uV_step = (_step),                            \
+	}
+
 #if defined(CONFIG_DEBUG_FS) && \
 	IS_ENABLED(CONFIG_GOOGLE_DA9188_REGULATOR_REGISTER_ACCESS)
 #define DEBUGFS_DENTRY_NAME "pmic"
 #define USER_INPUT_BUF_SIZE (16)
-#endif
 
-#define REGULATOR_BUCK_DESC(_name, _id, _min, _step)                  \
-	{                                                             \
-		.name = (#_name), .of_match = of_match_ptr(#_name),   \
-		.regulators_node = of_match_ptr("regulators"),        \
-		.ops = &pmic_buck_reg_ops, .type = REGULATOR_VOLTAGE, \
-		.id = (_id), .owner = THIS_MODULE, .n_voltages = 256, \
-		.min_uV = (_min), .uV_step = (_step),                 \
-		.of_map_mode = pmic_reg_map_buck_mode,                \
-	}
-
-/*
- * Most LDOs are powered / sourced from the BUCK regulators.
- * The regulator framework supports the chained power source by setting the
- * "supply_name". But chips already support VOUT Tracking (automatic
- * sub-regulation) that can auto adjust the BUCK Vout to fit the LDO's Vout
- * needs. To avoid conflict and interfere with other regulators, the driver
- * here is not setting the supply_name and will let the PMIC HW logic handles
- * it.
- */
-#define REGULATOR_LDO_DESC(_name, _id, _supply, _ops, _min, _step)             \
-	{                                                                      \
-		.name = (#_name), .of_match = of_match_ptr(#_name),            \
-		.regulators_node = of_match_ptr("regulators"), .ops = &(_ops), \
-		.type = REGULATOR_VOLTAGE, .id = (_id), .owner = THIS_MODULE,  \
-		.n_voltages = 256, .min_uV = (_min), .uV_step = (_step),       \
-	}
-
-#if defined(CONFIG_DEBUG_FS) && \
-	IS_ENABLED(CONFIG_GOOGLE_DA9188_REGULATOR_REGISTER_ACCESS)
 /* This driver provide control to 2 PMICs */
-static const char *const pmic_names[] = {
+enum pmic_idx {
+	PMIC_IDX_DA9188 = 0,
+	PMIC_IDX_DA9189,
+	PMIC_IDX_MAX,
+};
+
+static const char *const pmic_names[PMIC_IDX_MAX] = {
 	"da9188-pmic",
 	"da9189-pmic",
 };
@@ -178,15 +184,15 @@ struct pmic_device {
 	IS_ENABLED(CONFIG_GOOGLE_DA9188_REGULATOR_REGISTER_ACCESS)
 	struct dentry *debugfs_root;
 	size_t num_of_pmics;
-	struct pmic_info pmic_info[ARRAY_SIZE(pmic_names)];
+	struct pmic_info pmic_info[PMIC_IDX_MAX];
 #endif
 };
 
 /*
  * Get / Set helpers for regulator control.
  */
-int pmic_reg_mb_get_value(struct regulator_dev *rdev, u16 reg_id, u8 cmd,
-			  u32 *read_value)
+static int pmic_reg_mb_get_value(struct regulator_dev *rdev, u16 reg_id, u8 cmd,
+				 u32 *read_value)
 {
 	struct pmic_device *drvdata = rdev_get_drvdata(rdev);
 	struct mailbox_data req_data = { 0 }, resp_data;
@@ -211,8 +217,8 @@ int pmic_reg_mb_get_value(struct regulator_dev *rdev, u16 reg_id, u8 cmd,
 	return ret;
 }
 
-int pmic_reg_mb_set_value(struct regulator_dev *rdev, u16 reg_id, u8 cmd,
-			  u32 value)
+static int pmic_reg_mb_set_value(struct regulator_dev *rdev, u16 reg_id, u8 cmd,
+				 u32 value)
 {
 	struct pmic_device *drvdata = rdev_get_drvdata(rdev);
 	struct mailbox_data req_data = { 0 };
@@ -428,62 +434,62 @@ static const struct regulator_desc pmic_regulators_desc[] = {
 	REGULATOR_BUCK_DESC(buck_11m, DA9188_REGL_BUCK11M, 240000, 5000),
 	REGULATOR_BUCK_DESC(buck_12m, DA9188_REGL_BUCK12M, 240000, 5000),
 	REGULATOR_BUCK_DESC(buck_13m, DA9188_REGL_BUCK13M, 240000, 5000),
-	REGULATOR_LDO_DESC(ldo_1m, DA9188_REGL_LDO1M, "buck_8m",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_2m, DA9188_REGL_LDO2M, "buck_7s",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_3m, DA9188_REGL_LDO3M, "buck_8m",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_4m, DA9188_REGL_LDO4M, NULL, pmic_ldo_reg_ops,
+	REGULATOR_LDO_DESC(ldo_1m, DA9188_REGL_LDO1M, pmic_ldo_reg_ops, 400000,
+			   5000),
+	REGULATOR_LDO_DESC(ldo_2m, DA9188_REGL_LDO2M, pmic_ldo_reg_ops, 1200000,
+			   10000),
+	REGULATOR_LDO_DESC(ldo_3m, DA9188_REGL_LDO3M, pmic_ldo_reg_ops, 400000,
+			   5000),
+	REGULATOR_LDO_DESC(ldo_4m, DA9188_REGL_LDO4M, pmic_ldo_reg_ops, 1200000,
+			   10000),
+	REGULATOR_LDO_DESC(ldo_5m, DA9188_REGL_LDO5M, pmic_ldo_reg_ops, 1200000,
+			   10000),
+	REGULATOR_LDO_DESC(ldo_6m, DA9188_REGL_LDO6M, pmic_ldo_reg_ops, 400000,
+			   5000),
+	REGULATOR_LDO_DESC(ldo_7m, DA9188_REGL_LDO7M, pmic_ldo_reg_ops, 960000,
+			   15000),
+	REGULATOR_LDO_DESC(ldo_8m, DA9188_REGL_LDO8M, pmic_ldo_reg_ops, 400000,
+			   5000),
+	REGULATOR_LDO_DESC(ldo_9m, DA9188_REGL_LDO9M, pmic_ldo_reg_ops, 400000,
+			   5000),
+	REGULATOR_LDO_DESC(ldo_10m, DA9188_REGL_LDO10M, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_11m, DA9188_REGL_LDO11M, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_12m, DA9188_REGL_LDO12M, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_13m, DA9188_REGL_LDO13M, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_14m, DA9188_REGL_LDO14M, pmic_ldo_reg_ops,
 			   1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_5m, DA9188_REGL_LDO5M, NULL, pmic_ldo_reg_ops,
+	REGULATOR_LDO_DESC(ldo_15m, DA9188_REGL_LDO15M, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_16m, DA9188_REGL_LDO16M, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_17m, DA9188_REGL_LDO17M, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_18m, DA9188_REGL_LDO18M, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_19m, DA9188_REGL_LDO19M, pmic_ldo_reg_ops,
 			   1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_6m, DA9188_REGL_LDO6M, "buck_6m",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_7m, DA9188_REGL_LDO7M, "ldo_2m",
-			   pmic_ldo_reg_ops, 960000, 15000),
-	REGULATOR_LDO_DESC(ldo_8m, DA9188_REGL_LDO8M, "buck_8m",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_9m, DA9188_REGL_LDO9M, "buck_6m",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_10m, DA9188_REGL_LDO10M, "buck_6m",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_11m, DA9188_REGL_LDO11M, "buck_6m",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_12m, DA9188_REGL_LDO12M, "buck_6m",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_13m, DA9188_REGL_LDO13M, "buck_8m",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_14m, DA9188_REGL_LDO14M, "buck_boost",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_15m, DA9188_REGL_LDO15M, "buck_8m",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_16m, DA9188_REGL_LDO16M, "buck_8m",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_17m, DA9188_REGL_LDO17M, "buck_8m",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_18m, DA9188_REGL_LDO18M, "buck_6m",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_19m, DA9188_REGL_LDO19M, "buck_boost",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_20m, DA9188_REGL_LDO20M, "buck_7s",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_21m, DA9188_REGL_LDO21M, "buck_boost",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_22m, DA9188_REGL_LDO22M, "buck_8m",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_23m, DA9188_REGL_LDO23M, "buck_7s",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_24m, DA9188_REGL_LDO24M, "buck_7s",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_25m, DA9188_REGL_LDO25M, "buck_7s",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_26m, DA9188_REGL_LDO26M, "buck_boost",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_27m, DA9188_REGL_LDO27M, "buck_boost",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_28m, DA9188_REGL_LDO28M, "buck_8m",
-			   pmic_ldo_reg_ops, 400000, 5000),
+	REGULATOR_LDO_DESC(ldo_20m, DA9188_REGL_LDO20M, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_21m, DA9188_REGL_LDO21M, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_22m, DA9188_REGL_LDO22M, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_23m, DA9188_REGL_LDO23M, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_24m, DA9188_REGL_LDO24M, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_25m, DA9188_REGL_LDO25M, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_26m, DA9188_REGL_LDO26M, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_27m, DA9188_REGL_LDO27M, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_28m, DA9188_REGL_LDO28M, pmic_ldo_reg_ops,
+			   400000, 5000),
 	/* DA9189 (S) */
 	REGULATOR_BUCK_DESC(buck_1s, DA9188_REGL_BUCK1S, 240000, 5000),
 	REGULATOR_BUCK_DESC(buck_2s, DA9188_REGL_BUCK2S, 240000, 5000),
@@ -500,62 +506,62 @@ static const struct regulator_desc pmic_regulators_desc[] = {
 	REGULATOR_BUCK_DESC(buck_13s, DA9188_REGL_BUCK13S, 240000, 5000),
 	/* 1 buck-boost */
 	REGULATOR_BUCK_DESC(buck_boost, DA9188_REGL_BUBO, 1300000, 10000),
-	REGULATOR_LDO_DESC(ldo_1s, DA9188_REGL_LDO1S, "buck_3s",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_2s, DA9188_REGL_LDO2S, "buck_3s",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_3s, DA9188_REGL_LDO3S, "buck_7s",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_4s, DA9188_REGL_LDO4S, "buck_7s",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_5s, DA9188_REGL_LDO5S, "buck_boost",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_6s, DA9188_REGL_LDO6S, "buck_3s",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_7s, DA9188_REGL_LDO7S, "buck_7s",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_8s, DA9188_REGL_LDO8S, "buck_boost",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_9s, DA9188_REGL_LDO9S, "buck_6s",
-			   pmic_ldo_reg_bypass_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_10s, DA9188_REGL_LDO10S, "buck_6s",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_11s, DA9188_REGL_LDO11S, "buck_6s",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_12s, DA9188_REGL_LDO12S, "buck_6s",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_13s, DA9188_REGL_LDO13S, "buck_6s",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_14s, DA9188_REGL_LDO14S, "buck_6s",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_15s, DA9188_REGL_LDO15S, "buck_boost",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_16s, DA9188_REGL_LDO16S, "buck_boost",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_17s, DA9188_REGL_LDO17S, "buck_7s",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_18s, DA9188_REGL_LDO18S, "buck_boost",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_19s, DA9188_REGL_LDO19S, "buck_7s",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_20s, DA9188_REGL_LDO20S, "buck_7s",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_21s, DA9188_REGL_LDO21S, "buck_6s",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_22s, DA9188_REGL_LDO22S, "buck_7s",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_23s, DA9188_REGL_LDO23S, "buck_6s",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_24s, DA9188_REGL_LDO24S, "buck_6s",
-			   pmic_ldo_reg_ops, 400000, 5000),
-	REGULATOR_LDO_DESC(ldo_25s, DA9188_REGL_LDO25S, "buck_boost",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_26s, DA9188_REGL_LDO26S, "buck_boost",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_27s, DA9188_REGL_LDO27S, "buck_7s",
-			   pmic_ldo_reg_ops, 1200000, 10000),
-	REGULATOR_LDO_DESC(ldo_28s, DA9188_REGL_LDO28S, "buck_boost",
-			   pmic_ldo_reg_ops, 1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_1s, DA9188_REGL_LDO1S, pmic_ldo_reg_ops, 400000,
+			   5000),
+	REGULATOR_LDO_DESC(ldo_2s, DA9188_REGL_LDO2S, pmic_ldo_reg_ops, 400000,
+			   5000),
+	REGULATOR_LDO_DESC(ldo_3s, DA9188_REGL_LDO3S, pmic_ldo_reg_ops, 1200000,
+			   10000),
+	REGULATOR_LDO_DESC(ldo_4s, DA9188_REGL_LDO4S, pmic_ldo_reg_ops, 1200000,
+			   10000),
+	REGULATOR_LDO_DESC(ldo_5s, DA9188_REGL_LDO5S, pmic_ldo_reg_ops, 1200000,
+			   10000),
+	REGULATOR_LDO_DESC(ldo_6s, DA9188_REGL_LDO6S, pmic_ldo_reg_ops, 400000,
+			   5000),
+	REGULATOR_LDO_DESC(ldo_7s, DA9188_REGL_LDO7S, pmic_ldo_reg_ops, 1200000,
+			   10000),
+	REGULATOR_LDO_DESC(ldo_8s, DA9188_REGL_LDO8S, pmic_ldo_reg_ops, 1200000,
+			   10000),
+	REGULATOR_LDO_DESC(ldo_9s, DA9188_REGL_LDO9S, pmic_ldo_reg_bypass_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_10s, DA9188_REGL_LDO10S, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_11s, DA9188_REGL_LDO11S, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_12s, DA9188_REGL_LDO12S, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_13s, DA9188_REGL_LDO13S, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_14s, DA9188_REGL_LDO14S, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_15s, DA9188_REGL_LDO15S, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_16s, DA9188_REGL_LDO16S, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_17s, DA9188_REGL_LDO17S, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_18s, DA9188_REGL_LDO18S, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_19s, DA9188_REGL_LDO19S, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_20s, DA9188_REGL_LDO20S, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_21s, DA9188_REGL_LDO21S, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_22s, DA9188_REGL_LDO22S, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_23s, DA9188_REGL_LDO23S, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_24s, DA9188_REGL_LDO24S, pmic_ldo_reg_ops,
+			   400000, 5000),
+	REGULATOR_LDO_DESC(ldo_25s, DA9188_REGL_LDO25S, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_26s, DA9188_REGL_LDO26S, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_27s, DA9188_REGL_LDO27S, pmic_ldo_reg_ops,
+			   1200000, 10000),
+	REGULATOR_LDO_DESC(ldo_28s, DA9188_REGL_LDO28S, pmic_ldo_reg_ops,
+			   1200000, 10000),
 };
 
 static_assert(ARRAY_SIZE(pmic_regulators_desc) == DA9188_REGL_MAX);
@@ -1136,6 +1142,7 @@ static int da9188_regulator_probe(struct platform_device *pdev)
 	int da9188_regulator_count, da9189_regulator_count;
 	int i;
 	struct regulator_desc *temp_desc;
+	u8 val8;
 
 	if (!dev->of_node)
 		return -ENODEV;
@@ -1146,13 +1153,7 @@ static int da9188_regulator_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, pmic_dev);
 
 	pmic_dev->dev = dev;
-
-	ret = of_property_read_u32(dev->of_node, "mba-dest-channel",
-				   &pmic_dev->mb_dest_channel);
-	if (ret < 0) {
-		dev_err(dev, "Failed to read mba-dest-channel\n");
-		return ret;
-	}
+	pmic_dev->mb_dest_channel = CPM_COMMON_PMIC_SERVICE;
 
 	dev_info(dev, "Init mailbox client\n");
 	ret = da9188_mfd_mbox_request(dev, &pmic_dev->mbox);
@@ -1282,15 +1283,26 @@ static int da9188_regulator_probe(struct platform_device *pdev)
 
 #if defined(CONFIG_DEBUG_FS) && \
 	IS_ENABLED(CONFIG_GOOGLE_DA9188_REGULATOR_REGISTER_ACCESS)
-	pmic_dev->num_of_pmics = ARRAY_SIZE(pmic_names);
+	pmic_dev->num_of_pmics = PMIC_IDX_MAX;
 	for (i = 0; i < pmic_dev->num_of_pmics; ++i) {
 		pmic_dev->pmic_info[i].name = pmic_names[i];
 		pmic_dev->pmic_info[i].dev = pmic_dev->dev;
 		pmic_dev->pmic_info[i].mbox = pmic_dev->mbox;
 		pmic_dev->pmic_info[i].mb_dest_channel =
 			pmic_dev->mb_dest_channel;
-		pmic_dev->pmic_info[i].pmic_id = i;
 	}
+
+	// Main PMIC ID, defaulted to 0x0.
+	pmic_dev->pmic_info[PMIC_IDX_DA9188].pmic_id = 0x0;
+	ret = of_property_read_u8(dev->of_node, "pmic-id-main", &val8);
+	if (ret == 0)
+		pmic_dev->pmic_info[PMIC_IDX_DA9188].pmic_id = val8;
+
+	// Sub PMIC ID, defaulted to 0x1.
+	pmic_dev->pmic_info[PMIC_IDX_DA9189].pmic_id = 0x1;
+	ret = of_property_read_u8(dev->of_node, "pmic-id-sub", &val8);
+	if (ret == 0)
+		pmic_dev->pmic_info[PMIC_IDX_DA9189].pmic_id = val8;
 
 	return da9188_regulator_debugfs_init(pmic_dev);
 #else
@@ -1304,20 +1316,18 @@ free_mbox:
 	return ret;
 }
 
-static int da9188_regulator_remove(struct platform_device *pdev)
+static void da9188_regulator_remove(struct platform_device *pdev)
 {
 	struct pmic_device *pmic_dev = platform_get_drvdata(pdev);
 
 	if (IS_ERR_OR_NULL(pmic_dev))
-		return 0;
+		return;
 
 	da9188_mfd_mbox_release(&pmic_dev->mbox);
 #if defined(CONFIG_DEBUG_FS) && \
 	IS_ENABLED(CONFIG_GOOGLE_DA9188_REGULATOR_REGISTER_ACCESS)
 	debugfs_remove_recursive(pmic_dev->debugfs_root);
 #endif
-
-	return 0;
 }
 
 static const struct platform_device_id da9188_regulator_id[] = {

@@ -145,8 +145,8 @@ PVRSRVBridgePDumpImageDescriptor(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psPDumpImageDescriptorIN->ui32StringSize * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiFileNameInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiFileNameInt,
 		     (const void __user *)psPDumpImageDescriptorIN->puiFileName,
 		     psPDumpImageDescriptorIN->ui32StringSize * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
@@ -168,8 +168,8 @@ PVRSRVBridgePDumpImageDescriptor(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (4 * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32FBCClearColourInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32FBCClearColourInt,
 		     (const void __user *)psPDumpImageDescriptorIN->pui32FBCClearColour,
 		     4 * sizeof(IMG_UINT32)) != PVRSRV_OK)
 		{
@@ -329,8 +329,9 @@ PVRSRVBridgePVRSRVPDumpComment(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psPVRSRVPDumpCommentIN->ui32CommentSize * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiCommentInt, (const void __user *)psPVRSRVPDumpCommentIN->puiComment,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiCommentInt,
+		     (const void __user *)psPVRSRVPDumpCommentIN->puiComment,
 		     psPVRSRVPDumpCommentIN->ui32CommentSize * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psPVRSRVPDumpCommentOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -472,8 +473,9 @@ PVRSRVBridgePDumpDataDescriptor(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psPDumpDataDescriptorIN->ui32StringSize * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiFileNameInt, (const void __user *)psPDumpDataDescriptorIN->puiFileName,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiFileNameInt,
+		     (const void __user *)psPDumpDataDescriptorIN->puiFileName,
 		     psPDumpDataDescriptorIN->ui32StringSize * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psPDumpDataDescriptorOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;

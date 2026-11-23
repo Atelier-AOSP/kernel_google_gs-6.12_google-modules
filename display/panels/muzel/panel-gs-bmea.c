@@ -336,18 +336,6 @@ static struct drm_dsc_config pps_configs[PANEL_TYPE_MAX][NUM_SUPPORTED_RESOLUTIO
 #define BMEA_WRCTRLD_BCTRL_BIT 0x20
 #define BMEA_WRCTRLD_HBM_BIT 0xC0
 
-#define BMEA_PPS_LEN 90
-
-#define TEAR_CNT_ADDR 0xC4
-#define ERR_FG_ADDR 0xEE
-#define ERR_FG_LEN 2
-#define ERR_FG_VGH_ERR 0x01
-#define ERR_FG_VLIN1_ERR 0x40
-#define ERR_FG_DSI_ERR 0x01
-
-#define ERR_DSI_ADDR 0xE9
-#define ERR_DSI_ERR_LEN 2
-
 #define BMEA_TE2_CHANGEABLE 0x04
 #define BMEA_TE2_FIXED_120HZ 0x29
 #define BMEA_TE2_FIXED_240HZ 0x41
@@ -370,7 +358,7 @@ static struct drm_dsc_config pps_configs[PANEL_TYPE_MAX][NUM_SUPPORTED_RESOLUTIO
 #define BZEA_TE_USEC_VRR 377
 #define MTEA_TE_USEC_VRR 373
 
-#define BMEA_OSC_DOE_CODE 0x00010000
+#define BMEA_OSC_DOE_CODE 0x00000100
 
 #define MTEA_MIPI_DSI_FREQ_MBPS_DEFAULT 1368
 #define MTEA_MIPI_DSI_FREQ_MBPS_ALTERNATIVE 1346
@@ -405,136 +393,8 @@ static const u16 MTEA_WQHD_VFP = 12, MTEA_WQHD_VSA = 4, MTEA_WQHD_VBP = 22;
 #define MTEA_WQHD_DSC { .enabled = true, .dsc_count = 2, .cfg = &pps_configs[PANEL_TYPE_MTEA][1], }
 
 static const struct gs_panel_mode_array bzea_modes = GS_PANEL_MODES(
-#ifdef PANEL_FACTORY_BUILD
+#ifndef PANEL_FACTORY_BUILD
 	/* MRR modes */
-	{
-		.mode = {
-			.name = "1280x2856x1@1",
-			DRM_MODE_TIMING(1, BZEA_WQHD_HDISPLAY, BZEA_WQHD_HFP,
-					   BZEA_WQHD_HSA, BZEA_WQHD_HBP,
-					   BZEA_WQHD_VDISPLAY, BZEA_WQHD_VFP,
-					   BZEA_WQHD_VSA, BZEA_WQHD_VBP),
-			BZEA_DIMENSION_MM,
-		},
-		.gs_mode = {
-			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
-			.vblank_usec = 120,
-			.te_usec = BMEA_TE_USEC_120HZ,
-			.bpc = 8,
-			.dsc = BZEA_WQHD_DSC,
-		},
-		.te2_timing = {
-			.rising_edge = BMEA_TE2_RISING_EDGE_OFFSET,
-			.falling_edge = BZEA_TE2_FALLING_EDGE_OFFSET,
-		},
-	},
-	{
-		.mode = {
-			.name = "1280x2856x10@10",
-			DRM_MODE_TIMING(10, BZEA_WQHD_HDISPLAY, BZEA_WQHD_HFP,
-					    BZEA_WQHD_HSA, BZEA_WQHD_HBP,
-					    BZEA_WQHD_VDISPLAY, BZEA_WQHD_VFP,
-					    BZEA_WQHD_VSA, BZEA_WQHD_VBP),
-			BZEA_DIMENSION_MM,
-		},
-		.gs_mode = {
-			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
-			.vblank_usec = 120,
-			.te_usec = BMEA_TE_USEC_10HZ,
-			.bpc = 8,
-			.dsc = BZEA_WQHD_DSC,
-		},
-		.te2_timing = {
-			.rising_edge = BMEA_TE2_RISING_EDGE_OFFSET,
-			.falling_edge = BZEA_TE2_FALLING_EDGE_OFFSET,
-		},
-	},
-	{
-		.mode = {
-			.name = "1280x2856x24@24",
-			DRM_MODE_TIMING(24, BZEA_WQHD_HDISPLAY, BZEA_WQHD_HFP,
-					    BZEA_WQHD_HSA, BZEA_WQHD_HBP,
-					    BZEA_WQHD_VDISPLAY, BZEA_WQHD_VFP,
-					    BZEA_WQHD_VSA, BZEA_WQHD_VBP),
-			BZEA_DIMENSION_MM,
-		},
-		.gs_mode = {
-			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
-			.vblank_usec = 120,
-			.te_usec = BMEA_TE_USEC_24HZ,
-			.bpc = 8,
-			.dsc = BZEA_WQHD_DSC,
-		},
-		.te2_timing = {
-			.rising_edge = BMEA_TE2_RISING_EDGE_OFFSET,
-			.falling_edge = BZEA_TE2_FALLING_EDGE_OFFSET,
-		},
-	},
-	{
-		.mode = {
-			.name = "1280x2856x30@30",
-			/* hsa and hbp are swapped to differentiate from AOD 30 Hz */
-			DRM_MODE_TIMING(30, BZEA_WQHD_HDISPLAY, BZEA_WQHD_HFP,
-					    BZEA_WQHD_HBP, BZEA_WQHD_HSA,
-					    BZEA_WQHD_VDISPLAY, BZEA_WQHD_VFP,
-					    BZEA_WQHD_VSA, BZEA_WQHD_VBP),
-			BZEA_DIMENSION_MM,
-		},
-		.gs_mode = {
-			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
-			.vblank_usec = 120,
-			.te_usec = BMEA_TE_USEC_30HZ,
-			.bpc = 8,
-			.dsc = BZEA_WQHD_DSC,
-		},
-		.te2_timing = {
-			.rising_edge = BMEA_TE2_RISING_EDGE_OFFSET,
-			.falling_edge = BZEA_TE2_FALLING_EDGE_OFFSET,
-		},
-	},
-	{
-		.mode = {
-			.name = "1280x2856x48@48",
-			DRM_MODE_TIMING(48, BZEA_WQHD_HDISPLAY, BZEA_WQHD_HFP,
-					    BZEA_WQHD_HSA, BZEA_WQHD_HBP,
-					    BZEA_WQHD_VDISPLAY, BZEA_WQHD_VFP,
-					    BZEA_WQHD_VSA, BZEA_WQHD_VBP),
-			BZEA_DIMENSION_MM,
-		},
-		.gs_mode = {
-			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
-			.vblank_usec = 120,
-			.te_usec = BMEA_TE_USEC_48HZ,
-			.bpc = 8,
-			.dsc = BZEA_WQHD_DSC,
-		},
-		.te2_timing = {
-			.rising_edge = BMEA_TE2_RISING_EDGE_OFFSET,
-			.falling_edge = BZEA_TE2_FALLING_EDGE_OFFSET,
-		},
-	},
-	{
-		.mode = {
-			.name = "1280x2856x80@80",
-			DRM_MODE_TIMING(80, BZEA_WQHD_HDISPLAY, BZEA_WQHD_HFP,
-					    BZEA_WQHD_HSA, BZEA_WQHD_HBP,
-					    BZEA_WQHD_VDISPLAY, BZEA_WQHD_VFP,
-					    BZEA_WQHD_VSA, BZEA_WQHD_VBP),
-			BZEA_DIMENSION_MM,
-		},
-		.gs_mode = {
-			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
-			.vblank_usec = 120,
-			.te_usec = BMEA_TE_USEC_80HZ,
-			.bpc = 8,
-			.dsc = BZEA_WQHD_DSC,
-		},
-		.te2_timing = {
-			.rising_edge = BMEA_TE2_RISING_EDGE_OFFSET,
-			.falling_edge = BZEA_TE2_FALLING_EDGE_OFFSET,
-		},
-	},
-#endif /* PANEL_FACTORY_BUILD */
 	{
 		.mode = {
 			.name = "1280x2856x60@60",
@@ -578,7 +438,6 @@ static const struct gs_panel_mode_array bzea_modes = GS_PANEL_MODES(
 			.falling_edge = BZEA_TE2_FALLING_EDGE_OFFSET,
 		},
 	},
-#ifndef PANEL_FACTORY_BUILD
 	{
 		.mode = {
 			.name = "1080x2410x60@60",
@@ -621,14 +480,15 @@ static const struct gs_panel_mode_array bzea_modes = GS_PANEL_MODES(
 			.falling_edge = BZEA_TE2_FALLING_EDGE_OFFSET,
 		},
 	},
+#endif
 	/* VRR modes */
 	{
 		.mode = {
 			.name = "1280x2856x120@240",
 			DRM_VRR_MODE_TIMING(120, 240, BZEA_WQHD_HDISPLAY, BZEA_WQHD_HFP,
-					     BZEA_WQHD_HSA, BZEA_WQHD_HBP,
-					     BZEA_WQHD_VDISPLAY, BZEA_WQHD_VFP,
-					     BZEA_WQHD_VSA, BZEA_WQHD_VBP),
+						      BZEA_WQHD_HSA, BZEA_WQHD_HBP,
+						      BZEA_WQHD_VDISPLAY, BZEA_WQHD_VFP,
+						      BZEA_WQHD_VSA, BZEA_WQHD_VBP),
 			/* aligned to bootloader resolution */
 			.type = DRM_MODE_TYPE_PREFERRED,
 			BZEA_DIMENSION_MM,
@@ -645,13 +505,14 @@ static const struct gs_panel_mode_array bzea_modes = GS_PANEL_MODES(
 			.falling_edge = BZEA_TE2_FALLING_EDGE_OFFSET,
 		},
 	},
+#ifndef PANEL_FACTORY_BUILD
 	{
 		.mode = {
 			.name = "1080x2410x120@240",
 			DRM_VRR_MODE_TIMING(120, 240, BZEA_FHD_HDISPLAY, BZEA_FHD_HFP,
-					     BZEA_FHD_HSA, BZEA_FHD_HBP,
-					     BZEA_FHD_VDISPLAY, BZEA_FHD_VFP,
-					     BZEA_FHD_VSA, BZEA_FHD_VBP),
+						      BZEA_FHD_HSA, BZEA_FHD_HBP,
+						      BZEA_FHD_VDISPLAY, BZEA_FHD_VFP,
+						      BZEA_FHD_VSA, BZEA_FHD_VBP),
 			BZEA_DIMENSION_MM,
 		},
 		.gs_mode = {
@@ -670,9 +531,9 @@ static const struct gs_panel_mode_array bzea_modes = GS_PANEL_MODES(
 		.mode = {
 			.name = "1280x2856x120@120",
 			DRM_VRR_MODE_TIMING(120, 120, BZEA_WQHD_HDISPLAY, BZEA_WQHD_HFP,
-					     BZEA_WQHD_HSA, BZEA_WQHD_HBP,
-					     BZEA_WQHD_VDISPLAY, BZEA_WQHD_VFP,
-					     BZEA_WQHD_VSA, BZEA_WQHD_VBP),
+						      BZEA_WQHD_HSA, BZEA_WQHD_HBP,
+						      BZEA_WQHD_VDISPLAY, BZEA_WQHD_VFP,
+						      BZEA_WQHD_VSA, BZEA_WQHD_VBP),
 			BZEA_DIMENSION_MM,
 		},
 		.gs_mode = {
@@ -691,9 +552,9 @@ static const struct gs_panel_mode_array bzea_modes = GS_PANEL_MODES(
 		.mode = {
 			.name = "1080x2410x120@120",
 			DRM_VRR_MODE_TIMING(120, 120, BZEA_FHD_HDISPLAY, BZEA_FHD_HFP,
-					     BZEA_FHD_HSA, BZEA_FHD_HBP,
-					     BZEA_FHD_VDISPLAY, BZEA_FHD_VFP,
-					     BZEA_FHD_VSA, BZEA_FHD_VBP),
+						      BZEA_FHD_HSA, BZEA_FHD_HBP,
+						      BZEA_FHD_VDISPLAY, BZEA_FHD_VFP,
+						      BZEA_FHD_VSA, BZEA_FHD_VBP),
 			BZEA_DIMENSION_MM,
 		},
 		.gs_mode = {
@@ -712,136 +573,8 @@ static const struct gs_panel_mode_array bzea_modes = GS_PANEL_MODES(
 ); /* bzea_modes */
 
 static const struct gs_panel_mode_array mtea_modes = GS_PANEL_MODES(
-#ifdef PANEL_FACTORY_BUILD
+#ifndef PANEL_FACTORY_BUILD
 	/* MRR modes */
-	{
-		.mode = {
-			.name = "1344x2992x1@1",
-			DRM_MODE_TIMING(1, MTEA_WQHD_HDISPLAY, MTEA_WQHD_HFP,
-					   MTEA_WQHD_HSA, MTEA_WQHD_HBP,
-					   MTEA_WQHD_VDISPLAY, MTEA_WQHD_VFP,
-					   MTEA_WQHD_VSA, MTEA_WQHD_VBP),
-			MTEA_DIMENSION_MM,
-		},
-		.gs_mode = {
-			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
-			.vblank_usec = 120,
-			.te_usec = BMEA_TE_USEC_120HZ,
-			.bpc = 8,
-			.dsc = MTEA_WQHD_DSC,
-		},
-		.te2_timing = {
-			.rising_edge = BMEA_TE2_RISING_EDGE_OFFSET,
-			.falling_edge = MTEA_TE2_FALLING_EDGE_OFFSET,
-		},
-	},
-	{
-		.mode = {
-			.name = "1344x2992x10@10",
-			DRM_MODE_TIMING(10, MTEA_WQHD_HDISPLAY, MTEA_WQHD_HFP,
-					    MTEA_WQHD_HSA, MTEA_WQHD_HBP,
-					    MTEA_WQHD_VDISPLAY, MTEA_WQHD_VFP,
-					    MTEA_WQHD_VSA, MTEA_WQHD_VBP),
-			MTEA_DIMENSION_MM,
-		},
-		.gs_mode = {
-			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
-			.vblank_usec = 120,
-			.te_usec = BMEA_TE_USEC_10HZ,
-			.bpc = 8,
-			.dsc = MTEA_WQHD_DSC,
-		},
-		.te2_timing = {
-			.rising_edge = BMEA_TE2_RISING_EDGE_OFFSET,
-			.falling_edge = MTEA_TE2_FALLING_EDGE_OFFSET,
-		},
-	},
-	{
-		.mode = {
-			.name = "1344x2992x24@24",
-			DRM_MODE_TIMING(24, MTEA_WQHD_HDISPLAY, MTEA_WQHD_HFP,
-					    MTEA_WQHD_HSA, MTEA_WQHD_HBP,
-					    MTEA_WQHD_VDISPLAY, MTEA_WQHD_VFP,
-					    MTEA_WQHD_VSA, MTEA_WQHD_VBP),
-			MTEA_DIMENSION_MM,
-		},
-		.gs_mode = {
-			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
-			.vblank_usec = 120,
-			.te_usec = BMEA_TE_USEC_24HZ,
-			.bpc = 8,
-			.dsc = MTEA_WQHD_DSC,
-		},
-		.te2_timing = {
-			.rising_edge = BMEA_TE2_RISING_EDGE_OFFSET,
-			.falling_edge = MTEA_TE2_FALLING_EDGE_OFFSET,
-		},
-	},
-	{
-		.mode = {
-			.name = "1344x2992x30@30",
-			/* hsa and hbp are swapped to differentiate from AOD 30 Hz */
-			DRM_MODE_TIMING(30, MTEA_WQHD_HDISPLAY, MTEA_WQHD_HFP,
-					    MTEA_WQHD_HBP, MTEA_WQHD_HSA,
-					    MTEA_WQHD_VDISPLAY, MTEA_WQHD_VFP,
-					    MTEA_WQHD_VSA, MTEA_WQHD_VBP),
-			MTEA_DIMENSION_MM,
-		},
-		.gs_mode = {
-			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
-			.vblank_usec = 120,
-			.te_usec = BMEA_TE_USEC_30HZ,
-			.bpc = 8,
-			.dsc = MTEA_WQHD_DSC,
-		},
-		.te2_timing = {
-			.rising_edge = BMEA_TE2_RISING_EDGE_OFFSET,
-			.falling_edge = MTEA_TE2_FALLING_EDGE_OFFSET,
-		},
-	},
-	{
-		.mode = {
-			.name = "1344x2992x48@48",
-			DRM_MODE_TIMING(48, MTEA_WQHD_HDISPLAY, MTEA_WQHD_HFP,
-					    MTEA_WQHD_HSA, MTEA_WQHD_HBP,
-					    MTEA_WQHD_VDISPLAY, MTEA_WQHD_VFP,
-					    MTEA_WQHD_VSA, MTEA_WQHD_VBP),
-			MTEA_DIMENSION_MM,
-		},
-		.gs_mode = {
-			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
-			.vblank_usec = 120,
-			.te_usec = BMEA_TE_USEC_48HZ,
-			.bpc = 8,
-			.dsc = MTEA_WQHD_DSC,
-		},
-		.te2_timing = {
-			.rising_edge = BMEA_TE2_RISING_EDGE_OFFSET,
-			.falling_edge = MTEA_TE2_FALLING_EDGE_OFFSET,
-		},
-	},
-	{
-		.mode = {
-			.name = "1344x2992x80@80",
-			DRM_MODE_TIMING(80, MTEA_WQHD_HDISPLAY, MTEA_WQHD_HFP,
-					    MTEA_WQHD_HSA, MTEA_WQHD_HBP,
-					    MTEA_WQHD_VDISPLAY, MTEA_WQHD_VFP,
-					    MTEA_WQHD_VSA, MTEA_WQHD_VBP),
-			MTEA_DIMENSION_MM,
-		},
-		.gs_mode = {
-			.mode_flags = MIPI_DSI_CLOCK_NON_CONTINUOUS,
-			.vblank_usec = 120,
-			.te_usec = BMEA_TE_USEC_80HZ,
-			.bpc = 8,
-			.dsc = MTEA_WQHD_DSC,
-		},
-		.te2_timing = {
-			.rising_edge = BMEA_TE2_RISING_EDGE_OFFSET,
-			.falling_edge = MTEA_TE2_FALLING_EDGE_OFFSET,
-		},
-	},
-#endif /* PANEL_FACTORY_BUILD */
 	{
 		.mode = {
 			.name = "1344x2992x60@60",
@@ -885,7 +618,6 @@ static const struct gs_panel_mode_array mtea_modes = GS_PANEL_MODES(
 			.falling_edge = MTEA_TE2_FALLING_EDGE_OFFSET,
 		},
 	},
-#ifndef PANEL_FACTORY_BUILD
 	{
 		.mode = {
 			.name = "1080x2404x60@60",
@@ -928,6 +660,7 @@ static const struct gs_panel_mode_array mtea_modes = GS_PANEL_MODES(
 			.falling_edge = MTEA_TE2_FALLING_EDGE_OFFSET,
 		},
 	},
+#endif
 	/* VRR modes */
 	{
 		.mode = {
@@ -952,6 +685,7 @@ static const struct gs_panel_mode_array mtea_modes = GS_PANEL_MODES(
 			.falling_edge = MTEA_TE2_FALLING_EDGE_OFFSET,
 		},
 	},
+#ifndef PANEL_FACTORY_BUILD
 	{
 		.mode = {
 			.name = "1080x2404x120@240",
@@ -2356,7 +2090,6 @@ static void bmea_set_panel_lp_feat(struct gs_panel *ctx, const struct gs_panel_m
 	GS_DCS_BUF_ADD_CMDLIST_AND_FLUSH(dev, lock_cmd_f0);
 }
 
-#ifndef PANEL_FACTORY_BUILD
 static void bmea_update_refresh_ctrl_feat(struct gs_panel *ctx, const struct gs_panel_mode *pmode)
 {
 	/**
@@ -2393,7 +2126,6 @@ static void bmea_refresh_ctrl(struct gs_panel *ctx)
 
 	PANEL_ATRACE_END(__func__);
 }
-#endif /* !PANEL_FACTORY_BUILD */
 
 static void bmea_write_display_mode(struct gs_panel *ctx, const struct gs_panel_mode *pmode)
 {
@@ -2629,11 +2361,7 @@ static void bmea_set_lp_mode(struct gs_panel *ctx, const struct gs_panel_mode *p
 	GS_DCS_BUF_ADD_CMDLIST_AND_FLUSH(dev, lock_cmd_f0);
 
 	gs_panel_send_cmdset(ctx, &bmea_set_lp_cmdset);
-#ifndef PANEL_FACTORY_BUILD
 	bmea_update_refresh_ctrl_feat(ctx, pmode);
-#else
-	bmea_set_panel_lp_feat(ctx, pmode);
-#endif
 	gs_panel_set_binned_lp_helper(ctx, brightness);
 
 	ctx->sw_status.te.freq_hz = 30;
@@ -2660,9 +2388,7 @@ static void bmea_set_nolp_mode(struct gs_panel *ctx, const struct gs_panel_mode 
 	GS_DCS_BUF_ADD_CMD(dev, 0xB0, 0x00, 0x05, 0xBD);
 	GS_DCS_BUF_ADD_CMD(dev, 0xBD, test_bit(FEAT_PWM_HIGH, ctx->sw_status.feat) ? 0x28 : 0x00);
 	GS_DCS_BUF_ADD_CMDLIST_AND_FLUSH(dev, lock_cmd_f0);
-#ifndef PANEL_FACTORY_BUILD
 	bmea_update_refresh_ctrl_feat(ctx, pmode);
-#endif
 	bmea_set_panel_feat(ctx, pmode, true);
 	bmea_write_display_mode(ctx, pmode);
 	bmea_change_frequency(ctx, pmode);
@@ -2717,17 +2443,15 @@ static void mtea_update_ffc(struct gs_panel *ctx, unsigned int hs_clk_mbps)
 
 static bool bzea_is_panel_alt_osc(struct gs_panel *ctx)
 {
-	u32 id;
-
 	if (ctx->panel_rev_id.id >= PANEL_REVID_EVT1)
 		return true;
 
-	if (kstrtou32(ctx->panel_extinfo, 16, &id)) {
-		dev_err(ctx->dev, "failed to get panel extinfo\n");
+	if (ctx->panel_id == PANEL_ID_INVALID_VALUE) {
+		dev_err(ctx->dev, "failed to get panel id\n");
 		return false;
 	}
 
-	return id & BMEA_OSC_DOE_CODE;
+	return ctx->panel_id & BMEA_OSC_DOE_CODE;
 }
 
 static void bzea_update_ffc(struct gs_panel *ctx, unsigned int hs_clk_mbps)
@@ -3035,9 +2759,7 @@ static int bmea_enable(struct drm_panel *panel)
 		bmea_set_lp_mode(ctx, pmode);
 		GS_DCS_BUF_ADD_CMD_AND_FLUSH(dev, MIPI_DCS_SET_DISPLAY_ON);
 	} else {
-#ifndef PANEL_FACTORY_BUILD
 		bmea_update_refresh_ctrl_feat(ctx, pmode);
-#endif
 		bmea_update_panel_feat(ctx, true);
 		bmea_write_display_mode(ctx, pmode); /* dimming */
 		bmea_change_frequency(ctx, pmode);
@@ -3155,7 +2877,6 @@ static void bmea_update_idle_state(struct gs_panel *ctx)
 	PANEL_ATRACE_END(__func__);
 }
 
-#define BR_LEN 2
 /**
  * define TRIGGER_DUMP_FOR_COLLISION_TH - threshold of triggering dumps for GRAM collision
  *
@@ -3164,18 +2885,14 @@ static void bmea_update_idle_state(struct gs_panel *ctx)
  */
 #define TRIGGER_DUMP_FOR_COLLISION_TH 24
 #define DDIC_MAX_COLLISION_CNT 255
-static int bmea_detect_fault(struct gs_panel *ctx)
+#define TEAR_CNT_ADDR 0xC4
+static void bmea_detect_gram_collision(struct gs_panel *ctx)
 {
 	struct device *dev = ctx->dev;
 	struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
-	u8 buf[ERR_FG_LEN] = { 0 };
 	u8 collision_cnt = 0;
 	int ret;
 
-	PANEL_ATRACE_BEGIN("bmea_detect_fault");
-	bitmap_zero(ctx->panel_errors, GS_PANEL_ERR_MAX);
-
-	/* GRAM collision */
 	GS_DCS_BUF_ADD_CMDLIST(dev, unlock_cmd_f0);
 	GS_DCS_BUF_ADD_CMDLIST(dev, unlock_cmd_fc);
 	GS_DCS_BUF_ADD_CMD(dev, 0xB0, 0x00, 0x01, 0xC4);
@@ -3219,89 +2936,28 @@ static int bmea_detect_fault(struct gs_panel *ctx)
 			}
 		}
 	}
+}
 
-	ret = mipi_dsi_dcs_read(dsi, ERR_FG_ADDR, buf, ERR_FG_LEN);
-	if (ret != ERR_FG_LEN) {
-		ctx->ddic_read_fail_cnt++;
-		dev_warn(dev, "Error reading ERR_FG (%pe), cnt=%d\n",
-			ERR_PTR(ret), ctx->ddic_read_fail_cnt);
-		if (ctx->ddic_read_fail_cnt >= MAX_DDIC_READ_FAIL_CNT)
-			set_bit(GS_PANEL_ERR_DSI_READ_FAILURE, ctx->panel_errors);
-		goto end;
-	} else {
-		dev_dbg(dev, "ERR_FG: %02x %02x\n", buf[0], buf[1]);
-		ctx->ddic_read_fail_cnt = 0;
-	}
+static int bmea_detect_fault(struct gs_panel *ctx,
+			     const struct gs_panel_detect_fault_desc *fault_desc,
+			     bool irq_triggered)
+{
+	struct device *dev = ctx->dev;
+	int ret;
 
-	if (buf[0] & ERR_FG_VGH_ERR)
-		set_bit(GS_PANEL_ERR_VGH, ctx->panel_errors);
-	if (buf[1] & ERR_FG_VLIN1_ERR)
-		set_bit(GS_PANEL_ERR_VLIN1, ctx->panel_errors);
-	if (buf[1] & ERR_FG_DSI_ERR) {
-		u8 err_buf[ERR_DSI_ERR_LEN] = { 0 };
+	PANEL_ATRACE_BEGIN("bmea_detect_fault");
 
-		ret = mipi_dsi_dcs_read(dsi, ERR_DSI_ADDR, err_buf, ERR_DSI_ERR_LEN);
-		if (ret == ERR_DSI_ERR_LEN) {
-			if (err_buf[0] || err_buf[1]) {
-				bitmap_set_value8(ctx->panel_errors, err_buf[0], 8);
-				bitmap_set_value8(ctx->panel_errors, err_buf[1], 0);
-			} else {
-				dev_dbg(dev, "DSI error flag set, but no specific error");
-			}
-		} else {
-			dev_err(dev, "Error reading DSI error register (%pe)\n", ERR_PTR(ret));
-		}
-	}
-	if (!bitmap_empty(ctx->panel_errors, GS_PANEL_ERR_MAX)) {
-		struct bmea_panel *spanel = to_spanel(ctx);
-		u8 br_buf[BR_LEN] = { 0 };
-		u8 pps_buf[BMEA_PPS_LEN] = { 0 };
+	if (irq_triggered)
+		bmea_detect_gram_collision(ctx);
+	else
+		GS_DCS_BUF_ADD_CMDLIST_AND_FLUSH(dev, unlock_cmd_f0);
 
-		/**
-		 * Skip reg dump if only GRAM collision is detected and collision count is less
-		 * than the threshold or it has been triggered before.
-		 */
-		if (gs_panel_only_specific_error_detected_in_bitmap(ctx->panel_errors,
-								    GS_PANEL_ERR_GRAM_COLLISION) &&
-		    (!ctx->trigger_dumps_for_gram_collision ||
-		     spanel->reg_dump_for_gram_collision_triggered)) {
-			ret = 1;
-			goto end;
-		}
+	ret = gs_panel_detect_fault_helper(ctx, fault_desc, irq_triggered);
 
-		dev_err(dev, "DDIC error: %*pbl\n", GS_PANEL_ERR_MAX, ctx->panel_errors);
-
-		/* Brightness */
-		ret = mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_BRIGHTNESS, br_buf, BR_LEN);
-		if (ret == BR_LEN)
-			dev_err(dev, "br: %02x %02x\n", br_buf[0], br_buf[1]);
-		else
-			dev_err(dev, "Error reading brightness (%pe)\n", ERR_PTR(ret));
-
-		/* PPS */
-		ret = mipi_dsi_dcs_read(dsi, MIPI_DCS_READ_PPS_START, pps_buf, BMEA_PPS_LEN);
-		if (ret == BMEA_PPS_LEN) {
-			char pps_str[BMEA_PPS_LEN * 2 + 1];
-
-			bin2hex(pps_str, pps_buf, BMEA_PPS_LEN);
-			dev_err(dev, "pps: %s\n", pps_str);
-		} else {
-			dev_err(dev, "Error reading pps (%pe)\n", ERR_PTR(ret));
-		}
-
-		if (test_bit(GS_PANEL_ERR_GRAM_COLLISION, ctx->panel_errors) &&
-		    ctx->trigger_dumps_for_gram_collision)
-			spanel->reg_dump_for_gram_collision_triggered = true;
-
-		/* positive return to indicate successful read of extant faults */
-		ret = 1;
-	} else {
-		ret = 0;
-	}
-
-end:
-	GS_DCS_BUF_ADD_CMDLIST(dev, lock_cmd_fc);
+	if (irq_triggered)
+		GS_DCS_BUF_ADD_CMDLIST(dev, lock_cmd_fc);
 	GS_DCS_BUF_ADD_CMDLIST_AND_FLUSH(dev, lock_cmd_f0);
+
 	PANEL_ATRACE_END("bmea_detect_fault");
 
 	return ret;
@@ -3540,13 +3196,8 @@ static void bmea_panel_init(struct gs_panel *ctx)
 	bmea_disable_retention(ctx);
 	gs_panel_send_cmdset(ctx, &bmea_collision_detection_cmdset);
 
-#ifdef PANEL_FACTORY_BUILD
-	ctx->idle_data.panel_idle_enabled = false;
-	set_bit(FEAT_FRAME_MANUAL_FI, ctx->sw_status.feat);
-#else
 	ctx->refresh_ctrl |= GS_PANEL_REFRESH_CTRL_EARLY_EXIT;
 	bmea_update_refresh_ctrl_feat(ctx, pmode);
-#endif
 	ctx->hw_status.irc_mode = IRC_FLAT_DEFAULT;
 #ifndef PANEL_FACTORY_BUILD
 	/* default fixed TE2 240Hz */
@@ -3631,9 +3282,7 @@ static const struct gs_panel_funcs bmea_gs_funcs = {
 	.update_te2 = bmea_update_te2,
 	.commit_done = bmea_commit_done,
 	.set_self_refresh = bmea_set_self_refresh,
-#ifndef PANEL_FACTORY_BUILD
 	.refresh_ctrl = bmea_refresh_ctrl,
-#endif
 	.read_serial = gs_panel_read_slsi_ddic_id,
 	.set_acl_mode = bmea_set_acl_mode,
 	.handle_skin_temperature = bmea_handle_skin_temperature,
@@ -3674,6 +3323,21 @@ static struct gs_panel_calibration_desc bmea_calibration_desc = {
 	},
 };
 
+static const struct gs_panel_detect_fault_desc bmea_fault_desc = {
+	.errfg_reg = 0xEE,
+	.errfg_len = 2,
+	.dsi_err_reg = 0xE9,
+	.vgh_mask = BIT(8),
+	.vlin1_mask = BIT(6),
+	.dsi_err_mask = BIT(0),
+	/**
+	 * The err_fg pin is supported and may keep high in some worse cases. Adjust the value
+	 * if needed.
+	 */
+	.detect_interval_ms = 5000,
+	.panel_errors_mask = BIT(GS_PANEL_ERR_DSI_READ_FAILURE) | BIT(GS_PANEL_ERR_GRAM_COLLISION),
+};
+
 #define DEFINE_BMEA_PANEL_DESC(NAME, MODES, LP_MODES, BINNED_LP, MIPI_DSI_FREQ)			\
 static struct gs_panel_desc NAME = {								\
 	.data_lane_cnt = 4,									\
@@ -3704,13 +3368,7 @@ static struct gs_panel_desc NAME = {								\
 	 * kernel, the delay of notification is estimated to be ~50ms.				\
 	 */											\
 	.notify_te2_freq_changed_work_delay_ms = 50,						\
-	/**											\
-	 * The err_fg pin is supported and may keep high in some worse cases. Adjust the value	\
-	 * if needed.										\
-	 */											\
-	.fault_detect_interval_ms = 2000,							\
-	.panel_errors_mask = BIT(GS_PANEL_ERR_DSI_READ_FAILURE) |				\
-			BIT(GS_PANEL_ERR_GRAM_COLLISION),					\
+	.fault_desc = &bmea_fault_desc,								\
 }
 
 DEFINE_BMEA_PANEL_DESC(gs_bzea, bzea_modes, bzea_lp_modes, bzea_binned_lp,

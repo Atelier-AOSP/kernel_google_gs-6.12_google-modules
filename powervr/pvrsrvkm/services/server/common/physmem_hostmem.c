@@ -49,7 +49,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "allocmem.h"
 #include "physheap.h"
 #include "pvrsrv_device.h"
-#include "physheap.h"
 #include "physmem_osmem.h"
 
 static void HostMemCpuPAddrToDevPAddr(IMG_HANDLE hPrivData,
@@ -91,7 +90,7 @@ static PVRSRV_DEVICE_CONFIG gsHostMemDevConfig[] =
 {
 	{
 		.pszName = "HostMemDevice",
-		.eCacheSnoopingMode = PVRSRV_DEVICE_SNOOP_NONE,
+		.eSystemCoherencyMode = PVRSRV_DEVICE_SNOOP_NONE,
 		.pasPhysHeaps = &gsPhysHeapConfigHostMemDevice[0],
 		.ui32PhysHeapCount = ARRAY_SIZE(gsPhysHeapConfigHostMemDevice),
 	}

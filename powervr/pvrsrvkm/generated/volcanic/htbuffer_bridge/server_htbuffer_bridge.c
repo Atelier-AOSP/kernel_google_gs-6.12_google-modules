@@ -143,8 +143,8 @@ PVRSRVBridgeHTBControl(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psHTBControlIN->ui32NumGroups * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32GroupEnableInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32GroupEnableInt,
 		     (const void __user *)psHTBControlIN->pui32GroupEnable,
 		     psHTBControlIN->ui32NumGroups * sizeof(IMG_UINT32)) != PVRSRV_OK)
 		{

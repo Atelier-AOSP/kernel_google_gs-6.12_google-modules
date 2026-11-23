@@ -107,6 +107,7 @@ static const struct event_entry std_hw_events[] = {
 	{ 24, "max-read-stall-cycles", GEM_EVENT_TYPE_HISTORICAL_HIGH },
 	{ 25, "max-write-stall-cycles", GEM_EVENT_TYPE_HISTORICAL_HIGH },
 	{ 26, "core-clock-cycles", GEM_EVENT_TYPE_ACCUMULATOR },
+	{ 27, "total-write-req-bytes", GEM_EVENT_TYPE_ACCUMULATOR },
 	{ 0, NULL },
 };
 
@@ -249,6 +250,34 @@ static const struct event_entry gmc_generic_hw_events[] = {
 	{ 94, "timeout_vc_2" },
 	{ 95, "timeout_vc_3" },
 	{ 96, "timeout_vc_4" },
+	{ 97, "CMD_RFMpb" },
+	{ 98, "CMD_RFMab" },
+	{ 99, "cyc_rank_0_SR" },
+	{ 100, "cyc_rank_1_SR" },
+	{ 101, "cyc_rank_0_SRPD" },
+	{ 102, "cyc_rank_1_SRPD" },
+	{ 103, "cyc_CSSRPD" },
+	{ 104, "cyc_PHY_LP_data" },
+	{ 105, "cyc_PHY_LP_ctrl" },
+	{ 106, "write_timeout" },
+	{ 107, "occurrence_ref_alert_lvl_3_bo" },
+	{ 108, "cyc_ref_alert_lvl_3_bo" },
+	{ 109, "occurrence_dmnt_alert_lvl_2_bo" },
+	{ 110, "cyc_dmnt_alert_lvl_2_bo" },
+	{ 111, "occurrence_ctrlupd_bo" },
+	{ 112, "cyc_ctrlupd_bo" },
+	{ 113, "occurrence_phymstr_bo" },
+	{ 114, "cyc_phymstr_bo" },
+	{ 115, "occurrence_lp2_exit" },
+	{ 116, "cyc_lp2_exit" },
+	{ 117, "occurrence_sw_seq_block" },
+	{ 118, "cyc_sw_seq_block" },
+	{ 119, "same_rank_r2w" },
+	{ 120, "same_rank_w2r" },
+	{ 121, "diff_rank_r2w" },
+	{ 122, "diff_rank_w2r" },
+	{ 123, "diff_rank_r2r" },
+	{ 124, "diff_rank_w2w" },
 	{ 0, NULL },
 };
 
@@ -267,6 +296,14 @@ static const struct event_entry gmc_dfi_hw_events[] = {
 	{ 1, "WR" },
 	{ 2, "dfi_wrdata_en" },
 	{ 3, "dfi_rddata_valid" },
+	{ 0, NULL },
+};
+
+static const struct event_entry gmc_dfi_hw_events_v2[] = {
+	{ 0, "RD" },
+	{ 1, "WR" },
+	{ 2, "dfi_rddata_valid" },
+	{ 3, "dfi_wrdata_en" },
 	{ 0, NULL },
 };
 
@@ -388,6 +425,12 @@ static const struct event_entry gslc_core_hw_events[] = {
 	{ 104, "WR_URGENCYLVL_03_CYC_VC3" },
 	{ 105, "WR_URGENCYLVL_03_CYC_VC4" },
 	{ 106, "WR_URGENCYLVL_03_CYC_VC5" },
+	{ 107, "CSR_PREFETCH_GEN" },
+	{ 108, "CSR_PREFETCH_DRP" },
+	{ 109, "RQB_STALL_BE_AW_CYC" },
+	{ 110, "RQB_STALL_BE_AR_CYC" },
+	{ 111, "LOCK_CACHELINE" },
+	{ 112, "LOCK_FAIL" },
 	{ 140, "TAGRAM_ACCESS_CYCLE" },
 	{ 141, "TAGRAM_RET_CYCLE" },
 	{ 142, "TAGRAM_PG_CYCLE" },
@@ -449,6 +492,7 @@ static const struct eventgrp_desc gem_event_groups[] = {
 	{ "dvfs-gslc", dvfs_gslc_hw_events, NULL },
 	{ "gmc-generic", gmc_generic_hw_events, gmc_generic_hw_filters },
 	{ "gmc-dfi", gmc_dfi_hw_events, gmc_dfi_hw_filters },
+	{ "gmc-dfi-v2", gmc_dfi_hw_events_v2, gmc_dfi_hw_filters },
 	{ "gslc-core", gslc_core_hw_events, gslc_core_hw_filters },
 	{ NULL },
 };
@@ -2005,7 +2049,7 @@ cleanup_gdmc_iface:
 	return ret;
 }
 
-static int google_gem_client_remove(struct platform_device *pdev)
+static void google_gem_client_remove(struct platform_device *pdev)
 {
 	struct gem_drvdata *gem_drvdata = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
@@ -2013,7 +2057,6 @@ static int google_gem_client_remove(struct platform_device *pdev)
 	debugfs_remove_recursive(gem_drvdata->debugfs_dir);
 	of_reserved_mem_device_release(dev);
 	gdmc_iface_put(gem_drvdata->gdmc_iface);
-	return 0;
 }
 
 static const struct of_device_id google_gem_of_match_table[] = {

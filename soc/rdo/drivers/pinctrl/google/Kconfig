@@ -35,6 +35,17 @@ config PINCTRL_LGA
 	  Select Y if you have such device.
 	  If unsure select "N".
 
+config PINCTRL_MBU
+	bool "Pinctrl Malibu support"
+	depends on !PINCTRL_LGA
+	depends on !PINCTRL_RDO
+	depends on PINCTRL_GOOGLE
+	help
+	  Enable pinctrl for Malibu
+	  Driver for IO BANK programming and for IRQ over GPIO.
+	  Select Y if you have such device.
+	  If unsure select "N".
+
 config PINCTRL_GOOGLE_TEST
 	tristate "Test driver for Google pin controller"
 	depends on PINCTRL_GOOGLE

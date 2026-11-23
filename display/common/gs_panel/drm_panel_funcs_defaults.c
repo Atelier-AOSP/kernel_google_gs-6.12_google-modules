@@ -122,6 +122,13 @@ int gs_panel_get_modes(struct drm_panel *panel, struct drm_connector *connector)
 			const struct gs_panel_mode *pmode = &ctx->desc->modes->modes[i];
 			struct drm_display_mode *mode;
 
+			if (ctx->mode_override_idx >= 0 && ctx->mode_override_idx != i)
+				continue;
+
+			if (gs_panel_has_func(ctx, is_mode_valid) &&
+			   !ctx->desc->gs_panel_func->is_mode_valid(ctx, pmode))
+				continue;
+
 			mode = drm_mode_duplicate(connector->dev, &pmode->mode);
 			if (!mode)
 				return -ENOMEM;

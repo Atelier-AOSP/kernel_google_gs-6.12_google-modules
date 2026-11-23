@@ -45,6 +45,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #if !defined(RGX_MIPS_H)
 #define RGX_MIPS_H
 
+#define RGXMIPSFW_FIRMWARE_HEAP_BASE             (0xC0000000)
+#define RGXMIPSFW_FIRMWARE_HEAP_BASE_CACHED		 (0xD0000000)
+
 /*
  * Utility defines for memory management
  */

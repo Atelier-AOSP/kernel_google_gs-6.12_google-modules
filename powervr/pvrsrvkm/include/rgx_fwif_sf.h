@@ -426,6 +426,7 @@ X(405, RGXFW_GROUP_MAIN, RGXFW_SF_MAIN_FPF_INVALID_CHECKPOINT, "Invalid FPF sync
 X(406, RGXFW_GROUP_MAIN, RGXFW_SF_MAIN_FPFCB_WOFF_UPDATE, "FPF-CB Woff update = %u", 1) \
 X(407, RGXFW_GROUP_MAIN, RGXFW_SF_MAIN_FPF_WAITING_FOR_CB, "FPF-CB waiting for space to write token", 0) \
 X(408, RGXFW_GROUP_MAIN, RGXFW_SF_MAIN_FPFCB_WRITE_CANCELLED, "FPF token %u dropped after waiting for space", 1) \
+X(409, RGXFW_GROUP_MAIN, RGXFW_SF_MAIN_INVALID_KM_PTR, "Bad KM pointer: type = %u; function = %u; line = %u; offset = 0x%X; size = 0x%X; DriverID = %u", 6) \
 \
 X(  1, RGXFW_GROUP_MTS, RGXFW_SF_MTS_BG_KICK_DEPRECATED, "Bg Task DM = %u, counted = %u", 2) \
 X(  2, RGXFW_GROUP_MTS, RGXFW_SF_MTS_BG_COMPLETE_DEPRECATED, "Bg Task complete DM = %u", 1) \
@@ -761,6 +762,7 @@ X( 67, RGXFW_GROUP_SPM, RGXFW_SF_SPM_RESUMED_TA, "OOM: Resumed TA with ready pag
 X( 68, RGXFW_GROUP_SPM, RGXFW_SF_SPM_PR_DEADLOCK_UNBLOCKED, "OOM TA/3D PR deadlock unblocked reordering DM%u runlist head from Context 0x%08x to 0x%08x", 3) \
 X( 69, RGXFW_GROUP_SPM, RGXFW_SF_SPM_STATE_PR_FORCEFREE, "SPM State = PR force free", 0) \
 X( 70, RGXFW_GROUP_SPM, RGXFW_SF_SPM_BUFFER_BACKING_FAILED, "Failure to back PR Buffer", 0) \
+X( 71, RGXFW_GROUP_SPM, RGXFW_SF_SPM_PR_INFO, "SPM Info: DM%u GEOM FWCtx 0x%08.8x is OOM, 3D FWCtx 0x%08.8x PR sync 0x%08.8x will need to be >= 0x%08.8x", 5) \
 \
 X(  1, RGXFW_GROUP_POW, RGXFW_SF_POW_CHECK_DEPRECATED, "Check Pow state DM%u int: 0x%x, ext: 0x%x, pow flags: 0x%x", 4) \
 X(  2, RGXFW_GROUP_POW, RGXFW_SF_POW_GPU_IDLE, "GPU idle (might be powered down). Pow state int: 0x%x, ext: 0x%x, flags: 0x%x", 3) \
@@ -1094,6 +1096,13 @@ X(  6, RGXFW_GROUP_CUSTOMER, RGXFW_SF_CUSTOMER_CPM_INVALID_THERMAL_LIMITS, "CPM:
 X(  7, RGXFW_GROUP_CUSTOMER, RGXFW_SF_CUSTOMER_LPCM_UNEXPECTED_STATE, "LPCM: WARNING! GPU at unexpected op level: 0x%08x should be at:0x%08x", 2) \
 X(  8, RGXFW_GROUP_CUSTOMER, RGXFW_SF_CUSTOMER_IIF_ERROR_SIGNAL, "IIF: fence (id %u) signalled with an error", 1) \
 X(  9, RGXFW_GROUP_CUSTOMER, RGXFW_SF_CUSTOMER_LPCM_SET_STATE_FAILURE, "LPCM: Failed to set DVFS state", 0) \
+X( 10, RGXFW_GROUP_CUSTOMER, RGXFW_SF_CUSTOMER_IIF_WAIT_REQUESTED, "IIF: Wait requested for fence id %u", 1) \
+X( 11, RGXFW_GROUP_CUSTOMER, RGXFW_SF_CUSTOMER_IIF_WAIT_REQUESTED_PROCEED, "IIF: Wait requested for fence id %u proceeded", 1) \
+X( 12, RGXFW_GROUP_CUSTOMER, RGXFW_SF_CUSTOMER_IIF_SIGNAL_REQUESTED, "IIF: Signal requested for fence id %u", 1) \
+X( 13, RGXFW_GROUP_CUSTOMER, RGXFW_SF_CUSTOMER_IIF_KICK_WAITER, "IIF: Kicking waiter IP %u", 1) \
+X( 14, RGXFW_GROUP_CUSTOMER, RGXFW_SF_CUSTOMER_MBA_SEND_MSG, "MBA: Sending message:", 0) \
+X( 15, RGXFW_GROUP_CUSTOMER, RGXFW_SF_CUSTOMER_MBA_RECV_MSG, "MBA: Received message:", 0) \
+X( 16, RGXFW_GROUP_CUSTOMER, RGXFW_SF_CUSTOMER_CUSTOM_DEBUG_MSG, "Pixel GPU Custom Debug Message (%x) (%u) :", 2) \
 \
 X(65535, RGXFW_GROUP_NULL, RGXFW_SF_LAST, "You should not use this string", 15)
 

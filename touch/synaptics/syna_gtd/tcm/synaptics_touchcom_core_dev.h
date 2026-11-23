@@ -398,8 +398,7 @@ struct tcm_serial_number_info {
 	unsigned char wafer_lot[12];
 	unsigned char x_coordinate[6];
 	unsigned char y_coordinate[6];
-	unsigned char wafer_id[4];
-	unsigned char date_code[4];
+	unsigned char date_wafer_code[8];
 };
 
 /** Definitions of timing settings */

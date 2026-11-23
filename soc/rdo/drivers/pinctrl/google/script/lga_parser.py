@@ -125,6 +125,10 @@ class Common:
     print("static const struct of_device_id {}[] = {{".format(match_table_name))
     for sswrp in self.sswrp_list:
       print_compatible_single(sswrp)
+
+    # Add sentinel
+    print("\t{},")
+
     print("};")
 
   def print_google_pins(self):

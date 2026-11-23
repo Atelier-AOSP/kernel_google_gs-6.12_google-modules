@@ -11,6 +11,7 @@
 
 #include <linux/of.h>
 #include <linux/of_graph.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <drm/drm_atomic_state_helper.h>
 #include <drm/drm_connector.h>
@@ -45,6 +46,8 @@ MODULE_PARM_DESC(panel0_serial, "Serial number for primary panel");
 static char panel1_serial[PANEL_SERIAL_MAX] = { '\0' };
 module_param_string(panel1_serial, panel1_serial, sizeof(panel1_serial), 0644);
 MODULE_PARM_DESC(panel1_serial, "Serial number for secondary panel");
+
+static struct platform_driver gs_drm_connector_driver;
 
 int gs_drm_mode_bts_fps(const struct drm_display_mode *mode, unsigned int min_bts_fps)
 {
@@ -203,6 +206,15 @@ static int gs_drm_connector_late_register(struct drm_connector *connector)
 	return -EINVAL;
 }
 
+static void gs_drm_connector_early_unregister(struct drm_connector *connector)
+{
+	struct gs_drm_connector *gs_connector = to_gs_connector(connector);
+	const struct gs_drm_connector_funcs *funcs = gs_connector->funcs;
+
+	if (funcs && funcs->early_unregister)
+		funcs->early_unregister(gs_connector);
+}
+
 static const struct drm_connector_funcs base_drm_connector_funcs = {
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.reset = gs_drm_connector_reset,
@@ -213,6 +225,7 @@ static const struct drm_connector_funcs base_drm_connector_funcs = {
 	.atomic_set_property = gs_drm_connector_set_property,
 	.atomic_print_state = gs_drm_connector_print_state,
 	.late_register = gs_drm_connector_late_register,
+	.early_unregister = gs_drm_connector_early_unregister,
 };
 
 bool is_gs_drm_connector(const struct drm_connector *connector)
@@ -397,6 +410,63 @@ static int gs_drm_connector_create_panel_errors_property(struct gs_drm_connector
 	return 0;
 }
 
+static int gs_drm_connector_create_pmic_errors_property(struct gs_drm_connector *gs_connector)
+{
+	static const struct drm_prop_enum_list props[] = {
+		{ GS_PMIC_ERR_IRQ_TRIGGERED, "PMIC IRQ Triggered" },
+	};
+	struct drm_device *dev = gs_connector->base.dev;
+	struct gs_drm_connector_properties *p = gs_drm_connector_get_properties(gs_connector);
+
+	p->pmic_errors = drm_property_create_bitmask(dev, DRM_MODE_PROP_IMMUTABLE, "pmic_errors",
+						     props, ARRAY_SIZE(props),
+						     BIT_ULL(GS_PMIC_ERR_MAX) - 1);
+	if (!p->pmic_errors)
+		return -ENOMEM;
+
+	return 0;
+}
+
+bool gs_drm_connector_check_ddic_errors(struct gs_drm_connector_state *state)
+{
+	const unsigned long *errors = state->panel_errors;
+
+	if (test_bit(GS_PANEL_ERR_DSI_ECC_MULTI, errors) &&
+	    test_bit(GS_PANEL_ERR_DSI_CHECKSUM, errors))
+		return true;
+
+	if (test_bit(GS_PANEL_ERR_VLIN1, errors) && test_bit(GS_PANEL_ERR_VGH, errors))
+		return true;
+
+	return false;
+}
+EXPORT_SYMBOL_GPL(gs_drm_connector_check_ddic_errors);
+
+bool gs_drm_connector_check_gram_errors(struct gs_drm_connector_state *state)
+{
+	if (state->trigger_dumps_for_gram_collision &&
+	    !state->coredump_for_gram_collision_triggered) {
+		state->trigger_dumps_for_gram_collision = false;
+		/* won't trigger coredump again until the next reboot */
+		state->coredump_for_gram_collision_triggered = true;
+		return true;
+	}
+	return false;
+}
+EXPORT_SYMBOL_GPL(gs_drm_connector_check_gram_errors);
+
+bool gs_drm_connector_check_dsi_errors(struct gs_drm_connector_state *state)
+{
+	return test_bit(GS_DSI_ERR_HARD_RSTN, state->dsi_errors);
+}
+EXPORT_SYMBOL_GPL(gs_drm_connector_check_dsi_errors);
+
+bool gs_drm_connector_check_pmic_errors(struct gs_drm_connector_state *state)
+{
+	return !bitmap_empty(state->pmic_errors, GS_PMIC_ERR_MAX);
+}
+EXPORT_SYMBOL_GPL(gs_drm_connector_check_pmic_errors);
+
 static int gs_drm_connector_create_luminance_properties(struct gs_drm_connector *gs_connector)
 {
 	struct drm_device *dev = gs_connector->base.dev;
@@ -553,6 +623,10 @@ int gs_drm_connector_create_properties(struct drm_connector *connector)
 	if (ret)
 		return ret;
 
+	ret = gs_drm_connector_create_pmic_errors_property(gs_connector);
+	if (ret)
+		return ret;
+
 	ret = gs_drm_connector_create_refresh_ctrl_properties(gs_connector);
 
 	p->frame_interval = drm_property_create_range(drm_dev, 0, "frame_interval", 0, UINT_MAX);
@@ -624,6 +698,55 @@ int gs_connector_bind(struct device *dev, struct device *master, void *data)
 EXPORT_SYMBOL_GPL(gs_connector_bind);
 
 /* Parsing */
+
+/**
+ * get_gs_drm_connector_node() - Gets the gs_drm_connector from a device node
+ * @np: pointer to device node to check
+ *
+ * Return: error pointer (-EINVAL) if cannot find platform device,
+ *         NULL if device node is not a gs_drm_connector node,
+ *         or valid pointer to struct gs_drm_connector corresponding to node.
+ */
+static struct gs_drm_connector *get_gs_drm_connector_node(struct device_node *np)
+{
+	struct platform_device *pdev = of_find_device_by_node(np);
+
+	if (!pdev) {
+		pr_warn("find_connector: Unable to find platform device for node %s\n",
+			np->full_name);
+		return ERR_PTR(-EINVAL);
+	}
+
+	if (pdev->dev.driver == &gs_drm_connector_driver.driver)
+		return platform_get_drvdata(pdev);
+
+	return NULL;
+}
+
+struct gs_drm_connector *of_gs_drm_find_connector(struct device_node *panel_np)
+{
+	struct device_node *parent_node;
+	struct gs_drm_connector *out_conn;
+
+	out_conn = get_gs_drm_connector_node(panel_np);
+	if (!IS_ERR_OR_NULL(out_conn))
+		return out_conn;
+
+	parent_node = of_get_parent(panel_np);
+	if (parent_node) {
+		out_conn = get_gs_drm_connector_node(parent_node);
+		if (IS_ERR(out_conn))
+			out_conn = NULL;
+		of_node_put(parent_node);
+	} else {
+		pr_warn("find_connector: Unable to find parent node for device_node %s\n",
+			panel_np->full_name);
+		out_conn = NULL;
+	}
+
+	return out_conn;
+}
+EXPORT_SYMBOL_GPL(of_gs_drm_find_connector);
 
 static struct device_node *
 gs_drm_connector_find_host_node(const struct gs_drm_connector *gs_connector, int port, int endpoint)
@@ -697,7 +820,6 @@ static int connector_add_mipi_dsi_device(struct gs_drm_connector *gs_connector, 
 		.node = NULL,
 		.channel = 1,
 	};
-	struct device_node *node;
 	struct device *dev = gs_connector->kdev;
 	const char *node_label;
 	const char *p;
@@ -709,12 +831,8 @@ static int connector_add_mipi_dsi_device(struct gs_drm_connector *gs_connector, 
 	dev_dbg(dev, "%s+ Preferred panel %s\n", __func__, pname);
 
 	/* Search for matching child node */
-	for_each_available_child_of_node(dev->of_node, node) {
+	for_each_available_child_of_node_scoped(dev->of_node, node) {
 		bool found;
-
-		if (info.node) {
-			continue;
-		}
 
 		if (of_property_read_u32(node, "channel", &info.channel)) {
 			/* if cannot read channel, continue */
@@ -728,6 +846,7 @@ static int connector_add_mipi_dsi_device(struct gs_drm_connector *gs_connector, 
 		if (found) {
 			strscpy(info.type, node_label, sizeof(info.type));
 			info.node = of_node_get(node);
+			break;
 		}
 	}
 
@@ -764,7 +883,7 @@ static const char *strip_optional_panel_name_prefix(const char *name)
  * "panel_name.panel_id", where panel_id is a 6- or 8-character hex string. This
  * function parses that string into an integer.
  *
- * Return: 32-bit integer representing the panel_id, or INVALID_PANEL_ID if
+ * Return: 32-bit integer representing the panel_id, or PANEL_ID_INVALID_VALUE if
  *         invalid or missing
  */
 static u32 dsim_get_panel_id(const char *name)
@@ -777,7 +896,7 @@ static u32 dsim_get_panel_id(const char *name)
 	 * otherwise return an invalid panel ID
 	 */
 	if (!p)
-		return INVALID_PANEL_ID;
+		return PANEL_ID_INVALID_VALUE;
 
 	p++;
 
@@ -787,7 +906,7 @@ static u32 dsim_get_panel_id(const char *name)
 		return __builtin_bswap32(*(u32 *)panel_id);
 	}
 
-	return INVALID_PANEL_ID;
+	return PANEL_ID_INVALID_VALUE;
 }
 
 /*
@@ -812,7 +931,7 @@ static int parse_panel_name(struct gs_drm_connector *gs_connector)
 		 * With no valid preferred name, presume invalid ID; panel
 		 * driver will check extinfo for id after first enable
 		 */
-		gs_connector->panel_id = INVALID_PANEL_ID;
+		gs_connector->panel_id = PANEL_ID_INVALID_VALUE;
 
 		return connector_add_mipi_dsi_device_preferred(gs_connector);
 	}
@@ -824,6 +943,7 @@ static int parse_panel_name(struct gs_drm_connector *gs_connector)
  *
  * The panel is responsible for either copying this string's contents or
  * reading the serial number directly and storing it within gs_panel
+ * @gs_connector: Pointer to gs_connector
  */
 static void read_panel_serial(struct gs_drm_connector *gs_connector)
 {
@@ -925,12 +1045,10 @@ static int gs_drm_connector_probe(struct platform_device *pdev)
 	return 0;
 };
 
-static int gs_drm_connector_remove(struct platform_device *pdev)
+static void gs_drm_connector_remove(struct platform_device *pdev)
 {
 	struct gs_drm_connector *gs_connector = platform_get_drvdata(pdev);
 	(void)gs_connector; /*TODO(tknelms): use*/
-
-	return 0;
 };
 
 static const struct of_device_id gs_connector_of_match[] = {

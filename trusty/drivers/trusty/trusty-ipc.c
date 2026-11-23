@@ -441,6 +441,7 @@ static int vds_queue_txbuf(struct tipc_virtio_dev *vds,
 	mutex_lock(&vds->lock);
 	if (vds->state == VDS_ONLINE) {
 		sg_init_one(&sg, mb, mb->wpos);
+		sg_dma_address(&sg) = mb->buf_id;
 		err = virtqueue_add_outbuf(vds->txvq, &sg, 1, mb, GFP_KERNEL);
 		need_notify = virtqueue_kick_prepare(vds->txvq);
 	} else {
@@ -2080,6 +2081,7 @@ static int _handle_rxbuf(struct tipc_virtio_dev *vds,
 drop_it:
 	/* add the buffer back to the virtqueue */
 	sg_init_one(&sg, rxbuf, rxbuf->buf_sz);
+	sg_dma_address(&sg) = rxbuf->buf_id;
 	err = virtqueue_add_inbuf(vds->rxvq, &sg, 1, rxbuf, GFP_KERNEL);
 	if (err < 0) {
 		dev_err(dev, "failed to add a virtqueue buffer: %d\n", err);
@@ -2135,8 +2137,10 @@ static int tipc_virtio_probe(struct virtio_device *vdev)
 	struct tipc_virtio_dev *vds;
 	struct tipc_dev_config config;
 	struct virtqueue *vqs[2];
-	vq_callback_t *vq_cbs[] = {_rxvq_cb, _txvq_cb};
-	static const char * const vq_names[] = { "rx", "tx" };
+	struct virtqueue_info vqs_info[] = {
+		{ "rx", _rxvq_cb },
+		{ "tx", _txvq_cb },
+	};
 
 	vds = kzalloc(sizeof(*vds), GFP_KERNEL);
 	if (!vds)
@@ -2167,8 +2171,7 @@ static int tipc_virtio_probe(struct virtio_device *vdev)
 	vds->cdev_name[sizeof(vds->cdev_name)-1] = '\0';
 
 	/* find tx virtqueues (rx and tx and in this order) */
-	err = vdev->config->find_vqs(vdev, 2, vqs, vq_cbs, vq_names, NULL,
-				     NULL);
+	err = vdev->config->find_vqs(vdev, 2, vqs, vqs_info, NULL);
 	if (err)
 		goto err_find_vqs;
 
@@ -2192,6 +2195,7 @@ static int tipc_virtio_probe(struct virtio_device *vdev)
 		}
 
 		sg_init_one(&sg, rxbuf, rxbuf->buf_sz);
+		sg_dma_address(&sg) = rxbuf->buf_id;
 		err = virtqueue_add_inbuf(vds->rxvq, &sg, 1, rxbuf, GFP_KERNEL);
 		WARN_ON(err); /* sanity check; this can't really happen */
 	}
@@ -2217,7 +2221,6 @@ static void tipc_virtio_remove(struct virtio_device *vdev)
 
 	mutex_lock(&vds->lock);
 	vds->state = VDS_DEAD;
-	vds->vdev = NULL;
 	mutex_unlock(&vds->lock);
 
 	vdev->config->reset(vdev);
@@ -2230,7 +2233,12 @@ static void tipc_virtio_remove(struct virtio_device *vdev)
 
 	vdev->config->del_vqs(vds->vdev);
 
+	mutex_lock(&vds->lock);
+	vds->vdev = NULL;
+	mutex_unlock(&vds->lock);
+
 	kref_put(&vds->refcount, _free_vds);
+	vdev->config->set_status(vdev, 0);
 }
 
 // TODO (b/207176288) This needs to be sent upstream

@@ -14,6 +14,7 @@
 
 #include <ap-pmic/da9188.h>
 #include <mailbox/protocols/mba/cpm/common/pmic/pmic_service.h>
+#include <soc/google/goog_cpm_service_ids.h>
 
 /* GPIO direction constants used in MBA protocol. */
 enum da9188_gpio_direction {
@@ -440,18 +441,12 @@ static int da9188_gpio_get_direction(struct gpio_chip *chip,
 		       GPIO_LINE_DIRECTION_IN;
 }
 
-static int da9188_gpio_direction_input(struct gpio_chip *chip,
-				       unsigned int offset)
-{
-	return pinctrl_gpio_direction_input(chip->base + offset);
-}
-
 static int da9188_gpio_direction_output(struct gpio_chip *chip,
 					unsigned int offset, int value)
 {
 	int ret;
 
-	ret = pinctrl_gpio_direction_output(chip->base + offset);
+	ret = pinctrl_gpio_direction_output(chip, offset);
 	if (unlikely(ret))
 		return ret;
 
@@ -496,7 +491,7 @@ static const struct gpio_chip da9188_gpio_chip = {
 	.owner = THIS_MODULE,
 	.request = gpiochip_generic_request,
 	.free = gpiochip_generic_free,
-	.direction_input = da9188_gpio_direction_input,
+	.direction_input = pinctrl_gpio_direction_input,
 	.direction_output = da9188_gpio_direction_output,
 	.get_direction = da9188_gpio_get_direction,
 	.get = da9188_gpio_get,
@@ -522,13 +517,7 @@ static int da9188_gpio_probe(struct platform_device *pdev)
 
 	priv->dev = dev;
 	platform_set_drvdata(pdev, priv);
-
-	ret = of_property_read_u32(dev->of_node, "mba-dest-channel",
-				   &priv->mb_dest_channel);
-	if (ret < 0) {
-		dev_err(dev, "Failed to read mba-dest-channel.\n");
-		return ret;
-	}
+	priv->mb_dest_channel = CPM_COMMON_PMIC_SERVICE;
 
 	ret = da9188_mfd_mbox_request(dev, &priv->mbox);
 	if (ret < 0)
@@ -571,16 +560,14 @@ free_mbox:
 	return ret;
 }
 
-static int da9188_gpio_remove(struct platform_device *pdev)
+static void da9188_gpio_remove(struct platform_device *pdev)
 {
 	struct da9188_gpio_ctrl *priv = platform_get_drvdata(pdev);
 
 	if (IS_ERR_OR_NULL(priv))
-		return 0;
+		return;
 
 	da9188_mfd_mbox_release(&priv->mbox);
-
-	return 0;
 }
 
 static const struct platform_device_id da9188_gpio_id[] = {

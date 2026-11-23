@@ -3,6 +3,7 @@
 #include <linux/bits.h>
 #include <linux/device.h>
 #include <linux/minmax.h>
+#include <linux/of.h>
 #include <linux/string.h>
 #include <linux/types.h>
 
@@ -114,12 +115,12 @@ static struct qos_box_dt_attr dt_attr[] = {
 };
 
 static int of_qos_box_read_u32(struct qos_box_dev *qos_box_dev,
-			       struct device_node *np, const char *propname, u32 *data)
+			struct device_node *np, const char *propname, u32 *data)
 {
 	struct device *dev = qos_box_dev->dev;
 	int ret;
 
-	if (!of_property_read_bool(np, propname)) {
+	if (!of_property_present(np, propname)) {
 		dev_err(dev, "%s property not existed\n", propname);
 		return -EINVAL;
 	}
@@ -144,7 +145,7 @@ static int of_qos_box_read_vc_map_cfg(struct qos_box_dev *qos_box_dev, struct de
 	 * google,vc_map_cfg is optional,
 	 * qos_box driver only write VC_MAP_CFG value during probe when the property exists
 	 */
-	if (!of_property_read_bool(np, propname)) {
+	if (!of_property_present(np, propname)) {
 		qos_box_dev->have_vc_map_cfg_init_val = false;
 		return 0;
 	}
@@ -390,7 +391,7 @@ int of_qos_box_read_common_property(struct qos_box_dev *qos_box_dev, struct devi
 
 	/* read load_en_delay_ns */
 	load_en_delay = &qos_box_dev->load_en_delay;
-	load_en_delay->enable = of_property_read_bool(np_common_prop, propname_load_en_delay_ns);
+	load_en_delay->enable = of_property_present(np_common_prop, propname_load_en_delay_ns);
 
 	if (load_en_delay->enable) {
 		if (of_property_read_u32(np_common_prop,

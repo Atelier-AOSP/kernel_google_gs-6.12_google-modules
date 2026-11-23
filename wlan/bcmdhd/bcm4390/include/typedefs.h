@@ -348,9 +348,17 @@ typedef float64 float_t;
 /* Force inlining. */
 #if defined(BWL_COMPILER_GNU)
 #define INLINE_ALWAYS	inline  __attribute__ ((always_inline))
+#if defined(DATAPATH_NOINLINE_PERF)
+/* do not use always inline to avoid increase in DP fn size
+ * this can be used for select DP api's based on size
+ */
+#define INLINE_ALWAYS_DP	INLINE
+#else
+#define INLINE_ALWAYS_DP	INLINE_ALWAYS
+#endif /* WL_DATAPATH_PERF */
 #else
 #define INLINE_ALWAYS	INLINE
-#endif
+#endif /* BWL_COMPILER_GNU */
 
 #undef TYPEDEF_BOOL
 #undef TYPEDEF_UCHAR

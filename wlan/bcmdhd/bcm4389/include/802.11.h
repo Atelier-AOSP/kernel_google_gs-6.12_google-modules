@@ -192,7 +192,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_action_vs_frmhdr {
 	uint8	OUI[3];
 	uint8	type;
 	uint8	subtype;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8	data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_action_vs_frmhdr dot11_action_vs_frmhdr_t;
 
@@ -305,7 +305,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_action_measure {
 	uint8	category;
 	uint8	action;
 	uint8	token;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8	data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 #define DOT11_ACTION_MEASURE_LEN	3	/* d11 action measurement header length */
 
@@ -353,7 +353,7 @@ typedef struct dot11_supp_channels dot11_supp_channels_t;
 BWL_PRE_PACKED_STRUCT struct dot11_action_frmhdr {
 	uint8	category;
 	uint8	action;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8	data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_action_frmhdr dot11_action_frmhdr_t;
 
@@ -467,7 +467,7 @@ typedef struct dot11_transmit_power_envelope dot11_transmit_power_envelope_ie_t;
 BWL_PRE_PACKED_STRUCT struct dot11_extcap_ie {
 	uint8 id;
 	uint8 len;
-	BCM_DECLARE_FLEX_ARRAY(uint8, cap);
+	uint8 cap[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_extcap_ie dot11_extcap_ie_t;
 
@@ -505,7 +505,7 @@ typedef struct dot11_extcap_ie dot11_extcap_ie_t;
 BWL_PRE_PACKED_STRUCT struct dot11_rsnxe {
 	uint8 id;	/* id DOT11_MNG_RSNXE_ID */
 	uint8 len;
-	BCM_DECLARE_FLEX_ARRAY(uint8, cap);
+	uint8 cap[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_rsnxe dot11_rsnxe_t;
 
@@ -589,25 +589,25 @@ BWL_PRE_PACKED_STRUCT struct dot11_meas_req_loc {
 	{
 		BWL_PRE_PACKED_STRUCT struct {
 			uint8 subject;
-			BCM_DECLARE_FLEX_ARRAY(uint8, data);
+			uint8 data[BCM_FLEX_ARRAY];
 		} BWL_POST_PACKED_STRUCT lci;
 		BWL_PRE_PACKED_STRUCT struct {
 			uint8 subject;
 			uint8 type;  /* type of civic location */
 			uint8 siu;   /* service interval units */
 			uint16 si; /* service interval */
-			BCM_DECLARE_FLEX_ARRAY(uint8, data);
+			uint8 data[BCM_FLEX_ARRAY];
 		} BWL_POST_PACKED_STRUCT civic;
 		BWL_PRE_PACKED_STRUCT struct {
 			uint8 subject;
 			uint8 siu;   /* service interval units */
 			uint16 si; /* service interval */
-			BCM_DECLARE_FLEX_ARRAY(uint8, data);
+			uint8 data[BCM_FLEX_ARRAY];
 		} BWL_POST_PACKED_STRUCT locid;
 		BWL_PRE_PACKED_STRUCT struct {
 			uint16 max_init_delay;		/* maximum random initial delay */
 			uint8 min_ap_count;
-			BCM_DECLARE_FLEX_ARRAY(uint8, data);
+			uint8 data[BCM_FLEX_ARRAY];
 		} BWL_POST_PACKED_STRUCT ftm_range;
 	} BWL_POST_PACKED_STRUCT req;
 } BWL_POST_PACKED_STRUCT;
@@ -620,7 +620,7 @@ typedef struct dot11_meas_req_loc dot11_meas_req_loc_t;
 BWL_PRE_PACKED_STRUCT struct dot11_lci_subelement {
 	uint8 subelement;
 	uint8 length;
-	BCM_DECLARE_FLEX_ARRAY(uint8, lci_data);
+	uint8 lci_data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_lci_subelement dot11_lci_subelement_t;
 
@@ -628,7 +628,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_colocated_bssid_list_se {
 	uint8 sub_id;
 	uint8 length;
 	uint8 max_bssid_ind; /* MaxBSSID Indicator */
-	BCM_DECLARE_FLEX_ARRAY(struct ether_addr, bssid); /* variable */
+	struct ether_addr bssid[BCM_FLEX_ARRAY]; /* variable */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_colocated_bssid_list_se dot11_colocated_bssid_list_se_t;
 #define DOT11_LCI_COLOCATED_BSSID_LIST_FIXED_LEN     3
@@ -638,7 +638,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_civic_subelement {
 	uint8 type;  /* type of civic location */
 	uint8 subelement;
 	uint8 length;
-	BCM_DECLARE_FLEX_ARRAY(uint8, civic_data);
+	uint8 civic_data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_civic_subelement dot11_civic_subelement_t;
 
@@ -722,7 +722,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_ibss_dfs {
 	uint8 len;
 	uint8 eaddr[ETHER_ADDR_LEN];
 	uint8 interval;
-	BCM_DECLARE_FLEX_ARRAY(chan_map_tuple_t, map);
+	chan_map_tuple_t map[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_ibss_dfs dot11_ibss_dfs_t;
 
@@ -877,7 +877,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_management_notification {
 	uint8 action;
 	uint8 token;
 	uint8 status;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);	/* Elements */
+	uint8 data[BCM_FLEX_ARRAY];	/* Elements */
 } BWL_POST_PACKED_STRUCT;
 #define DOT11_MGMT_NOTIFICATION_LEN 4	/* Fixed length */
 
@@ -1929,7 +1929,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_dls_req {
 	struct ether_addr	sa;	/* source address */
 	uint16 cap;			/* capability */
 	uint16 timeout;			/* timeout value */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);	/* IE:support rate, extend support rate, HT cap */
+	uint8 data[BCM_FLEX_ARRAY];	/* IE:support rate, extend support rate, HT cap */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_dls_req dot11_dls_req_t;
 #define DOT11_DLS_REQ_LEN 18	/* Fixed length */
@@ -1941,7 +1941,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_dls_resp {
 	uint16 status;			/* status code field */
 	struct ether_addr	da;	/* destination address */
 	struct ether_addr	sa;	/* source address */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);	/* optional: capability, rate ... */
+	uint8 data[BCM_FLEX_ARRAY];	/* optional: capability, rate ... */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_dls_resp dot11_dls_resp_t;
 #define DOT11_DLS_RESP_LEN 16	/* Fixed length */
@@ -1953,7 +1953,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_tim_ie {
 	uint8 dtim_count;		/* DTIM decrementing counter */
 	uint8 dtim_period;		/* DTIM period */
 	uint8 bitmap_control;		/* AID 0 + bitmap offset */
-	BCM_DECLARE_FLEX_ARRAY(uint8, pvb);	/* Partial Virtual Bitmap, variable length */
+	uint8 pvb[BCM_FLEX_ARRAY];	/* Partial Virtual Bitmap, variable length */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_tim_ie dot11_tim_ie_t;
 #define DOT11_TIM_IE_FIXED_LEN	3	/* Fixed length, without id and len */
@@ -2309,7 +2309,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_gtk_ie {
 	uint16 key_info;
 	uint8 key_len;
 	uint8 rsc[8];
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_gtk_ie dot11_gtk_ie_t;
 
@@ -2328,7 +2328,7 @@ BWL_PRE_PACKED_STRUCT struct short_ssid_list_ie {
 	uint8 id;
 	uint8 len;
 	uint8 id_ext;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);    /* Capabilities Information */
+	uint8 data[BCM_FLEX_ARRAY];    /* Capabilities Information */
 } BWL_POST_PACKED_STRUCT;
 
 typedef struct short_ssid_list_ie short_ssid_list_ie_t;

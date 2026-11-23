@@ -46,7 +46,6 @@ static bool aoc_voip_support_interrupt(uint8_t mbox_index)
 static enum hrtimer_restart aoc_voip_irq_process(struct aoc_alsa_stream *alsa_stream)
 {
 	struct aoc_service_dev *dev;
-	struct snd_pcm_runtime *runtime;
 	unsigned long consumed;
 
 	if (!alsa_stream || !alsa_stream->substream || !alsa_stream->substream->runtime ||
@@ -54,9 +53,8 @@ static enum hrtimer_restart aoc_voip_irq_process(struct aoc_alsa_stream *alsa_st
 		return HRTIMER_NORESTART;
 
 	dev = alsa_stream->dev;
-	runtime = alsa_stream->substream->runtime;
 
-	if (runtime->status->state != SNDRV_PCM_STATE_RUNNING)
+	if (!alsa_stream->running)
 		return HRTIMER_RESTART;
 
 	/* The number of bytes read/written should be the bytes in the buffer
@@ -276,8 +274,11 @@ static int snd_aoc_pcm_close(struct snd_soc_component *component,
 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
 	struct aoc_chip *chip = alsa_stream->chip;
 	int err;
+	bool mutex_locked = true;
 
 	dev_dbg(component->dev, "name %s substream %pK", rtd->dai_link->name, substream);
+	// Wait for any active ISR to finish
+	synchronize_irq(alsa_stream->dev->irq);
 	aoc_timer_stop_sync(alsa_stream);
 	atomic_set(&alsa_stream->cancel_work_active, 1);
 	audio_free_isr(alsa_stream->dev);
@@ -290,7 +291,8 @@ static int snd_aoc_pcm_close(struct snd_soc_component *component,
 
 	if (mutex_lock_interruptible(&chip->audio_mutex)) {
 		dev_err(component->dev, "ERR: interrupted while waiting for lock\n");
-		return -EINTR;
+		mutex_locked = false;
+		/* b/480740542 don't return to cleanup the resource */
 	}
 
 	/* Stop voip call (Refactor needed) */
@@ -331,7 +333,8 @@ static int snd_aoc_pcm_close(struct snd_soc_component *component,
 	chip->opened &= ~(1 << alsa_stream->idx);
 
 	update_google_cdd_audio_stat_ext(chip, CCD_AUDIO_VOIP, false);
-	mutex_unlock(&chip->audio_mutex);
+	if (mutex_locked)
+		mutex_unlock(&chip->audio_mutex);
 	return 0;
 }
 

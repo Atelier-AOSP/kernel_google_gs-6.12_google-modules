@@ -3342,7 +3342,7 @@ QDF_STATUS dp_hw_link_desc_pool_banks_alloc(struct dp_soc *soc, uint32_t mac_id)
 			hal_srng_get_entrysize(soc->hal_soc,
 					       RXDMA_MONITOR_DESC);
 		total_link_descs = dp_monitor_get_total_link_descs(soc, mac_id);
-		qdf_str_lcopy(minidump_str, "mon_link_desc_bank",
+		qdf_str_scopy(minidump_str, "mon_link_desc_bank",
 			      MINIDUMP_STR_SIZE);
 	} else {
 		num_mpdu_link_descs = (max_clients * AVG_TIDS_PER_CLIENT *
@@ -3363,7 +3363,7 @@ QDF_STATUS dp_hw_link_desc_pool_banks_alloc(struct dp_soc *soc, uint32_t mac_id)
 
 		pages = &soc->link_desc_pages;
 		total_link_descs = &soc->total_link_descs;
-		qdf_str_lcopy(minidump_str, "link_desc_bank",
+		qdf_str_scopy(minidump_str, "link_desc_bank",
 			      MINIDUMP_STR_SIZE);
 	}
 

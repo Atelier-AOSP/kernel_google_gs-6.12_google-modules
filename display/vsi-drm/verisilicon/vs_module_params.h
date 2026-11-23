@@ -17,8 +17,9 @@
  *		      specifically when reported by DSI host.
  * @SSCD_SRC_DDIC_ERR: Trigger when fatal error bits flagged in DSI transmission,
  *		       specifically when reported by panel DDIC.
+ * @SSCD_SRC_PMIC_ERR: Trigger when panel PMIC reports hardware faults.
  *
- * User can change which errors lead to coredumps by way of module parameter.
+ * User can change which errors lead to coredumps or recovery by way of module parameter.
  */
 enum coredump_source {
 	SSCD_SRC_MANUAL = 0,
@@ -27,6 +28,7 @@ enum coredump_source {
 	SSCD_SRC_GRAM_COLLISION,
 	SSCD_SRC_DSI_ERR,
 	SSCD_SRC_DDIC_ERR,
+	SSCD_SRC_PMIC_ERR,
 	/** @SSCD_SRC_MAX: bounding enumerator; add new entries before this */
 	SSCD_SRC_MAX,
 };

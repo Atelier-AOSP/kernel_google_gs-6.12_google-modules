@@ -197,8 +197,9 @@ PVRSRVBridgeRIWriteMEMDESCEntry(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRIWriteMEMDESCEntryIN->ui32TextBSize * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiTextBInt, (const void __user *)psRIWriteMEMDESCEntryIN->puiTextB,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiTextBInt,
+		     (const void __user *)psRIWriteMEMDESCEntryIN->puiTextB,
 		     psRIWriteMEMDESCEntryIN->ui32TextBSize * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psRIWriteMEMDESCEntryOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -391,8 +392,9 @@ PVRSRVBridgeRIWriteProcListEntry(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRIWriteProcListEntryIN->ui32TextBSize * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiTextBInt, (const void __user *)psRIWriteProcListEntryIN->puiTextB,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiTextBInt,
+		     (const void __user *)psRIWriteProcListEntryIN->puiTextB,
 		     psRIWriteProcListEntryIN->ui32TextBSize * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psRIWriteProcListEntryOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;

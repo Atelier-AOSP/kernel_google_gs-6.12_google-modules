@@ -104,7 +104,7 @@ typedef IMG_UINT64 _RI_BASE_T;
 /* No +1 in SIZE macros since sizeof includes \0 byte in size */
 
 #define RI_PROC_BUF_SIZE    16
-#define RI_ANNO_BUF_SIZE    80
+#define RI_ANNO_BUF_SIZE    (PVR_ANNOTATION_MAX_LEN + 1)
 #define RI_ANNO_FRMT_SIZE (sizeof(RI_ANNO_FRMT))
 
 #define RI_DEV_ID_BUF_SIZE  4

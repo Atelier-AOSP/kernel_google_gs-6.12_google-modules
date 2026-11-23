@@ -170,6 +170,9 @@ static const int8 map_320m_cc_chanid[] = {
 	0,    /* CC 31 */
 	1,    /* CC 95 */
 	2,    /* CC 159 */
+#ifdef BCMWIFI_BAND6G_BAND7
+	3,    /* CC 223 */
+#endif
 };
 
 typedef struct {
@@ -181,7 +184,10 @@ typedef struct {
 
 static const wf_6g_320m_chan_range_t wf_6g_320m_ch_set[] =
 {
-	{1, 61, 31, 0}, {65, 125, 95, 0}, {129, 189, 159, 0}
+	{1, 61, 31, 0}, {65, 125, 95, 0}, {129, 189, 159, 0},
+#ifdef BCMWIFI_BAND6G_BAND7
+	{193, 253, 223, 0}
+#endif /* */
 };
 
 static const wf_6g_320m_chan_range_t wf_6g_320m_ch_ol_set[] =
@@ -211,22 +217,22 @@ static const uint ch_per_blk_map[] = {
 #define WFC_BW_EQ(bw, val)	(FALSE)
 #endif /* WL11BE || WL_BW320MHZ */
 
-/* compare bandwidth based on WFC_NON_CONT_CHAN */
-#ifdef WFC_NON_CONT_CHAN
+/* compare bandwidth based on BCMWIFI_NON_CONT_CHAN */
+#ifdef BCMWIFI_NON_CONT_CHAN
 #define WFC_NCBW_EQ(bw, val)	WFC_2VALS_EQ(bw, val)
 #else
 #define WFC_NCBW_EQ(bw, val)	(FALSE)
 #endif
 
 static void wf_chanspec_iter_firstchan(wf_chanspec_iter_t *iter);
-static chanspec_bw_t wf_iter_next_bw(chanspec_bw_t bw);
+static chanspec_bw_t wf_iter_next_bw(chanspec_bw_t bw) BCMCONSTFN;
 static bool wf_chanspec_iter_next_2g(wf_chanspec_iter_t *iter);
 static bool wf_chanspec_iter_next_5g(wf_chanspec_iter_t *iter);
 static int wf_chanspec_iter_next_5g_range(wf_chanspec_iter_t *iter, chanspec_bw_t bw);
 static bool wf_chanspec_iter_6g_range_init(wf_chanspec_iter_t *iter, chanspec_bw_t bw);
 static bool wf_chanspec_iter_next_6g(wf_chanspec_iter_t *iter);
 static uint wf_6g_get_center_chan_from_primary(uint primary_channel, chanspec_bw_t bw,
-	bool overlapped320);
+	bool overlapped320) BCMCONSTFN;
 
 /**
  * Return the chanspec bandwidth in MHz
@@ -246,7 +252,7 @@ wf_bw_chspec_to_mhz(chanspec_t chspec)
 /* bw in MHz, return the channel count from the center channel to the
  * the channel at the edge of the band
  */
-static uint
+static uint BCMCONSTFN
 center_chan_to_edge(chanspec_bw_t bw)
 {
 	uint delta = 0;
@@ -273,7 +279,7 @@ center_chan_to_edge(chanspec_bw_t bw)
 /* return channel number of the low edge of the band
  * given the center channel and BW
  */
-static uint
+static uint BCMCONSTFN
 channel_low_edge(uint center_ch, chanspec_bw_t bw)
 {
 	return (center_ch - center_chan_to_edge(bw));
@@ -282,7 +288,7 @@ channel_low_edge(uint center_ch, chanspec_bw_t bw)
 /* return side band number given center channel and primary20 channel
  * return -1 on error
  */
-static int
+static int BCMCONSTFN
 channel_to_sb(uint center_ch, uint primary_ch, chanspec_bw_t bw)
 {
 	uint lowest = channel_low_edge(center_ch, bw);
@@ -312,7 +318,7 @@ channel_to_sb(uint center_ch, uint primary_ch, chanspec_bw_t bw)
 }
 
 /* return primary20 channel given center channel and side band */
-static uint
+static uint BCMCONSTFN
 channel_to_primary20_chan(uint center_ch, chanspec_bw_t bw, uint sb)
 {
 	return (channel_low_edge(center_ch, bw) + sb * 4);
@@ -321,7 +327,7 @@ channel_to_primary20_chan(uint center_ch, chanspec_bw_t bw, uint sb)
 /* return index of 80MHz channel from channel number
  * return -1 on error
  */
-static int
+static int BCMCONSTFN
 channel_80mhz_to_id(uint ch)
 {
 	uint i;
@@ -336,7 +342,7 @@ channel_80mhz_to_id(uint ch)
 /* return index of the 6G 80MHz channel from channel number
  * return -1 on error
  */
-static int
+static int BCMCONSTFN
 channel_6g_80mhz_to_id(uint ch)
 {
 	/* The 6GHz center channels start at 7, and have a spacing of 16 */
@@ -417,7 +423,7 @@ channel_6g_320mhz_to_id(uint ch)
  * @return   Return the center channel number, or 0 on error.
  *
  */
-static uint8
+static uint8 BCMCONSTFN
 wf_chspec_5G_id80_to_ch(uint8 chan_80MHz_id)
 {
 	if (chan_80MHz_id < WF_NUM_5G_80M_CHANS) {
@@ -435,7 +441,7 @@ wf_chspec_5G_id80_to_ch(uint8 chan_80MHz_id)
  * @return   Return the center channel number, or 0 on error.
  *
  */
-static uint8
+static uint8 BCMCONSTFN
 wf_chspec_6G_id80_to_ch(uint8 chan_80MHz_id)
 {
 	uint8 ch = 0;
@@ -1195,7 +1201,7 @@ wf_iter_next_bw(chanspec_bw_t bw)
 	case WL_CHANSPEC_BW_160:
 		bw = WL_CHANSPEC_BW_320;
 		break;
-#endif /* WL_BW320MHZ */
+#endif
 	default:
 		bw = INVCHANSPEC;
 		break;
@@ -2205,7 +2211,7 @@ BCMFASTPATH(wf_chspec_primary20_chan)(chanspec_t chspec)
  *         "320", "20", "20", "40", "80", "160", "80+80",
  */
 const char *
-BCMRAMFN(wf_chspec_to_bw_str)(chanspec_t chspec)
+BCMACCESSOR_RAMFN(wf_chspec_to_bw_str)(chanspec_t chspec)
 {
 	return wf_chspec_bw_str[WL_CHSPEC_BW(chspec)];
 }
@@ -2972,7 +2978,8 @@ wf_get_all_ext(chanspec_t chspec, uint8 *pext)
  * Given two chanspecs, returns true if they overlap.
  * (Overlap: At least one 20MHz subband is common between the two chanspecs provided)
  */
-bool wf_chspec_overlap(chanspec_t chspec0, chanspec_t chspec1)
+bool
+wf_chspec_overlap(chanspec_t chspec0, chanspec_t chspec1)
 {
 	uint8 ch0, ch1;
 
@@ -3040,6 +3047,7 @@ wf_create_chspec_sb(uint sb, uint center_channel, chanspec_bw_t bw,
 	chanspec_band_t band)
 {
 	chanspec_t chspec;
+
 	if (WFC_BW_EQ(bw, WL_CHANSPEC_BW_320)) {
 		int chan_id = -1;
 		if (sb > (WL_CHANSPEC_320_SB_MASK >> WL_CHANSPEC_320_SB_SHIFT)) {

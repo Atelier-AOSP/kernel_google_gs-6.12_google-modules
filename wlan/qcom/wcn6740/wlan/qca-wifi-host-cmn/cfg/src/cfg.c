@@ -244,7 +244,7 @@ cfg_string_item_handler(struct cfg_value_store *store,
 		return;
 	}
 
-	qdf_str_lcopy(store_value, str_value, meta->max + 1);
+	qdf_str_scopy(store_value, str_value, meta->max + 1);
 }
 
 static __attribute__((unused)) void
@@ -335,7 +335,7 @@ static void cfg_store_set_defaults(struct cfg_value_store *store)
 
 #undef __CFG_INI_STRING
 #define __CFG_INI_STRING(id, mtype, ctype, name, min_len, max_len, ...) \
-	qdf_str_lcopy((char *)&store->values.id##_internal, id, (max_len) + 1);
+	qdf_str_scopy((char *)&store->values.id##_internal, id, (max_len) + 1);
 
 #undef __CFG_INI
 #define __CFG_INI(id, mtype, ctype, name, min, max, fallback, desc, def...) \
@@ -619,7 +619,7 @@ cfg_store_print(struct wlan_objmgr_psoc *psoc)
 		case CFG_MAC_ITEM:
 			cfg_nofl_debug("%pK %s " QDF_MAC_ADDR_FMT,
 				       offset, meta->name,
-				       QDF_MAC_ADDR_REF(offset));
+				       QDF_MAC_ADDR_REF((uint8_t *)offset));
 			break;
 		case CFG_IPV4_ITEM:
 			cfg_nofl_debug("%pK %s %pI4",
@@ -694,7 +694,7 @@ cfg_ini_config_print(struct wlan_objmgr_psoc *psoc, uint8_t *buf,
 			len = qdf_scnprintf(buf, buflen,
 					    "%s " QDF_MAC_ADDR_FMT "\n",
 					    meta->name,
-					    QDF_MAC_ADDR_REF(offset));
+					    QDF_MAC_ADDR_REF((uint8_t *)offset));
 			buf += len;
 			buflen -= len;
 			break;

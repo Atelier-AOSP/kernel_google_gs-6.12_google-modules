@@ -202,28 +202,6 @@ void RGX_WaitForInterruptsTimeout(PVRSRV_RGXDEV_INFO *psDevInfo);
 
 #endif /* !defined(NO_HARDWARE) */
 
-#if defined(RGX_FEATURE_AXI_ACE_BIT_MASK) || defined(RGX_FEATURE_AXI_ACELITE_BIT_MASK)
-/*!
-************************************************************************************
- @Function		RGXQueryCoreCoherencyFeature
-
- @Description	Get the system fabric coherency for the device by reading default
-				configuration from device register, subject to AppHint overrides.
-
- @Input			sRegsCpuPBase		: Device register CPU physical address base
-				ui32RegsSize		: Device register size
-				peDevFabricType		: Device memory bus fabric type
-				peCacheSnoopingMode : Fabric coherency override
-
- @Return		PVRSRV_ERROR
-************************************************************************************/
-PVRSRV_ERROR RGXQueryCoreCoherencyFeature(PVRSRV_DEVICE_CONFIG *psDeviceConfig,
-										 IMG_CPU_PHYADDR sRegsCpuPBase,
-										 IMG_UINT32 ui32RegsSize,
-										 PVRSRV_DEVICE_FABRIC_TYPE *peDevFabricType,
-										 PVRSRV_DEVICE_SNOOP_MODE *peCacheSnoopingMode);
-#endif
-
 /*!
  *******************************************************************************
 
@@ -247,6 +225,32 @@ PVRSRV_ERROR RGXInitCreateFWKernelMemoryContext(PVRSRV_DEVICE_NODE *psDeviceNode
  @Input         psDeviceNode  device node
  ******************************************************************************/
 void RGXDeInitDestroyFWKernelMemoryContext(PVRSRV_DEVICE_NODE *psDeviceNode);
+
+#if defined(RGX_FEATURE_ERYX_TOP_INFRASTRUCTURE)
+/*!
+ *******************************************************************************
+ @Function      RGXInitCreateUVBSpillMemContext
+
+ @Description   Called to create UVB spill memory mem context.
+                This is a global, kernel managed context to hold
+                shared UVB spill memory buffer for Meteoric cores.
+
+ @Input         psDeviceNode - device node
+ @Return        PVRSRV_ERROR
+ ******************************************************************************/
+PVRSRV_ERROR RGXInitCreateUVBSpillMemContext(PVRSRV_DEVICE_NODE *psDeviceNode);
+
+/*!
+ *******************************************************************************
+ @Function      RGXDeInitDestroyUVBSpillMemoryContext
+
+
+ @Description   Called to destroy UVB spill memory mem context.
+
+ @Input         psDeviceNode - device node
+ ******************************************************************************/
+void RGXDeInitDestroyUVBSpillMemoryContext(PVRSRV_DEVICE_NODE *psDeviceNode);
+#endif
 
 /*!
  *******************************************************************************

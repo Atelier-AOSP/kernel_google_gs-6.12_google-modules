@@ -36,6 +36,14 @@ int gs_panel_initialize_gs_connector(struct gs_panel *ctx, struct drm_device *dr
 int gs_panel_set_op_hz(struct gs_panel *ctx, unsigned int hz);
 
 /**
+ * gs_panel_get_pwm_mode() - Wrapper for panel-specific get_pwm_mode function
+ * @ctx: handle for gs_panel
+ *
+ * Return: current pwm_mode
+ */
+enum gs_pwm_mode gs_panel_get_pwm_mode(struct gs_panel *ctx);
+
+/**
  * gs_panel_set_pwm_mode() - Wrapper for panel-specific set_pwm_mode function
  * @ctx: handle for gs_panel
  * @mode: PWM mode
@@ -120,6 +128,11 @@ int gs_panel_sysfs_create_bl_files(struct device *bl_dev, struct gs_panel *ctx);
  * @gs_connector: Pointer to gs_connector
  */
 void gs_panel_node_attach(struct gs_drm_connector *gs_connector);
+/**
+ * gs_panel_node_detach - Removes sysfs entries for panel
+ * @gs_connector: Pointer to gs_connector
+ */
+void gs_panel_node_detach(struct gs_drm_connector *gs_connector);
 
 /**
  * gs_panel_set_panel_state - Sets the panel state and logs the change
@@ -206,6 +219,10 @@ void panel_update_lhbm(struct gs_panel *ctx);
  */
 ssize_t gs_dsi_dcs_transfer(struct mipi_dsi_device *dsi, u8 type, const void *data, size_t len,
 			    u16 flags);
+
+/* gs_panel_irq.c */
+void gs_panel_init_gpio_irq_handlers(struct gs_panel *ctx);
+void gs_panel_enable_te2_irq(struct gs_panel *ctx, bool enable);
 
 /* gs_panel.c */
 void panel_update_idle_mode_locked(struct gs_panel *ctx, bool allow_delay_update);

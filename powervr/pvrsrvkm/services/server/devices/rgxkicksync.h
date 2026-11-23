@@ -109,26 +109,8 @@ PVRSRVRGXKickSyncKM(RGX_SERVER_KICKSYNC_CONTEXT * psKicksyncContext,
                     PVRSRV_TIMELINE               iUpdateTimeline,
                     PVRSRV_FENCE                * piUpdateFence,
                     IMG_CHAR                      szUpdateFenceName[PVRSRV_SYNC_NAME_LENGTH],
+                    PVRSRV_FENCE                  iExportFenceToSignal,
                     IMG_UINT32                    ui32ExtJobRef);
-
-/**************************************************************************/ /*!
-@Function       PVRSRVRGXKickSyncWithExportFenceKM
-@Description    Kicks a sync only command
-@Return         PVRSRV_OK on success. Otherwise, a PVRSRV_ error code
-*/ /**************************************************************************/
-PVRSRV_ERROR
-PVRSRVRGXKickSyncWithExportFenceKM(RGX_SERVER_KICKSYNC_CONTEXT * psKicksyncContext,
-                                   IMG_UINT32                    ui32ClientUpdateCount,
-                                   SYNC_PRIMITIVE_BLOCK       ** pauiClientUpdateUFODevVarBlock,
-                                   IMG_UINT32                  * paui32ClientUpdateDevVarOffset,
-                                   IMG_UINT32                  * paui32ClientUpdateValue,
-                                   IMG_UINT32                    ui32FWCmdSize,
-                                   PVRSRV_FENCE                  iCheckFence,
-                                   PVRSRV_TIMELINE               iUpdateTimeline,
-                                   PVRSRV_FENCE                * piUpdateFence,
-                                   IMG_CHAR                      szUpdateFenceName[PVRSRV_SYNC_NAME_LENGTH],
-                                   PVRSRV_FENCE                  iExportFenceToSignal,
-                                   IMG_UINT32                    ui32ExtJobRef);
 
 #endif /* RGXKICKSYNC_H */
 

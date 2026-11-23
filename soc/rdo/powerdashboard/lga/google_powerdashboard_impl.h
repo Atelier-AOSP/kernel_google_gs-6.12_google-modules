@@ -6,6 +6,7 @@
 #define __GOOGLE_POWERDASHBOARD_H__
 
 #include <linux/types.h>
+#include "../google_powerdashboard_iface.h"
 
 #define MBA_CLIENT_TX_TIMEOUT 3000
 #define READ_TIME 3
@@ -259,10 +260,55 @@ enum blocker_modes {
 #define GENERATE_ENUM_LPCM(a, b) PD_LPCM_ID(a),
 enum pd_lpcm_id { LGA_LPCM_X_MACRO_TABLE(GENERATE_ENUM_LPCM) LPCM_NUM_SSWRPS };
 
-#if IS_ENABLED(CONFIG_POWER_STATE_BLOCKERS_SECTION)
-struct google_powerdashboard;
-ssize_t google_power_state_blockers_show(struct google_powerdashboard *pd, char *buf,
-			unsigned int state);
-#endif
+/* SOC Specific Sections */
+
+struct pd_power_state_blocker_stats {
+	u64 last_blocked_ts;
+	u64 time_blocked;
+	u32 blocked_count;
+	u32 is_currently_blocking;
+} __packed;
+
+struct pd_power_state_sswrp_blockers {
+	u64 total_blocked_count;
+	u64 total_time_blocked;
+	struct pd_power_state_blocker_stats blocker_stats[SOC_POWER_PRE_LPB_NUM_SSWRPS];
+} __packed;
+
+struct pd_power_state_kernel_blockers {
+	u64 total_blocked_count;
+	struct pd_power_state_blocker_stats blocker_stats[SOC_PWR_STATE_NUM_KERNEL_BLOCKERS];
+} __packed;
+
+struct pd_power_state_blockers_section {
+	struct pd_section_header header;
+	u32 _reserved;
+	struct pd_power_state_kernel_blockers kernel_blockers;
+	struct pd_power_state_sswrp_blockers sswrp_blockers[SOC_POWER_STATE_NUM];
+} __packed;
+
+struct pd_fabric_acg_apg_res {
+	u32 fabmed_acc_val_acg;
+	u32 fabrt_acc_val_acg;
+	u32 fabstby_acc_val_acg;
+	u32 fabsyss_acc_val_acg;
+	u32 fabhbw_acc_val_acg;
+	u32 fabmem_acc_val_acg;
+	u32 gslc01_acc_val_acg;
+	u32 gslc01_acc_val_apg;
+	u32 gslc23_acc_val_acg;
+	u32 gslc23_acc_val_apg;
+} __packed;
+
+struct pd_gmc_acg_apg_res {
+	u32 gmc_acc_val_acg;
+	u32 gmc_acc_val_apg;
+} __packed;
+
+struct pd_acg_apg_csr_res_section {
+	struct pd_section_header header;
+	struct pd_fabric_acg_apg_res *fabric_acg_apg_res;
+	struct pd_gmc_acg_apg_res *gmc_acg_apg_res;
+} __packed;
 
 #endif // __GOOGLE_POWERDASHBOARD_H__

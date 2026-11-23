@@ -140,6 +140,15 @@ out:
 	return gdd->io_base + adjusted_offset;
 }
 
+static inline bool any_wake_irqs_enabled(struct gia_device_data *gdd)
+{
+	for (int i = 0; i < gdd->nr_irq_chips; i++) {
+		if (gdd->wake_cache[i])
+			return true;
+	}
+	return false;
+}
+
 /* Root sysfs directory object */
 struct kobject *gia_sysfs_kobj;
 
@@ -154,7 +163,7 @@ static int gia_telemetry_memory_alloc(struct gia_device_data *gdd)
 	if (!gdd->telemetry.concurrency)
 		return -ENOMEM;
 
-	gdd->telemetry.irq_latencies = devm_kmalloc(gdd->dev, sizeof(struct gia_irq_latency) *
+	gdd->telemetry.irq_latencies = devm_kzalloc(gdd->dev, sizeof(struct gia_irq_latency *) *
 						    gdd->nr_irq_chips * IRQS_PER_REG, GFP_KERNEL);
 	if (!gdd->telemetry.irq_latencies)
 		return -ENOMEM;
@@ -166,7 +175,7 @@ static void gia_telemetry_reset(struct gia_device_data *gdd)
 {
 	unsigned long flags;
 	struct gia_irq_latency *entry;
-	unsigned int total_hwirq = gdd->nr_irq_chips * IRQS_PER_REG;
+	u32 total_hwirq = gdd->nr_irq_chips * IRQS_PER_REG;
 
 	gia_lock_process_context(&gdd->lock, &flags);
 
@@ -178,8 +187,11 @@ static void gia_telemetry_reset(struct gia_device_data *gdd)
 	for (int i = 0; i < MAX_CONCURRENCY; i++)
 		gdd->telemetry.concurrency[i] = 0;
 
-	for (int hwirq = 0; hwirq < total_hwirq; hwirq++) {
-		entry = &gdd->telemetry.irq_latencies[hwirq];
+	for (u32 hwirq = 0; hwirq < total_hwirq; hwirq++) {
+		entry = gdd->telemetry.irq_latencies[hwirq];
+		if (!entry)
+			continue;
+
 		entry->count = 0;
 		entry->sw_wait_time_min = INT_MAX;
 		entry->sw_wait_time_max = 0;
@@ -266,6 +278,8 @@ static void gia_telemetry_per_irq_end(struct gia_device_data *gdd, u32 hwirq, u3
 	u32 window_index;
 	ktime_t handler_end;
 
+	handler_end = ktime_get();
+
 	/*
 	 * It is a conscious choice that spinlock not taken while doing telemetry write. Because,
 	 * the only concurrently occurring scenario is IRQ path and sysfs action happening together.
@@ -276,8 +290,10 @@ static void gia_telemetry_per_irq_end(struct gia_device_data *gdd, u32 hwirq, u3
 	if (!gia_telemetry_on)
 		return;
 
-	handler_end = ktime_get();
-	entry = &gdd->telemetry.irq_latencies[(chip_number * IRQS_PER_REG) + hwirq];
+	entry = gdd->telemetry.irq_latencies[(chip_number * IRQS_PER_REG) + hwirq];
+	if (!entry)
+		return;
+
 	wait_time_in_sw = ktime_to_ns(ktime_sub(start, gdd->telemetry.start_time));
 	handler_latency = ktime_to_ns(ktime_sub(handler_end, start));
 
@@ -539,8 +555,6 @@ static const struct kobj_type per_gia_ktype = {
 
 static int gia_sysfs_create_per_gia_dir(struct gia_device_data *gdd)
 {
-	unsigned int total_hwirq = gdd->nr_irq_chips * IRQS_PER_REG;
-
 	if (!gia_sysfs_kobj)
 		return -EIO;
 
@@ -551,13 +565,6 @@ static int gia_sysfs_create_per_gia_dir(struct gia_device_data *gdd)
 		return -EIO;
 	}
 
-	for (unsigned int hwirq = 0; hwirq < total_hwirq; hwirq++) {
-		if (kobject_init_and_add(&gdd->telemetry.irq_latencies[hwirq].irq_kobj,
-					 &per_irq_ktype, &gdd->gia_kobj, "hwirq_%03u", hwirq)) {
-			dev_err(gdd->dev, "Failed to create sysfs folder for hwirq %u\n", hwirq);
-			return -EIO;
-		}
-	}
 	return 0;
 }
 
@@ -609,7 +616,7 @@ static struct kobj_attribute enable_attr = __ATTR_RW(enable);
 
 static struct kobj_attribute reset_attr = __ATTR_WO(reset);
 
-static int gia_sysfs_init(void)
+static int __init gia_sysfs_init(void)
 {
 	int ret;
 
@@ -722,26 +729,37 @@ static void gia_irq_handler_chained(struct irq_desc *desc)
 	trace_gia_irq_handler_exit(gdd, d);
 }
 
-static void gia_irq_mask_update(struct irq_data *d, bool set)
+static void gia_irq_mask_update(struct irq_data *d, bool set, bool wake)
 {
 	struct gia_device_data *gdd = d->domain->host_data;
 	unsigned int chip_number = d->hwirq / IRQS_PER_REG;
 	unsigned long flags;
 	void __iomem *addr;
 	u32 imr;
+	u32 bit = (1U << (d->hwirq % IRQS_PER_REG));
 
 	gia_lock_process_context(&gdd->lock, &flags);
 	addr = gia_reg_addr(gdd, gdd->type_data->mask_offset, chip_number);
-	imr = gdd->mask_cache[chip_number];
-	if (set)
-		imr |= (1U << (d->hwirq % IRQS_PER_REG)); /* set to unmask */
-	else
-		imr &= ~(1U << (d->hwirq % IRQS_PER_REG)); /* clear to mask */
 
+	if (wake) {
+		if (set) {
+			gdd->wake_cache[chip_number] |= bit;
+			gdd->has_wake_irqs = true;
+		} else {
+			gdd->wake_cache[chip_number] &= ~bit;
+			gdd->has_wake_irqs = any_wake_irqs_enabled(gdd);
+		}
+	} else {
+		if (set)
+			gdd->mask_cache[chip_number] |= bit;
+		else
+			gdd->mask_cache[chip_number] &= ~bit;
+	}
+
+	imr = gdd->mask_cache[chip_number];
 	writel_relaxed(imr, addr);
-	gdd->mask_cache[chip_number] = imr;
 	gia_unlock_process_context(&gdd->lock, &flags);
-	trace_gia_cache_update(gdd, chip_number, imr);
+	trace_gia_cache_update(gdd, chip_number, imr, gdd->has_wake_irqs);
 }
 
 static void gia_irq_mask(struct irq_data *d)
@@ -749,7 +767,7 @@ static void gia_irq_mask(struct irq_data *d)
 	struct gia_device_data *gdd = d->domain->host_data;
 
 	trace_gia_irq_mask(gdd, d);
-	gia_irq_mask_update(d, false);
+	gia_irq_mask_update(d, false, false);
 }
 
 static void gia_irq_unmask(struct irq_data *d)
@@ -757,7 +775,43 @@ static void gia_irq_unmask(struct irq_data *d)
 	struct gia_device_data *gdd = d->domain->host_data;
 
 	trace_gia_irq_unmask(gdd, d);
-	gia_irq_mask_update(d, true);
+	gia_irq_mask_update(d, true, false);
+}
+
+/**
+ * The driver calling irq_set_wake must make sure that the power domain stays active for the entire
+ * time that wakeup interrupts can be generated. This means that GIA can safely serve those
+ * interrupts even if it is pm_runtime suspended.
+ *
+ * This needs to be orthogonal to regular masking:
+ * see comment above irq_set_irq_wake() in kernel/irq/manage.c
+ *
+ * This needs to propagate to all parents because otherwise they might not serve wakeup interrupts
+ * if pm_runtime is off. Clients calling set_wake must ensure that the power domain stays on while
+ * wakeup interrupts can generate.
+ *
+ * With current Pixel architecture, this will *not* change whether an interrupt can wake device from
+ * system suspend. That is controlled entirely by CPM. There is no interface for kernel drivers
+ * to dynamically choose which interrupts CPM uses to wake AP.
+ */
+static int gia_irq_set_wake(struct irq_data *d, unsigned int on)
+{
+	struct gia_device_data *gdd = d->domain->host_data;
+	struct irq_chip *parent_chip = NULL;
+	struct irq_data *parent_data = NULL;
+
+	trace_gia_irq_set_wake(gdd, d, on);
+	gia_irq_mask_update(d, on != 0, true);
+
+	if (gdd->nr_out_irq > 0) {
+		parent_chip = irq_get_chip(gdd->virqs[0]);
+		parent_data = irq_get_irq_data(gdd->virqs[0]);
+	}
+
+	if (parent_chip && parent_chip->irq_set_wake && parent_data)
+		parent_chip->irq_set_wake(parent_data, gdd->has_wake_irqs);
+
+	return 0;
 }
 
 /*
@@ -924,17 +978,20 @@ static void gia_irq_update_affinity_downstream(struct gia_device_data *gdd,
 static int gia_irq_set_affinity(struct irq_data *d, const struct cpumask *cpu_mask, bool force)
 {
 	struct gia_device_data *gdd = d->domain->host_data;
-	struct irq_chip *parent_chip;
-	struct irq_data *parent_data;
+	struct irq_chip *parent_chip = NULL;
+	struct irq_data *parent_data = NULL;
 	int ret;
 	unsigned long flags;
 
 	trace_gia_irq_set_affinity(gdd, d, cpu_mask, force);
-	parent_chip = irq_get_chip(gdd->virqs[0]);
-	parent_data = irq_get_irq_data(gdd->virqs[0]);
+	if (gdd->nr_out_irq > 0) {
+		parent_chip = irq_get_chip(gdd->virqs[0]);
+		parent_data = irq_get_irq_data(gdd->virqs[0]);
+	}
 
-	if (!parent_chip || !parent_chip->irq_set_affinity) {
-		dev_err(gdd->dev, "parent_chip %pK or its irq_set_affinity is NULL\n", parent_chip);
+	if (!parent_chip || !parent_chip->irq_set_affinity || !parent_data) {
+		dev_err(gdd->dev, "NULL parent_chip %pK or irq_set_affinity, or 0 output irqs\n",
+				 parent_chip);
 		return -EINVAL;
 	}
 
@@ -969,11 +1026,13 @@ static struct irq_chip gia_irq_chip = {
 	.irq_bus_lock = gia_irq_bus_lock,
 	.irq_bus_sync_unlock = gia_irq_bus_sync_unlock,
 	.irq_set_affinity = gia_irq_set_affinity,
+	.irq_set_wake = gia_irq_set_wake,
 };
 
 static int gia_domain_map(struct irq_domain *irq_domain, unsigned int virq, irq_hw_number_t hwirq)
 {
 	struct gia_device_data *gdd = irq_domain->host_data;
+	struct gia_irq_latency *gil;
 
 	trace_gia_domain_map(gdd, virq, hwirq);
 
@@ -982,6 +1041,28 @@ static int gia_domain_map(struct irq_domain *irq_domain, unsigned int virq, irq_
 
 	irq_set_chip_and_handler_name(virq, &gia_irq_chip, handle_fasteoi_irq,
 				      gdd->dev->of_node->full_name);
+
+	/*
+	 * Telemetry allocations happen just one per line, even if the line is shared between
+	 * multiple clients. And, this is not error case.
+	 */
+	if (gdd->telemetry.irq_latencies[hwirq])
+		return 0;
+
+	gil = devm_kzalloc(gdd->dev, sizeof(*gil), GFP_KERNEL);
+	if (!gil)
+		return -ENOMEM;
+
+	gil->hwirq = hwirq;
+	gil->sw_wait_time_min = INT_MAX;
+	gil->handler_time_min = INT_MAX;
+	gdd->telemetry.irq_latencies[hwirq] = gil;
+
+	if (kobject_init_and_add(&gil->irq_kobj,
+				 &per_irq_ktype, &gdd->gia_kobj, "hwirq_%03u", (u32)hwirq)) {
+		dev_err(gdd->dev, "Failed to create sysfs folder for hwirq %u\n", (u32)hwirq);
+		return -EIO;
+	}
 
 	return 0;
 }
@@ -1001,7 +1082,7 @@ static void gia_restore_state(struct gia_device_data *gdd)
 	for (int i = 0; i < gdd->nr_irq_chips; i++) {
 		writel_relaxed(~0x0, gia_reg_addr(gdd, gdd->type_data->enable_offset, i));
 		imr = gdd->mask_cache[i];
-		trace_gia_cache_update(gdd, i, imr);
+		trace_gia_cache_update(gdd, i, imr, false);
 		writel_relaxed(imr, gia_reg_addr(gdd, gdd->type_data->mask_offset, i));
 	}
 	gia_unlock_process_context(&gdd->lock, &flags);
@@ -1027,16 +1108,19 @@ static void gia_log_pending_irqs(struct gia_device_data *gdd, bool suspend)
 
 		/*
 		 * Log only relevant irqs. Filter out ones who are actually disabled by their
-		 * clients. That's definitely one way for clients to disable their irqs.
+		 * clients. That's definitely one way for clients to disable their irqs. And also,
+		 * filter out wake up irqs. They indeed are legit outliers.
 		 */
-		pending = (isr & imr);
+		pending = (isr & imr) & ~(gdd->wake_cache[i]);
 
 		if (!pending)
 			continue;
 
 		/*
 		 * Logs printed here do not necessarily suggests an underlying issue. It varies
-		 * case to case. Some clients okay to drop their IRQ.
+		 * case to case. Some clients okay to drop their IRQ and GIAs with wake up IRQs
+		 * may still serve some interrupts, if clients have not unmasked. So, they won't be
+		 * dropped.
 		 */
 		if (suspend) {
 			trace_gia_pending_irq_error(gdd, i, pending,
@@ -1055,30 +1139,47 @@ static void gia_log_pending_irqs(struct gia_device_data *gdd, bool suspend)
 	gia_unlock_process_context(&gdd->lock, &flags);
 }
 
-/*
- * Note:
- * Doing MASK register restoration is not required all the time. There are cases, where power
- * domain attached to device is turning off but not the underlying SSWRP, which can still hold
- * the register content. If the register restoration is tied up with SSWRP on/off, we can save
- * on some latency during runtime_resume
- */
-int gia_runtime_suspend(struct device *dev)
+static int gia_runtime_suspend(struct device *dev)
 {
 	struct gia_device_data *gdd = dev_get_drvdata(dev);
 
 	trace_gia_runtime_suspend(gdd);
 
+	/*
+	 * GIAs without power domains should not be treated on their RPM suspend case. Historically,
+	 * they have been RPM disabled, and used to work. Now, they are RPM enabled. So, we will
+	 * observe their suspend/resume hooks invoked. But to maintain legacy behavior, better to
+	 * bail out early.
+	 */
 	if (!gdd->dev->pm_domain)
 		return 0;
 
-	for (int i = 0; i < gdd->nr_out_irq; i++)
-		/*
-		 * We can just wait for ACTIVE interrupts today. No upstream method to wait
-		 * on, PENDING but not yet ACTIVE interrupts. This helps clients who have no
-		 * means to know if their IRQ is raised or not, and hence can't wait for
-		 * it to be handled before going RPM SUSPENDED. We'd drop them today.
-		 */
-		disable_irq(gdd->virqs[i]);
+	/*
+	 * Make sure we don't receive any interrupts while we're runtime suspended. When we're
+	 * runtime suspended our power domain might be turned off and we can't read registers.
+	 *
+	 * NOTES:
+	 * - If we have any wakeup IRQs then it _must_ be safe to still get interrupts, so don't
+	 *   disable them in this case.
+	 * - We can safely look at `has_wake_irqs` without any locking and also guarantee that the
+	 *   value of `has_wake_irqs` will stay the same for gia_runtime_resume() (so we don't get
+	 *   unbalanced). Why? Before the core ever updates things like wake masks, it should lock
+	 *   the bus. Locking the bus forces us to stay runtime resumed. So if we are suspended then
+	 *   the bus is unlocked and values can't change.
+	 * - Well, in N:N aggr cases, we should ideally disable non-wake up out-going IRQs. But, not
+	 *   blocking that one case here because we understand that underlying power is ON as far
+	 *   as we have at least one wake up source.
+	 */
+	if (!gdd->has_wake_irqs) {
+		for (int i = 0; i < gdd->nr_out_irq; i++)
+			/*
+			 * We can just wait for ACTIVE interrupts today. No upstream method to wait
+			 * on, PENDING but not yet ACTIVE interrupts. This helps clients who have no
+			 * means to know if their IRQ is raised or not, and hence can't wait for
+			 * it to be handled before going RPM SUSPENDED. We'd drop them today.
+			 */
+			disable_irq(gdd->virqs[i]);
+	}
 
 	/*
 	 * Pending IRQs at this time may be dropped. Idea is to be explicit about it. If clients
@@ -1090,13 +1191,22 @@ int gia_runtime_suspend(struct device *dev)
 	return 0;
 }
 
-int gia_runtime_resume(struct device *dev)
+static int gia_runtime_resume(struct device *dev)
 {
 	struct gia_device_data *gdd = dev_get_drvdata(dev);
 
 	trace_gia_runtime_resume(gdd);
+
+	/*
+	 * On P26, some GIAs don't define power domain, and go off in system suspend. They need
+	 * their GIA IMR restoration.
+	 */
 	gia_restore_state(gdd);
 
+	/*
+	 * GIAs without power domain don't disable their interrutps in suspend, so don't re-enable
+	 * them in resume too.
+	 */
 	if (!gdd->dev->pm_domain)
 		return 0;
 
@@ -1105,14 +1215,17 @@ int gia_runtime_resume(struct device *dev)
 	 * SUSPENDED. Something, clients need to fix, ideally.
 	 */
 	gia_log_pending_irqs(gdd, false);
-	for (int i = 0; i < gdd->nr_out_irq; i++)
-		enable_irq(gdd->virqs[i]);
+
+	if (!gdd->has_wake_irqs) {
+		for (int i = 0; i < gdd->nr_out_irq; i++)
+			enable_irq(gdd->virqs[i]);
+	}
 
 	return 0;
 }
 
 const struct dev_pm_ops gia_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
 	SET_RUNTIME_PM_OPS(gia_runtime_suspend, gia_runtime_resume, NULL)
 };
 
@@ -1128,13 +1241,11 @@ static void gia_setup_pm_ops(struct gia_device_data *gdd)
 static void gia_pm_init(struct gia_device_data *gdd)
 {
 	gia_setup_pm_ops(gdd);
-	if (gdd->dev->pm_domain) {
-		pm_runtime_use_autosuspend(gdd->dev);
-		pm_runtime_set_autosuspend_delay(gdd->dev, GIA_AUTOSUSPEND_DELAY_MS);
-		pm_runtime_set_active(gdd->dev);
-		devm_pm_runtime_enable(gdd->dev);
-		pm_runtime_mark_last_busy(gdd->dev);
-	}
+	pm_runtime_use_autosuspend(gdd->dev);
+	pm_runtime_set_autosuspend_delay(gdd->dev, GIA_AUTOSUSPEND_DELAY_MS);
+	pm_runtime_set_active(gdd->dev);
+	devm_pm_runtime_enable(gdd->dev);
+	pm_runtime_mark_last_busy(gdd->dev);
 }
 
 /**
@@ -1210,6 +1321,7 @@ EXPORT_SYMBOL_GPL(gia_set_clear_trigger_reg);
 int gia_init(struct gia_device_data *gdd)
 {
 	struct device_node *node;
+	int ret;
 
 	trace_gia_init(gdd);
 	node = gdd->dev->of_node;
@@ -1227,6 +1339,10 @@ int gia_init(struct gia_device_data *gdd)
 	if (!gdd->mask_cache)
 		return -ENOMEM;
 
+	gdd->wake_cache = devm_kzalloc(gdd->dev, sizeof(u32) * (gdd->nr_irq_chips), GFP_KERNEL);
+	if (!gdd->wake_cache)
+		return -ENOMEM;
+
 	/* Allocate memory for telemetry */
 	if (gia_telemetry_memory_alloc(gdd))
 		return -ENOMEM;
@@ -1234,6 +1350,10 @@ int gia_init(struct gia_device_data *gdd)
 	gia_telemetry_reset(gdd);
 
 	gia_restore_state(gdd);
+
+	ret = gia_sysfs_create_per_gia_dir(gdd);
+	if (ret)
+		return ret;
 
 	/*
 	 * Create IRQ domain for this interrupt controller. This domain allows this GIA's consumers
@@ -1243,8 +1363,9 @@ int gia_init(struct gia_device_data *gdd)
 	 * Pass max number of IRQs this domain can handle, pointer to domain ops and data, that we
 	 * want to get into every ops.
 	 */
-	gdd->irq_domain = irq_domain_add_linear(node, gdd->nr_irq_chips * IRQS_PER_REG,
-						&gia_irq_domain_ops, gdd);
+	gdd->irq_domain = irq_domain_create_linear(dev_fwnode(gdd->dev),
+						   gdd->nr_irq_chips * IRQS_PER_REG,
+						   &gia_irq_domain_ops, gdd);
 
 	if (unlikely(!gdd->irq_domain)) {
 		dev_err(gdd->dev, "Cannot get IRQ domain\n");
@@ -1289,7 +1410,7 @@ int gia_init(struct gia_device_data *gdd)
 	list_add_tail(&gdd->list, &gia_device_list);
 	mutex_unlock(&gia_global_mutex);
 
-	return gia_sysfs_create_per_gia_dir(gdd);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(gia_init);
 
@@ -1308,7 +1429,7 @@ void gia_exit(struct gia_device_data *gdd)
 }
 EXPORT_SYMBOL_GPL(gia_exit);
 
-const char *gia_trace_events[] = {
+static const char * const gia_trace_events[] __initconst = {
 	"gia_get_power",
 	"gia_put_power",
 	"gia_irq_handler_entry",
@@ -1333,11 +1454,11 @@ const char *gia_trace_events[] = {
 	"gia_pending_irq_error",
 };
 
-static struct trace_array *gia_trace_init(void)
+static struct trace_array * __init gia_trace_init(void)
 {
 	struct trace_array *trace_instance;
 
-	trace_instance = trace_array_get_by_name_ext("irq_gia_google", "irq_gia");
+	trace_instance = trace_array_get_by_name("irq_gia_google", "irq_gia");
 	if (!trace_instance) {
 		pr_err("Interrupts trace instance creation/retrieve did not succeed\n");
 		return NULL;
@@ -1349,7 +1470,7 @@ static struct trace_array *gia_trace_init(void)
 	return trace_instance;
 }
 
-int __init gia_lib_init(void)
+static int __init gia_lib_init(void)
 {
 	gia_trace_init();
 	gia_sysfs_init();

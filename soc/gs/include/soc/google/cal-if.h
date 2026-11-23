@@ -112,5 +112,6 @@ extern void cal_cp_disable_dump_pc_no_pg(void);
 extern int cal_init(void);
 
 extern void cal_register_pd_lookup_cmu_id(void *(*func)(u32 cmu_id));
+extern void register_set_cluster_enabled_cb(void (*func)(int, int));
 #endif
 #endif

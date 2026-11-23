@@ -542,3 +542,6 @@ void dma_lma_heap_destroy(struct dma_heap *heap)
 	gen_pool_destroy(lma_heap->pool);
 	kfree(lma_heap);
 }
+#if (defined(ANDROID) && (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)))
+MODULE_IMPORT_NS("DMA_BUF_HEAP");
+#endif

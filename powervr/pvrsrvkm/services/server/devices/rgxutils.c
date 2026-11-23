@@ -51,7 +51,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pvrsrv.h"
 #include "sync_internal.h"
 #include "rgxfwutils.h"
-#include "rgxlayer.h"
+#include "rgxhal.h"
 #include "rgxmmudefs_km.h"
 #include "rgxta3d.h"
 #include "devicemem_server.h"
@@ -224,6 +224,18 @@ PHYS_HEAP_POLICY RGXPhysHeapGetLMAPolicy(PHYS_HEAP_USAGE_FLAGS ui32UsageFlags, P
 {
 	PHYS_HEAP_POLICY ui32Policy;
 
+	if (BITMASK_ANY(ui32UsageFlags,
+		(PHYS_HEAP_USAGE_FW_SHARED    |
+		 PHYS_HEAP_USAGE_FW_PREMAP_PT |
+		 PHYS_HEAP_USAGE_FW_CODE      |
+		 PHYS_HEAP_USAGE_FW_PRIV_DATA |
+		 PHYS_HEAP_USAGE_FW_PRIV_RODATA)))
+	{
+		/* b/488947008 : FW/LMA heaps cannot allow NONCONTIG allocations as
+		 * the KMD can not map these into the FW.  */
+		return PHYS_HEAP_POLICY_DEFAULT;
+	}
+
 	if (OSIsMapPhysNonContigSupported())
 	{
 		ui32Policy = PHYS_HEAP_POLICY_ALLOC_ALLOW_NONCONTIG;
@@ -323,7 +335,7 @@ IMG_UINT32 RGXCalcMListSize(PVRSRV_DEVICE_NODE *psDeviceNode,
 	PVR_UNREFERENCED_PARAMETER(psDevInfo);
 	/*
 	 *  Assert if Size of PB exceeds maximum theoretical limit
-	 *  RGX_PM_MAX_PB_VIRT_ADDR_SPACE represents the 16G address space#
+	 *  RGX_PM_MAX_PB_VIRT_ADDR_SPACE represents the 16G address space.
 	 */
 	PVR_ASSERT(ui64MaxLocalPBSize+ui64MaxGlobalPBSize <= RGX_PM_MAX_PB_VIRT_ADDR_SPACE);
 

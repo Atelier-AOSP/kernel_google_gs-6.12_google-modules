@@ -47,6 +47,7 @@
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 5, 0))
 #include <drm/drm_debugfs.h>
 #include <drm/drm_file.h>
+#include <drm/drm_print.h>
 #include <linux/uaccess.h>
 #endif
 

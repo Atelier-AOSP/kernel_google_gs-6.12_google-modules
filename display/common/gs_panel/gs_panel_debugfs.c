@@ -123,7 +123,113 @@ static const struct file_operations gs_te2_irq_en_fops = {
 	.release = seq_release,
 };
 
-static ssize_t parse_byte_buf(u8 *out, size_t len, char *src)
+static ssize_t gs_force_ffc_off_write(struct file *file, const char __user *user_buf, size_t count,
+				      loff_t *ppos)
+{
+	struct seq_file *m = file->private_data;
+	struct gs_panel *ctx = m->private;
+	int ret;
+	bool val;
+
+	ret = kstrtobool_from_user(user_buf, count, &val);
+	if (ret)
+		return ret;
+
+	if (!gs_panel_has_func(ctx, pre_update_ffc) || !gs_panel_has_func(ctx, update_ffc))
+		return -EOPNOTSUPP;
+
+	if (val != ctx->force_ffc_off) {
+		const struct drm_connector_state *conn_state = ctx->gs_connector->base.state;
+		struct gs_drm_connector_state *gs_conn_state = to_gs_connector_state(conn_state);
+
+		dev_info(ctx->dev, "force ffc off: %d\n", val);
+
+		mutex_lock(&ctx->mode_lock);
+		if (val)
+			ctx->desc->gs_panel_func->pre_update_ffc(ctx);
+		else
+			ctx->desc->gs_panel_func->update_ffc(ctx, gs_conn_state->dsi_hs_clk_mbps);
+		ctx->force_ffc_off = val;
+		mutex_unlock(&ctx->mode_lock);
+	}
+
+	return count;
+}
+
+static int gs_force_ffc_off_show(struct seq_file *m, void *data)
+{
+	struct gs_panel *ctx = m->private;
+
+	seq_printf(m, "%d\n", ctx->force_ffc_off);
+
+	return 0;
+}
+
+static int gs_force_ffc_off_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, gs_force_ffc_off_show, inode->i_private);
+}
+
+static const struct file_operations gs_force_ffc_off_fops = {
+	.open = gs_force_ffc_off_open,
+	.read = seq_read,
+	.write = gs_force_ffc_off_write,
+	.llseek = seq_lseek,
+	.release = seq_release,
+};
+
+/* DSI Address Functions */
+
+static int gs_dsi_address_show(struct seq_file *m, void *data)
+{
+	struct gs_dsi_reg_data *reg_data = m->private;
+
+	seq_printf(m, "0x%02x\n", reg_data->address);
+
+	return 0;
+}
+
+static ssize_t gs_dsi_address_write(struct file *file, const char __user *user_buf, size_t count,
+				    loff_t *ppos)
+{
+	struct seq_file *m = file->private_data;
+	struct gs_dsi_reg_data *reg_data = m->private;
+	u8 addr;
+	int ret;
+
+	ret = kstrtou8_from_user(user_buf, 4, 16, &addr);
+	if (ret) {
+		dev_err(&reg_data->dsi->dev,
+				"Invalid input (not a hex). Address is currently 0x%02x.\n",
+				reg_data->address);
+		return -EINVAL;
+	}
+
+	reg_data->address = addr;
+	dev_info(&reg_data->dsi->dev, "Address set to 0x%02x\n", reg_data->address);
+
+	return count;
+}
+
+DEFINE_SHOW_STORE_ATTRIBUTE(gs_dsi_address);
+
+/* DSI Payload Functions */
+
+/**
+ * parse_byte_buf - Parse a string of hex values into a byte buffer.
+ * @out: Output buffer for parsed bytes.
+ * @len: Maximum number of bytes to parse into @out.
+ * @src: Input string to parse. This string is modified.
+ * @bad_token: On parse failure, this is set to the token with invalid format.
+ *
+ * Parses a string containing space or newline-separated hexadecimal byte values
+ * (e.g., "0a 1f fe"). The content in @src will be modified by this function.
+ *
+ * Returns:
+ * The number of bytes successfully parsed, or a negative error code
+ * from kstrtou8() on failure.
+ */
+static ssize_t parse_byte_buf(u8 *out, size_t len, char *src, char **bad_token)
 {
 	const char *skip = "\n ";
 	size_t i = 0;
@@ -134,14 +240,14 @@ static ssize_t parse_byte_buf(u8 *out, size_t len, char *src)
 		s = strsep(&src, skip);
 		if (*s != '\0') {
 			rc = kstrtou8(s, 16, out + i);
+			if (rc && bad_token)
+				*bad_token = s;
 			i++;
 		}
 	}
 
 	return rc ?: i;
 }
-
-/* DSI Payload Functions */
 
 static ssize_t gs_dsi_payload_write(struct file *file, const char __user *user_buf, size_t count,
 				    loff_t *ppos)
@@ -150,6 +256,7 @@ static ssize_t gs_dsi_payload_write(struct file *file, const char __user *user_b
 	struct gs_dsi_reg_data *reg_data = m->private;
 	char *buf;
 	char *payload;
+	char *bad_token = NULL;
 	size_t len;
 	ssize_t bytes_to_send;
 	ssize_t ret = 0;
@@ -166,7 +273,7 @@ static ssize_t gs_dsi_payload_write(struct file *file, const char __user *user_b
 		return -ENOMEM;
 	}
 
-	bytes_to_send = parse_byte_buf(payload, len, buf);
+	bytes_to_send = parse_byte_buf(payload, len, buf, &bad_token);
 	if (bytes_to_send > 0) {
 		ssize_t bytes_sent;
 		if (reg_data->type)
@@ -180,8 +287,13 @@ static ssize_t gs_dsi_payload_write(struct file *file, const char __user *user_b
 			if (bytes_sent > 0)
 				pr_warn("%s: request to send %zd bytes, actual sent %zd bytes\n",
 					__func__, bytes_to_send, bytes_sent);
+		} else {
+			print_hex_dump(KERN_INFO, "payload write hex dump: ", DUMP_PREFIX_NONE, 16,
+					bytes_sent, payload, bytes_sent, false);
 		}
 	} else {
+		dev_err(&reg_data->dsi->dev,
+				"Invalid input '%s' (not a hex number)\n", bad_token);
 		ret = -EINVAL;
 	}
 
@@ -206,7 +318,13 @@ static int gs_dsi_payload_show(struct seq_file *m, void *data)
 
 	rc = mipi_dsi_dcs_read(reg_data->dsi, reg_data->address, buf, reg_data->count);
 	if (rc > 0) {
-		seq_hex_dump(m, "", DUMP_PREFIX_NONE, 16, 1, buf, rc, false);
+		static const char log_pattern[] = "payload read reg 0x%02x, len %zu\n";
+		static const char hex_dump_prefix[] = "payload read hex dump: ";
+
+		seq_printf(m, log_pattern, reg_data->address, reg_data->count);
+		seq_hex_dump(m, hex_dump_prefix, DUMP_PREFIX_NONE, 16, 1, buf, rc, false);
+		dev_info(&reg_data->dsi->dev, log_pattern, reg_data->address, reg_data->count);
+		print_hex_dump(KERN_INFO, hex_dump_prefix, DUMP_PREFIX_NONE, 16, 1, buf, rc, false);
 		rc = 0;
 	} else if (rc == 0) {
 		dev_warn(&reg_data->dsi->dev, "no response back, addr(%#x)\n", reg_data->address);
@@ -217,19 +335,7 @@ static int gs_dsi_payload_show(struct seq_file *m, void *data)
 	return rc;
 }
 
-static int gs_dsi_payload_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, gs_dsi_payload_show, inode->i_private);
-}
-
-static const struct file_operations gs_dsi_payload_fops = {
-	.owner = THIS_MODULE,
-	.open = gs_dsi_payload_open,
-	.write = gs_dsi_payload_write,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-};
+DEFINE_SHOW_STORE_ATTRIBUTE(gs_dsi_payload);
 
 /* Cmdset Functions */
 
@@ -261,7 +367,9 @@ static int panel_cmdset_show(struct seq_file *m, void *data)
 		cmd = &cmdset->cmds[i];
 
 		type = panel_get_cmd_type(cmd);
-		seq_printf(m, "0x%02x ", type);
+		seq_printf(m, "%#04x ", type); // 0xXX
+		if (cmd->panel_rev_bitmask != PANEL_REV_ALL)
+			seq_printf(m, "\trev_bitmask %#010x", cmd->panel_rev_bitmask);
 		seq_hex_dump(m, "\t", DUMP_PREFIX_NONE, 16, 1, cmd->cmd, cmd->cmd_len, false);
 
 		if (cmd->delay_ms)
@@ -307,6 +415,29 @@ static ssize_t gs_debugfs_panel_errors(struct file *file, const char __user *use
 static const struct file_operations gs_panel_errors_fops = {
 	.open = simple_open,
 	.write = gs_debugfs_panel_errors,
+};
+
+static ssize_t gs_debugfs_pmic_errors(struct file *file, const char __user *user_buf, size_t count,
+				      loff_t *ppos)
+{
+	struct mipi_dsi_device *dsi = file->private_data;
+	struct gs_panel *ctx = mipi_dsi_get_drvdata(dsi);
+	u64 errors;
+	int ret;
+
+	ret = kstrtou64_from_user(user_buf, count, 0, &errors);
+	if (ret)
+		return ret;
+
+	mutex_lock(&ctx->mode_lock); /*TODO(b/267170999): MODE*/
+	bitmap_write(ctx->pmic_errors, errors, 0, GS_PMIC_ERR_MAX);
+	mutex_unlock(&ctx->mode_lock); /*TODO(b/267170999): MODE*/
+
+	return count;
+}
+static const struct file_operations gs_pmic_errors_fops = {
+	.open = simple_open,
+	.write = gs_debugfs_pmic_errors,
 };
 
 /* High-level Functions */
@@ -368,7 +499,7 @@ static int debugfs_add_dsi_folder(struct mipi_dsi_device *dsi,
 
 	reg_data->dsi = dsi;
 
-	debugfs_create_u8("address", 0600, reg_root, &reg_data->address);
+	debugfs_create_file("address", 0600, reg_root, reg_data, &gs_dsi_address_fops);
 	debugfs_create_u8("type", 0600, reg_root, &reg_data->type);
 	debugfs_create_size_t("count", 0600, reg_root, &reg_data->count);
 	debugfs_create_u16("flags", 0600, reg_root, &reg_data->flags);
@@ -378,6 +509,7 @@ static int debugfs_add_dsi_folder(struct mipi_dsi_device *dsi,
 	debugfs_create_file("reset_panel", 0200, panel_entry, dsi, &gs_reset_panel_fops);
 
 	debugfs_create_file("panel_errors", 0200, panel_entry, dsi, &gs_panel_errors_fops);
+	debugfs_create_file("pmic_errors", 0200, panel_entry, dsi, &gs_pmic_errors_fops);
 
 	entries->reg = reg_root;
 
@@ -403,7 +535,7 @@ static int debugfs_add_cmdset_folder(struct gs_panel *ctx, struct gs_panel_debug
 
 	gs_panel_debugfs_create_cmdset(entries->cmdset, desc->off_cmdset, "off");
 
-	if (desc->lp_modes && desc->lp_cmdset) {
+	if (desc->lp_modes) {
 		struct dentry *lpd;
 		int i;
 
@@ -422,7 +554,8 @@ static int debugfs_add_cmdset_folder(struct gs_panel *ctx, struct gs_panel_debug
 		} else {
 			lpd = entries->cmdset;
 		}
-		gs_panel_debugfs_create_cmdset(lpd, desc->lp_cmdset, "lp_entry");
+		if (desc->lp_cmdset)
+			gs_panel_debugfs_create_cmdset(lpd, desc->lp_cmdset, "lp_entry");
 	}
 
 	return 0;
@@ -437,13 +570,14 @@ static int debugfs_add_cmdset_folder(struct gs_panel *ctx, struct gs_panel_debug
  */
 static int debugfs_add_misc_panel_entries(struct gs_panel *ctx, struct dentry *panel_entry)
 {
-	debugfs_create_u32("rev", 0600, panel_entry, &ctx->panel_rev_id.id);
+	debugfs_create_x32("rev", 0600, panel_entry, &ctx->panel_rev_id.id);
 	debugfs_create_bool("lhbm_postwork_disabled", 0600, panel_entry,
 			    &ctx->lhbm.post_work_disabled);
 	debugfs_create_u32("common_work_delay_ms", 0600, panel_entry,
 			   &ctx->common_work.delay_ms);
 	debugfs_create_file("te2_irq_en", 0600, panel_entry, ctx, &gs_te2_irq_en_fops);
 	debugfs_create_file("allowed_hs_clks", 0400, panel_entry, ctx, &gs_allowed_hs_clks_fops);
+	debugfs_create_file("force_ffc_off", 0600, panel_entry, ctx, &gs_force_ffc_off_fops);
 
 	/*
 	 * TODO(tknelms)
@@ -513,6 +647,47 @@ static int debugfs_add_regulator_folder(struct gs_panel *ctx, struct dentry *pan
 	return 0;
 }
 
+static int lp_threshold_show(struct seq_file *m, void *data)
+{
+	const struct gs_binned_lp *b = m->private;
+
+	seq_printf(m, "%d\n", b->bl_threshold);
+	return 0;
+}
+DEFINE_SHOW_ATTRIBUTE(lp_threshold);
+
+/**
+ * debugfs_add_lp_threshold_folder - Adds debugfs folder for bl_threshold of LP modes
+ * @ctx: Reference to panel data
+ * @entries: Reference to debugfs entries for panel
+ *
+ * Return: 0 on success, negative value on error
+ */
+static int debugfs_add_lp_threshold_folder(struct gs_panel *ctx, struct dentry *panel_entry)
+{
+	struct dentry *threshold_root;
+	const struct gs_panel_desc *desc = ctx->desc;
+
+	if (!desc->binned_lp) {
+		dev_warn(ctx->dev, "binned_lp not found in panel desc");
+		return -ENODATA;
+	}
+
+	threshold_root = debugfs_create_dir("lp_threshold", panel_entry);
+	if (!threshold_root) {
+		dev_err(ctx->dev, "can't create lp_threshold dir\n");
+		return -EFAULT;
+	}
+
+	for (int i = 0; i < desc->num_binned_lp; i++) {
+		const struct gs_binned_lp *b = &desc->binned_lp[i];
+
+		debugfs_create_file(b->name, 0400, threshold_root, (void *) b, &lp_threshold_fops);
+	}
+
+	return 0;
+}
+
 int gs_panel_create_debugfs_entries(struct gs_panel *ctx, struct dentry *parent)
 {
 	int ret;
@@ -531,6 +706,7 @@ int gs_panel_create_debugfs_entries(struct gs_panel *ctx, struct dentry *parent)
 		return ret;
 	debugfs_add_driver_specific_entries(ctx, parent);
 	debugfs_add_regulator_folder(ctx, ctx->debugfs_entries.panel);
+	debugfs_add_lp_threshold_folder(ctx, ctx->debugfs_entries.panel);
 
 	return 0;
 }

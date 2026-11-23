@@ -15,54 +15,53 @@
 #include <linux/gpio/driver.h>
 #endif
 #include <linux/types.h>
-#include <misc/gvotable.h>
 #include <linux/mutex.h>
 #include "gbms_power_supply.h"
 #include "google_bms.h"
 #include "max77779.h"
 
 #define WLC_USER_VOTER				"WLC_USER_VOTER"
-#define MPP_CAL_VOTER				"MPP_CAL_VOTER"
 #define WLC_AUTH_VOTER				"WLC_AUTH_VOTER"
-#define WLC_DC_VOTER				"WLC_DC_VOTER"
+#define MPP25_VOTER				"MPP25_VOTER"
 #define EOC_VOTER				"EOC_VOTER"
 #define NEGO_VOTER				"NEGO_VOTER"
-#define MODE_VOTER				"MODE_VOTER"
+#define MODE_VOTER				"WLC_MODE_VOTER"
 #define OCP_VOTER				"OCP_VOTER"
 #define OUTPUT_DISABLE_VOTER			"OUTPUT_DISABLE_VOTER"
 #define EOC_CLOAK_VOTER				"EOC_CLOAK_VOTER"
 #define DC_ICL_VOTABLE_HANDLE			"DC_ICL"
 #define CHG_ENABLE_VOTER			"CHG_ENABLE_VOTER"
+#define CHG_SWITCH_VOTER			"CHG_SWITCH_VOTER"
 #define USB_CONN_VOTER				"USB_CONN_VOTER"
 #define WLC_MDIS_VOTER				"WLC_MDIS_VOTER"
 #define WLCFW_VOTER				"WLC_FWUPDATE"
 #define EDS_VOTER				"EDS_VOTER"
+#define DPLOSS_VOTER				"DPLOSS_VOTER"
 #define DD_VOTER				"DD_VOTER"
+#define USECASE_INPUT_SUSPEND_VOTER		"USECASE_INPUT_SUSPEND"
+#define WLC_RETAIL_VOTER			"WLC_RETAIL_VOTER"
 
 #define GOOGLE_WLC_NOTIFIER_DELAY_MS			100
 #define GOOGLE_WLC_PRESENT_CHECK_INTERVAL_MS		1000
-#define GOOGLE_WLC_DCIN_RETRY_DELAY_MS			50
-#define GOOGLE_WLC_STARTUP_UA				100000
+#define GOOGLE_WLC_DCIN_RETRY_DELAY_MS			2000
+#define GOOGLE_WLC_DEFAULT_STARTUP_UA			100000
 #define GOOGLE_WLC_BOOTUP_UA				500000
 #define GOOGLE_WLC_CHG_SUSPEND_MW			0
 #define GOOGLE_WLC_STARTUP_MW				0
-#define GOOGLE_WLC_MPP_HEADROOM_MA			25000
+#define GOOGLE_WLC_MPP_HEADROOM_UA			25000
 #define GOOGLE_WLC_MPP_RESTRICTED_ICL			400000
 #define GOOGLE_WLC_MPP_MAX_POWER			15000
-#define GOOGLE_WLC_DC_MIN_POWER				10000
+#define GOOGLE_WLC_MPP25_MAX_POWER			25000
 #define GOOGLE_WLC_MPP_NPM_MAX_POWER			15000
-#define GOOGLE_WLC_MPP_HPM_MAX_POWER			25000
 #define GOOGLE_WLC_EPP_MAX_POWER			10000
 #define GOOGLE_WLC_BPP_MAX_POWER			5000
 #define GOOGLE_WLC_PREAUTH_RAMP_TARGET			7500
-#define GOOGLE_WLC_MAX_LOAD_STEP			25000
 #define GOOGLE_WLC_MPP_RAMP_MAX_RETRY_TIME		10000 /* 10 seconds */
 #define GOOGLE_WLC_RAMP_RETRY_INTERVAL			200 /* ms */
 #define GOOGLE_WLC_RAMP_DONE_CHECK_NUM			0
 #define GOOGLE_WLC_RAMP_SKIP_CHECK_NUM			5
 #define GOOGLE_WLC_ICL_RAMP_TIMEOUT_MS			5000
-#define GOOGLE_WLC_DEFAULT_DECREASE_STEP		25000 /* ua */
-#define GOOGLE_WLC_PRE_WLC_DC_DECREASE_STEP		50000 /* ua */
+#define GOOGLE_WLC_RAMPDOWN_DECREASE_MULT		2
 #define GOOGLE_WLC_DCIN_CHECK_INTERVAL_MS		(1 * 1000)
 #define MPP_RAMP_DELAY_MS				(1 * 1000)
 #define MPP_RESTRICTED_RETRY_MS				500
@@ -80,7 +79,7 @@
 #define TX_ID_STR_LEN					9
 #define UEVENT_ENVP_LEN					20
 #define NOTIFIER_REGISTER_RETRY_MS			1000
-#define DC_ICL_STEP					25000
+#define DEFAULT_DC_ICL_STEP				25000
 #define WLC_SOC_STATS_LEN				101
 #define WLC_CHARGE_STATS_TIMEOUT_MS			(10 * 1000)
 #define GOOGLE_WLC_MPLA_NUM_MAX				12
@@ -89,11 +88,11 @@
 #define MPP25_MIN_POTENTIAL_POWER			20000
 #define GOOGLE_WLC_OPFREQ_THRES				300
 #define GOOGLE_WLC_CLOAK_DEBOUNCE_MS			1000
-#define MPP25_PM_SWITCH_TIMEOUT_MS			(10 * 1000)
+#define MPP25_PM_SWITCH_TIMEOUT_MS			(15 * 1000)
 #define WLC_DC_DISABLE_SWC_TIMEOUT_MS			(20 * 1000)
 #define MPP25_CALIBRATION_TIMEOUT_MS			(5 * 60 * 1000)
 #define MPP_DPLOSS_NUM_STEPS				3
-#define GOOGLE_WLC_VOUT_MIN				12000
+#define GOOGLE_WLC_VOUT_MIN				10500
 #define GOOGLE_WLC_VOUT_MAX				19000
 #define WPC_RCS_TX_MAX_POWER				1
 #define WPC_RCS_TX_SYS_PROTECTION			2
@@ -105,14 +104,12 @@
 #define WLC_DC_DPLOSS_PARAM_INIT_DELAY			(4 * 1000)
 #define WLC_FW_RECHECK_TIMEOUT_MS			(10 * 1000)
 #define WLC_FW_CHECK_TIMEOUT_MS				(1 * 1000)
-#define MPP25_CAL_ENTER_TIMEOUT				(10 * 1000)
+#define MPP25_CAL_ENTER_TIMEOUT				(30 * 1000)
 #define MPP25_CAL_RENEGO_TIMEOUT			(10 * 1000)
 #define WLC_FWUPDATE_RETRIES_MAX			10
 #define WLC_FWUPDATE_SOC_THRESHOLD			10
 #define WLC_DISABLE_TIMEOUT				(5 * 1000)
-#define GOOGLE_WLC_DC_MAX_VOLT_DEFAULT			19000000
-#define GOOGLE_WLC_DC_MAX_CURR_DEFAULT			1600000;
-#define GOOGLE_WLC_QI22_TAG				0x5149
+#define GOOGLE_WLC_DC_MAX_VOLT_DEFAULT_MV		19000
 #define WLC_DC_MAX_VOUT_DELTA_DEFAULT			80
 #define WLC_DC_MAX_POUT_DELTA_DEFAULT			2000
 #define AUTH_EDS_INTERVAL_MS				(100 * 1000)
@@ -122,14 +119,47 @@
 #define DREAM_DEBOUNCE_TIME_S				400
 #define GOOGLE_WLC_IOP_FAIL_TIMEOUT_MS			(10 * 1000)
 #define GOOGLE_WLC_IOP_FAIL_COUNT_MAX			5
-#define GOOGLE_WLC_IOP_VOUT_MV				9000
-#define GOOGLE_WLC_ICL_STABLE_TIME_MS			(30 * 1000)
+#define WLC_INIT_CHECK_INTERVAL				1000
+#define MPP25_HPM_MV					18000
+#define MPP25_DPLOSS_STABLE_CHECK_RETRIES		100
+#define MPP25_VOUT_STABLE_CHECK_RETRIES			15
+#define MPP25_VOUT_STABLE_CHECK_THRESHOLD_MV		100
+#define MPP25_DPLOSS_STABLE_CHECK_INTERVAL		1000
+#define MPP25_DPLOSS_STABLE_CHECK_THRESHOLD		500
+#define MPP25_DPLOSS_STABLE_CHECK_GOAL			2
+#define MPP25_DPLOSS_FALLBACK_MIN_STEP1			8000
+#define MPP25_DPLOSS_FALLBACK_MAX_STEP1			11000
+#define MPP25_DPLOSS_FALLBACK_MIN_STEP2			11000
+#define MPP25_DPLOSS_FALLBACK_MAX_STEP2			13000
+#define MPP25_DPLOSS_FALLBACK_MIN_STEP3			13000
+#define MPP25_DPLOSS_FALLBACK_MAX_STEP3			15500
+#define MPP25_DPLOSS_FALLBACK_MIN_STEP4			18000
+#define MPP25_DPLOSS_FALLBACK_MAX_STEP4			25000
+#define WLC_CHARGER_STARTUP_RETRIES			10
+#define WLC_IOUT_VALID_LEVEL_MA				50
+#define WLC_CHARGER_STARTUP_CHECK_INTERVAL		1000
 #define MPP_NPM_MIN_VOLTAGE				12000
 #define MPP_NPM_MAX_VOLTAGE				14000
+#define MPP_NPM_MAX_POWER_12V_THRESHOLD			12800 /* 15W/14V*12V, don't overshoot 15W */
 #define MPP25_MAX_OUTPUT_VOLTAGE_MV			19000
-#define GOOGLE_WLC_MPP25_MAX_POWER			25000
+#define GOOGLE_WLC_IOP_VOUT_MV				9000
+#define MPP25_CHECK_DELAY_MS				3000
+#define CHARGER_SWITCH_CHECK_TIMEOUT_S			300 /* 5 minutes */
+#define GOOGLE_WLC_CHG_STABLE_TIME_MS			(30 * 1000)
+#define GOOGLE_WLC_DC_CHG_STABLE_TIME_MS		(60 * 1000)
+#define WLC_DC_XCE_THRESH_DEFAULT			1
+#define WLC_DC_DPLOSS_CALI_POWER_MIN			15000
+#define FSK_MISSING_COUNT_MAX				3
+#define GOOGLE_WLC_FSK_MISSING_INT_CHECK_S		2
+#define GOOGLE_WLC_CHG_SESSION_CHECK_S			10
 #define LIMIT_REASON_RETRY_TIME_MS			(5 * 1000)
 #define LIMIT_REASON_RETRY_COUNT			3
+#define GOOGLE_WLC_SWC_STATE_CHECK_COUNT		20
+#define RCS_LOAD_BACKOFF_IRQ_COUNT			50
+#define WLC_DISCONNECT_TIMEOUT				(5 * 1000)
+#define GOOGLE_WLC_MPP_NEGO_TIMEOUT_MS			(5 * 60 * 1000)
+#define GOOGLE_WLC_XID_DELAY_MS				100
+#define GOOGLE_WLC_XID_RETRY_COUNT			10
 
 #define FWUPDATE_DATA_MINSIZE				8
 #define FWUPDATE_DATA_MAXSIZE				12
@@ -152,27 +182,63 @@
 #define TXID_DD_TYPE2					0xA0
 #define IOP_MFG_NUM_MAX					10
 #define INCOMPAT_COUNT					5
+#define IOP_SOC_MAX					90
 
-#define GOOGLE_WLC_IOP_BPP_RAMP_DONE_CHECK_NUM		20
-#define GOOGLE_WLC_IOP_BPP_RAMP_DONE_CHECK_MS		(1 * 1000)
-#define GOOGLE_WLC_RAMP_DONE_ICL_MIN_UA			650000
+#define FSK_MISSING_HISTORY_SIZE			20
+#define GOOGLE_WLC_BPP_MISCOMM_POWER			4500
+#define BPP_MISCOMM_DISCONNECT_COUNT			3
+
+#define WLC_RETAIL_LOWSOC_THRESHOLD			20
+#define WLC_CLOAK_ERROR_COUNT_MAX			5
 
 #define PRESENT_RATELIMIT_INTERVAL			(30 * 60 * HZ)
 #define PRESENT_RATELIMIT_BURST				20
 
+#define GOOGLE_WLC_BPP_RAMP_DONE_CHECK_NUM		5
+#define GOOGLE_WLC_IOP_BPP_RAMP_DONE_CHECK_NUM		20
+#define GOOGLE_WLC_IOP_BPP_RAMP_DONE_CHECK_MS		(1 * 1000)
+#define GOOGLE_WLC_RAMP_DONE_ICL_MIN_UA			650000
+
+#define GOOGLE_WLC_READING_MAX_IOUT_MA			10000
+#define GOOGLE_WLC_READING_MAX_VOLT_MV			25000
+#define GOOGLE_WLC_READING_MAX_FREQ_KHZ			1000
+#define GOOGLE_WLC_READING_MAX_TEMP_C			1000
+
+struct wlc_chg_config {
+	u32 target_power_mode; /* target power mode */
+	u32 charger_type; /* CP or Buck charger */
+	u32 mod_mode;
+	u32 mod_change_timing;
+	u32 init_cur_ua;
+	u32 icl_rounding;
+	u32 init_volt_uv;
+	bool auto_vout;
+	u32 icl_step_size_ua;
+	u32 max_volt_uv;
+	bool mpp25_only; /* only supports mpp25, not mpp15 */
+	const char *mpp_mdis_name;
+	u32 mpp_mdis_pwr[MDIS_LEVEL_MAX];
+	int mpp_mdis_num;
+	bool exit_by_ept;
+
+};
+
 struct google_wlc_platform_data {
 	struct gpio_desc				*irq_gpio;
 	int						irq_int;
+	int						irq_hybrid;
 	struct gpio_desc				*ap5v_gpio;
+	struct gpio_desc				*vdden_gpio;
 	struct gpio_desc				*mode_gpio;
 	struct gpio_desc				*inhibit_gpio;
 	struct gpio_desc				*wcin_inlim_en_gpio;
 	struct gpio_desc				*det_gpio;
-	struct gpio_desc				*qi22_en_gpio;
 	struct gpio_desc				*qi_version_gpio;
 	struct power_supply				*batt_psy;
+	struct regulator				*ext_bst_supply;
 	u8						*bpp_fods;
 	u8						*epp_fods;
+	struct wlc_chg_config				*chg_configs;
 	int						bpp_fod_num;
 	int						epp_fod_num;
 	u8						fod_qf;
@@ -193,19 +259,16 @@ struct google_wlc_platform_data {
 	int						epp_mdis_num;
 	int						mpp_mdis_num;
 	int						wlc_dc_mdis_num;
-	bool						has_wlc_dc;
-	bool						support_mpp25;
-	int						dploss_num_cal;
-	int						dploss_cal_steps[4];
+	bool						has_mpp25_wlc_dc;
+	bool						has_mpp15_wlc_dc;
+	u32						support_mpp25;
 	bool						eoc_cloak_en;
 	u32						dploss_steps[MPP_DPLOSS_NUM_STEPS];
+	u32						dploss_volts[MPP_DPLOSS_NUM_STEPS];
 	int						dploss_points_num;
-	int						qi22_en_gpio_active;
-	int						qi22_en_gpio_value;
 	const char					*bl_name;
 	const char					*fw_name;
 	u32						wlc_dc_max_voltage;
-	u32						wlc_dc_max_current;
 	u8						mod_depth_max;
 	int						mod_soc;
 	u32						mpp_eds_icl[EDS_ICL_LEVEL_MAX];
@@ -218,7 +281,13 @@ struct google_wlc_platform_data {
 	u16						iop_vout_mfg[IOP_MFG_NUM_MAX];
 	int						iop_vout_mfg_num;
 	u32						cloak_ping_delay_ms;
+	int						chg_configs_num;
 	u32						iop_bpp_vout_tolerance;
+	bool						no_charger_switch_cloak;
+	u32						wlc_dc_xce_thresh;
+	u32						wlc_dc_max_vout_delta;
+	u32						wlc_dc_max_pout_delta;
+	u32						wlc_epp_max_power_mw;
 };
 
 enum google_wlc_status {
@@ -229,12 +298,21 @@ enum google_wlc_status {
 	GOOGLE_WLC_STATUS_CLOAK,
 	GOOGLE_WLC_STATUS_CLOAK_ENTERING,
 	GOOGLE_WLC_STATUS_CLOAK_EXITING,
-	GOOGLE_WLC_STATUS_INHIBITED,
+};
+
+enum google_wlc_chg_stable_type {
+	CHG_STABLE_TYPE_NONE = 0,
+	CHG_STABLE_TYPE_CHARGING,
+	CHG_STABLE_TYPE_DC_CHARGING,
 };
 
 static const char * const google_wlc_status_str[] = {
 	"Not-Detected", "Detected", "Charging", "DC-Charging",
-	"Cloak", "Entering Cloak", "Exiting Cloak", "Inhibited"
+	"Cloak", "Entering Cloak", "Exiting Cloak"
+};
+
+static const char * const google_wlc_fwupdate_state_str[] = {
+	"Unknown", "Not start", "In progress", "Success", "Fail"
 };
 
 struct icl_loop_status {
@@ -263,6 +341,18 @@ enum sys_op_mode {
 	RX_MODE_MPP_CLOAK,
 	RX_MODE_PDET,
 	RX_MODE_UNKNOWN,
+};
+
+enum cloak_error_reason {
+	CLOAK_EXIT_NORMAL = 0,
+	CLOAK_EXIT_FSK_FAIL,
+	CLOAK_DET_PING_TIMEOUT,
+	CLOAK_PING_TIMEOUT,
+	CLOAK_EXIT_PTX_XID_CHECK_FAIL,
+	CLOAK_PTX_POWER_DOWN_TIMEOUT,
+	CLOAK_PTX_POWER_DOWN_FAILURE,
+	CLOAK_PTX_FSK_MISSING,
+	CLOAK_PING_FREQ_INCORRECT,
 };
 
 enum adapter_type {
@@ -353,6 +443,8 @@ enum wlc_feature {
 	WLCF_FAST_CHARGE             = 0x04,
 	WLCF_CHARGE_15W              = 0x08,
 	WLCF_QI_PASSED_FEATURE       = 0x10,
+	WLCF_RETAIL_CHARGE           = 0x20,
+	WLCF_DREAM_DEFER             = 0x40,
 };
 
 enum uevent_source {
@@ -361,10 +453,11 @@ enum uevent_source {
 	UEVENT_WLC_ON,
 	UEVENT_FAN,
 	UEVENT_FWUPDATE,
+	UEVENT_TXSRC,
 };
 
 static char *uevent_source_str[] = {
-	"N/A", "WLC_OFF", "WLC_ON", "FAN", "FWUPDATE"
+	"N/A", "WLC_OFF", "WLC_ON", "FAN", "FWUPDATE", "TXSRC"
 };
 
 enum gpio_mode {
@@ -406,16 +499,16 @@ struct google_wlc_stats {
 
 enum mpp25_state {
 	MPP25_OFF = 0,
-	MPP25_WLC_DC_CHECKING, /* online=2 received */
-	MPP25_WLC_DC_PREPARING, /* ramping down */
-	MPP25_WLC_DC_READY, /* online=2 returned */
+	MPP25_CHECKING, /* online=2 received */
+	MPP25_PREPARING, /* ramping down */
+	MPP25_READY, /* online=2 returned */
 	MPP25_DPLOSS_CALIBRATION,
 	MPP25_ENTER_HPM,
 	MPP25_DPLOSS_CAL4,
 	MPP25_ACTIVE,
 };
 static char *mpp25_state_str[] = {
-	"OFF", "WLCDC Not Ready", "WLCDC Preparing", "WLCDC Ready", "DPLoss",
+	"OFF", "Not Ready", "Preparing", "Ready", "DPLoss",
 	"Enter HPM", "DPloss Cal4", "Active"
 };
 
@@ -445,6 +538,11 @@ enum mpp_powermode {
 };
 static char *mpp_powermode_str[] = {
 	"None", "CPM", "LPM", "NPM", "HPM", "Default"
+};
+
+enum charger_type {
+	CHARGER_TYPE_BUCK,
+	CHARGER_TYPE_SWC,
 };
 
 enum mated_q_result {
@@ -480,8 +578,21 @@ enum dploss_cal_reject_reason {
 };
 
 enum ask_mod_mode {
-	ASK_MOD_MODE_SWC_MOD,
-	ASK_MOD_MODE_BUCK_MOD,
+	ASK_MOD_MODE_NEG_CAP_MOD,
+	ASK_MOD_MODE_ADAPTIVE_LOAD_MOD,
+	ASK_MOD_MODE_POS_CAP_MOD,
+	ASK_MOD_MODE_LOAD_MOD,
+};
+
+static char *ask_mod_str[] = {
+	"Neg Cap", "Load (Adaptive)", "Pos Cap", "Load (No adaptive)"
+};
+
+enum ask_mod_timing {
+	ASK_MOD_TIMING_EARLY, /* change ask mod before starting charger */
+	ASK_MOD_TIMING_LATE, /* change ask mod after starting charger */
+	ASK_MOD_TIMING_GPIO, /* control ask mod by virtual gpio */
+	ASK_MOD_TIMING_POS_CAP_GPIO, /* start charger with pos cap mod, then control by gpio */
 };
 
 enum fw_update_step {
@@ -502,7 +613,7 @@ enum fw_update_option {
 	FWUPDATE_DIFF = 1,
 	FWUPDATE_NEW = 2,
 	FWUPDATE_FORCE = 3,
-	FWUPDATE_FORCE_NO_TAG = 4,
+	FWUPDATE_FORCE_MANUAL = 4,
 };
 
 enum fw_update_status {
@@ -579,10 +690,32 @@ enum fw_msg_type {
 	FWU_MSG_WLC_TYPE_CRC_CHECK,
 };
 
+enum fw_update_state {
+	FWU_STATE_UNKNOWN = 0,
+	FWU_STATE_NOT_STARTED,
+	FWU_STATE_IN_PROGRESS,
+	FWU_STATE_SUCCESS,
+	FWU_STATE_FAIL,
+};
+
 enum skip_nego_mode {
 	SKIP_ALL_BUT_OT = 1,
 	SKIP_FO_ONLY,
 	FORCE_25W_NEGO,
+};
+
+enum icl_target_round_method {
+	ICL_TARGET_ROUND_UP_WITH_COMP,
+	ICL_TARGET_ROUND_UP,
+	ICL_TARGET_ROUND_DOWN,
+	ICL_TARGET_ROUND_NEAREST,
+};
+
+enum charger_switch_rc {
+	CHARGER_SWITCH_OK,
+	CHARGER_SWITCH_RESCHEDULE,
+	CHARGER_SWITCH_WAIT_AUTH,
+	CHARGER_SWITCH_MPP25_NOTSUPP,
 };
 
 enum compatibility_type {
@@ -603,6 +736,7 @@ struct wlc_dc_data {
 	bool dploss_param_init_ok;
 	bool dploss_param_ok;
 	enum swc_enable_state swc_en_state;
+	bool swc_on;
 	int max_voltage_limit;
 };
 
@@ -616,15 +750,17 @@ struct mpp25_data {
 	bool power_limit_reason_ok;
 	bool cal_enter_ok;
 	bool cal_active;
-	bool entering_npm;
 	bool dploss_cal_ok;
 	bool pwrmode_ok;
 	bool cal4_ok;
+	bool back_npm;
 	enum dploss_cal_event last_dploss_event;
 	bool dploss_event_success;
 	int dploss_step;
 	enum fod_cloak_status fod_cloak;
 	struct mode_cap_data mode_capabilities;
+	int dploss_comp;
+	bool setup_done;
 };
 
 struct psy_info {
@@ -648,7 +784,9 @@ struct wlc_adapter_capabilities_2_fields {
 struct wlc_adapter_capabilities_4_fields {
 	u16 mpp25_state;
 	int8_t compatibility;
-	u8 reserved;
+	uint8_t flag_fsk_fallback_15w : 1;
+	uint8_t flag_iop_fallback_bpp : 1;
+	uint8_t reserved : 6;
 };
 
 struct wlc_receiver_state_0_fields {
@@ -685,6 +823,7 @@ struct google_wlc_data {
 	struct gvotable_election		*dc_avail_votable;
 	struct gvotable_election		*msc_last_votable;
 	struct gvotable_election		*csi_status_votable;
+	struct gvotable_election		*pri_chg_min_pwr_votable;
 	/* mutexes */
 	struct mutex				io_lock;
 	struct mutex				status_lock;
@@ -693,10 +832,14 @@ struct google_wlc_data {
 	struct mutex				fwupdate_lock;
 	struct mutex				cmd_lock;
 	struct mutex				stats_lock;
+	struct mutex				completion_lock;
+	struct mutex				ext_boost_lock;
+	struct mutex				vdden_lock;
 	/* delayed works */
 	struct delayed_work			psy_notifier_work;
 	struct delayed_work			icl_ramp_work;
 	struct delayed_work			icl_ramp_timeout_work;
+	struct delayed_work			mpp_nego_timeout_work;
 	struct delayed_work			present_check_work;
 	struct delayed_work			soc_work;
 	struct delayed_work			csp_enable_work;
@@ -707,15 +850,20 @@ struct google_wlc_data {
 	struct delayed_work			tx_work;
 	struct delayed_work			register_usecase_work;
 	struct delayed_work			charge_stats_hda_work;
-	struct delayed_work			wlc_dc_init_work;
+	struct delayed_work			charging_init_work;
+	struct delayed_work			mpp25_init_work;
 	struct delayed_work			mpp25_timeout_work;
 	struct delayed_work			wlc_fw_update_work;
 	struct delayed_work			eds_work;
 	struct delayed_work			pla_ack_timeout_work;
 	struct delayed_work			check_iop_timeout_work;
 	struct delayed_work			set_iop_vout_work;
-	struct delayed_work			icl_stable_work;
+	struct delayed_work			charger_switch_ready_work;
+	struct delayed_work			chg_stable_work;
 	struct delayed_work			limit_reason_work;
+	struct delayed_work			cloak_err_work;
+	struct delayed_work			vdd_err_work;
+	struct delayed_work			xid_work;
 	/* buck charger icl ramp related */
 	int					icl_now;
 	int					icl_ramp_target_mw;
@@ -724,7 +872,7 @@ struct google_wlc_data {
 	int					ramp_skip_check_count;
 	enum icl_loop_state			icl_loop_state;
 	enum icl_loop_mode			icl_loop_mode;
-	int					icl_loss_compensation;
+	int					icl_accuracy_comp;
 	bool					force_icl_decrease;
 	/* wake sources */
 	struct wakeup_source			*icl_ramp_ws;
@@ -734,10 +882,13 @@ struct google_wlc_data {
 	struct wakeup_source			*disconnect_ws;
 	struct wakeup_source			*fwupdate_ws;
 	struct wakeup_source			*mpp25_ws;
+	struct wakeup_source			*init_charging_ws;
 	struct wakeup_source			*wlc_disable_ws;
 	struct wakeup_source			*icl_target_ws;
 	struct wakeup_source			*eds_tx_ws;
 	struct wakeup_source			*limit_reason_ws;
+	struct wakeup_source			*xid_ws;
+	struct wakeup_source			*chg_stable_ws;
 	struct logbuffer			*log;
 	struct logbuffer			*fw_log;
 	struct dentry				*debug_entry;
@@ -760,16 +911,25 @@ struct google_wlc_data {
 	u8					tx_id_str[TX_ID_STR_LEN];
 	int					wlc_charge_enabled;
 	struct wlc_dc_data			dc_data;
+	struct wlc_chg_config			*output_chg_config;
+	int					chg_config_index;
 	struct mpp25_data			mpp25;
-	bool 					mpp25_disabled; /* disable for rest of session */
+	bool					mpp25_disabled; /* disable for rest of session */
+	bool					mpp15_wlc_dc_ready;
 	int					cloak_enter_reason;
 	int					usecase;
+	bool					usecase_ready;
 	struct completion			cloak_completion;
 	struct completion			cal_enter_done;
 	struct completion			cal_renego_done;
 	struct completion			icl_ramp_done;
+	struct completion			pwrmode_switch;
+	struct completion			charger_disconnect;
 	bool					wait_for_cloak;
 	bool					wait_for_exit_cloak;
+	int					wait_for_mode;
+	bool					pwrmode_switch_initial_done;
+	bool					pwrmode_switch_renego_done;
 	int					inlim_setting;
 	bool					inlim_available;
 	bool					wait_for_cal_enter;
@@ -780,14 +940,21 @@ struct google_wlc_data {
 	ktime_t					online_at;
 	bool					vout_ready;
 	struct psy_info				last_psy_info;
+	bool					ext_boost_enabled;
 	bool					iop_bpp;
 	int					compatibility;
+	int					ask_mod_mode;
+	bool					charger_started;
 	bool					mpp_initialized;
+	bool					charging_initialized;
 	bool					mpp_restricted_set;
 	u8					limit_reason;
 	u8					limit_reason_retry_count;
+	int					mdis_pwr_limit;
 	bool					wlc_dc_to_ramp;
 	u16					qi_id;
+	bool					charger_switch_check_finished;
+	int					rcs_backoff_count;
 	/* eds or auth related */
 	u8					*tx_buf;
 	u8					*rx_buf;
@@ -806,11 +973,21 @@ struct google_wlc_data {
 	u16					eds_total_count;
 	bool					eds_event;
 	bool					wpc_auth_type;
+	bool					run_fwupdate;
 	int					last_charging_uevent;
+	ktime_t					wlc_offline_last;
+	u32					wlc_offline_count;
+	ktime_t					fsk_missing_last;
+	u32					fsk_missing_count;
+	u32					session_txid;
+	ktime_t					fsk_missing_history[FSK_MISSING_HISTORY_SIZE];
+	int					history_index;
+	bool					shutdown_notify;
 	/* debug or fwupdate related values */
 	bool					force_bpp;
 	bool					manual_force_bpp;
 	int					online_disable;
+	bool					online_disable_override;
 	bool					fwupdate_mode;
 	u32					addr_fw;
 	u16					addr;
@@ -828,6 +1005,7 @@ struct google_wlc_data {
 	int					de_rf_curr_n;
 	u8					de_rf_curr[GOOGLE_WLC_RF_CURR_NUM_MAX];
 	int					mdis_level;
+	int					pri_chg_mdis_lvl;
 	int					skip_nego;
 	int					pkt_ready;
 	int					wlc_dc_skip_qi_ver;
@@ -839,21 +1017,27 @@ struct google_wlc_data {
 	int					wlc_dc_skip_dploss;
 	int					wlc_dc_skip_dploss_param;
 	u8					wlc_dc_debug_gain_linear;
-	u8					wlc_dc_debug_ask_custom;
-	u8					wlc_dc_debug_ask_buck;
-	u8					wlc_dc_debug_ask_swc;
 	int					mpp25_dploss_cal4;
+	int					mpp25_dploss_cal4_volt;
 	int					fsk_log;
 	u16					disconnect_total_count;
 	u16					irq_error_count;
 	u16					irq_load_decrease_count;
 	u32					qi22_write_mpla2;
 	u16					mpla2_alpha_fm_itx;
+	bool					stdby_mode;
 	u32					mpla2_alpha_fm_vrect;
 	u16					mpla2_alpha_fm_irect;
 	u32					wlc_dc_max_vout_delta;
 	u32					wlc_dc_max_pout_delta;
+	u32					icl_target_rounding_override;
+	u32					dploss_thresh;
+	u32					no_charger_switch_cloak;
+	u32					wlc_dc_xce_thresh;
 	bool					debug_force_crc_check_only;
+	u32					iop_fail_count_max;
+	u32					cloak_err_count;
+	u32					cloak_err_count_max;
 	/* end */
 	bool					boot_on_wlc;
 	struct wlc_fw_data			fw_data;
@@ -861,13 +1045,24 @@ struct google_wlc_data {
 	int					ad_type;
 	int					vrect_count;
 	ktime_t					last_vrect;
+	ktime_t					this_vrect;
+	u8					fwupdate_state;
 	bool					mod_enable;
 	bool					wait_for_dd;
 	bool					lower_qi_version;
 	u32					cloak_ping_delay_ms;
 	bool					bpp_ramp_done_check;
 	u32					bpp_ramp_done_target;
+	u32					mpp_mdis_chg_idx;
+	const char				*mdis_name;
+	int					mdis_limit;
 	bool					mode_ready;
+	u8					product_id;
+	bool					txsrc;
+	u16					ptmc;
+	u8					xid_retry_count;
+	bool					retail_power_limit;
+	int					chg_stable_type;
 };
 
 struct google_wlc_bits {
@@ -894,6 +1089,9 @@ struct google_wlc_bits {
 	u8				dploss_cal_retry;
 	u8				fsk_missing;
 	u8				dynamic_mod;
+	u8				cloak_error;
+	u8				vdd_err;
+	u8				sys_mode;
 };
 
 struct google_wlc_packet {
@@ -943,6 +1141,7 @@ struct google_wlc_chip {
 	size_t tx_buf_size;
 	struct regmap *regmap;
 	struct regmap *fw_regmap;
+	int val_default_vout;
 	int reg_qi_id;
 
 	int (*reg_read_n)(struct google_wlc_data *chgr, unsigned int reg, void *buf, size_t n);
@@ -991,6 +1190,7 @@ struct google_wlc_chip {
 	int (*chip_send_ept)(struct google_wlc_data *chgr, enum ept_reason reason);
 	int (*chip_write_fod)(struct google_wlc_data *chgr, int sys_mode);
 	int (*chip_get_cloak_reason)(struct google_wlc_data *chgr, u8 *reason);
+	int (*chip_get_cloak_exit_reason)(struct google_wlc_data *chgr, u8 *reason);
 	int (*chip_send_sadt)(struct google_wlc_data *chgr, u8 stream);
 	int (*chip_eds_reset)(struct google_wlc_data *chgr);
 	int (*chip_get_negotiated_power)(struct google_wlc_data *chgr, u32 *mw);
@@ -1001,7 +1201,7 @@ struct google_wlc_chip {
 	int (*chip_fw_reg_write_n)(struct google_wlc_data *chgr, u32 reg,
 				   const char *buf, size_t n);
 	int (*chip_get_mpp_xid)(struct google_wlc_data *chgr, u32 *device_id, u32 *mfg_rsvd_id,
-				u32 *unique_id);
+				u32 *unique_id, u8 *product_id);
 	int (*chip_write_mpla)(struct google_wlc_data *chgr);
 	int (*chip_write_rf_curr)(struct google_wlc_data *chgr);
 	int (*chip_send_packet)(struct google_wlc_data *chgr, struct google_wlc_packet packet);
@@ -1018,6 +1218,7 @@ struct google_wlc_chip {
 	int (*chip_get_vinv)(struct google_wlc_data *chgr, u32 *mv);
 	int (*chip_get_mode_capabilities)(struct google_wlc_data *chgr, struct mode_cap_data *cap);
 	int (*chip_set_dynamic_mod)(struct google_wlc_data *chgr);
+	int (*chip_get_xce)(struct google_wlc_data *chgr, s8 *xce);
 };
 
 int google_wlc_chip_init(struct google_wlc_data *charger);

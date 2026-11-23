@@ -518,7 +518,27 @@ PVRSRV_ERROR PDumpMMUDumpPxEntries(PVRSRV_DEVICE_NODE *psDeviceNode,
 
 		if (eMMULevel == MMU_LEVEL_1)
 		{
-			if (iShiftAmount == 0)
+			if (pszMemspaceName == NULL)
+			{
+				IMG_UINT64 uiBadAddr =
+				    ((MMU_BAD_PHYS_ADDR & uiAddrMask) >> uiAddrShift << uiLog2Align) | ui64Protflags64;
+
+				/* If no source is given set it to MMU_BAD_PHYS_ADDR. This is used e.g. by
+				 * the `MMU_FEATURE_NON_RESIDENT_SUPPORT` feature where the mapping doesn't
+				 * point to any particular memory but needs to set the NON_RESIDENT bit. */
+				eErr = PDumpSNPrintf(hScript,
+				                     ui32MaxLen,
+				                     "WRW%s :%s:%s%016"IMG_UINT64_FMTSPECX":0x%08X 0x%"IMG_UINT64_FMTSPECX"\n",
+				                     pszWrwSuffix,
+				                     /* dest */
+				                     pszPDumpDevName,
+				                     pszMMUPX,
+				                     ui64PxSymAddr,
+				                     ui32SymAddrOffset,
+				                     /* src */
+				                     uiBadAddr);
+			}
+			else if (iShiftAmount == 0)
 			{
 				eErr = PDumpSNPrintf(hScript,
 				                     ui32MaxLen,

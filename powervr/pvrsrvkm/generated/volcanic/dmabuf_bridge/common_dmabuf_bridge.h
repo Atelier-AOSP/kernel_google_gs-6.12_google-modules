@@ -67,10 +67,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 /* Bridge in structure for PhysmemImportDmaBuf */
 typedef struct PVRSRV_BRIDGE_IN_PHYSMEMIMPORTDMABUF_TAG
 {
+	PVRSRV_MEMALLOCFLAGS_T uiFlags;
 	const IMG_CHAR *puiName;
 	IMG_INT ifd;
 	IMG_UINT32 ui32NameSize;
-	PVRSRV_MEMALLOCFLAGS_T uiFlags;
 } __packed PVRSRV_BRIDGE_IN_PHYSMEMIMPORTDMABUF;
 
 /* Bridge out structure for PhysmemImportDmaBuf */
@@ -124,13 +124,13 @@ typedef struct PVRSRV_BRIDGE_OUT_PHYSMEMEXPORTGEMHANDLE_TAG
 typedef struct PVRSRV_BRIDGE_IN_PHYSMEMIMPORTSPARSEDMABUF_TAG
 {
 	IMG_DEVMEM_SIZE_T uiChunkSize;
+	PVRSRV_MEMALLOCFLAGS_T uiFlags;
 	IMG_UINT32 *pui32MappingTable;
 	const IMG_CHAR *puiName;
 	IMG_INT ifd;
 	IMG_UINT32 ui32NameSize;
 	IMG_UINT32 ui32NumPhysChunks;
 	IMG_UINT32 ui32NumVirtChunks;
-	PVRSRV_MEMALLOCFLAGS_T uiFlags;
 } __packed PVRSRV_BRIDGE_IN_PHYSMEMIMPORTSPARSEDMABUF;
 
 /* Bridge out structure for PhysmemImportSparseDmaBuf */

@@ -27,6 +27,8 @@ struct thermal_client_driver_data {
 	int (*configure_sensor)(struct google_sensor_data *sens);
 	int (*cleanup_sensor)(struct google_sensor_data *sens);
 	int (*post_configure)(struct list_head *sensor_list);
+	bool ignore_genl;
+	bool irq_wakeable;
 };
 
 struct thermal_driver_data {
@@ -40,7 +42,6 @@ const struct thermal_client_driver_data google_ntc_thermal_ops = {
 		.get_temp = thermal_ntc_get_temp,
 		.set_trips = thermal_ntc_set_trips,
 		.set_trip_temp = thermal_ntc_set_trip_temp,
-		.set_trip_hyst = thermal_ntc_set_trip_hyst,
 	},
 	.max_sensors = NTC_THERMAL_MAX_CHANNEL,
 	.configure = thermal_ntc_configure,
@@ -49,20 +50,21 @@ const struct thermal_client_driver_data google_ntc_thermal_ops = {
 	.configure_sensor = thermal_ntc_configure_sensor,
 	.cleanup_sensor = thermal_ntc_cleanup_sensor,
 	.post_configure = thermal_ntc_post_configure,
+	.irq_wakeable = true,
 };
 
 const struct thermal_client_driver_data google_tmu_thermal_ops = {
 	.ops =  {
 		.get_temp = thermal_tmu_get_temp,
 		.set_trip_temp = thermal_tmu_set_trip_temp,
-		.set_trip_hyst = thermal_tmu_set_trip_hyst,
 	},
-	.max_sensors = HW_TZ_MAX,
+	.max_sensors = TZ_MAX,
 	.configure = thermal_tmu_configure,
 	.cleanup = thermal_tmu_cleanup,
 	.configure_sensor = thermal_tmu_configure_sensor,
 	.cleanup_sensor = thermal_tmu_cleanup_sensor,
 	.post_configure = thermal_tmu_post_configure,
+	.ignore_genl = true,
 };
 
 static const struct of_device_id thermal_match_table[] = {
@@ -78,7 +80,7 @@ static const struct of_device_id thermal_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, thermal_match_table);
 
-static int thermal_exit(struct platform_device *pdev)
+static void thermal_exit(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	int ret = 0;
@@ -112,8 +114,6 @@ static int thermal_exit(struct platform_device *pdev)
 		list_del(&drv_data->node);
 		devm_kfree(dev, drv_data);
 	}
-
-	return ret;
 }
 
 static int thermal_probe(struct platform_device *pdev)
@@ -151,7 +151,8 @@ static int thermal_probe(struct platform_device *pdev)
 	}
 
 	ret = thermal_register_sensors(dev, clnt_data->max_sensors, &clnt_data->ops,
-				       &drv_data->thermal_sensor_list);
+				       &drv_data->thermal_sensor_list, clnt_data->ignore_genl,
+				       clnt_data->irq_wakeable);
 	if (ret)
 		goto thermal_probe_error;
 

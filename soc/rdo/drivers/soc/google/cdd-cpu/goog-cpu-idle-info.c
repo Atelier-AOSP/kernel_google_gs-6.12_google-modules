@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * goog-cpu-idle-info.c - record core idle info test module
+ * goog-cpu-idle-info.c - record psci crumbs module
  *
  * Copyright 2024 Google LLC
  */
@@ -12,11 +12,6 @@
 static int cpu_pm_notifier(struct notifier_block *nb, unsigned long action,
 			   void *data)
 {
-	if (action == CPU_PM_ENTER || action == CPU_CLUSTER_PM_ENTER)
-		google_cdd_cpuidle_mod("c2", 0, 0, CDD_FLAG_IN);
-	else
-		google_cdd_cpuidle_mod("c2", 0, 0, CDD_FLAG_OUT);
-
 	if (action == CPU_PM_EXIT)
 		google_cdd_update_psci_crumbs();
 
@@ -51,5 +46,5 @@ module_init(cpu_idle_logs_probe);
 module_exit(cpu_idle_logs_remove);
 
 MODULE_AUTHOR("Mariano Marciello <mmarciello@google.com>");
-MODULE_DESCRIPTION("record core idle info test module");
+MODULE_DESCRIPTION("record psci crumbs module");
 MODULE_LICENSE("GPL");

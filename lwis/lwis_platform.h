@@ -136,9 +136,20 @@ int lwis_platform_update_top_dev(struct lwis_device *top_dev, struct lwis_device
 				 bool *qos_box_probed);
 
 /*
+ * lwis_platform_dpm_read_clock: Get lwis_dev clock rate
+ */
+uint32_t lwis_platform_dpm_read_clock(struct lwis_device *lwis_dev);
+
+/*
  * Checks if batch register IO is supported.
  * True if batch register IO is supported, false otherwise.
  */
 bool lwis_platform_is_batch_register_io_supported(void);
+
+/*
+ *  lwis_platform_dpm_op_level_get: gets the operating level for the requesting entity.
+ */
+int lwis_platform_dpm_op_level_get(struct lwis_device *lwis_dev,
+				   struct lwis_dpm_op_level *op_level);
 
 #endif /* LWIS_PLATFORM_H_ */

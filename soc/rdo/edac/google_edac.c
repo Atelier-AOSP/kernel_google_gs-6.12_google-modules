@@ -354,14 +354,12 @@ free_ctl:
 	return ret;
 }
 
-static int google_edac_platform_remove(struct platform_device *pdev)
+static void google_edac_platform_remove(struct platform_device *pdev)
 {
 	struct google_edac *edac = platform_get_drvdata(pdev);
 
 	edac_device_del_device(edac->dev);
 	edac_device_free_ctl_info(edac->edac_ctl);
-
-	return 0;
 }
 
 static const struct of_device_id google_edac_of_match_table[] = {

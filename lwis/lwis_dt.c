@@ -9,23 +9,28 @@
 
 #include "lwis_dt.h"
 
+#include <linux/cleanup.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
+#include <linux/of_platform.h>
 #include <linux/of_address.h>
 #include <linux/of_gpio.h>
 #include <linux/pinctrl/consumer.h>
+#include <linux/platform_device.h>
 #include <linux/slab.h>
 
+#include "lwis_bus_manager.h"
 #include "lwis_clock.h"
 #include "lwis_device_dpm.h"
 #include "lwis_gpio.h"
 #include "lwis_i2c.h"
 #include "lwis_ioreg.h"
 #include "lwis_platform.h"
+#include "lwis_pwrseq.h"
 #include "lwis_regulator.h"
-#include "lwis_bus_manager.h"
 
 #define IOREG_RANGE_FIELD_SIZE 3
+#define OTP_SETTING_FIELD_SIZE 2
 
 #define LWIS_DT_I3C_OTP_SETTINGS "i3c-otp-settings"
 #define LWIS_DT_I3C_OTP_SETTLE_TIME "i3c-otp-settle-time"
@@ -34,6 +39,114 @@
 
 /* Uncomment this to help debug device tree parsing. */
 // #define CONFIG_LWIS_DT_DEBUG
+
+/**
+ * parse_u32_array() - Parse a device tree property containing a u32 array.
+ * @dev_node:  Pointer to the device tree node to read the property from.
+ * @prop_name: The name of the device tree property containing the u32 array.
+ * @array:     Output parameter. A pointer to a u32*. On successful return
+ *             (return value > 0), this will point to a newly allocated array
+ *             containing the property values. If @devres is not NULL, this
+ *             memory is device-managed; otherwise, the caller is responsible
+ *             for freeing this memory using kfree().
+ * @devres:    If not NULL, use device-managed memory allocation
+ *             (devm_kmalloc_array) associated with this device.
+ *             If NULL, use standard kernel memory allocation (kmalloc_array).
+ *
+ * Reads the specified device tree property (@prop_name) from the given device
+ * node (@dev_node). It expects the property to contain an array of 32-bit
+ * unsigned integers.
+ *
+ * If the property exists and contains elements, this function allocates memory
+ * (using either kmalloc_array() or devm_kmalloc_array() based on @devres,
+ * with GFP_KERNEL) to hold the array values. It then reads the values from
+ * the property into the allocated array and updates the @array pointer to
+ * point to this new array.
+ *
+ * Return:
+ * * The number of u32 elements read (> 0) on success.
+ * * 0 if the property does not exist or is empty (in which case *array is
+ *   not modified).
+ * * -ENOMEM if memory allocation fails.
+ * * Other negative error codes from of_property_read_u32_array() on read
+ *   failure.
+ */
+static int parse_u32_array(struct device_node *dev_node, const char *prop_name, u32 **array,
+			   struct device *devres)
+{
+	int count;
+	int ret;
+
+	count = of_property_count_u32_elems(dev_node, prop_name);
+	if (count <= 0)
+		return 0;
+
+	if (devres)
+		*array = devm_kmalloc_array(devres, count, sizeof(u32), GFP_KERNEL);
+	else
+		*array = kmalloc_array(count, sizeof(u32), GFP_KERNEL);
+	if (*array == NULL)
+		return -ENOMEM;
+
+	ret = of_property_read_u32_array(dev_node, prop_name, *array, count);
+	if (ret) {
+		pr_err("Failed to read %s array: %d\n", prop_name, ret);
+		if (!devres)
+			kfree(*array);
+		return ret;
+	}
+
+	return count;
+}
+
+/**
+ * parse_u64_array() - Parse a device tree property containing a u64 array.
+ * @dev_node:  Pointer to the device tree node to read the property from.
+ * @prop_name: The name of the device tree property containing the u64 array.
+ * @array:     Output parameter. A pointer to a u64*. On successful return
+ *             (return value > 0), this will point to a newly allocated array
+ *             containing the property values. The caller is responsible for
+ *             freeing this memory using kfree().
+ *
+ * Reads the specified device tree property (@prop_name) from the given device
+ * node (@dev_node). It expects the property to contain an array of 64-bit
+ * unsigned integers.
+ *
+ * If the property exists and contains elements, this function allocates memory
+ * using kmalloc_array() (with GFP_KERNEL) to hold the array values. It then
+ * reads the values from the property into the allocated array and updates the
+ * @array pointer to point to this new array.
+ *
+ * Return:
+ * * The number of u64 elements read (> 0) on success.
+ * * 0 if the property does not exist or is empty (in which case *array is
+ *   not modified).
+ * * -ENOMEM if memory allocation fails.
+ * * Other negative error codes from of_property_read_u64_array() on read
+ *   failure.
+ */
+static int parse_u64_array(struct device_node *dev_node, const char *prop_name, u64 **array)
+{
+	int count;
+	int ret;
+
+	count = of_property_count_u64_elems(dev_node, prop_name);
+	if (count <= 0)
+		return 0;
+
+	*array = kmalloc_array(count, sizeof(u64), GFP_KERNEL);
+	if (*array == NULL)
+		return -ENOMEM;
+
+	ret = of_property_read_u64_array(dev_node, prop_name, *array, count);
+	if (ret) {
+		pr_err("Failed to read %s array: %d\n", prop_name, ret);
+		kfree(*array);
+		return ret;
+	}
+
+	return count;
+}
 
 static int parse_irq_gpios(struct lwis_device *lwis_dev)
 {
@@ -105,32 +218,18 @@ static int parse_irq_gpios(struct lwis_device *lwis_dev)
 			LWIS_MAX_NAME_STRING_LEN);
 	}
 
-	irq_gpios_types = kmalloc(sizeof(u32) * type_count, GFP_KERNEL);
-	if (IS_ERR_OR_NULL(irq_gpios_types)) {
-		ret = -ENOMEM;
+	/* Parse gpio irq types (handles allocation internally) */
+	type_count =
+		parse_u32_array(dev_node, "irq-gpios-types", &irq_gpios_types, /*devres=*/NULL);
+	if (type_count <= 0) {
+		ret = -EINVAL;
 		goto error_parse_irq_gpios;
 	}
 
-	type_count = of_property_read_variable_u32_array(dev_node, "irq-gpios-types",
-							 irq_gpios_types, type_count, type_count);
-
-	if (type_count != count) {
-		pr_err("Error getting irq-gpios-types: %d\n", type_count);
-		ret = type_count;
-		goto error_parse_irq_gpios;
-	}
-
-	irq_gpios_events = kmalloc(sizeof(u64) * event_count, GFP_KERNEL);
-	if (IS_ERR_OR_NULL(irq_gpios_events)) {
-		ret = -ENOMEM;
-		goto error_parse_irq_gpios;
-	}
-
-	event_count = of_property_read_variable_u64_array(
-		dev_node, "irq-gpios-events", irq_gpios_events, event_count, event_count);
-	if (event_count != count) {
-		pr_err("Error getting irq-gpios-events: %d\n", event_count);
-		ret = event_count;
+	/* Parse gpio irq events (handles allocation internally) */
+	event_count = parse_u64_array(dev_node, "irq-gpios-events", &irq_gpios_events);
+	if (event_count <= 0) {
+		ret = -EINVAL;
 		goto error_parse_irq_gpios;
 	}
 
@@ -217,7 +316,7 @@ static int parse_clocks(struct lwis_device *lwis_dev)
 		/* Clock may fetched from devfreq as well */
 		rate = (ret == 0) ? rate : 0;
 
-		ret = lwis_clock_get(lwis_dev->clocks, (char *)name, dev, rate);
+		ret = lwis_clock_get(lwis_dev->clocks, name, dev, rate);
 		if (ret < 0) {
 			pr_err("Cannot find clock: %s\n", name);
 			goto error_parse_clk;
@@ -261,111 +360,51 @@ error_parse_clk:
 	return ret;
 }
 
-static int parse_irq_reg_bits(struct device_node *info, int *bits_num_result, u32 **reg_bits_result)
-{
-	int int_reg_bits_num;
-	u32 *int_reg_bits;
-
-	int_reg_bits_num = of_property_count_elems_of_size(info, "int-reg-bits", 4);
-	if (int_reg_bits_num <= 0) {
-		pr_err("Error getting int-reg-bits: %d\n", int_reg_bits_num);
-		return -EINVAL;
-	}
-
-	int_reg_bits = kmalloc(sizeof(u32) * int_reg_bits_num, GFP_KERNEL);
-	if (IS_ERR_OR_NULL(int_reg_bits))
-		return -ENOMEM;
-
-	*bits_num_result = int_reg_bits_num;
-	int_reg_bits_num = of_property_read_variable_u32_array(info, "int-reg-bits", int_reg_bits,
-							       int_reg_bits_num, int_reg_bits_num);
-	if (*bits_num_result != int_reg_bits_num) {
-		pr_err("Error getting int-reg-bits: %d\n", int_reg_bits_num);
-		kfree(int_reg_bits);
-		return -EINVAL;
-	}
-	*reg_bits_result = int_reg_bits;
-
-	return 0;
-}
-
-static int parse_critical_irq_events(struct device_node *event_info, u64 **irq_events)
+static int parse_interrupt_event_info(struct lwis_interrupt_list *list, int index,
+				      struct device_node *event_info)
 {
 	int ret;
-	int critical_irq_events_num;
-	u64 critical_irq_events;
-	int i;
-
-	critical_irq_events_num =
-		of_property_count_elems_of_size(event_info, "critical-irq-events", 8);
-	/* No Critical IRQ event found, just return */
-	if (critical_irq_events_num <= 0)
-		return 0;
-
-	*irq_events = kmalloc(sizeof(u64) * critical_irq_events_num, GFP_KERNEL);
-	if (*irq_events == NULL)
-		return 0;
-
-	for (i = 0; i < critical_irq_events_num; ++i) {
-		ret = of_property_read_u64_index(event_info, "critical-irq-events", i,
-						 &critical_irq_events);
-		if (ret < 0) {
-			pr_err("Error adding critical irq events[%d]\n", i);
-			kfree(*irq_events);
-			*irq_events = NULL;
-			return 0;
-		}
-		*irq_events[i] = critical_irq_events;
-	}
-
-	return critical_irq_events_num;
-}
-
-static int parse_interrupts_event_info(struct lwis_interrupt_list *list, int index,
-				       struct device_node *event_info)
-{
-	int irq_events_num;
 	int int_reg_bits_num = 0;
-	int critical_events_num = 0;
-	u64 *irq_events = NULL;
 	u32 *int_reg_bits = NULL;
+	int irq_events_num;
+	u64 *irq_events = NULL;
+	int critical_events_num;
 	u64 *critical_events = NULL;
-	int ret = 0;
 
-	ret = parse_irq_reg_bits(event_info, &int_reg_bits_num, &int_reg_bits);
-	if (ret)
-		return ret;
-
-	irq_events_num = of_property_count_elems_of_size(event_info, "irq-events", 8);
-	if (irq_events_num != int_reg_bits_num || irq_events_num <= 0) {
-		pr_err("Error getting irq-events: %d\n", irq_events_num);
+	/* Parse irq_reg_bits (handles allocation internally) */
+	int_reg_bits_num =
+		parse_u32_array(event_info, "int-reg-bits", &int_reg_bits, /*devres=*/NULL);
+	if (int_reg_bits_num <= 0) {
 		ret = -EINVAL;
 		goto event_info_exit;
 	}
 
-	irq_events = kmalloc(sizeof(u64) * irq_events_num, GFP_KERNEL);
-	if (IS_ERR_OR_NULL(irq_events)) {
-		ret = -ENOMEM;
+	/* Parse irq events (handles allocation internally) */
+	irq_events_num = parse_u64_array(event_info, "irq-events", &irq_events);
+	if (irq_events_num <= 0) {
+		ret = -EINVAL;
 		goto event_info_exit;
 	}
 
-	irq_events_num = of_property_read_variable_u64_array(event_info, "irq-events", irq_events,
-							     irq_events_num, irq_events_num);
 	if (irq_events_num != int_reg_bits_num) {
-		pr_err("Error getting irq-events: %d\n", irq_events_num);
-		ret = irq_events_num;
+		pr_err("Mismatch or invalid count for irq-events (%d) vs int-reg-bits (%d) for IRQ %s\n",
+		       irq_events_num, int_reg_bits_num, list->irq[index].name);
+		ret = -EINVAL;
 		goto event_info_exit;
 	}
 
-	critical_events_num = parse_critical_irq_events(event_info, &critical_events);
+	/* Parse critical events (handles allocation internally) */
+	critical_events_num = parse_u64_array(event_info, "critical-irq-events", &critical_events);
+	if (critical_events_num < 0) {
+		ret = critical_events_num;
+		goto event_info_exit;
+	}
 
 	ret = lwis_interrupt_set_event_info(list, index, (int64_t *)irq_events, irq_events_num,
 					    int_reg_bits, int_reg_bits_num,
 					    (int64_t *)critical_events, critical_events_num);
-	if (ret) {
-		pr_err("Error setting event info for interrupt %d %d\n", index, ret);
-		goto event_info_exit;
-	}
+	if (ret)
+		pr_err("Error setting event info for IRQ %s (%d)\n", list->irq[index].name, ret);
 
 event_info_exit:
 	kfree(critical_events);
@@ -391,27 +430,38 @@ static int parse_interrupt_leaf_nodes(struct lwis_interrupt_list *list, int inde
 	int irq_leaves_num;
 	int int_reg_bits_num;
 	u32 *int_reg_bits = NULL;
-	struct of_phandle_iterator it;
+	struct of_phandle_iterator it = {};
 	int i = 0, ret = 0;
+	int32_t *current_leaf_indexes = NULL;
 
-	ret = parse_irq_reg_bits(leaf_info, &int_reg_bits_num, &int_reg_bits);
-	if (ret)
-		return ret;
+	/* Parse irq_reg_bits (handles allocation internally) */
+	int_reg_bits_num =
+		parse_u32_array(leaf_info, "int-reg-bits", &int_reg_bits, /*devres=*/NULL);
+	if (int_reg_bits_num < 0)
+		return int_reg_bits_num;
+	if (int_reg_bits_num == 0) {
+		pr_err("No 'int-reg-bits' property found or it is empty\n");
+		return -EINVAL;
+	}
 
 	irq_leaves_num = of_property_count_elems_of_size(leaf_info, "irq-leaf-nodes", 4);
-	if (irq_leaves_num != int_reg_bits_num || irq_leaves_num <= 0) {
+	if (irq_leaves_num < 0) {
 		pr_err("Error getting irq-leaf-nodes: %d\n", irq_leaves_num);
+		ret = irq_leaves_num;
+		goto leaf_error;
+	}
+	if (irq_leaves_num != int_reg_bits_num || irq_leaves_num == 0) {
+		pr_err("Mismatch or invalid count for irq-leaf-nodes (%d) vs int-reg-bits (%d)\n",
+		       irq_leaves_num, int_reg_bits_num);
 		ret = -EINVAL;
-		kfree(int_reg_bits);
-		return ret;
+		goto leaf_error;
 	}
 
 	i = 0;
 	of_for_each_phandle(&it, ret, leaf_info, "irq-leaf-nodes", 0, 0) {
-		struct device_node *irq_group_node = of_node_get(it.node);
+		struct device_node *irq_group_node = it.node;
 		int leaf_interrupts_count;
 		const char *leaf_interrupt_name;
-		int32_t *leaf_indexes = NULL;
 		int j = 0;
 
 		leaf_interrupts_count =
@@ -421,35 +471,36 @@ static int parse_interrupt_leaf_nodes(struct lwis_interrupt_list *list, int inde
 			/* leaf node */
 			continue;
 		} else if (leaf_interrupts_count < 0) {
-			pr_err("Error counting leaf-interrupt-names for : %d\n",
-			       leaf_interrupts_count);
-			ret = -EINVAL;
+			pr_err("Error counting leaf-interrupt-names: %d\n", leaf_interrupts_count);
+			ret = leaf_interrupts_count;
 			goto leaf_error;
 		}
 
-		leaf_indexes = kmalloc(sizeof(int32_t) * leaf_interrupts_count, GFP_KERNEL);
-		if (IS_ERR_OR_NULL(leaf_indexes)) {
+		current_leaf_indexes = kmalloc(sizeof(int32_t) * leaf_interrupts_count, GFP_KERNEL);
+		if (IS_ERR_OR_NULL(current_leaf_indexes)) {
 			ret = -ENOMEM;
 			goto leaf_error;
 		}
 
 		for (j = 0; j < leaf_interrupts_count; ++j) {
-			of_property_read_string_index(irq_group_node, "leaf-interrupt-names", j,
-						      &leaf_interrupt_name);
-			leaf_indexes[j] = find_irq_index_by_name(list, leaf_interrupt_name);
-			if (leaf_indexes[j] < 0) {
-				ret = leaf_indexes[j];
+			ret = of_property_read_string_index(irq_group_node, "leaf-interrupt-names",
+							    j, &leaf_interrupt_name);
+			if (ret < 0) {
+				pr_err("Error reading leaf-interrupt-names index %d: %d\n", j, ret);
+				goto leaf_error;
+			}
+			current_leaf_indexes[j] = find_irq_index_by_name(list, leaf_interrupt_name);
+			if (current_leaf_indexes[j] < 0) {
+				ret = current_leaf_indexes[j];
 				pr_err("Cannot find leaf irq %s\n", leaf_interrupt_name);
-				kfree(leaf_indexes);
 				goto leaf_error;
 			}
 		}
 
 		ret = lwis_interrupt_add_leaf(list, index, int_reg_bits[i], leaf_interrupts_count,
-					      leaf_indexes);
+					      current_leaf_indexes);
 		if (ret) {
-			pr_err("Error setting event info for interrupt %d %d\n", index, ret);
-			kfree(leaf_indexes);
+			pr_err("Error setting leaf nodes for interrupt %d %d\n", index, ret);
 			goto leaf_error;
 		}
 		i++;
@@ -458,7 +509,9 @@ static int parse_interrupt_leaf_nodes(struct lwis_interrupt_list *list, int inde
 	kfree(int_reg_bits);
 	return 0;
 leaf_error:
+	of_node_put(it.node);
 	lwis_interrupt_free_leaves(&list->irq[index]);
+	kfree(current_leaf_indexes);
 	kfree(int_reg_bits);
 	return ret;
 }
@@ -471,7 +524,7 @@ static int parse_interrupts(struct lwis_device *lwis_dev)
 	const char *name;
 	struct device_node *dev_node;
 	struct platform_device *plat_dev;
-	struct of_phandle_iterator it;
+	struct of_phandle_iterator it = {};
 
 	if (!lwis_dev->plat_dev) {
 		dev_info(lwis_dev->dev, "Non-platform device, skip parse interrupts\n");
@@ -508,7 +561,7 @@ static int parse_interrupts(struct lwis_device *lwis_dev)
 	for (i = 0; i < count; ++i) {
 		ret = of_property_read_string_index(dev_node, "interrupt-names", i, &name);
 		if (!ret) {
-			ret = lwis_interrupt_init(lwis_dev->irqs, i, (char *)name);
+			ret = lwis_interrupt_init(lwis_dev->irqs, i, name);
 			if (ret) {
 				pr_err("Cannot initialize irq %s\n", name);
 				goto error_get_irq;
@@ -541,7 +594,7 @@ static int parse_interrupts(struct lwis_device *lwis_dev)
 		u32 irq_reg_bitwidth = 32;
 		int32_t irq_type = REGULAR_INTERRUPT;
 		int j;
-		struct device_node *event_info = of_node_get(it.node);
+		struct device_node *event_info = it.node;
 
 		ret = of_property_read_string(event_info, "irq-reg-space", &irq_reg_space);
 		if (ret) {
@@ -636,7 +689,7 @@ static int parse_interrupts(struct lwis_device *lwis_dev)
 		}
 
 		/* Parse event info */
-		ret = parse_interrupts_event_info(lwis_dev->irqs, i, event_info);
+		ret = parse_interrupt_event_info(lwis_dev->irqs, i, event_info);
 		if (ret) {
 			pr_err("Cannot set event info %s\n", name);
 			goto error_event_infos;
@@ -651,7 +704,6 @@ static int parse_interrupts(struct lwis_device *lwis_dev)
 			}
 		}
 
-		of_node_put(event_info);
 		i++;
 	}
 
@@ -661,6 +713,7 @@ static int parse_interrupts(struct lwis_device *lwis_dev)
 	return 0;
 error_event_infos:
 	/* TODO(yromanenko): lwis_interrupt_put */
+	of_node_put(it.node);
 error_get_irq:
 	lwis_interrupt_list_free(lwis_dev->irqs);
 	lwis_dev->irqs = NULL;
@@ -697,7 +750,7 @@ static int parse_phys(struct lwis_device *lwis_dev)
 
 	for (i = 0; i < count; ++i) {
 		of_property_read_string_index(dev_node, "phy-names", i, &name);
-		ret = lwis_phy_get(lwis_dev->phys, (char *)name, dev);
+		ret = lwis_phy_get(lwis_dev->phys, name, dev);
 		if (ret < 0) {
 			pr_err("Error adding PHY[%d]\n", i);
 			goto error_parse_phy;
@@ -717,12 +770,14 @@ error_parse_phy:
 	return ret;
 }
 
-static void parse_bitwidths(struct lwis_device *lwis_dev)
+static int parse_bitwidths(struct lwis_device *lwis_dev)
 {
 	struct device *dev;
 	struct device_node *dev_node;
 	u32 addr_bitwidth = 32;
-	u32 value_bitwidth = 32;
+	u32 value_bitwidths[2] = { 32, 32 };
+	int count;
+	int ret = 0;
 
 	dev = lwis_dev->k_dev;
 	dev_node = dev->of_node;
@@ -731,12 +786,29 @@ static void parse_bitwidths(struct lwis_device *lwis_dev)
 	if (IS_ENABLED(CONFIG_LWIS_DT_DEBUG))
 		pr_info("Addr bitwidth set to: %d\n", addr_bitwidth);
 
-	of_property_read_u32(dev_node, "reg-value-bitwidth", &value_bitwidth);
+	count = of_property_count_elems_of_size(dev_node, "reg-value-bitwidth", sizeof(u32));
+	if (count == 2) {
+		ret = of_property_read_u32_array(dev_node, "reg-value-bitwidth", value_bitwidths,
+						 2);
+		if (ret)
+			return ret;
+	} else if (count == 1 || count == -EINVAL) {
+		of_property_read_u32(dev_node, "reg-value-bitwidth", &value_bitwidths[0]);
+		value_bitwidths[1] = value_bitwidths[0];
+	} else {
+		dev_err(dev, "Invalid reg-value-bitwidth element count: %d\n", count);
+		return count > 0 ? -EINVAL : count;
+	}
+
 	if (IS_ENABLED(CONFIG_LWIS_DT_DEBUG))
-		pr_info("Value bitwidth set to: %d\n", value_bitwidth);
+		pr_info("Value bitwidth set to: read=%d, write=%d\n", value_bitwidths[0],
+			value_bitwidths[1]);
 
 	lwis_dev->native_addr_bitwidth = addr_bitwidth;
-	lwis_dev->native_value_bitwidth = value_bitwidth;
+	lwis_dev->native_read_value_bitwidth = value_bitwidths[0];
+	lwis_dev->native_write_value_bitwidth = value_bitwidths[1];
+
+	return 0;
 }
 
 static int parse_power_seqs(struct lwis_device *lwis_dev, const char *seq_name,
@@ -811,6 +883,17 @@ static int parse_power_seqs(struct lwis_device *lwis_dev, const char *seq_name,
 			ret = lwis_regulator_list_add_info(dev, &lwis_dev->regulator_list, name);
 			if (ret)
 				goto error_parse_power_seqs;
+		} else if (strcmp(type, "regulator_mode") == 0) {
+			ret = lwis_regulator_list_add_info_by_set_mode(
+				dev, &lwis_dev->regulator_list, name);
+			if (ret)
+				goto error_parse_power_seqs;
+		} else if (strcmp(type, "pwrseq") == 0) {
+			ret = lwis_pwrseq_list_add_info(dev, &lwis_dev->pwrseq_list, name);
+			if (ret) {
+				dev_err_probe(dev, ret, "Error adding power sequence %s\n", name);
+				goto error_parse_power_seqs;
+			}
 		}
 
 		ret = of_property_read_u32_index(dev_node, str_seq_delay, i, &delay_us);
@@ -827,6 +910,7 @@ static int parse_power_seqs(struct lwis_device *lwis_dev, const char *seq_name,
 	return 0;
 
 error_parse_power_seqs:
+	lwis_pwrseq_list_free(&lwis_dev->pwrseq_list);
 	lwis_regulator_put_all(&lwis_dev->regulator_list);
 	lwis_regulator_list_free(&lwis_dev->regulator_list);
 	lwis_gpios_list_free(&lwis_dev->gpios_list);
@@ -835,11 +919,16 @@ error_parse_power_seqs:
 	return ret;
 }
 
+static void lwis_of_node_put(void *node)
+{
+	of_node_put(node);
+}
+
 static int parse_unified_power_seqs(struct lwis_device *lwis_dev)
 {
 	struct device *dev;
 	struct device_node *dev_node;
-	struct device_node *dev_node_seq;
+	struct device_node *dev_node_seq __free(device_node) = NULL;
 	int count;
 	int ret = 0;
 
@@ -862,20 +951,21 @@ static int parse_unified_power_seqs(struct lwis_device *lwis_dev)
 
 	ret = parse_power_seqs(lwis_dev, "power-up", &lwis_dev->power_up_sequence, dev_node_seq);
 	if (ret) {
-		pr_err("Error parsing power-up-seqs\n");
+		if (ret != -EPROBE_DEFER)
+			pr_err("Error parsing power-up-seqs\n");
 		return ret;
 	}
 
 	ret = parse_power_seqs(lwis_dev, "power-down", &lwis_dev->power_down_sequence,
 			       dev_node_seq);
 	if (ret) {
-		pr_err("Error parsing power-down-seqs\n");
+		if (ret != -EPROBE_DEFER)
+			pr_err("Error parsing power-down-seqs\n");
 		return ret;
 	}
 
-	lwis_dev->power_seq_handler = dev_node_seq;
-
-	return ret;
+	lwis_dev->power_seq_handler = no_free_ptr(dev_node_seq);
+	return devm_add_action_or_reset(dev, lwis_of_node_put, lwis_dev->power_seq_handler);
 }
 
 static int parse_access_mode(struct lwis_device *lwis_dev)
@@ -999,36 +1089,23 @@ static int parse_otp_setting(struct lwis_i2c_device *i2c_dev, const char *prop_n
 	struct device *dev = i2c_dev->base_dev.k_dev;
 	struct device_node *dev_node = dev->of_node;
 	int count;
-	int ret;
 
-	count = of_property_count_u32_elems(dev_node, prop_name);
-
-	if (count == -EINVAL || count == 0) {
+	/* Parse otp setting (handles device managed allocation internally) */
+	count = parse_u32_array(dev_node, prop_name, (u32 **)&otp_config->settings, /*devres=*/dev);
+	if (count < 0)
+		return count;
+	if (count == 0) {
 		dev_dbg(dev, "%s property not found or empty, skipping.\n", prop_name);
 		otp_config->settings = NULL;
 		otp_config->setting_count = 0;
 		return 0;
-	} else if (count < 0) {
-		dev_err(dev, "Error reading %s property count: %d\n", prop_name, count);
-		return count;
 	}
-
-	if (count % 2 != 0) {
+	if (count % OTP_SETTING_FIELD_SIZE != 0) {
 		dev_err(dev, "Malformed %s property\n", prop_name);
 		return -EINVAL;
 	}
 
-	otp_config->settings =
-		devm_kmalloc_array(dev, count / 2, sizeof(*otp_config->settings), GFP_KERNEL);
-	if (!otp_config->settings)
-		return -ENOMEM;
-
-	ret = of_property_read_u32_array(dev_node, prop_name, (u32 *)otp_config->settings, count);
-	if (ret) {
-		dev_err(dev, "Failed to read %s array: %d\n", prop_name, ret);
-		return ret;
-	}
-	otp_config->setting_count = count / 2;
+	otp_config->setting_count = count / OTP_SETTING_FIELD_SIZE;
 
 	return 0;
 }
@@ -1047,13 +1124,18 @@ static int parse_otp_settle_time_us(struct lwis_i2c_device *i2c_dev, const char 
 static int parse_i3c_ibi_config(struct lwis_i2c_device *i2c_dev)
 {
 	struct device_node *dev_node = i2c_dev->base_dev.k_dev->of_node;
+	int ret_len, ret_slots;
 
 	i2c_dev->ibi_config.ibi_max_payload_len = 0;
 	/* The default value for the IBI num_slots in the common drivers is the magic number 8 */
 	i2c_dev->ibi_config.ibi_num_slots = 8;
-	of_property_read_u32(dev_node, "ibi-max-payload-len",
-			     &i2c_dev->ibi_config.ibi_max_payload_len);
-	of_property_read_u32(dev_node, "ibi-num-slots", &i2c_dev->ibi_config.ibi_num_slots);
+	ret_len = of_property_read_u32(dev_node, "ibi-max-payload-len",
+				       &i2c_dev->ibi_config.ibi_max_payload_len);
+	ret_slots =
+		of_property_read_u32(dev_node, "ibi-num-slots", &i2c_dev->ibi_config.ibi_num_slots);
+
+	i2c_dev->ibi_config.ibi_configured_in_dt = ret_len == 0 && ret_slots == 0;
+
 	return 0;
 }
 
@@ -1105,30 +1187,85 @@ static void parse_ioreg_device_priority(struct lwis_ioreg_device *ioreg_dev)
 static int parse_ioreg_valid_range(struct lwis_ioreg_device *ioreg_dev)
 {
 	struct device *dev = ioreg_dev->base_dev.k_dev;
-	struct device_node *dev_node = ioreg_dev->base_dev.k_dev->of_node;
-	static const char * const prop_name = "reg-valid-ranges";
+	struct device_node *dev_node = dev->of_node;
 	int count;
 
-	count = of_property_count_elems_of_size(dev_node, prop_name,
-						sizeof(u32) * IOREG_RANGE_FIELD_SIZE);
-	if (count <= 0)
+	/* Parse reg valid range (handles device managed allocation internally) */
+	count = parse_u32_array(dev_node, "reg-valid-ranges",
+				(u32 **)&ioreg_dev->reg_valid_range_list.ranges, /*devres=*/dev);
+	if (count < 0)
+		return count;
+	if (count == 0) {
+		dev_dbg(dev, "reg-valid-ranges property not found or empty, skipping.\n");
 		return 0;
+	}
+	if (count % IOREG_RANGE_FIELD_SIZE != 0) {
+		dev_err(dev, "Malformed reg-valid-ranges property\n");
+		return -EINVAL;
+	}
 
-	ioreg_dev->reg_valid_range_list.ranges =
-		devm_kcalloc(dev, count, sizeof(struct lwis_ioreg_valid_range), GFP_KERNEL);
-	if (!ioreg_dev->reg_valid_range_list.ranges)
-		return -ENOMEM;
-
-	of_property_read_u32_array(dev_node, prop_name,
-				   (u32 *)ioreg_dev->reg_valid_range_list.ranges,
-				   count * IOREG_RANGE_FIELD_SIZE);
-	ioreg_dev->reg_valid_range_list.count = count;
+	ioreg_dev->reg_valid_range_list.count = count / IOREG_RANGE_FIELD_SIZE;
 
 	if (IS_ENABLED(CONFIG_LWIS_DT_DEBUG))
 		lwis_ioreg_device_valid_range_list_print(ioreg_dev);
 
 	return 0;
 }
+
+static int parse_ioreg_reg_offsets(struct lwis_ioreg_device *ioreg_dev)
+{
+	int i;
+
+	for (i = 0; i < ioreg_dev->reg_list.count; ++i) {
+		/* Initialize to 0 before setting, since this is an optional value */
+		ioreg_dev->reg_list.block[i].offset = 0;
+		of_property_read_u64(ioreg_dev->base_dev.k_dev->of_node, "reg-offset",
+				     &ioreg_dev->reg_list.block[i].offset);
+	}
+	return 0;
+}
+
+#if IS_ENABLED(CONFIG_GOOGLE_IIS)
+static int parse_ioreg_access_controllers(struct lwis_ioreg_device *ioreg_dev)
+{
+	struct device *k_dev = ioreg_dev->base_dev.k_dev;
+	struct device_node *ac_node;
+	struct platform_device *ac_pdev;
+	struct device_link *link;
+	int ac_index = 0;
+	int ret = -ENODEV;
+
+	while ((ac_node = of_parse_phandle(k_dev->of_node, "access-controllers", ac_index))) {
+		if (!of_device_is_compatible(ac_node, "google,iis")) {
+			of_node_put(ac_node);
+			ac_index++;
+			continue;
+		}
+
+		ac_pdev = of_find_device_by_node(ac_node);
+		if (!ac_pdev) {
+			ret = dev_err_probe(k_dev, -EPROBE_DEFER, "Failed to find IIS device\n");
+			goto put_node;
+		}
+
+		link = device_link_add(k_dev, &ac_pdev->dev,
+				       DL_FLAG_PM_RUNTIME | DL_FLAG_AUTOREMOVE_CONSUMER);
+		if (!link) {
+			ret = dev_err_probe(k_dev, -EINVAL, "Failed to link to IIS\n");
+			goto put_device;
+		}
+		ret = 0;
+
+put_device:
+		put_device(&ac_pdev->dev);
+put_node:
+		of_node_put(ac_node);
+		break;
+	}
+
+	return ret;
+}
+#endif
 
 int lwis_base_parse_dt(struct lwis_device *lwis_dev)
 {
@@ -1168,14 +1305,16 @@ int lwis_base_parse_dt(struct lwis_device *lwis_dev)
 
 	ret = parse_unified_power_seqs(lwis_dev);
 	if (ret) {
-		pr_err("Error parse_unified_power_seqs\n");
+		if (ret != -EPROBE_DEFER)
+			pr_err("Error parse_unified_power_seqs\n");
 		return ret;
 	}
 
 	if (lwis_dev->power_up_sequence == NULL) {
 		ret = parse_power_seqs(lwis_dev, "power-up", &lwis_dev->power_up_sequence, NULL);
 		if (ret) {
-			pr_err("Error parsing power-up-seqs\n");
+			if (ret != -EPROBE_DEFER)
+				pr_err("Error parsing power-up-seqs\n");
 			return ret;
 		}
 	}
@@ -1184,20 +1323,23 @@ int lwis_base_parse_dt(struct lwis_device *lwis_dev)
 		ret = parse_power_seqs(lwis_dev, "power-down", &lwis_dev->power_down_sequence,
 				       NULL);
 		if (ret) {
-			pr_err("Error parsing power-down-seqs\n");
+			if (ret != -EPROBE_DEFER)
+				pr_err("Error parsing power-down-seqs\n");
 			return ret;
 		}
 	}
 
 	ret = parse_power_seqs(lwis_dev, "suspend", &lwis_dev->suspend_sequence, NULL);
 	if (ret) {
-		pr_err("Error parsing suspend-seqs\n");
+		if (ret != -EPROBE_DEFER)
+			pr_err("Error parsing suspend-seqs\n");
 		return ret;
 	}
 
 	ret = parse_power_seqs(lwis_dev, "resume", &lwis_dev->resume_sequence, NULL);
 	if (ret) {
-		pr_err("Error parsing resume-seqs\n");
+		if (ret != -EPROBE_DEFER)
+			pr_err("Error parsing resume-seqs\n");
 		return ret;
 	}
 
@@ -1222,7 +1364,11 @@ int lwis_base_parse_dt(struct lwis_device *lwis_dev)
 	parse_access_mode(lwis_dev);
 	parse_power_up_mode(lwis_dev);
 	parse_thread_priority(lwis_dev);
-	parse_bitwidths(lwis_dev);
+	ret = parse_bitwidths(lwis_dev);
+	if (ret) {
+		dev_err(lwis_dev->dev, "Error parsing bitwidths (%d)\n", ret);
+		return ret;
+	}
 	parse_transaction_process_limit(lwis_dev);
 
 	lwis_dev->bts_scenario_name = NULL;
@@ -1262,6 +1408,7 @@ int lwis_i2c_device_parse_dt(struct lwis_i2c_device *i2c_dev)
 		}
 	}
 
+	of_node_put(dev_node_i2c);
 	if (!i2c_dev->adapter) {
 		dev_err(i2c_dev->base_dev.dev, "Cannot find i2c adapter\n");
 		return -ENODEV;
@@ -1303,6 +1450,26 @@ int lwis_i2c_device_parse_dt(struct lwis_i2c_device *i2c_dev)
 	return 0;
 }
 
+static void parse_i3c_match_properties(struct lwis_i2c_device *i2c_dev)
+{
+	u32 val;
+
+	i2c_dev->match_type = LWIS_I3C_MATCH_NONE;
+
+	if (!of_property_read_u64(i2c_dev->base_dev.k_dev->of_node, "i3c-pid",
+				  &i2c_dev->match.pid)) {
+		i2c_dev->match_type = LWIS_I3C_MATCH_PID;
+	} else if (!of_property_read_u32(i2c_dev->base_dev.k_dev->of_node, "i3c-dcr", &val)) {
+		i2c_dev->match_type = LWIS_I3C_MATCH_DCR;
+		i2c_dev->match.dcr = val;
+	} else if (!of_property_read_u32(i2c_dev->base_dev.k_dev->of_node, "i3c-bcr", &val)) {
+		i2c_dev->match_type = LWIS_I3C_MATCH_BCR;
+		i2c_dev->match.bcr = val;
+	} else {
+		dev_info(i2c_dev->base_dev.dev, "No i3c-pid/dcr/bcr definition\n");
+	}
+}
+
 int lwis_i3c_proxy_device_parse_dt(struct lwis_i2c_device *i2c_dev)
 {
 	struct device *dev = i2c_dev->base_dev.dev;
@@ -1334,12 +1501,7 @@ int lwis_i3c_proxy_device_parse_dt(struct lwis_i2c_device *i2c_dev)
 		return ret;
 	}
 
-	ret = of_property_read_u32(i2c_dev->base_dev.k_dev->of_node, "i3c-dcr", &i2c_dev->dcr);
-	if (ret) {
-		dev_err(i2c_dev->base_dev.dev, "Failed to read i3c-dcr\n");
-		return ret;
-	}
-
+	parse_i3c_match_properties(i2c_dev);
 	parse_i3c_ibi_config(i2c_dev);
 	parse_i3c_mode(i2c_dev);
 
@@ -1377,7 +1539,7 @@ int lwis_ioreg_device_parse_dt(struct lwis_ioreg_device *ioreg_dev)
 
 	for (i = 0; i < blocks; ++i) {
 		of_property_read_string_index(dev_node, "reg-names", i, &name);
-		ret = lwis_ioreg_get(ioreg_dev, i, (char *)name);
+		ret = lwis_ioreg_get(ioreg_dev, i, name);
 		if (ret) {
 			dev_err(ioreg_dev->base_dev.dev, "Cannot set ioreg info for %s\n", name);
 			goto error_ioreg;
@@ -1387,6 +1549,19 @@ int lwis_ioreg_device_parse_dt(struct lwis_ioreg_device *ioreg_dev)
 	parse_ioreg_device_priority(ioreg_dev);
 	parse_ioreg_device_group(ioreg_dev);
 	parse_ioreg_valid_range(ioreg_dev);
+	parse_ioreg_reg_offsets(ioreg_dev);
+#if IS_ENABLED(CONFIG_GOOGLE_IIS)
+	ret = parse_ioreg_access_controllers(ioreg_dev);
+	if (ret == -ENODEV) {
+		if (strstr(dev_name(ioreg_dev->base_dev.dev), "pdma")) {
+			dev_err(ioreg_dev->base_dev.dev, "Missing IIS device!\n");
+			goto error_ioreg;
+		}
+	} else if (ret) {
+		dev_err_probe(ioreg_dev->base_dev.dev, ret, "Failed to attach iis device\n");
+		goto error_ioreg;
+	}
+#endif
 
 	return 0;
 
@@ -1448,6 +1623,23 @@ int lwis_slc_device_parse_dt(struct lwis_slc_device *slc_dev)
 		slc_dev->pt[i].partition_id = lwis_platform_get_default_pt_id();
 		slc_dev->pt[i].partition_handle = NULL;
 	}
+
+	return 0;
+}
+
+int lwis_pwrseq_device_parse_dt(struct lwis_pwrseq_device *pwrseq_dev)
+{
+	const char *name;
+	int ret = 0;
+	struct device_node *of_node = pwrseq_dev->base_dev.k_dev->of_node;
+
+	ret = of_property_read_string(of_node, "target-name", &name);
+	if (ret < 0) {
+		dev_err(pwrseq_dev->base_dev.dev,
+			"Error parsing target name from device tree (%d)\n", ret);
+		return ret;
+	}
+	strscpy(pwrseq_dev->target_name, name, LWIS_MAX_NAME_STRING_LEN);
 
 	return 0;
 }

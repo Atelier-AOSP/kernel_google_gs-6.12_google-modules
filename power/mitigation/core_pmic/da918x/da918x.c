@@ -5,6 +5,7 @@
  */
 
 #include "core_pmic_defs.h"
+#include "da918x.h"
 #include "da9188_limits.h"
 
 int meter_write(int pmic, struct bcl_device *bcl_dev, int idx, u8 value)

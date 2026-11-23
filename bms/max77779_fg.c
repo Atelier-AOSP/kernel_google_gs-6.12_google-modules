@@ -20,12 +20,14 @@
 #pragma clang diagnostic ignored "-Wswitch"
 #pragma clang diagnostic ignored "-Wunused-function"
 
+#include <linux/cleanup.h>
 #include <linux/debugfs.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
+#include <misc/logbuffer.h>
 #include "max77779_fg.h"
 
 /* sync from google/logbuffer.c */
@@ -64,7 +66,8 @@ enum max77779_fg_command_bits {
 static irqreturn_t max77779_fg_irq_thread_fn(int irq, void *obj);
 static int max77779_fg_set_next_update(struct max77779_fg_chip *chip);
 static int max77779_fg_update_cycle_count(struct max77779_fg_chip *chip);
-static int max77779_fg_apply_register(struct max77779_fg_chip *chip, struct device_node *node);
+static int max77779_fg_apply_register(struct max77779_fg_chip *chip,
+				      const struct device_node *node);
 static u16 max77779_fg_save_battery_cycle(struct max77779_fg_chip *chip, u16 reg_cycle);
 
 /* Do not move reg_write_nolock to public header */
@@ -431,6 +434,27 @@ static ssize_t model_state_show(struct device *dev,
 }
 
 static DEVICE_ATTR_RO(model_state);
+
+static ssize_t model_version_show(struct device *dev,
+				struct device_attribute *attr,
+				char *buf)
+{
+	struct power_supply *psy = container_of(dev, struct power_supply, dev);
+	struct max77779_fg_chip *chip = power_supply_get_drvdata(psy);
+	ssize_t len = 0;
+
+	if (!chip->model_data)
+		return -EINVAL;
+
+	mutex_lock(&chip->model_lock);
+	len += scnprintf(&buf[len], PAGE_SIZE - len, "%d\n",
+			 max77779_model_read_version(chip->model_data));
+	mutex_unlock(&chip->model_lock);
+
+	return len;
+}
+
+static DEVICE_ATTR_RO(model_version);
 
 static ssize_t gmsr_show(struct device *dev,
 			 struct device_attribute *attr,
@@ -1846,13 +1870,9 @@ static int max77779_gbms_fg_get_property(struct power_supply *psy,
 							       chip->aafv_modified_fus;
 		break;
 	default:
-		pr_debug("%s: route to max77779_fg_get_property, psp:%d\n", __func__, psp);
 		err = -ENODATA;
 		break;
 	}
-
-	if (err < 0)
-		pr_debug("error %d reading prop %d\n", err, psp);
 
 	mutex_unlock(&chip->model_lock);
 	return err;
@@ -2378,10 +2398,14 @@ static struct device_node *max77779_fg_find_batt_node(struct max77779_fg_chip *c
 {
 	const int batt_id = chip->batt_id;
 	const struct device *dev = chip->dev;
-	struct device_node *config_node, *child_node;
+	struct device_node *config_node __free(device_node) = NULL;
+	struct device_node *child_node;
+	bool child_status;
 	u32 batt_id_kohm;
 	int ret;
 
+	/* balance of_node_put() in of_find_node_by_name() */
+	of_node_get(dev->of_node);
 	config_node = of_find_node_by_name(dev->of_node, "max77779,config");
 	if (!config_node) {
 		dev_warn(dev, "Failed to find max77779,config setting\n");
@@ -2391,6 +2415,10 @@ static struct device_node *max77779_fg_find_batt_node(struct max77779_fg_chip *c
 	for_each_child_of_node(config_node, child_node) {
 		ret = of_property_read_u32(child_node, "max77779,batt-id-kohm", &batt_id_kohm);
 		if (ret != 0)
+			continue;
+
+		child_status = of_device_is_available(child_node);
+		if (!child_status)
 			continue;
 
 		if (batt_id == batt_id_kohm)
@@ -2477,6 +2505,48 @@ max77779_fg_enable_firmware_update_exit:
 
 EXPORT_SYMBOL_GPL(max77779_fg_enable_firmware_update);
 
+int max77779_fg_vdroop_snapshot(struct device *dev)
+{
+	int ret;
+	struct max77779_fg_chip *chip = dev_get_drvdata(dev);
+	struct maxfg_regmap *map = &chip->regmap;
+	struct max77779_vdroop_snapshot data;
+	u16 val;
+
+	ret = max77779_fg_get_battery_soc(chip);
+	if (ret < 0)
+		goto error;
+
+	data.soc = ret;
+	ret = REGMAP_READ(map, MAX77779_FG_Current, &val);
+	if (ret != 0)
+		goto error;
+
+	data.inow = -reg_to_micro_amp(val, chip->RSense);
+
+	data.temperature = max77779_fg_get_temp(chip);
+	ret = REGMAP_READ(map, MAX77779_FG_VCell, &val);
+	if (ret != 0)
+		goto error;
+
+	data.vnow = reg_to_micro_volt(val);
+	ret = max77779_fg_get_cycle_count(chip);
+	if (ret < 0)
+		goto error;
+
+	data.cycle_count = ret;
+	gbms_logbuffer_devlog(chip->monitor_log, chip->dev, LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
+			      "%#04X SOC:%#04X I:%#04X V:%#04X T:%#04X CYL:%#04X",
+			      MONITOR_TAG_VD, data.soc, data.inow, data.vnow, data.temperature,
+			      data.cycle_count);
+
+
+	return 0;
+error:
+	dev_info(dev, "%s: error: %d\n", __func__, ret);
+	return -EINVAL;
+}
+EXPORT_SYMBOL_GPL(max77779_fg_vdroop_snapshot);
 
 static int debug_ce_start(void *data, u64 val)
 {
@@ -3547,6 +3617,24 @@ static int max77779_fg_log_event(struct max77779_fg_chip *chip, gbms_tag_t tag)
 }
 
 /* handle recovery of FG state */
+static void max77779_fg_check_gmsr_data(struct max77779_fg_chip *chip)
+{
+	int ret;
+
+	if (!chip->model_data)
+		return;
+
+	if (!max77779_fg_model_check_version(chip->model_data) ||
+	    !max77779_fg_check_state(chip->model_data)) {
+		ret = max77779_reset_state_data(chip->model_data);
+		if (ret < 0)
+			dev_err(chip->dev, "GMSR: model data didn't erase ret=%d\n", ret);
+		else
+			dev_warn(chip->dev, "GMSR: model data erased\n");
+	}
+}
+
+/* handle recovery of FG state */
 static int max77779_fg_init_model_data(struct max77779_fg_chip *chip)
 {
 	int ret;
@@ -3556,11 +3644,6 @@ static int max77779_fg_init_model_data(struct max77779_fg_chip *chip)
 
 	if (!max77779_fg_model_check_version(chip->model_data) ||
 	    !max77779_fg_check_state(chip->model_data)) {
-		ret = max77779_reset_state_data(chip->model_data);
-		if (ret < 0)
-			dev_err(chip->dev, "GMSR: model data didn't erase ret=%d\n", ret);
-		else
-			dev_warn(chip->dev, "GMSR: model data erased\n");
 
 		gbms_logbuffer_devlog(chip->ce_log, chip->dev,
 				      LOGLEVEL_INFO, 0, LOGLEVEL_INFO,
@@ -3690,6 +3773,9 @@ static int max77779_fg_init_chip(struct max77779_fg_chip *chip)
 	mutex_lock(&chip->model_lock);
 	max77779_fg_update_cycle_count(chip);
 	mutex_unlock(&chip->model_lock);
+
+	/* check if need to erase GMSR */
+	max77779_fg_check_gmsr_data(chip);
 
 	/* triggers loading of the model in the irq handler on POR */
 	if (!chip->por) {
@@ -3867,6 +3953,7 @@ static struct attribute *max77779_fg_attrs[] = {
 	&dev_attr_resistance.attr,
 	&dev_attr_gmsr.attr,
 	&dev_attr_model_state.attr,
+	&dev_attr_model_version.attr,
 	&dev_attr_fg_abnormal_events.attr,
 	&dev_attr_fg_learning_events.attr,
 	&dev_attr_registers_dump.attr,
@@ -3882,7 +3969,8 @@ static const struct attribute_group max77779_fg_attr_grp = {
 	.attrs = max77779_fg_attrs,
 };
 
-static int max77779_fg_apply_register(struct max77779_fg_chip *chip, struct device_node *node)
+static int max77779_fg_apply_register(struct max77779_fg_chip *chip,
+				      const struct device_node *node)
 {
 	struct maxfg_regmap *regmap;
 	const char *propname[] = {"max77779,fg_regval", "max77779,fg_n_regval"};
@@ -4143,6 +4231,8 @@ void max77779_fg_remove(struct max77779_fg_chip *chip)
 		power_supply_unregister(chip->psy);
 
 	maxfg_free_capture_buf(&chip->cb_lh);
+
+	of_node_put(chip->batt_node);
 }
 EXPORT_SYMBOL_GPL(max77779_fg_remove);
 

@@ -145,6 +145,7 @@ PVRSRV_ERROR PVRSRVRGXCreateComputeContextKM(CONNECTION_DATA			*psConnection,
 		Create the FW compute context, this has the CDM common
 		context embedded within it
 	 */
+	PDUMPCOMMENT(psDeviceNode, "Allocate FwComputeContext");
 	eError = DevmemFwAllocate(psDevInfo,
 			sizeof(RGXFWIF_FWCOMPUTECONTEXT),
 			RGX_FWCOMCTX_ALLOCFLAGS,
@@ -172,8 +173,7 @@ PVRSRV_ERROR PVRSRVRGXCreateComputeContextKM(CONNECTION_DATA			*psConnection,
 		Allocate device memory for the firmware GPU context suspend state.
 		Note: the FW reads/writes the state to memory by accessing the GPU register interface.
 	*/
-	PDUMPCOMMENT(psDeviceNode, "Allocate RGX firmware compute context suspend state");
-
+	PDUMPCOMMENT(psDeviceNode, "Allocate FwComputeContextState");
 	eError = DevmemFwAllocate(psDevInfo,
 							  sizeof(RGXFWIF_COMPUTECTX_STATE),
 							  RGX_FWCOMCTX_ALLOCFLAGS,
@@ -272,7 +272,7 @@ PVRSRV_ERROR PVRSRVRGXCreateComputeContextKM(CONNECTION_DATA			*psConnection,
 
 	OSDeviceMemCopy(&psFWComputeContext->sCDMContext.uDMSpecific.sComp, pCompData, ui32CompContextDataSize);
 	DevmemPDumpLoadMem(psComputeContext->psFWComputeContextMemDesc, 0, sizeof(RGXFWIF_FWCOMPUTECONTEXT), PDUMP_FLAGS_CONTINUOUS);
-	RGXFwSharedMemCacheOpValue(psFWComputeContext->sStaticComputeContextState, FLUSH);
+	RGXFwSharedMemCacheOpValue(psFWComputeContext->sCDMContext, FLUSH);
 	DevmemReleaseCpuVirtAddr(psComputeContext->psFWComputeContextMemDesc);
 
 #if defined(SUPPORT_BUFFER_SYNC)
@@ -331,15 +331,35 @@ PVRSRV_ERROR PVRSRVRGXDestroyComputeContextKM(RGX_SERVER_COMPUTE_CONTEXT *psComp
 	PVRSRV_ERROR				eError = PVRSRV_OK;
 	PVRSRV_RGXDEV_INFO *psDevInfo = psComputeContext->psDeviceNode->pvDevice;
 
+	/* remove node from list before calling destroy - as destroy, if successful
+	 * will invalidate the node
+	 * must be re-added if destroy fails
+	 */
+	OSWRLockAcquireWrite(psDevInfo->hComputeCtxListLock);
+	dllist_remove_node(&(psComputeContext->sListNode));
+	OSWRLockReleaseWrite(psDevInfo->hComputeCtxListLock);
+
 	/* Check if the FW has finished with this resource ... */
 	eError = RGXFWRequestCommonContextCleanUp(psComputeContext->psDeviceNode,
 											  psComputeContext->psServerCommonContext,
 											  RGXFWIF_DM_CDM,
 											  PDUMP_FLAGS_NONE);
 
-	RGX_RETURN_IF_ERROR_AND_DEVICE_RECOVERABLE(psComputeContext->psDeviceNode,
-						   eError,
-						   RGXFWRequestCommonContextCleanUp);
+	if (RGXIsErrorAndDeviceRecoverable(psComputeContext->psDeviceNode, &eError))
+	{
+		goto failed;
+	}
+	else if (eError != PVRSRV_OK)
+	{
+		PVR_LOG(("%s: Unexpected error from RGXFWRequestCommonContextCleanUp(%s)",
+				__func__,
+				PVRSRVGetErrorString(eError)));
+		/* Device is dead.
+		 * Change error type to make callers destroy the resource handle.
+		 * This is to prevent repeated calls to this function.
+		 */
+		eError = PVRSRV_OK;
+	}
 
 #if defined(SUPPORT_BUFFER_SYNC)
 	/* remove after RGXFWRequestCommonContextCleanUp() because we might return
@@ -365,7 +385,7 @@ PVRSRV_ERROR PVRSRVRGXDestroyComputeContextKM(RGX_SERVER_COMPUTE_CONTEXT *psComp
 					"%s: Failed to map firmware compute context (%s)",
 					__func__,
 					PVRSRVGetErrorString(eError)));
-			return eError;
+			goto failed;
 		}
 		RGXFwSharedMemCacheOpValue(psFWComputeContext->sCDMContext.ui32WorkEstCCBSubmitted, INVALIDATE);
 		ui32WorkEstCCBSubmitted = psFWComputeContext->sCDMContext.ui32WorkEstCCBSubmitted;
@@ -380,16 +400,13 @@ PVRSRV_ERROR PVRSRVRGXDestroyComputeContextKM(RGX_SERVER_COMPUTE_CONTEXT *psComp
 					__func__, ui32WorkEstCCBSubmitted,
 					psComputeContext->sWorkEstData.ui32WorkEstCCBReceived));
 
-			return PVRSRV_ERROR_RETRY;
+			eError = PVRSRV_ERROR_RETRY;
+			goto failed;
 		}
 	}
 #endif
 
 	/* ... it has so we can free its resources */
-
-	OSWRLockAcquireWrite(psDevInfo->hComputeCtxListLock);
-	dllist_remove_node(&(psComputeContext->sListNode));
-	OSWRLockReleaseWrite(psDevInfo->hComputeCtxListLock);
 
 #if defined(SUPPORT_WORKLOAD_ESTIMATION)
 	if (!PVRSRV_VZ_MODE_IS(GUEST, DEVINFO, psDevInfo))
@@ -415,6 +432,13 @@ PVRSRV_ERROR PVRSRVRGXDestroyComputeContextKM(RGX_SERVER_COMPUTE_CONTEXT *psComp
 	OSFreeMem(psComputeContext);
 
 	return PVRSRV_OK;
+
+	/* If we failed, return the context to the context list */
+failed:
+	OSWRLockAcquireWrite(psDevInfo->hComputeCtxListLock);
+	dllist_add_to_tail(&(psDevInfo->sComputeCtxtListHead), &(psComputeContext->sListNode));
+	OSWRLockReleaseWrite(psDevInfo->hComputeCtxListLock);
+	return eError;
 }
 
 PVRSRV_ERROR PVRSRVRGXKickCDMKM(RGX_SERVER_COMPUTE_CONTEXT	*psComputeContext,
@@ -686,46 +710,6 @@ PVRSRV_ERROR PVRSRVRGXKickCDMKM(RGX_SERVER_COMPUTE_CONTEXT	*psComputeContext,
 
 		CHKPT_DBG((PVR_DBG_ERROR, "%s: ...returned from SyncCheckpointCreateFence (iUpdateFence=%d, psFenceTimelineUpdateSync=<%p>, ui32FenceTimelineUpdateValue=%u)", __func__, iUpdateFence, psFenceTimelineUpdateSync, ui32FenceTimelineUpdateValue));
 
-		CHKPT_DBG((PVR_DBG_ERROR, "%s: iExportFenceToSignal=%d", __func__, iExportFenceToSignal));
-		/* Resolve the iExportFenceToSignal (if required) */
-		if (iExportFenceToSignal != PVRSRV_NO_FENCE)
-		{
-			CHKPT_DBG((PVR_DBG_ERROR, "%s: SyncCheckpointResolveExportFence(iExportFenceToSignal=%d), ui32FenceSyncCheckpointCount=%d", __func__, iExportFenceToSignal, ui32FenceSyncCheckpointCount));
-			eError = SyncCheckpointResolveExportFence(iExportFenceToSignal,
-			                                          psComputeContext->psDeviceNode->hSyncCheckpointContext,
-			                                          &psExportFenceSyncCheckpoint,
-			                                          ui32PDumpFlags);
-			if (eError != PVRSRV_OK)
-			{
-				CHKPT_DBG((PVR_DBG_ERROR, "%s: ...returned error (%s) psExportFenceSyncCheckpoint=<%p>", __func__, PVRSRVGetErrorString(eError), psExportFenceSyncCheckpoint));
-				goto fail_resolve_export_fence;
-			}
-
-			/* Check that the export fence was not also included as part of the
-			 * check fence (which is an error and would lead to a stalled kick).
-			 */
-			if (ui32FenceSyncCheckpointCount > 0)
-			{
-				IMG_UINT32 iii;
-
-				CHKPT_DBG((PVR_DBG_ERROR, "%s:   Checking export fence is not part of check fence...", __func__));
-				CHKPT_DBG((PVR_DBG_ERROR, "%s:   ui32FenceSyncCheckpointCount=%d",
-						   __func__, ui32FenceSyncCheckpointCount));
-
-				for (iii=0; iii<ui32FenceSyncCheckpointCount; iii++)
-				{
-					CHKPT_DBG((PVR_DBG_ERROR, "%s: apsFenceSyncCheckpoints[%d]=<%p>, FWAddr=0x%x", __func__, iii, apsFenceSyncCheckpoints[iii], SyncCheckpointGetFirmwareAddr(apsFenceSyncCheckpoints[iii])));
-					if (apsFenceSyncCheckpoints[iii] == psExportFenceSyncCheckpoint)
-					{
-						CHKPT_DBG((PVR_DBG_ERROR, "%s: ERROR psExportFenceSyncCheckpoint=<%p>", __func__, psExportFenceSyncCheckpoint));
-						eError = PVRSRV_ERROR_INVALID_PARAMS;
-						PVR_DPF((PVR_DBG_ERROR, " %s - iCheckFence includes iExportFenceToSignal", PVRSRVGetErrorString(eError)));
-						goto fail_check_fence_includes_export_fence;
-					}
-				}
-			}
-		}
-
 		CHKPT_DBG((PVR_DBG_ERROR, "%s: ui32IntClientUpdateCount=%u, psFenceTimelineUpdateSync=<%p>", __func__, ui32IntClientUpdateCount, (void*)psFenceTimelineUpdateSync));
 		/* Append the sync prim update for the timeline (if required) */
 		if (psFenceTimelineUpdateSync)
@@ -787,6 +771,22 @@ PVRSRV_ERROR PVRSRVRGXKickCDMKM(RGX_SERVER_COMPUTE_CONTEXT	*psComputeContext,
 #endif
 			/* Ensure paui32IntUpdateValue is now pointing to our new array of update values */
 			paui32IntUpdateValue = pui32IntAllocatedUpdateValues;
+		}
+	}
+
+	CHKPT_DBG((PVR_DBG_ERROR, "%s: iExportFenceToSignal=%d", __func__, iExportFenceToSignal));
+	/* Resolve the iExportFenceToSignal (if required) */
+	if (iExportFenceToSignal != PVRSRV_NO_FENCE)
+	{
+		CHKPT_DBG((PVR_DBG_ERROR, "%s: SyncCheckpointResolveExportFence(iExportFenceToSignal=%d), ui32FenceSyncCheckpointCount=%d", __func__, iExportFenceToSignal, ui32FenceSyncCheckpointCount));
+		eError = SyncCheckpointResolveExportFence(iExportFenceToSignal,
+		                                          psComputeContext->psDeviceNode->hSyncCheckpointContext,
+		                                          &psExportFenceSyncCheckpoint,
+		                                          ui32PDumpFlags);
+		if (eError != PVRSRV_OK)
+		{
+			CHKPT_DBG((PVR_DBG_ERROR, "%s: ...returned error (%s) psExportFenceSyncCheckpoint=<%p>", __func__, PVRSRVGetErrorString(eError), psExportFenceSyncCheckpoint));
+			goto fail_resolve_export_fence;
 		}
 	}
 
@@ -1195,8 +1195,6 @@ fail_cmdinvalfbsc:
 #endif
 	SyncAddrListRollbackCheckpoints(psComputeContext->psDeviceNode, &psComputeContext->sSyncAddrListFence);
 	SyncAddrListRollbackCheckpoints(psComputeContext->psDeviceNode, &psComputeContext->sSyncAddrListUpdate);
-fail_alloc_update_values_mem:
-fail_check_fence_includes_export_fence:
 	if (psExportFenceSyncCheckpoint)
 	{
 		/* Drop the extra reference taken by SyncCheckpointResolveExportFence */
@@ -1204,6 +1202,7 @@ fail_check_fence_includes_export_fence:
 		SyncCheckpointRollbackExportFence(iExportFenceToSignal);
 	}
 fail_resolve_export_fence:
+fail_alloc_update_values_mem:
 	if (iUpdateFence != PVRSRV_NO_FENCE)
 	{
 		SyncCheckpointRollbackFenceData(iUpdateFence, pvUpdateFenceFinaliseData);

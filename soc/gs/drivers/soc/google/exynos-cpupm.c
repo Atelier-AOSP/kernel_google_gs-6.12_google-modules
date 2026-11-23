@@ -7,6 +7,7 @@
  *
  */
 
+#include <linux/cleanup.h>
 #include <linux/cpumask.h>
 #include <linux/slab.h>
 #include <linux/tick.h>
@@ -1201,9 +1202,13 @@ static int cpuhp_cpupm_offline(unsigned int cpu)
  ******************************************************************************/
 static void wakeup_mask_init(struct device_node *cpupm_dn)
 {
-	struct device_node *root_dn, *wm_dn, *dn;
+	struct device_node *root_dn __free(device_node);
+	struct device_node *wm_dn __free(device_node) = NULL;
+	struct device_node *dn;
 	int count, i;
 
+	/* balance of_node_put() in of_find_node_by_name() */
+	of_node_get(cpupm_dn);
 	root_dn = of_find_node_by_name(cpupm_dn, "wakeup-mask");
 	if (!root_dn) {
 		pr_warn("wakeup-mask is omitted in device tree\n");
@@ -1215,6 +1220,8 @@ static void wakeup_mask_init(struct device_node *cpupm_dn)
 		return;
 
 	/* initialize wakeup-mask */
+	/* balance of_node_put() in of_find_node_by_name() */
+	of_node_get(root_dn);
 	wm_dn = of_find_node_by_name(root_dn, "wakeup-masks");
 	if (!wm_dn) {
 		pr_warn("wakeup-masks is omitted in device tree\n");
@@ -1237,8 +1244,11 @@ static void wakeup_mask_init(struct device_node *cpupm_dn)
 				     &wm_config->wakeup_masks[i].mask);
 		i++;
 	}
+	of_node_put(wm_dn);
 
 	/* initialize eint-wakeup-mask */
+	/* balance of_node_put() in of_find_node_by_name() */
+	of_node_get(root_dn);
 	wm_dn = of_find_node_by_name(root_dn, "eint-wakeup-masks");
 	if (!wm_dn) {
 		pr_warn("eint-wakeup-masks is omitted in device tree\n");
@@ -1269,7 +1279,7 @@ fail:
 static int exynos_cpupm_mode_init(struct platform_device *pdev)
 {
 	int cluster_id = 0;
-	struct device_node *dn = pdev->dev.of_node;
+	struct device_node *dn __free(device_node) = of_node_get(pdev->dev.of_node);
 
 	cpupm = alloc_percpu(struct exynos_cpupm);
 
@@ -1403,11 +1413,12 @@ static int exynos_cpuidle_state_init(void)
 #define EXTERN_IDLE_IP_MAX		(4)
 static int extern_idle_ip_init(struct device_node *dn)
 {
-	struct device_node *child = of_get_child_by_name(dn, "idle-ip");
+	struct device_node *child __free(device_node);
 	struct idle_ip *ip;
 	int i, count, new_index;
 	unsigned long flags;
 
+	child = of_get_child_by_name(dn, "idle-ip");
 	if (!child)
 		return 0;
 
@@ -1419,26 +1430,29 @@ static int extern_idle_ip_init(struct device_node *dn)
 	if (!ip)
 		return -ENOMEM;
 
-	spin_lock_irqsave(&idle_ip_lock, flags);
-
+	/*
+	 * TODO(b/374084861): this looks strange, seems it only really deals
+	 * with count == 1, as it keeps reusing 'ip' to attach to the global
+	 * ip_list multiple times.
+	 */
 	for (i = 0; i < count; i++) {
 		const char *name;
 
 		of_property_read_string_index(child, "extern-idle-ip", i, &name);
+		ip->name = name;
+		ip->type = EXTERN_IP;
+		ip->pmu_offset = PMU_IDLE_IP(i);
 
+		spin_lock_irqsave(&idle_ip_lock, flags);
 		if (list_empty(&ip_list))
 			new_index = 0;
 		else
 			new_index = list_last_entry(&ip_list, struct idle_ip, list)->index + 1;
-
-		ip->name = name;
 		ip->index = new_index;
-		ip->type = EXTERN_IP;
-		ip->pmu_offset = PMU_IDLE_IP(i);
-		list_add_tail(&ip->list, &ip_list);
-	}
 
-	spin_unlock_irqrestore(&idle_ip_lock, flags);
+		list_add_tail(&ip->list, &ip_list);
+		spin_unlock_irqrestore(&idle_ip_lock, flags);
+	}
 
 	return 0;
 }

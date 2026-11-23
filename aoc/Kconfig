@@ -38,6 +38,16 @@ config AOC_TBN_DRIVER
 	help
 		Say yes here to add TBN service for the AoC
 
+config AOC_MBOX_FULL_DRIVER
+	tristate "WhiteChapel AoC Mbox Full service"
+	depends on AOC_DRIVER
+	default m
+	help
+		This module adds support for
+		the Mailbox Full service
+		which is part of the AoC subsystem.
+		Say yes here to add Mbox Full service for the AoC
+
 config AOC_UWB_DRIVER
 	tristate "WhiteChapel AoC UWB service"
 	depends on AOC_DRIVER
@@ -74,4 +84,9 @@ config AOC_LGA
 	bool "AoC LGA"
 	help
 		AOC LGA
+
+config AOC_MBU
+	bool "AoC MBU"
+	help
+		AOC MBU
 endchoice

@@ -44,17 +44,29 @@ struct edgetpu_queue_metadata {
  * struct edgetpu_firmware_metadata - Metadata for information exchange with firmware; used when
  * migrating to CMF.
  * @kd_version: KD version, was using KCI.config_spare_0.
+ * @reserved_0: Reserved field.
+ * @log_addr: Telemetry log buffer firmware remap region address.
+ * @log_size: Telemetry log buffer size.
+ * @trace_addr: Telemetry trace buffer firmware remap region address.
+ * @trace_size: Telemetry trace buffer size.
+ * @reserved_1: Reserved padding array.
  * @fw_boot_stage: Firmware boot stage, was using KCI.config_spare_1.
- * @reserved: Reserved.
+ * @fw_boot_ready: 1 if firmware booted and ready.
+ * @reserved_2: Reserved padding array.
  * @queue_metadata: Array of queue metadata indexed by KCI, IKV, and IIF mailboxes.
- * @reserved_1: Reserved padding.
  */
 struct edgetpu_firmware_metadata {
 	u32 kd_version;
+	u32 reserved_0;
+	u32 log_addr;
+	u32 log_size;
+	u32 trace_addr;
+	u32 trace_size;
+	u32 reserved_1[10];
 	u32 fw_boot_stage;
-	u32 reserved[14];
+	u32 fw_boot_ready;
+	u32 reserved_2[14];
 	struct edgetpu_queue_metadata queue_metadata[3];
-	u8 reserved_1[64];
 };
 
 /**

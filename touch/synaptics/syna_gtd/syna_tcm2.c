@@ -1254,6 +1254,59 @@ exit:
 	return ret;
 }
 
+static int syna_set_report_rate(void *private_data, struct gti_report_rate_cmd *cmd)
+{
+	struct syna_tcm *tcm = private_data;
+	u16 config = 0;
+	int ret = 0;
+
+	if (goog_pm_wake_get_locks(tcm->gti) == 0 || tcm->pwr_state != PWR_ON) {
+		LOGI("Connot set report rate because touch is off");
+		return -EPERM;
+	}
+
+	switch (cmd->setting) {
+	case 120:
+		config = 1;
+		LOGI("Set low report rate");
+		break;
+	case 240:
+		config = 0;
+		LOGI("Set high report rate");
+		break;
+	default:
+		LOGE("Invalid report rate %d", cmd->setting);
+		return -EINVAL;
+	}
+
+	ret = syna_tcm_set_dynamic_config(tcm->tcm_dev, DC_REPORT_RATE_SWITCH, config,
+					  CMD_RESPONSE_IN_ATTN);
+
+	return ret;
+}
+
+static int syna_get_report_rate(void *private_data, struct gti_report_rate_cmd *cmd)
+{
+	struct syna_tcm *tcm = private_data;
+	int ret = 0;
+	u16 config = 0;
+
+	if (goog_pm_wake_get_locks(tcm->gti) == 0 || tcm->pwr_state != PWR_ON) {
+		LOGI("Connot get report rate because touch is off");
+		return -EPERM;
+	}
+
+	ret = syna_tcm_get_dynamic_config(tcm->tcm_dev, DC_REPORT_RATE_SWITCH, &config,
+					  CMD_RESPONSE_IN_ATTN);
+	if (ret < 0 || (config != 0 && config != 1)) {
+		LOGE("Fail to read report rate, ret: %d, config: %u", ret, config);
+		return -EINVAL;
+	}
+
+	cmd->setting = config == 0 ? 240 : 120;
+	return ret;
+}
+
 static int syna_dev_ptflib_decoder(struct syna_tcm *tcm, const u16 *in_array,
 				   const int in_array_size, u16 *out_array,
 				   const int out_array_max_size)
@@ -1409,6 +1462,8 @@ static void syna_gti_init(struct syna_tcm *tcm)
 	options->set_continuous_report = syna_set_continuous_report;
 	options->get_mutual_sensor_data = syna_get_mutual_sensor_data;
 	options->get_self_sensor_data = syna_get_self_sensor_data;
+	options->get_report_rate = syna_get_report_rate;
+	options->set_report_rate = syna_set_report_rate;
 
 	tcm->gti = goog_touch_interface_probe(
 		tcm, &pdev->dev, tcm->input_dev, gti_default_handler, options);
@@ -4099,13 +4154,13 @@ err_allocate_tcm:
  * @return
  *    0 or positive value in case of success, a negative value otherwise.
  */
-static int syna_dev_remove(struct platform_device *pdev)
+static void syna_dev_remove(struct platform_device *pdev)
 {
 	struct syna_tcm *tcm = platform_get_drvdata(pdev);
 
 	if (!tcm) {
 		LOGW("Invalid handle to remove\n");
-		return 0;
+		return;
 	}
 
 #if defined(ENABLE_HELPER)
@@ -4164,8 +4219,6 @@ static int syna_dev_remove(struct platform_device *pdev)
 
 	/* release the device context */
 	syna_pal_mem_free((void *)tcm);
-
-	return 0;
 }
 
 /** Definitions of TouchComm platform device */

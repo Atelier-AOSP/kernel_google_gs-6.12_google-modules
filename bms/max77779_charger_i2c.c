@@ -46,7 +46,6 @@ static int max77779_charger_i2c_probe(struct i2c_client *client)
 
 	data->dev = dev;
 	data->dev->init_name = "i2c-max77779-chrg";
-	data->uc_data.dev = dev;
 	data->regmap = regmap;
 	data->irq_int = client->irq;
 

@@ -23,6 +23,7 @@
 static int init_genpd_sysfs(struct pixel_gpu_device *pixel_dev);
 static void deinit_genpd_sysfs(struct pixel_gpu_device *pixel_dev);
 
+#if defined(PVR_DPF_CUSTOMER_DEBUG_ON)
 static const char *action_to_string(unsigned long action)
 {
 	switch (action) {
@@ -38,6 +39,7 @@ static const char *action_to_string(unsigned long action)
 		return "UNKNOWN";
 	}
 }
+#endif
 
 static const char *power_state_str(int state)
 {
@@ -63,8 +65,8 @@ static void update_power_state(struct pixel_gpu_device *pixel_dev, int new_state
 			    : NULL;
 	new_stats = &pixel_dev->power_state.stats[new_state];
 
-	dev_dbg(pixel_dev->dev, "%s: %s -> %s", __func__,
-		power_state_str(cur_state), power_state_str(new_state));
+	PVR_DPF((PVR_DBG_CUSTOMER, "%s: %s -> %s", __func__,
+		power_state_str(cur_state), power_state_str(new_state)));
 
 #if defined(PVRSRV_ANDROID_TRACE_GPU_POWER_STATE)
 	trace_gpu_power_state(cur_state,
@@ -113,8 +115,8 @@ static int genpd_notify_gpu(struct notifier_block *core_logic_notifier,
 		container_of(core_logic_notifier, struct pixel_gpu_device,
 			     core_logic_notifier);
 
-	dev_dbg(pixel_dev->dev, "%s: GPU Core Logic %s", __func__,
-		action_to_string(action));
+	PVR_DPF((PVR_DBG_CUSTOMER, "%s: GPU Core Logic %s", __func__,
+		action_to_string(action)));
 
 	switch (action) {
 	case GENPD_NOTIFY_PRE_ON:
@@ -147,8 +149,8 @@ static int genpd_notify_sswrp(struct notifier_block *sswrp_notifier,
 	struct pixel_gpu_device *pixel_dev = container_of(
 		sswrp_notifier, struct pixel_gpu_device, sswrp_notifier);
 
-	dev_dbg(pixel_dev->dev, "%s: GPU SSWRP %s", __func__,
-		action_to_string(action));
+	PVR_DPF((PVR_DBG_CUSTOMER, "%s: GPU SSWRP %s", __func__,
+		action_to_string(action)));
 
 	switch (action) {
 	case GENPD_NOTIFY_PRE_ON:
@@ -193,6 +195,7 @@ static struct device *attach_pm_domain(struct device *dev,
 
 #define POWER_FLAGS_BUFFER_SIZE 4
 
+#if defined(PVR_DPF_CUSTOMER_DEBUG_ON)
 static const char *power_flags_to_string(PVRSRV_POWER_FLAGS power_flags,
 					 char *buffer, size_t buffer_size)
 {
@@ -221,6 +224,7 @@ static const char *power_flags_to_string(PVRSRV_POWER_FLAGS power_flags,
 end:
 	return buffer;
 }
+#endif
 
 /**
  * Helper to decrement the usage count of a power domain.
@@ -252,23 +256,24 @@ static PVRSRV_ERROR pre_power_state(IMG_HANDLE sys_data,
 				    PVRSRV_POWER_FLAGS power_flags)
 {
 	struct pixel_gpu_device *pixel_dev = (struct pixel_gpu_device *)sys_data;
-	struct device *const dev = pixel_dev->dev;
+#if defined(PVR_DPF_CUSTOMER_DEBUG_ON)
 	char buffer[POWER_FLAGS_BUFFER_SIZE];
+#endif
 
 	if (disable_pm_runtime)
 		return PVRSRV_OK;
 
-	dev_dbg(dev, "%s: %s -> %s (flags: %s)", __func__,
+	PVR_DPF((PVR_DBG_CUSTOMER, "%s: %s -> %s (flags: %s)", __func__,
 		PVRSRVSysPowerStateToString(current_power_state),
 		PVRSRVSysPowerStateToString(new_power_state),
-		power_flags_to_string(power_flags, buffer, sizeof(buffer)));
+		power_flags_to_string(power_flags, buffer, sizeof(buffer))));
 
 	if (!(current_power_state == PVRSRV_SYS_POWER_STATE_ON &&
 	      new_power_state == PVRSRV_SYS_POWER_STATE_OFF))
 		return PVRSRV_OK;
 
 	if (BITMASK_HAS(power_flags, PVRSRV_POWER_FLAGS_OSPM_SUSPEND_REQ)) {
-		dev_dbg(dev, "%s: handling transition ON -> OFF", __func__);
+		PVR_DPF((PVR_DBG_CUSTOMER, "%s: handling transition ON -> OFF", __func__));
 
 		SBBM_SIGNAL_UPDATE(SBB_SIG_GPU_POWERING_OFF, 0);
 		ATRACE_BEGIN("GPU power-off ON->OFF");
@@ -280,7 +285,7 @@ static PVRSRV_ERROR pre_power_state(IMG_HANDLE sys_data,
 		ATRACE_END();
 		SBBM_SIGNAL_UPDATE(SBB_SIG_GPU_POWERING_OFF, 1);
 	} else {
-		dev_dbg(dev, "%s: handling transition ON -> PG", __func__);
+		PVR_DPF((PVR_DBG_CUSTOMER, "%s: handling transition ON -> PG", __func__));
 
 		/* By the time we get here there's already been some idle
 		 * delay, so it's okay to do the core logic power-off
@@ -317,23 +322,25 @@ static PVRSRV_ERROR post_power_state(IMG_HANDLE sys_data,
 {
 	struct pixel_gpu_device *pixel_dev = (struct pixel_gpu_device *)sys_data;
 	struct device *const dev = pixel_dev->dev;
+#if defined(PVR_DPF_CUSTOMER_DEBUG_ON)
 	char buffer[POWER_FLAGS_BUFFER_SIZE];
+#endif
 	PVRSRV_ERROR err = PVRSRV_OK;
 	int ret;
 
 	if (disable_pm_runtime)
 		return PVRSRV_OK;
 
-	dev_dbg(dev, "%s: %s -> %s (flags: %s)", __func__,
+	PVR_DPF((PVR_DBG_CUSTOMER, "%s: %s -> %s (flags: %s)", __func__,
 		PVRSRVSysPowerStateToString(current_power_state),
 		PVRSRVSysPowerStateToString(new_power_state),
-		power_flags_to_string(power_flags, buffer, sizeof(buffer)));
+		power_flags_to_string(power_flags, buffer, sizeof(buffer))));
 
 	if (!(current_power_state == PVRSRV_SYS_POWER_STATE_OFF &&
 	      new_power_state == PVRSRV_SYS_POWER_STATE_ON))
 		return PVRSRV_OK;
 
-	dev_dbg(dev, "%s: handling transition -> ON", __func__);
+	PVR_DPF((PVR_DBG_CUSTOMER, "%s: handling transition -> ON", __func__));
 
 	SBBM_SIGNAL_UPDATE(SBB_SIG_GPU_POWERING_ON, 0); /* Begin */
 	ATRACE_BEGIN("GPU power-on OFF->ON");

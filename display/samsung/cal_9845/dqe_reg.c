@@ -28,7 +28,7 @@ void dqe_regs_desc_init(void __iomem *regs, phys_addr_t start, const char *name,
 	regs_dqe[dqe_id].desc.regs = regs;
 	regs_dqe[dqe_id].desc.name = name;
 	regs_dqe[dqe_id].version = ver;
-        regs_dqe[dqe_id].desc.start = start;
+	regs_dqe[dqe_id].desc.start = start;
 }
 
 static void dqe_reg_set_img_size(u32 dqe_id, u32 width, u32 height)

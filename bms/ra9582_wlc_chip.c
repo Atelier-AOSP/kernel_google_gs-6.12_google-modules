@@ -453,17 +453,6 @@ static int ra9582_get_negotiated_power(struct google_wlc_data *chgr, u32 *mw)
 	return ret;
 }
 
-static int ra9582_get_load_step(struct google_wlc_data *chgr, s32 *ma)
-{
-	u8 val;
-	int ret;
-
-	ret = chgr->chip->reg_read_8(chgr, RA9582_LOAD_STEP_REG, &val);
-	if (ret == 0)
-		*ma = ((s8) val);
-	return ret;
-}
-
 static int ra9582_enable_load_increase(struct google_wlc_data *chgr, bool enable)
 {
 	int ret;
@@ -526,7 +515,6 @@ int ra9582_chip_init(struct google_wlc_data *chgr)
 	chip->chip_send_sadt = ra9582_send_sadt;
 	chip->chip_eds_reset = ra9582_eds_reset;
 	chip->chip_get_negotiated_power = ra9582_get_negotiated_power;
-	chip->chip_get_load_step = ra9582_get_load_step;
 	chip->chip_enable_load_increase = ra9582_enable_load_increase;
 	return 0;
 }

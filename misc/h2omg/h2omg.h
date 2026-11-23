@@ -71,6 +71,8 @@ struct h2omg_info {
 	bool dual_trigger;
 	unsigned int revision;
 
+	bool vref_div;  /* does the board divide vref? */
+
 	u32 trigger_delay_ms;       /* allowed single sensor wet time */
 	int timer_id;               /* which sensor triggered this timer */
 	struct timer_list wet_timer;

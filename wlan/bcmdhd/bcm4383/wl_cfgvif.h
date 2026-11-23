@@ -368,5 +368,21 @@ extern int wl_cfgvif_dump_survey(struct wiphy *wiphy, struct net_device *ndev,
 
 int wl_set_ant_config(struct net_device *dev, uint param);
 int wl_get_ant_config(struct net_device *dev, void *param);
-
+#ifdef WL_PMSR
+void wl_cfgvif_advertise_pmsr_cap(struct wiphy *wiphy);
+int	wl_cfgvif_start_pmsr(struct wiphy *wiphy, struct wireless_dev *wdev,
+	struct cfg80211_pmsr_request *request);
+void wl_cfgvif_abort_pmsr(struct wiphy *wiphy, struct wireless_dev *wdev,
+	struct cfg80211_pmsr_request *request);
+void wl_cfgvif_pmsr_timeout_work(struct work_struct *work);
+struct wireless_dev *wl_cfgvif_pd_if_add(struct bcm_cfg80211 *cfg, u8 *mac_addr);
+s32 wl_cfgvif_pd_if_del(struct wiphy *wiphy, struct wireless_dev *wdev);
+int	wl_cfgvif_start_pd(struct wiphy *wiphy, struct wireless_dev *wdev);
+void wl_cfgvif_stop_pd(struct wiphy *wiphy, struct wireless_dev *wdev);
+int	wl_cfgvif_get_ftm_responder_stats(struct wiphy *wiphy,
+	struct net_device *dev,
+	struct cfg80211_ftm_responder_stats *ftm_stats);
+s32 wl_cfgvif_pmsr_event_handler(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
+		const wl_event_msg_t *event, void *event_data);
+#endif /* WL_PMSR */
 #endif /* _wl_cfgvif_h_ */

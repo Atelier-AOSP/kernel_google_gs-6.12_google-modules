@@ -36,7 +36,7 @@ struct google_pcie_link_stats {
 	u64 link_up_failure_count;
 	u64 link_recovery_failure_count;
 	u64 link_down_irq_count;
-	u64 cmpl_timeout_irq_count;
+	u64 complete_timeout_irq_count;
 	u64 link_up_time_avg;
 };
 
@@ -69,5 +69,22 @@ int google_pcie_unregister_callback(int num);
 void google_pcie_dump_debug(int num);
 bool google_pcie_is_link_down(int num);
 bool google_pcie_is_cpl_timeout(int num);
+
+struct device;
+struct pci_pwrctrl;
+
+void google_pci_pwrctrl_init(struct pci_pwrctrl *pwrctrl, struct device *dev);
+int google_pci_pwrctrl_device_set_ready(struct pci_pwrctrl *pwrctrl);
+void google_pci_pwrctrl_device_unset_ready(struct pci_pwrctrl *pwrctrl);
+int devm_google_pci_pwrctrl_device_set_ready(struct device *dev,
+					     struct pci_pwrctrl *pwrctrl);
+/*
+ * Override pci-pwrctrl, because the upstream framework has not yet integrated
+ * PERST and link-training-retry.
+ */
+#define pci_pwrctrl_init google_pci_pwrctrl_init
+#define pci_pwrctrl_device_set_ready google_pci_pwrctrl_device_set_ready
+#define pci_pwrctrl_device_unset_ready google_pci_pwrctrl_device_unset_ready
+#define devm_pci_pwrctrl_device_set_ready devm_google_pci_pwrctrl_device_set_ready
 
 #endif /* _PCIE_GOOGLE_IF_H */

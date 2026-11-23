@@ -20,6 +20,10 @@ properties:
     type: boolean
     description: false for DPHY, true for CPHY
 
+  non24x_fix:
+    type: boolean
+    description: true for enabling the HW fix applicable to panel widths not multiple of 24
+
   clocks:
     minItems: 1
     items:

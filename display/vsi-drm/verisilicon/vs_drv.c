@@ -16,11 +16,12 @@
 #include <drm/drm_crtc_helper.h>
 #include <drm/drm_debugfs.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fbdev_generic.h>
+#include <drm/drm_fbdev_ttm.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_file.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_ioctl.h>
+#include <drm/drm_managed.h>
 #include <drm/drm_of.h>
 #include <drm/drm_prime.h>
 #include <drm/drm_print.h>
@@ -59,6 +60,7 @@ static const struct file_operations fops = {
 	.poll = drm_poll,
 	.read = drm_read,
 	.mmap = vs_gem_mmap,
+	.fop_flags = FOP_UNSIGNED_OFFSET,
 };
 
 static const struct drm_ioctl_desc vs_ioctls[] = {
@@ -69,6 +71,7 @@ static const struct drm_ioctl_desc vs_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(VS_GET_HW_CAP, vs_get_hw_cap_ioctl, DRM_MASTER),
 	DRM_IOCTL_DEF_DRV(VS_GET_HIST_BINS, vs_get_hist_bins_query_ioctl, DRM_MASTER),
 	DRM_IOCTL_DEF_DRV(VS_GET_LTM_HIST, vs_get_ltm_hist_ioctl, DRM_MASTER),
+	DRM_IOCTL_DEF_DRV(VS_GET_WB_FRM_DONE, vs_get_wb_frm_done_ioctl, DRM_MASTER),
 	DRM_IOCTL_DEF_DRV(VS_TASK_FENCE, vs_task_fence_ioctl, DRM_MASTER),
 };
 
@@ -155,7 +158,6 @@ void vs_drm_update_alignment(struct drm_device *drm_dev, unsigned int pitch_alig
 static const struct drm_mode_config_funcs vs_mode_config_funcs = {
 	.fb_create = vs_fb_create,
 	.get_format_info = vs_get_format_info,
-	.output_poll_changed = drm_fb_helper_output_poll_changed,
 	.atomic_check = vs_drm_atomic_check,
 	.atomic_commit = vs_drm_atomic_commit,
 };
@@ -316,7 +318,7 @@ static int vs_drm_bind(struct device *dev)
 
 	dev_set_drvdata(dev, drm_dev);
 
-	priv = devm_kzalloc(drm_dev->dev, sizeof(struct vs_drm_private), GFP_KERNEL);
+	priv = drmm_kzalloc(drm_dev, sizeof(struct vs_drm_private), GFP_KERNEL);
 	if (!priv) {
 		ret = -ENOMEM;
 		goto err_put_dev;
@@ -333,12 +335,14 @@ static int vs_drm_bind(struct device *dev)
 	if (ret)
 		dev_err(dev, "failed to enable traces\n");
 
-	drm_mode_config_init(drm_dev);
+	ret = drmm_mode_config_init(drm_dev);
+	if (ret)
+		goto err_put_dev;
 
 	/* Now try and bind all our sub-components */
 	ret = component_bind_all(dev, drm_dev);
 	if (ret)
-		goto err_mode;
+		goto err_put_dev;
 
 	vs_drm_update_wb_connectors_mask(drm_dev);
 
@@ -365,7 +369,7 @@ static int vs_drm_bind(struct device *dev)
 	drm_debugfs_add_custom_entries(drm_dev);
 #endif
 
-	drm_fbdev_generic_setup(drm_dev, 32);
+	drm_fbdev_ttm_setup(drm_dev, 32);
 
 	return 0;
 
@@ -375,10 +379,7 @@ err_helper:
 	drm_kms_helper_poll_fini(drm_dev);
 err_bind:
 	component_unbind_all(drm_dev->dev, drm_dev);
-err_mode:
-	drm_mode_config_cleanup(drm_dev);
 err_put_dev:
-	drm_dev->dev_private = NULL;
 	dev_set_drvdata(dev, NULL);
 	drm_dev_put(drm_dev);
 	return ret;
@@ -388,6 +389,8 @@ static void vs_drm_unbind(struct device *dev)
 {
 	struct drm_device *drm_dev = dev_get_drvdata(dev);
 
+	drm_atomic_helper_shutdown(drm_dev);
+
 	drm_dev_unregister(drm_dev);
 
 	vs_drm_destroy_state_history_record(drm_dev);
@@ -396,9 +399,6 @@ static void vs_drm_unbind(struct device *dev)
 
 	component_unbind_all(drm_dev->dev, drm_dev);
 
-	drm_mode_config_cleanup(drm_dev);
-
-	drm_dev->dev_private = NULL;
 	dev_set_drvdata(dev, NULL);
 	drm_dev_put(drm_dev);
 }
@@ -421,8 +421,7 @@ static struct platform_driver *drm_sub_drivers[] = {
 	/* put display control driver at start */
 	&dc_platform_driver,
 	&dc_be_platform_driver,
-	&dc_fe0_platform_driver,
-	&dc_fe1_platform_driver,
+	&dc_fe_platform_driver,
 	&dc_wb_platform_driver,
 
 /* bridge */
@@ -439,11 +438,6 @@ static struct platform_driver *drm_sub_drivers[] = {
 
 #define NUM_DRM_DRIVERS (sizeof(drm_sub_drivers) / sizeof(struct platform_driver *))
 
-static int compare_dev(struct device *dev, void *data)
-{
-	return dev == (struct device *)data;
-}
-
 static struct component_match *vs_drm_match_add(struct device *dev)
 {
 	struct component_match *match = NULL;
@@ -451,15 +445,14 @@ static struct component_match *vs_drm_match_add(struct device *dev)
 
 	for (i = 0; i < NUM_DRM_DRIVERS; ++i) {
 		struct platform_driver *drv = drm_sub_drivers[i];
-		struct device *p = NULL, *d;
+		struct device_node *np;
 
-		while ((d = platform_find_device_by_driver(p, &drv->driver))) {
-			put_device(p);
+		for_each_matching_node(np, drv->driver.of_match_table) {
+			if (!of_device_is_available(np))
+				continue;
 
-			component_match_add(dev, &match, compare_dev, d);
-			p = d;
+			component_match_add(dev, &match, component_compare_of, np);
 		}
-		put_device(p);
 	}
 
 	return match ?: ERR_PTR(-ENODEV);
@@ -532,20 +525,9 @@ static int vs_drm_platform_probe(struct platform_device *pdev)
 	return component_master_add_with_match(dev, &vs_drm_ops, match);
 }
 
-static int vs_drm_platform_remove(struct platform_device *pdev)
+static void vs_drm_platform_remove(struct platform_device *pdev)
 {
 	component_master_del(&pdev->dev, &vs_drm_ops);
-	return 0;
-}
-
-static void vs_drm_platform_shutdown(struct platform_device *pdev)
-{
-	struct drm_device *drm = platform_get_drvdata(pdev);
-
-	if (!drm)
-		return;
-
-	drm_atomic_helper_shutdown(drm);
 }
 
 #if IS_ENABLED(CONFIG_PM_SLEEP)
@@ -683,6 +665,16 @@ static const struct of_device_id vs_drm_dt_ids[] = {
 
 MODULE_DEVICE_TABLE(of, vs_drm_dt_ids);
 
+static void vs_drm_platform_shutdown(struct platform_device *pdev)
+{
+	struct drm_device *drm = platform_get_drvdata(pdev);
+
+	if (!drm)
+		return;
+
+	drm_atomic_helper_shutdown(drm);
+}
+
 static struct platform_driver vs_drm_platform_driver = {
 	.probe = vs_drm_platform_probe,
 	.remove = vs_drm_platform_remove,
@@ -694,6 +686,7 @@ static struct platform_driver vs_drm_platform_driver = {
 #if IS_ENABLED(CONFIG_PM_SLEEP)
 		.pm = &vs_drm_pm_ops,
 #endif
+		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 };
 

@@ -18,6 +18,11 @@ properties:
     description: disable AOC_VOTER on systems without such voter present.
     type: boolean
 
+  host-mode-aoc-optional:
+    description: aoc is not required for host mode functionality except
+    for audio offloading feature.
+    type: boolean
+
   eusb-role-sw-dev:
     description: Downstream eusb repeater phandle with usb-role-switch
     capability. If set, the driver will issue data role switch request to

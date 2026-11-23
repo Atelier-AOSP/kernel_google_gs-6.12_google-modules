@@ -2,7 +2,7 @@
 /*
  * Edge TPU firmware loader.
  *
- * Copyright (C) 2019-2025 Google LLC
+ * Copyright (C) 2019-2026 Google LLC
  */
 
 #include <linux/delay.h>
@@ -544,7 +544,7 @@ static int edgetpu_firmware_update_remapped_data_region(struct edgetpu_dev *etde
 		etdev->trace_buffer_size = telemetry_config.trace_buffer_size;
 		iremap_pool_mem_offset = EDGETPU_TELEMETRY_BUFFERS_OFFSET +
 					 (etdev->log_buffer_size + etdev->trace_buffer_size) *
-						 etdev->num_telemetry_buffers;
+					 etdev->num_telemetry_buffers;
 	} else {
 		etdev->num_telemetry_buffers = EDGETPU_NUM_CORES;
 		etdev->log_buffer_size = EDGETPU_TELEMETRY_LOG_BUFFER_SIZE;
@@ -693,6 +693,7 @@ static int edgetpu_firmware_prepare_run(struct edgetpu_firmware *et_fw)
 	if (ret)
 		return ret;
 
+	edgetpu_firmware_metadata_init_cmf(etdev);
 	edgetpu_soc_prepare_firmware(etdev);
 
 	return edgetpu_firmware_reset_cpu(etdev, false);
@@ -711,6 +712,7 @@ static int edgetpu_firmware_restart(struct edgetpu_firmware *et_fw, bool force_r
 	if (force_reset)
 		edgetpu_firmware_reset_cpu(etdev, true);
 
+	edgetpu_firmware_metadata_init_cmf(etdev);
 	edgetpu_soc_prepare_firmware(etdev);
 
 	ret = edgetpu_firmware_reset_cpu(etdev, false);
@@ -848,20 +850,14 @@ int edgetpu_firmware_reset_cpu(struct edgetpu_dev *etdev, bool assert_reset)
 	struct edgetpu_firmware *et_fw = etdev->firmware;
 	struct gcip_image_config *image_config = edgetpu_firmware_get_image_config(etdev);
 	int ret = 0;
-	/* topReset = 0x1, all other fields unchanged from reset value zero. */
-	const int top_reset = 0x1;
 
 	if (!image_config)
 		return 0;
 
 	if (gcip_image_config_is_ns(image_config)) {
-		int i;
-
 		if (!assert_reset)
 			program_iremap_csr(etdev);
-		for (i = 0; i < EDGETPU_NUM_CORES; i++)
-			edgetpu_dev_write_32_sync(etdev, EDGETPU_REG_RESET_CONTROL + i * 8,
-						  assert_reset ? top_reset : 0x0);
+		edgetpu_firmware_reset_cpu_ns(etdev, assert_reset);
 	} else if (et_fw->gsa_dev) {
 		ret = gsa_send_tpu_cmd(et_fw->gsa_dev,
 				       assert_reset ? GSA_TPU_SHUTDOWN : GSA_TPU_START);
@@ -947,7 +943,7 @@ static int edgetpu_firmware_handshake(struct edgetpu_firmware *et_fw)
 	etdev_info(etdev, "loaded %s firmware (%u.%u %u)", gcip_fw_flavor_str(fw_flavor),
 		   etdev->fw_version.major_version, etdev->fw_version.minor_version,
 		   et_fw->fw_info.fw_changelist);
-	/* Tell fw about log, trace, and optionally hwtrace buffers. */
+	/* Tell fw about log and trace buffers. */
 	ret = edgetpu_telemetry_kci(etdev);
 	if (ret)
 		etdev_warn(etdev, "telemetry KCI error: %d", ret);
@@ -1149,12 +1145,25 @@ static int edgetpu_firmware_run_locked(struct edgetpu_firmware *et_fw, const cha
 	if (ret)
 		goto out_failed;
 
+	/*
+	 * We simply abort if a reload is triggered while KCI commands are in progress. This is
+	 * practically impossible in production since firmware loading requires root privileges and
+	 * is rarely performed.
+	 */
+	ret = edgetpu_kci_disable(etdev->etkci);
+	if (ret) {
+		etdev_err(etdev,
+			  "Failed to disable KCI for firmware run: active commands in progress");
+		goto out_clear_image;
+	}
+
 	etdev_dbg(etdev, "run fw %s", name);
 	if (et_fw->sanitizer_status)
 		edgetpu_firmware_clear_bctcm(etdev);
 	ret = edgetpu_firmware_prepare_run(et_fw);
 	if (ret)
 		goto out_clear_image;
+	edgetpu_kci_enable(etdev->etkci);
 
 	gcip_fault_inject_send(et_fw->fault_inject);
 
@@ -1248,6 +1257,24 @@ int edgetpu_firmware_restart_locked(struct edgetpu_dev *etdev, bool force_reset)
 
 	edgetpu_firmware_set_loading(et_fw);
 	edgetpu_sw_wdt_stop(etdev);
+	/*
+	 * KCI disable can fail with -EBUSY if a KCI command is still in progress.
+	 * There are three paths that trigger restart:
+	 * 1) Powering up: KCI is already disabled initially, so this path is safe.
+	 * 2) Powering down: Active KCI commands hold a PM reference, so power-down cannot be
+	 *    triggered while KCI is busy.
+	 * 3) Watchdog timeout: If KCI disable fails here (due to a command still waiting for
+	 *    timeout after a firmware hang), we abort the restart and rely on subsequent PM
+	 *    power-down (when clients close or timeout) to recover the device.
+	 */
+	ret = edgetpu_kci_disable(etdev->etkci);
+	if (ret) {
+		etdev_err(
+			etdev,
+			"Failed to disable KCI for firmware restart: active commands in progress");
+		goto out;
+	}
+
 	if (et_fw->sanitizer_status)
 		edgetpu_firmware_clear_bctcm(etdev);
 	edgetpu_firmware_reset_mailboxes(etdev);
@@ -1262,6 +1289,7 @@ int edgetpu_firmware_restart_locked(struct edgetpu_dev *etdev, bool force_reset)
 		if (ret)
 			goto out;
 	}
+	edgetpu_kci_enable(etdev->etkci);
 	ret = edgetpu_firmware_handshake(et_fw);
 	if (!ret)
 		edgetpu_sw_wdt_start(etdev);

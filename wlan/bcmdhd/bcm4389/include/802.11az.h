@@ -113,7 +113,7 @@ typedef struct dot11_ranging_ndpa dot11_ranging_ndpa_t;
 #define DOT11_RANGING_TF_CMN_INFO_FIXED_SIZE 8u
 BWL_PRE_PACKED_STRUCT struct dot11_ranging_trigger {
 	uint8 cmn_info[DOT11_RANGING_TF_CMN_INFO_FIXED_SIZE];	/* trigger common info */
-	BCM_DECLARE_FLEX_ARRAY(uint8, dep_cmn_info);			/* type dependent common info */
+	uint8 dep_cmn_info[BCM_FLEX_ARRAY];			/* type dependent common info */
 	/* followed by user info list */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_ranging_trigger dot11_ranging_trigger_t;

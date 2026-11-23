@@ -11,6 +11,7 @@
 #include <linux/sizes.h>
 
 #include <gcip/gcip-image-config.h>
+#include <gcip/gcip-memory.h>
 
 #include "gxp-config.h"
 #include "gxp-internal.h"
@@ -18,7 +19,7 @@
 #define Q7_ALIVE_MAGIC	0x55555555
 
 #define CORE_CFG_REGION_SIZE (SZ_8K * GXP_NUM_CORES)
-#define VD_CFG_REGION_SIZE (SZ_4K)
+#define VD_CFG_REGION_SIZE (SZ_8K)
 
 /*
  * Enum for specifying what information needs to be fetched from the image_config.IommuMapping
@@ -187,6 +188,6 @@ void gxp_firmware_disable_ext_interrupts(struct gxp_dev *gxp, uint core);
  * provided image config.
  */
 int gxp_firmware_get_cfg_resource(struct gxp_dev *gxp, const struct gcip_image_config *img_cfg,
-				  enum gxp_imgcfg_type type, struct gxp_mapped_resource *res);
+				  enum gxp_imgcfg_type type, struct gcip_memory *res);
 
 #endif /* __GXP_FIRMWARE_H__ */

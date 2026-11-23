@@ -250,7 +250,7 @@ void edgetpu_soc_pm_dump_block_state(struct edgetpu_dev *etdev)
 
 	if (!etdev->soc_data->lpcm_lpm_csrs)
 		return;
-	if (pm_runtime_get_if_active(etdev->dev, false) <= 0) {
+	if (pm_runtime_get_if_active(etdev->dev) <= 0) {
 		etdev_info(etdev, "pm_runtime not active, skip PSM state dump.");
 		return;
 	}
@@ -656,6 +656,7 @@ void edgetpu_soc_deactivate_context(struct edgetpu_dev *etdev, int pasid)
 
 void edgetpu_soc_set_tpu_cpu_security(struct edgetpu_dev *etdev)
 {
+#ifdef EDGETPU_REG_INSTRUCTION_REMAP_AXIUSER_CORE0
 	const u32 mailboxId = 0, ssid = 0, ssidValid = 0, ipInitId = 0;
 	/* Leave tpuContextId alone; set rai, raci, vc, pid to default value 0 */
 	const u32 axiuser =
@@ -667,6 +668,7 @@ void edgetpu_soc_set_tpu_cpu_security(struct edgetpu_dev *etdev)
 				     axiuser);
 		edgetpu_dev_write_32(etdev, EDGETPU_REG_AXIUSER_CORE0 + 8 * i, axiuser);
 	}
+#endif
 }
 
 int edgetpu_soc_setup_irqs(struct edgetpu_dev *etdev)

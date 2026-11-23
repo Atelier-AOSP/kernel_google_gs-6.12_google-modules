@@ -2,7 +2,7 @@
 /*
  * Kernel Control Interface, implements the protocol between AP kernel and GCIP firmware.
  *
- * Copyright (C) 2022 Google LLC
+ * Copyright (C) 2022-2026 Google LLC
  */
 
 #include <linux/circ_buf.h>
@@ -122,13 +122,6 @@ static u64 gcip_kci_get_resp_elem_seq(struct gcip_mailbox *mailbox, void *resp)
 	return elem->seq;
 }
 
-static void gcip_kci_set_resp_elem_seq(struct gcip_mailbox *mailbox, void *resp, u64 seq)
-{
-	struct gcip_kci_response_element *elem = resp;
-
-	elem->seq = seq;
-}
-
 static int gcip_kci_wait_for_cmd_queue_not_full(struct gcip_mailbox *mailbox)
 {
 	struct gcip_kci *kci = gcip_mailbox_get_data(mailbox);
@@ -226,12 +219,12 @@ static inline bool gcip_kci_is_block_off(struct gcip_mailbox *mailbox)
 	return kci->ops->is_block_off ? kci->ops->is_block_off(kci) : false;
 }
 
-static void gcip_kci_on_error(struct gcip_mailbox *mailbox, int err)
+static void gcip_kci_on_error(struct gcip_mailbox *mailbox, void *cmd, int err)
 {
 	struct gcip_kci *kci = gcip_mailbox_get_data(mailbox);
 
 	if (kci->ops->on_error)
-		kci->ops->on_error(kci, err);
+		kci->ops->on_error(kci, cmd, err);
 }
 
 static const struct gcip_mailbox_ops gcip_mailbox_ops = {
@@ -248,7 +241,6 @@ static const struct gcip_mailbox_ops gcip_mailbox_ops = {
 	.acquire_rx_queue_lock = gcip_kci_acquire_resp_queue_lock,
 	.release_rx_queue_lock = gcip_kci_release_resp_queue_lock,
 	.get_resp_elem_seq = gcip_kci_get_resp_elem_seq,
-	.set_resp_elem_seq = gcip_kci_set_resp_elem_seq,
 	.wait_for_tx_queue_not_full = gcip_kci_wait_for_cmd_queue_not_full,
 	.is_rx_elem_reversed = gcip_kci_is_rx_elem_reversed,
 	.handle_reversed_command = gcip_kci_handle_reversed_command,
@@ -262,6 +254,8 @@ static const struct gcip_mailbox_ops gcip_mailbox_ops = {
  * Pushes an element to cmd queue and waits for the response.
  * Returns -ETIMEDOUT if no response is received within kci->mailbox.timeout msecs.
  *
+ * This function should not be used for reverse KCI commands because they don't expect responses.
+ *
  * Returns the code of response, or a negative errno on error.
  * @resp is updated with the response, as to retrieve returned retval field.
  */
@@ -269,18 +263,16 @@ int gcip_kci_send_cmd_return_resp(struct gcip_kci *kci, struct gcip_kci_command_
 				  struct gcip_kci_response_element *resp)
 {
 	int ret;
-	gcip_mailbox_cmd_flags_t flags = 0;
 
-	if (cmd->seq & GCIP_KCI_REVERSE_FLAG)
-		flags |= GCIP_MAILBOX_CMD_FLAGS_SKIP_ASSIGN_SEQ;
+	cmd->seq = atomic64_add_return(1, &kci->cur_seq);
 
-	ret = gcip_mailbox_send_cmd(&kci->mailbox, cmd, resp, flags);
+	ret = gcip_mailbox_send_cmd(&kci->mailbox, cmd, resp);
 	if (ret) {
 		dev_err(kci->dev, "Sending KCI command %d returned error: %d", cmd->code, ret);
 		return ret;
 	}
 
-	return resp ? resp->code : 0;
+	return resp->code;
 }
 
 int gcip_kci_send_cmd(struct gcip_kci *kci, struct gcip_kci_command_element *cmd)
@@ -289,7 +281,7 @@ int gcip_kci_send_cmd(struct gcip_kci *kci, struct gcip_kci_command_element *cmd
 
 	/* Don't wait on a response for reverse KCI response. */
 	if (cmd->seq & GCIP_KCI_REVERSE_FLAG)
-		return gcip_kci_send_cmd_return_resp(kci, cmd, NULL);
+		return gcip_mailbox_send_cmd_no_rsp(&kci->mailbox, cmd);
 	else
 		return gcip_kci_send_cmd_return_resp(kci, cmd, &resp);
 }
@@ -446,7 +438,7 @@ static inline void gcip_kci_set_data(struct gcip_kci *kci, void *data)
 int gcip_kci_init(struct gcip_kci *kci, const struct gcip_kci_args *args)
 {
 	int ret;
-	struct gcip_mailbox_args mailbox_args;
+	struct gcip_mailbox_args mailbox_args = {};
 
 	if (kci->ops)
 		return 0;
@@ -463,7 +455,7 @@ int gcip_kci_init(struct gcip_kci *kci, const struct gcip_kci_args *args)
 		goto err_unset_ops;
 
 	mailbox_args.dev = args->dev;
-	mailbox_args.mode = GCIP_MAILBOX_MODE_ALL;
+	mailbox_args.mode = GCIP_MAILBOX_MODE_BIDIRECTIONAL | GCIP_MAILBOX_MODE_SEQ_EXTERNAL;
 	mailbox_args.queue_wrap_bit = args->queue_wrap_bit;
 	mailbox_args.tx_queue = args->cmd_queue;
 	mailbox_args.tx_elem_size = sizeof(struct gcip_kci_command_element);
@@ -477,6 +469,7 @@ int gcip_kci_init(struct gcip_kci *kci, const struct gcip_kci_args *args)
 	if (ret)
 		goto err_unset_ops;
 
+	atomic64_set(&kci->cur_seq, 0);
 	mutex_init(&kci->cmd_queue_lock);
 	spin_lock_init(&kci->resp_queue_lock);
 	init_waitqueue_head(&kci->resp_doorbell_waitq);

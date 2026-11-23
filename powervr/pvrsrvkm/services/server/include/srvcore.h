@@ -58,20 +58,20 @@ PVRSRV_ERROR
 CopyFromUserWrapper(CONNECTION_DATA *psConnection,
                     IMG_UINT32 ui32DispatchTableEntry,
                     void *pvDest,
-                    void __user *pvSrc,
+                    const void __user *pvSrc,
                     IMG_UINT32 ui32Size);
 PVRSRV_ERROR
 CopyToUserWrapper(CONNECTION_DATA *psConnection,
                   IMG_UINT32 ui32DispatchTableEntry,
                   void __user *pvDest,
-                  void *pvSrc,
+                  const void *pvSrc,
                   IMG_UINT32 ui32Size);
 #else
 FORCE_INLINE PVRSRV_ERROR
 CopyFromUserWrapper(CONNECTION_DATA *psConnection,
 					IMG_UINT32 ui32DispatchTableEntry,
 					void *pvDest,
-					void __user *pvSrc,
+					const void __user *pvSrc,
 					IMG_UINT32 ui32Size)
 {
 	PVR_UNREFERENCED_PARAMETER (ui32DispatchTableEntry);
@@ -81,7 +81,7 @@ FORCE_INLINE PVRSRV_ERROR
 CopyToUserWrapper(CONNECTION_DATA *psConnection,
 				  IMG_UINT32 ui32DispatchTableEntry,
 				  void __user *pvDest,
-				  void *pvSrc,
+				  const void *pvSrc,
 				  IMG_UINT32 ui32Size)
 {
 	PVR_UNREFERENCED_PARAMETER (ui32DispatchTableEntry);
@@ -101,7 +101,7 @@ typedef struct _PVRSRV_BRIDGE_DISPATCH_TABLE_ENTRY
 	BridgeWrapperFunction pfFunction; /*!< The wrapper function that validates the ioctl
 	                                    arguments before calling into srvkm proper */
 	POS_LOCK hBridgeLock; /*!< The bridge lock which needs to be acquired
-                                   before calling the above wrapper */
+	                           before calling the above wrapper */
 
 	IMG_UINT32 ui32InBufferSize; /*!< The expected size of the in buffer given by the client */
 	IMG_UINT32 ui32OutBufferSize; /*!< The expected size of the out buffer given by the client */

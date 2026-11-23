@@ -12,6 +12,7 @@
  * <arach.mohammed.brahim@st.com>
  */
 
+#include <linux/cleanup.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/ioctl.h>
@@ -939,7 +940,6 @@ static const struct file_operations st54spi_fops = {
 	.compat_ioctl = st54spi_compat_ioctl,
 	.open = st54spi_open,
 	.release = st54spi_release,
-	.llseek = no_llseek,
 };
 
 /*-------------------------------------------------------------------------*/
@@ -1143,11 +1143,13 @@ static int st54spi_parse_ese_pwr_dt(struct device *dev, struct st54spi_data *pda
 static int st54spi_parse_dt(struct device *dev, struct st54spi_data *pdata)
 {
 	int r = 0;
-	struct device_node *np = dev->of_node;
 	const char *power_mode;
 
 #ifndef GKI_MODULE
+	struct device_node *np __free(device_node);
 	np = of_find_compatible_node(NULL, NULL, "st,st54spi");
+#else
+	struct device_node *np = dev->of_node;
 #endif
 
 	if (!np) {

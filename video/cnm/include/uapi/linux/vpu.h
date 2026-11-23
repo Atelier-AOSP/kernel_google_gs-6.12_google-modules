@@ -39,11 +39,18 @@ enum cpu_cmd_id {
 	VPU_DMA_BUF_SYNC,
 	VPU_SSCD_COREDUMP,
 	VPU_NOTIFY_IDLE,
-	VPU_NOTIFY_WAKELOCK,
+	VPU_SEND_FW_CMD,
 };
 /* <END OF HELPERS> */
 
 #define VPU_NO_INST (__u32)-1
+
+struct vpu_fw_cmd {
+	__u32 cmd;
+	__u32 codec;
+	__u32 index;
+};
+
 struct vpu_dmabuf {
 	__u32 inst_idx;
 	__u32 size;
@@ -98,6 +105,6 @@ struct vpu_coredump_info {
 #define VPU_IOCX_DMA_BUF_SYNC		_VPU_IOW(VPU_DMA_BUF_SYNC, struct vpu_buf_sync)
 #define VPU_IOCX_SSCD_COREDUMP		_VPU_IOW(VPU_SSCD_COREDUMP, struct vpu_coredump_info)
 #define VPU_IOCX_NOTIFY_IDLE		_VPU_IOW(VPU_NOTIFY_IDLE, __u32)
-#define VPU_IOCX_NOTIFY_WAKELOCK	_VPU_IOW(VPU_NOTIFY_WAKELOCK, __u32)
+#define VPU_IOCX_SEND_FW_CMD		_VPU_IOW(VPU_SEND_FW_CMD, struct vpu_fw_cmd)
 
 #endif /* _UAPI_VPU_H_ */

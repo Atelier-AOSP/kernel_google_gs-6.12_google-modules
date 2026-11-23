@@ -350,11 +350,11 @@ static void thermal_ntc_configure_sensor_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, thermal_ntc_configure_sensor(sens), 0);
 
 	ntc_data->stats_register_ret = -EINVAL;
-	KUNIT_EXPECT_EQ(test, thermal_ntc_configure_sensor(sens), -EINVAL);
+	KUNIT_EXPECT_EQ(test, thermal_ntc_configure_sensor(sens), 0);
 
 	thermal_ntc_test_init_var();
 	ntc_data->stats_set_thresholds_ret = -EINVAL;
-	KUNIT_EXPECT_EQ(test, thermal_ntc_configure_sensor(sens), -EINVAL);
+	KUNIT_EXPECT_EQ(test, thermal_ntc_configure_sensor(sens), 0);
 }
 
 static void thermal_ntc_cleanup_sensor_test(struct kunit *test)
@@ -585,7 +585,6 @@ static void thermal_ntc_post_configure_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test,
 			thermal_ntc_post_configure(&ntc_data->mock_list),
 			ntc_data->cpm_cb_ret);
-	KUNIT_EXPECT_EQ(test, ntc_data->warn_irq_ct, 0);
 	KUNIT_EXPECT_FALSE(test, ntc_data->trip_disable_called);
 
 	// Success
@@ -861,68 +860,79 @@ static void thermal_ntc_irq_notify_test(struct kunit *test)
 static void thermal_ntc_create_tzd_with_trip(struct kunit *test)
 {
 	struct ntc_test_data *ntc_data = test->priv;
-	struct thermal_trip *trips = kunit_kcalloc(test, THERMAL_TRIP_CRITICAL, sizeof(*trips),
-						   GFP_KERNEL);
 	int i = 0;
 
-	for (i = 0; i <= THERMAL_TRIP_CRITICAL; i++)
-		trips[i].type = i;
-	ntc_data->tzd->trips = trips;
 	ntc_data->tzd->num_trips = THERMAL_TRIP_CRITICAL + 1;
+	for (i = 0; i <= THERMAL_TRIP_CRITICAL; i++)
+		ntc_data->tzd->trips[i].trip.type = i;
+}
+
+struct thermal_ntc_set_trip_test_walk_data {
+	struct kunit *test;
+	int index;
+};
+
+static int thermal_ntc_set_trip_test_walk_cb(struct thermal_trip *trip, void *data)
+{
+	struct thermal_ntc_set_trip_test_walk_data * const twd = data;
+	struct kunit *test = twd->test;
+	struct ntc_test_data *ntc_data = test->priv;
+	int trip_idx = twd->index;
+
+	if (trip_idx != THERMAL_TRIP_HOT) {
+		/* Check for trip_type other than HOT. */
+		char test_case_str[10] = "";
+
+		sprintf(test_case_str, "trip:%d", trip_idx);
+		thermal_ntc_test_init_var();
+		KUNIT_EXPECT_EQ_MSG(test,
+				    __thermal_ntc_set_trip_temp(ntc_data->tzd, trip,
+								THERMAL_NTC_THRESHOLD_TEST_TEMP),
+				    0, test_case_str);
+		KUNIT_EXPECT_EQ_MSG(test, ntc_data->trip_val, 0, test_case_str);
+	} else {
+		/* temperature > initial fault trip */
+		thermal_ntc_test_init_var();
+		KUNIT_EXPECT_EQ(test,
+				thermal_ntc_set_fault_trip(ntc_data->tzd,
+							   THERMAL_NTC_THRESHOLD_TEST_TEMP),
+				0);
+		KUNIT_EXPECT_EQ(test,
+				__thermal_ntc_set_trip_temp(ntc_data->tzd, trip,
+							    THERMAL_NTC_THRESHOLD_TEST_TEMP
+							    + 10000),
+				0);
+		KUNIT_EXPECT_EQ(test, ntc_data->trip_val, THERMAL_NTC_THRESHOLD_REG_VAL);
+
+		/* temperature == initial fault trip */
+		KUNIT_EXPECT_EQ(test,
+				__thermal_ntc_set_trip_temp(ntc_data->tzd, trip,
+							    THERMAL_NTC_THRESHOLD_TEST_TEMP),
+				0);
+		KUNIT_EXPECT_EQ(test, ntc_data->trip_val, THERMAL_NTC_THRESHOLD_REG_VAL);
+
+		/* temperature < initial fault trip */
+		KUNIT_EXPECT_EQ(test,
+				__thermal_ntc_set_trip_temp(ntc_data->tzd, trip,
+							    THERMAL_NTC_THRESHOLD_TEST_TEMP_2),
+				0);
+		KUNIT_EXPECT_EQ(test, ntc_data->trip_val, THERMAL_NTC_THRESHOLD_REG_VAL_2);
+	}
+
+	twd->index++;
+	return 0;
 }
 
 static void thermal_ntc_set_trip_cb_test(struct kunit *test)
 {
 	struct ntc_test_data *ntc_data = test->priv;
-	int i = 0;
+	struct thermal_ntc_set_trip_test_walk_data twd = {
+		.test = test,
+	};
 
-	/* __thermal_zone_get_trip() returning error. */
-	thermal_ntc_test_init_var();
-	KUNIT_EXPECT_EQ(test,
-			__thermal_ntc_set_trip_temp(ntc_data->tzd, 1,
-						    THERMAL_NTC_THRESHOLD_TEST_TEMP),
-			-EINVAL);
-
-	/* Check for trip_type other than HOT. */
 	thermal_ntc_create_tzd_with_trip(test);
-	for (i = 0; i <= THERMAL_TRIP_CRITICAL; i++) {
-		char test_case_str[10] = "";
 
-		if (i == THERMAL_TRIP_HOT)
-			continue;
-		sprintf(test_case_str, "trip:%d", i);
-		thermal_ntc_test_init_var();
-		KUNIT_EXPECT_EQ_MSG(test,
-				    __thermal_ntc_set_trip_temp(ntc_data->tzd, i,
-								THERMAL_NTC_THRESHOLD_TEST_TEMP),
-				    0, test_case_str);
-		KUNIT_EXPECT_EQ_MSG(test, ntc_data->trip_val, 0, test_case_str);
-	}
-	/* temperature > initial fault trip */
-	thermal_ntc_test_init_var();
-	KUNIT_EXPECT_EQ(test,
-			thermal_ntc_set_fault_trip(ntc_data->tzd, THERMAL_NTC_THRESHOLD_TEST_TEMP),
-			0);
-	KUNIT_EXPECT_EQ(test,
-			__thermal_ntc_set_trip_temp(ntc_data->tzd, THERMAL_TRIP_HOT,
-						    THERMAL_NTC_THRESHOLD_TEST_TEMP + 10000),
-			0);
-	KUNIT_EXPECT_EQ(test, ntc_data->trip_val, THERMAL_NTC_THRESHOLD_REG_VAL);
-
-	/* temperature == initial fault trip */
-	KUNIT_EXPECT_EQ(test,
-			__thermal_ntc_set_trip_temp(ntc_data->tzd, THERMAL_TRIP_HOT,
-						    THERMAL_NTC_THRESHOLD_TEST_TEMP),
-			0);
-	KUNIT_EXPECT_EQ(test, ntc_data->trip_val, THERMAL_NTC_THRESHOLD_REG_VAL);
-
-	/* temperature < initial fault trip */
-	KUNIT_EXPECT_EQ(test,
-			__thermal_ntc_set_trip_temp(ntc_data->tzd, THERMAL_TRIP_HOT,
-						    THERMAL_NTC_THRESHOLD_TEST_TEMP_2),
-			0);
-	KUNIT_EXPECT_EQ(test, ntc_data->trip_val, THERMAL_NTC_THRESHOLD_REG_VAL_2);
-
+	for_each_thermal_trip(ntc_data->tzd, thermal_ntc_set_trip_test_walk_cb, &twd);
 }
 
 static struct kunit_case thermal_ntc_helper_test[] = {
@@ -949,13 +959,10 @@ static struct thermal_zone_device *__thermal_ntc_create_tripless_tzd(
 		struct kunit *test, struct google_sensor_data *sens)
 {
 	struct thermal_zone_device *tzd;
-	struct thermal_zone_device_ops *ops;
 
-	ops = kunit_kzalloc(test, sizeof(*ops), GFP_KERNEL);
-	ops->get_temp = mock_get_temp;
-
-	tzd = kunit_kzalloc(test, sizeof(*tzd), GFP_KERNEL);
-	tzd->ops = ops;
+	/* Allocate enough trips for thermal_ntc_create_tzd_with_trip() */
+	tzd = kunit_kzalloc(test, struct_size(tzd, trips, THERMAL_TRIP_CRITICAL + 1), GFP_KERNEL);
+	tzd->ops.get_temp = mock_get_temp;
 	tzd->devdata = sens;
 	snprintf(tzd->type, THERMAL_NAME_LENGTH, "mock-thermal-sensor");
 

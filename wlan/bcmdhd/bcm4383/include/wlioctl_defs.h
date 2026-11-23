@@ -301,6 +301,12 @@ typedef uint32 ratespec_t;
 #define WL_SCANFLAGS_EXT_NOMLOFOLLOWUP			0x2U	/* No 2G or 5G band active
 								 * scan due to RNR
 								 */
+#define WL_SCANFLAGS_EXT_USE_HOST_MAC			0x4U	/* Use host-supplied MAC address for
+								 * LISTEN state AMT programming.
+								 * Valid only when
+								 * WL_SCANFLAGS_LISTEN is also set
+								 * in scan_type
+								 */
 
 /* BIT MASK for 6G_SCAN_TYPE  */
 #define WL_SCAN_SSIDFLAGS_SHORT_SSID		0x01U /* include short ssid */
@@ -2352,7 +2358,8 @@ typedef uint32 ratespec_t;
 #define WL_CHAN_CC_INDOOR_EXT		(1u << 0u)	/* To extend sta indoor chan to P2P role */
 #define WL_CHAN_CC_DFS_EXT		(1u << 1u)	/* To extend sta DFS chan to P2P role */
 #define WL_CHAN_CC_AWARE_DFS_EXT	(1u << 2u)	/* To extend sta DFS chan to NAN role */
-#define WL_CHAN_CC_POLICY_MASK		0x7u		/* Supported chan concurrency policy mask */
+#define WL_CHAN_CC_AWARE_INDOOR_EXT	(1u << 3u)	/* To extend sta INDOOR chan to NAN role */
+#define WL_CHAN_CC_POLICY_MASK		0x15u		/* Supported chan concurrency policy mask */
 
 #ifdef EXT_STA
 #define IHV_OID_BCM 0x00181000	/* based on BRCM_OUI value */
@@ -3149,6 +3156,17 @@ enum wlc_capext_eht_subfeature_bitpos {
 	WLC_CAPEXT_EHT_BITPOS_MAX
 };
 
+/* New SET2 Features cap bits should be added here */
+#define WLC_CAPEXT_FEATURE_SET2_BUCKET WLC_CAPEXT_FEATURE_SET1_MAX, \
+	WLC_CAPEXT_FEATURE_SET2_BUCKET_START		= 200, \
+	WLC_CAPEXT_FEATURE_BITPOS_CSI_DMA               = 201, \
+	WLC_CAPEXT_FEATURE_BITPOS_LPCAP                 = 202, \
+	WLC_CAPEXT_FEATURE_BITPOS_MRSNO_AP              = 203, \
+	WLC_CAPEXT_FEATURE_BITPOS_P2P2		        = 204, \
+	WLC_CAPEXT_FEATURE_BITPOS_HOST_PMKID		= 205, \
+	/* Add here */ \
+	WLC_CAPEXT_FEATURE_SET2_BUCKET_END
+
 /* WLC features bit positions in top level WLC feature id. Features mentioned below are reported */
 enum wlc_capext_feature_bitpos {
 	WLC_CAPEXT_FEATURE_BITPOS_AP			= 0,	/* feature with sub-features */
@@ -3316,10 +3334,13 @@ enum wlc_capext_feature_bitpos {
 	WLC_CAPEXT_FEATURE_BITPOS_MPF_SCAN		= 138,
 	WLC_CAPEXT_FEATURE_BITPOS_MRSNO			= 139,
 	WLC_CAPEXT_FEATURE_BITPOS_AOP_SCAN		= 140,
-	WLC_CAPEXT_FEATURE_BITPOS_MRSNO_AP              = 141,
-	WLC_CAPEXT_FEATURE_BITPOS_CSI_DMA		= 142,
-	WLC_CAPEXT_FEATURE_BITPOS_LPCAP			= 143,
-
+	WLC_CAPEXT_FEATURE_BITPOS_TXSHAPER		= 141,
+	WLC_CAPEXT_FEATURE_BITPOS_SLIMEMLSR		= 142,
+	WLC_CAPEXT_FEATURE_BITPOS_SCF			= 143,
+	WLC_CAPEXT_FEATURE_BITPOS_AP_BCN_SSID_MITIGATE	= 144,
+	WLC_CAPEXT_FEATURE_BITPOS_SCAN_QUEUE_SUPPORT	= 145,
+	/* Please add SET2 features in WLC_CAPEXT_FEATURE_SET2_BUCKET */
+	WLC_CAPEXT_FEATURE_SET2_BUCKET,
 	WLC_CAPEXT_FEATURE_BITPOS_MAX
 };
 

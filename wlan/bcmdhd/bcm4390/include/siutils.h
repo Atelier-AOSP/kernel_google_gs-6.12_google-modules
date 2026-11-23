@@ -621,6 +621,7 @@ extern int si_pcie_configspace_get(const si_t *sih, uint8 *buf, uint size);
 
 #ifndef BCMDONGLEHOST
 extern void si_muxenab(si_t *sih, uint32 w);
+#endif /* !BCMDONGLEHOST */
 
 #if defined(FIQ_ON_AXI_ERR) || defined(SOCI_NCI_BUS) && defined(DONGLEBUILD)
 #define si_clear_backplane_to(sih)	0u
@@ -630,7 +631,6 @@ extern uint32 si_clear_backplane_to(si_t *sih);
 
 extern uint32 si_clear_backplane_to_fiq(si_t *sih);
 extern void si_slave_wrapper_add(si_t *sih);
-#endif /* !BCMDONGLEHOST */
 extern uint32 si_clear_backplane_to_per_core(si_t *sih, uint coreid, uint coreunit, void *wrap);
 
 extern uint32 si_findcoreidx_by_axiid(const si_t *sih, uint32 axiid);

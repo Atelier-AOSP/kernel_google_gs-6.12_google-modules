@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -37,7 +42,6 @@ ddk_module(
     ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
     ],
@@ -63,7 +67,6 @@ ddk_module(
     ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
     ],
@@ -89,8 +92,6 @@ ddk_module(
     ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
-        "//private/google-modules/soc/gs:gs_soc_module",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
     ],
@@ -116,8 +117,6 @@ ddk_module(
     ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
-        "//private/google-modules/soc/gs:gs_soc_module",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
     ],
@@ -143,8 +142,6 @@ ddk_module(
     ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
-        "//private/google-modules/soc/gs:gs_soc_module",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
     ],
@@ -170,8 +167,6 @@ ddk_module(
     ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
-        "//private/google-modules/soc/gs:gs_soc_module",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
     ],
@@ -274,24 +269,33 @@ ddk_module(
         "CONFIG_OPTION_REGION=\"$(PROJECT_REGION)\"",
         "CPIF_WAKEPKT_SET_MARK=0x80000000",
     ],
-    visibility = [
-        "//private/google-modules/aoc/alsa:__pkg__",
-        "//private/google-modules/power/mitigation:__pkg__",
-    ],
     deps = [
         ":cp_pmic",
         ":shm_ipc",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/radio/common/metrics_collection",
-        "//private/google-modules/soc/gs:gs_soc_module",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/gs/drivers/misc/s5910",
-        "//private/google-modules/soc/rdo:rdo_soc_headers",
-        "//private/google-modules/soc/rdo:rdo_soc_module",
-        "//private/google-modules/soc/rdo/pci:google-pcie",
-    ],
+        "//private/google-modules/soc/gs/drivers/misc/sbb-mux",
+        "//private/google-modules/soc/gs/drivers/soc/google/modemctl:google_modemctl",
+    ] + select({
+        "//private/devices/google/common:soc_is_laguna_or_later": [
+            "//private/google-modules/soc/rdo:rdo_soc_headers",
+            "//private/google-modules/soc/rdo/drivers/soc/google/cdd:gcdd",
+            "//private/google-modules/soc/rdo/pci:google-pcie",
+        ],
+        "//private/devices/google/common:soc_is_zumapro_or_before": [
+            "//private/google-modules/soc/gs/drivers/bts",
+            "//private/google-modules/soc/gs/drivers/iommu:exynos-pcie-iommu",
+            "//private/google-modules/soc/gs/drivers/pci/controller/dwc:pcie-exynos-gs",
+            "//private/google-modules/soc/gs/drivers/soc/google:ect_parser",
+            "//private/google-modules/soc/gs/drivers/soc/google:exynos_pm_qos",
+            "//private/google-modules/soc/gs/drivers/soc/google/cal-if:cmupmucal",
+        ],
+        "//conditions:default": [
+        ],
+    }),
 )
 
 ddk_module(
@@ -314,8 +318,6 @@ ddk_module(
     ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
-        "//private/google-modules/soc/gs:gs_soc_module",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
     ],
@@ -341,23 +343,7 @@ ddk_module(
     ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:headers",
-        "//private/google-modules/soc/gs:gs_soc_module",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
-    ],
-)
-
-kernel_module_group(
-    name = "cpif",
-    srcs = [
-        ":cp_pmic",
-        ":cp_thermal_zone",
-        ":cpif_ko",
-        ":cpif_page",
-        ":shm_ipc",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

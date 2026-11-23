@@ -708,7 +708,7 @@ static int mcf_pull_pcie_link_stats(struct mcf_pcie_link_stats_info *data,
 	data->link_up_failure_count = link_stats.link_up_failure_count;
 	data->link_recovery_failure_count = link_stats.link_recovery_failure_count;
 	data->link_down_irq_count = link_stats.link_down_irq_count;
-	data->cmpl_timeout_irq_count = link_stats.cmpl_timeout_irq_count;
+	data->cmpl_timeout_irq_count = link_stats.complete_timeout_irq_count;
 	data->link_up_time_avg = link_stats.link_up_time_avg;
 
 	return 0;

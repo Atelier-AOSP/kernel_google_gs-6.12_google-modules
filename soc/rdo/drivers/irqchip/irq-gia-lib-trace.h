@@ -146,6 +146,25 @@ DEFINE_EVENT(gia_device_events, gia_exit,
 	TP_ARGS(gdd)
 );
 
+TRACE_EVENT(gia_irq_set_wake,
+	TP_PROTO(struct gia_device_data *gdd, struct irq_data *d, unsigned int set),
+	TP_ARGS(gdd, d, set),
+	TP_STRUCT__entry(
+		__string(dev_name, GIA_DEV_NAME(gdd))
+		__field(unsigned int, virq)
+		__field(unsigned int, hwirq)
+		__field(unsigned int, set)
+	),
+	TP_fast_assign(
+		assign_str_wrp(dev_name, GIA_DEV_NAME(gdd));
+		__entry->virq = d->irq;
+		__entry->hwirq = d->hwirq;
+		__entry->set = set;
+	),
+	TP_printk("dev_name=%s, hwirq=%u, virq=%u, set=%u",
+		  __get_str(dev_name), __entry->hwirq, __entry->virq, __entry->set)
+);
+
 TRACE_EVENT(gia_get_power,
 	TP_PROTO(struct gia_device_data *gdd),
 	TP_ARGS(gdd),
@@ -230,20 +249,22 @@ TRACE_EVENT(gia_set_clear_trigger_reg,
 );
 
 TRACE_EVENT(gia_cache_update,
-	TP_PROTO(struct gia_device_data *gdd, int chip_number, u32 imr),
-	TP_ARGS(gdd, chip_number, imr),
+	TP_PROTO(struct gia_device_data *gdd, int chip_number, u32 imr, bool has_wake_irqs),
+	TP_ARGS(gdd, chip_number, imr, has_wake_irqs),
 	TP_STRUCT__entry(
 		__string(dev_name, GIA_DEV_NAME(gdd))
 		__field(int, chip_number)
 		__field(u32, imr)
+		__field(bool, has_wake_irqs)
 	),
 	TP_fast_assign(
 		assign_str_wrp(dev_name, GIA_DEV_NAME(gdd));
 		__entry->chip_number = chip_number;
 		__entry->imr = imr;
+		__entry->has_wake_irqs = has_wake_irqs;
 	),
-	TP_printk("dev_name=%s, chip_number=%d, imr=0x%x",
-		  __get_str(dev_name), __entry->chip_number, __entry->imr)
+	TP_printk("dev_name=%s, chip_number=%d, imr=0x%x, has_wake_irqs=%d",
+		  __get_str(dev_name), __entry->chip_number, __entry->imr, __entry->has_wake_irqs)
 );
 
 #endif /* _TRACE_IRQ_GIA_H */

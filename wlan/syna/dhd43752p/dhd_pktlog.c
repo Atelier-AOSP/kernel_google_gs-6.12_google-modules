@@ -23,6 +23,7 @@
  * $Id$
  */
 
+#include <linux/vmalloc.h>
 #include <linux/sched/clock.h>
 
 #include <typedefs.h>

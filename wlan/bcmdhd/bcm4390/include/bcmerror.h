@@ -144,9 +144,10 @@ typedef int bcmerror_t;
 #define BCME_OTP_PROG_LOCK		-85	/* OTP Program Locked */
 #define BCME_RETRY			-86	/* Ask caller to retry */
 #define BCME_NOTINFRASTA		-87	/* Not Infra STA */
+#define BCME_BADSCANCHAN		-88	/* Bad scan channel list */
 
 /* Add new one above and update BCME_LAST!! */
-#define BCME_LAST			BCME_NOTINFRASTA
+#define BCME_LAST			BCME_BADSCANCHAN
 
 /* This error code is *internal* to the driver, and is not propogated to users. It should
  * only be used by IOCTL patch handlers as an indication that it did not handle the IOCTL.
@@ -248,11 +249,13 @@ typedef int bcmerror_t;
 	"Programming failed due to OTP Locked - need a reset", \
 	"retry indication",		\
 	"Not Infra STA",		\
+	"Bad scan channel list",		\
 }
 
 /* FTM error codes [-1024, -2047] */
 enum {
-	WL_FTM_E_LAST			= -1094,
+	WL_FTM_E_LAST			= -1095,
+	WL_FTM_E_INVALID_BSSCFG		= -1095,
 	WL_FTM_E_SUPPRESS		= -1094,
 	WL_FTM_E_NO_CSI_DATA		= -1093,
 	WL_FTM_E_PHY_CSI_FATAL_ERR	= -1092,
@@ -329,8 +332,6 @@ enum {
 };
 typedef int32 wl_ftm_status_t;
 
-/* TODO: remove another copy in wlioctl.h */
-#ifdef BCMUTILS_ERR_CODES
 /* begin proxd codes compatible w/ ftm above - obsolete  DO NOT extend */
 enum {
 	/* Warning:
@@ -543,7 +544,6 @@ enum {
 	/* SAE-PK validation failed */
 	WL_SAE_E_AUTH_PK_VALIDATION		= -3098
 };
-#endif /* BCMUTILS_ERR_CODES */
 
 /*
  * Bootloader error code range: -4096...-5119
@@ -719,14 +719,15 @@ enum {
 	/* bmpu configuration error */
 	BL_E_BUS_MPU_CONFIG_FAIL	= -4151,
 
+	/* Hash below supported minimum */
+	BL_E_SIG_SHA_BELOW_MIN		= -4152,
+
 	/* last error */
 	BL_E_LAST			= -5119
 };
 
 typedef int32 bl_status_t;
 
-/* TODO: remove another copy in wlioctl.h */
-#ifdef BCMUTILS_ERR_CODES
 /* PMK manager block. Event codes from -5120 to -6143 */
 /* PSK hashing event codes */
 enum {
@@ -754,7 +755,6 @@ enum {
 	/* Failure to get NAF3 params */
 	WL_SOE_E_NAF3_PARAMS_GET_ERROR		= -6147
 };
-#endif /* BCMUTILS_ERR_CODES */
 
 /* BCM crypto ASN.1 status codes. */
 /* Reserved range is from -7168 to -8191 */
@@ -862,7 +862,9 @@ enum {
 	/* PTKSA lifetime expired */
 	WL_PASN_E_AUTH_PTKSA_EXPIRED		= -8231,
 	/* Local to deauth peer. */
-	WL_PASN_E_DEAUTH_PEER			= -8232
+	WL_PASN_E_DEAUTH_PEER			= -8232,
+	/* WLC down */
+	WL_PASN_E_WLC_DOWN			= -8233
 };
 
 /* bcm fsm status codes. [-9216, -10239] */
@@ -943,4 +945,5 @@ typedef enum {
 	BCMSM_E_EVT_HANDLED		= -12310,	/**< EVT is consumed without transition */
 	BCMSM_E_MAX			= -13311
 } bcmsm_status_t;
+
 #endif	/* _bcmerror_h_ */

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Implements methods common to the family of EdgeTPUs for mobile devices to retrieve host side
  * debug dump segments and report them to SSCD.
@@ -11,12 +11,14 @@
 #include <linux/completion.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
+#include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/fs.h>
 #include <linux/ktime.h>
 #include <linux/mutex.h>
 #include <linux/platform_data/sscoredump.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 #include <linux/rbtree.h>
 #include <linux/seq_file.h>
 #include <linux/slab.h>
@@ -324,10 +326,27 @@ err_external_debug_lock:
 
 void edgetpu_debug_dump_cpu_regs(struct edgetpu_dev *etdev)
 {
-	/* Acquires the PM count to ensure the TPU block and control cluster are powered. */
-	if (edgetpu_pm_get_if_powered(etdev, false)) {
-		dev_info(etdev->dev, "Device off. Skip CPU registers dump.");
+	u32 val;
+
+	if (IS_ENABLED(CONFIG_EDGETPU_TEST))
 		return;
+
+	/* Ensure the TPU block and control cluster are powered. */
+	if (pm_runtime_get_if_active(etdev->dev) <= 0) {
+		etdev_info(etdev, "pm_runtime not active, skip CPU registers dump.");
+		return;
+	}
+
+	/*
+	 * If Control Cluster is powered off access hits an SError (and there's
+	 * no need to dump PCs.
+	 */
+
+	val = edgetpu_dev_read_32_sync(etdev, EDGETPU_REG_LPM_CONTROL);
+	if (!(val & LPM_CTRL_LPMCTLPWRSTATE)) {
+		etdev_info(etdev, "control cluster powered off (%#x), skip CPU registers dump.",
+			   val);
+		goto err_rpm_put;
 	}
 
 	mutex_lock(&edgetpu_debug_regs_lock);
@@ -340,7 +359,8 @@ void edgetpu_debug_dump_cpu_regs(struct edgetpu_dev *etdev)
 
 err_unlock:
 	mutex_unlock(&edgetpu_debug_regs_lock);
-	edgetpu_pm_put(etdev);
+err_rpm_put:
+	pm_runtime_put(etdev->dev);
 }
 
 #if IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP) || IS_ENABLED(CONFIG_EDGETPU_TEST)

@@ -53,11 +53,11 @@ int lwis_dpm_update_qos(struct lwis_device *lwis_dev, struct lwis_qos_setting *q
 		return -EPERM;
 	}
 
-	// TODO: Real qos_family_name implementation will be done in b/291854347
-	// As for qos update, either of qos_family_name or clock_family need set.
+	/* As for qos update, either of qos_family_name or clock_family need set. */
 	if (strlen(qos_setting->qos_family_name) > 0 ||
 	    (qos_setting->clock_family != CLOCK_FAMILY_INVALID)) {
 		ret = lwis_platform_dpm_update_qos(lwis_dev, target_dev, qos_setting);
+
 		if (qos_setting->frequency_hz < 0) {
 			lwis_get_sync_update_device_mask(target_dev, qos_setting, sync_update);
 			lwis_platform_refresh_expected_qos_settings(target_dev, qos_setting);
@@ -247,12 +247,13 @@ int lwis_dpm_device_deinit(void)
 
 uint32_t lwis_dpm_read_clock(struct lwis_device *lwis_dev)
 {
-	uint32_t clock = 0;
+	return lwis_platform_dpm_read_clock(lwis_dev);
+}
 
-	if (!lwis_dev->clocks) {
-		dev_err(lwis_dev->dev, "%s clock not defined", lwis_dev->name);
-		return -ENODEV;
-	}
-	clock = clk_get_rate(lwis_dev->clocks->clk[0].clk);
-	return clock;
+/*
+ * lwis_dpm_op_level_get: gets the operating level for the requesting entity.
+ */
+int lwis_dpm_op_level_get(struct lwis_device *lwis_dev, struct lwis_dpm_op_level *op_level)
+{
+	return lwis_platform_dpm_op_level_get(lwis_dev, op_level);
 }

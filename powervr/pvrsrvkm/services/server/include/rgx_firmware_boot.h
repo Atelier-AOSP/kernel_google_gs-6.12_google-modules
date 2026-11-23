@@ -56,10 +56,14 @@ typedef union _PVRSRV_FW_BOOT_PARAMS_
 		IMG_DEV_VIRTADDR sFWDataDevVAddr;
 		IMG_DEV_VIRTADDR sFWRoDataDevVAddr;
 		IMG_DEV_VIRTADDR sFWCorememCodeDevVAddr;
-		RGXFWIF_DEV_VIRTADDR sFWCorememCodeFWAddr;
+#if defined(SUPPORT_TRUSTED_DEVICE) && defined(RGX_PREMAP_FW_HEAPS)
+		IMG_UINT32 ui32Unused1;
+#endif
 		IMG_DEVMEM_SIZE_T uiFWCorememCodeSize;
 		IMG_DEV_VIRTADDR sFWCorememDataDevVAddr;
-		RGXFWIF_DEV_VIRTADDR sFWCorememDataFWAddr;
+#if defined(SUPPORT_TRUSTED_DEVICE) && defined(RGX_PREMAP_FW_HEAPS)
+		IMG_UINT32 ui32Unused2;
+#endif
 		IMG_UINT32 ui32NumThreads;
 	} sMeta;
 
@@ -79,11 +83,15 @@ typedef union _PVRSRV_FW_BOOT_PARAMS_
 		IMG_DEV_VIRTADDR sFWRoDataDevVAddr;
 
 		IMG_DEV_VIRTADDR sFWCorememCodeDevVAddr;
-		RGXFWIF_DEV_VIRTADDR sFWCorememCodeFWAddr;
+#if defined(SUPPORT_TRUSTED_DEVICE) && defined(RGX_PREMAP_FW_HEAPS)
+		IMG_UINT32 ui32Unused1;
+#endif
 		IMG_DEVMEM_SIZE_T uiFWCorememCodeSize;
 
 		IMG_DEV_VIRTADDR sFWCorememDataDevVAddr;
-		RGXFWIF_DEV_VIRTADDR sFWCorememDataFWAddr;
+#if defined(SUPPORT_TRUSTED_DEVICE) && defined(RGX_PREMAP_FW_HEAPS)
+		IMG_UINT32 ui32Unused2;
+#endif
 		IMG_DEVMEM_SIZE_T uiFWCorememDataSize;
 	} sRISCV;
 

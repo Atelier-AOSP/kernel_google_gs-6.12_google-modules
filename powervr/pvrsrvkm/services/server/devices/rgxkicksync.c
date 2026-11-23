@@ -166,21 +166,41 @@ PVRSRV_ERROR PVRSRVRGXDestroyKickSyncContextKM(RGX_SERVER_KICKSYNC_CONTEXT * psK
 	PVRSRV_RGXDEV_INFO * psDevInfo = psKickSyncContext->psDeviceNode->pvDevice;
 	PVRSRV_ERROR         eError;
 
+	/* remove node from list before calling destroy - as destroy, if successful
+	 * will invalidate the node
+	 * must be re-added if destroy fails
+	 */
+	OSWRLockAcquireWrite(psDevInfo->hKickSyncCtxListLock);
+	dllist_remove_node(&(psKickSyncContext->sListNode));
+	OSWRLockReleaseWrite(psDevInfo->hKickSyncCtxListLock);
+
 	/* Check if the FW has finished with this resource ... */
 	eError = RGXFWRequestCommonContextCleanUp(psKickSyncContext->psDeviceNode,
 	                                          psKickSyncContext->psServerCommonContext,
 	                                          RGXFWIF_DM_GP,
 	                                          PDUMP_FLAGS_NONE);
 
-	RGX_RETURN_IF_ERROR_AND_DEVICE_RECOVERABLE(psKickSyncContext->psDeviceNode,
-						   eError,
-						   RGXFWRequestCommonContextCleanUp);
+	if (RGXIsErrorAndDeviceRecoverable(psKickSyncContext->psDeviceNode, &eError))
+	{
+		OSWRLockAcquireWrite(psDevInfo->hKickSyncCtxListLock);
+		dllist_add_to_tail(&(psDevInfo->sKickSyncCtxtListHead), &(psKickSyncContext->sListNode));
+		OSWRLockReleaseWrite(psDevInfo->hKickSyncCtxListLock);
+
+		return eError;
+	}
+	else if (eError != PVRSRV_OK)
+	{
+		PVR_LOG(("%s: Unexpected error from RGXFWRequestCommonContextCleanUp(%s)",
+				__func__,
+				PVRSRVGetErrorString(eError)));
+		/* Device is dead.
+		 * Change error type to make callers destroy the resource handle.
+		 * This is to prevent repeated calls to this function.
+		 */
+		eError = PVRSRV_OK;
+	}
 
 	/* ... it has so we can free its resources */
-
-	OSWRLockAcquireWrite(psDevInfo->hKickSyncCtxListLock);
-	dllist_remove_node(&(psKickSyncContext->sListNode));
-	OSWRLockReleaseWrite(psDevInfo->hKickSyncCtxListLock);
 
 	FWCommonContextFree(psKickSyncContext->psServerCommonContext);
 	psKickSyncContext->psServerCommonContext = NULL;
@@ -251,34 +271,8 @@ PVRSRV_ERROR PVRSRVRGXKickSyncKM(RGX_SERVER_KICKSYNC_CONTEXT * psKickSyncContext
                                  PVRSRV_TIMELINE               iUpdateTimeline,
                                  PVRSRV_FENCE                * piUpdateFence,
                                  IMG_CHAR                      szUpdateFenceName[PVRSRV_SYNC_NAME_LENGTH],
+                                 PVRSRV_FENCE                  iExportFenceToSignal,
                                  IMG_UINT32                    ui32ExtJobRef)
-{
-	return PVRSRVRGXKickSyncWithExportFenceKM(psKickSyncContext,
-	                                          ui32ClientUpdateCount,
-	                                          pauiClientUpdateUFODevVarBlock,
-	                                          paui32ClientUpdateOffset,
-	                                          paui32ClientUpdateValue,
-	                                          ui32FWCmdSize,
-	                                          iCheckFence,
-	                                          iUpdateTimeline,
-	                                          piUpdateFence,
-	                                          szUpdateFenceName,
-	                                          PVRSRV_NO_FENCE,
-	                                          ui32ExtJobRef);
-}
-
-PVRSRV_ERROR PVRSRVRGXKickSyncWithExportFenceKM(RGX_SERVER_KICKSYNC_CONTEXT * psKickSyncContext,
-                                                IMG_UINT32                    ui32ClientUpdateCount,
-                                                SYNC_PRIMITIVE_BLOCK       ** pauiClientUpdateUFODevVarBlock,
-                                                IMG_UINT32                  * paui32ClientUpdateOffset,
-                                                IMG_UINT32                  * paui32ClientUpdateValue,
-                                                IMG_UINT32                    ui32FWCmdSize,
-                                                PVRSRV_FENCE                  iCheckFence,
-                                                PVRSRV_TIMELINE               iUpdateTimeline,
-                                                PVRSRV_FENCE                * piUpdateFence,
-                                                IMG_CHAR                      szUpdateFenceName[PVRSRV_SYNC_NAME_LENGTH],
-                                                PVRSRV_FENCE                  iExportFenceToSignal,
-                                                IMG_UINT32                    ui32ExtJobRef)
 {
 	RGXFWIF_KCCB_CMD         sKickSyncKCCBCmd;
 	RGX_CCB_CMD_HELPER_DATA  asCmdHelperData[1];
@@ -457,30 +451,6 @@ PVRSRV_ERROR PVRSRVRGXKickSyncWithExportFenceKM(RGX_SERVER_KICKSYNC_CONTEXT * ps
 		{
 			CHKPT_DBG((PVR_DBG_ERROR, "%s: ...returned error (%s) psExportFenceSyncCheckpoint=<%p>", __func__, PVRSRVGetErrorString(eError), psExportFenceSyncCheckpoint));
 			goto fail_resolve_export_fence;
-		}
-
-		/* Check that the export fence was not also included as part of the
-		 * check fence (which is an error and would lead to a stalled kick).
-		 */
-		if (ui32FenceSyncCheckpointCount > 0)
-		{
-			IMG_UINT32 iii;
-
-			CHKPT_DBG((PVR_DBG_ERROR, "%s:   Checking export fence is not part of check fence...", __func__));
-			CHKPT_DBG((PVR_DBG_ERROR, "%s:   ui32FenceSyncCheckpointCount=%d",
-					   __func__, ui32FenceSyncCheckpointCount));
-
-			for (iii=0; iii<ui32FenceSyncCheckpointCount; iii++)
-			{
-				CHKPT_DBG((PVR_DBG_ERROR, "%s: apsFenceSyncCheckpoints[%d]=<%p>, FWAddr=0x%x", __func__, iii, apsFenceSyncCheckpoints[iii], SyncCheckpointGetFirmwareAddr(apsFenceSyncCheckpoints[iii])));
-				if (apsFenceSyncCheckpoints[iii] == psExportFenceSyncCheckpoint)
-				{
-					CHKPT_DBG((PVR_DBG_ERROR, "%s: ERROR psExportFenceSyncCheckpoint=<%p>", __func__, psExportFenceSyncCheckpoint));
-					eError = PVRSRV_ERROR_INVALID_PARAMS;
-					PVR_DPF((PVR_DBG_ERROR, " %s - iCheckFence includes iExportFenceToSignal", PVRSRVGetErrorString(eError)));
-					goto fail_check_fence_includes_export_fence;
-				}
-			}
 		}
 	}
 
@@ -841,7 +811,6 @@ fail_cmdacquire:
 	{
 		OSFreeMem(pui8FWCmd);
 	}
-fail_check_fence_includes_export_fence:
 fail_fwcmd:
 	if (psExportFenceSyncCheckpoint)
 	{

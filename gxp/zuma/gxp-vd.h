@@ -19,6 +19,7 @@
 #include <linux/types.h>
 #include <linux/wait.h>
 
+#include <gcip/gcip-dma-fence.h>
 #include <gcip/gcip-image-config.h>
 #include <gcip/gcip-iommu-reserve.h>
 #include <gcip/gcip-memory.h>
@@ -99,7 +100,7 @@ struct gxp_virtual_device {
 	 * The config regions specified in image config.
 	 * core_cfg's size should be a multiple of GXP_NUM_CORES.
 	 */
-	struct gcip_memory core_cfg, vd_cfg, sys_cfg, lpm;
+	struct gcip_memory core_cfg, vd_cfg, sys_cfg, lpm, mcu_shared_cfg;
 	uint core_list;
 	/*
 	 * The ID of DSP client. -1 if it is not allocated.
@@ -137,10 +138,8 @@ struct gxp_virtual_device {
 	/* A constant ID assigned after VD is allocated. For debug only. */
 	int vdid;
 	struct gcip_image_config_parser cfg_parser;
-	/* Protects @dma_fence_list. */
-	struct mutex fence_list_lock;
-	/* List of GXP DMA fences owned by this VD. */
-	struct list_head gxp_fence_list;
+	/* To manage DMA fences. */
+	struct gcip_dma_fence_manager *gfence_mgr;
 	/* Protects changing the state of vd while generating a debug dump. */
 	struct mutex debug_dump_lock;
 	/* An eventfd which will be triggered when this vd is invalidated. */
@@ -445,20 +444,6 @@ gxp_vd_get(struct gxp_virtual_device *vd)
  * If @vd->refcount becomes 0, @vd will be freed.
  */
 void gxp_vd_put(struct gxp_virtual_device *vd);
-
-/*
- * Change the status of the vd of @client_id to GXP_VD_UNAVAILABLE.
- * Internally, it will discard all pending/unconsumed user commands and call the
- * `gxp_vd_block_unready` function.
- *
- * This function will be called when the `CLIENT_FATAL_ERROR_NOTIFY` RKCI has been sent from the
- * firmware side.
- *
- * @gxp: The GXP device to obtain the handler for
- * @client_id: client_id of the crashed vd.
- * @release_vmbox: Releases the vmbox of the vd after invalidating it.
- */
-void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, bool release_vmbox);
 
 /*
  * Changes the status of the @vd to GXP_VD_UNAVAILABLE.

@@ -96,6 +96,10 @@ typedef IMG_UINT32 PHYS_HEAP_USAGE_FLAGS;
                               PHYS_HEAP_USAGE_PIXEL_SLC    | \
                               PHYS_HEAP_USAGE_DLM)
 
+#define PHYS_HEAP_USAGE_APPLICATION_MASK (PHYS_HEAP_USAGE_CPU_LOCAL    | \
+                                          PHYS_HEAP_USAGE_GPU_LOCAL    | \
+                                          PHYS_HEAP_USAGE_GPU_PRIVATE)
+
 #define FIRST_PHYSHEAP_MAPPED_TO_FW_MAIN_DEVMEM    PVRSRV_PHYS_HEAP_FW_CODE
 
 typedef void (*CpuPAddrToDevPAddr)(IMG_HANDLE hPrivData,

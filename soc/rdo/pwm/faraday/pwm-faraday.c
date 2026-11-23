@@ -637,7 +637,7 @@ disable_clk:
 	return ret;
 }
 
-static int pwm_faraday_remove(struct platform_device *pdev)
+static void pwm_faraday_remove(struct platform_device *pdev)
 {
 	struct pwm_faraday_host *host = platform_get_drvdata(pdev);
 	bool is_enabled = false;
@@ -659,8 +659,6 @@ static int pwm_faraday_remove(struct platform_device *pdev)
 	pm_runtime_dont_use_autosuspend(&pdev->dev);
 
 	pwmchip_remove(&host->chip);
-
-	return 0;
 }
 
 static int __maybe_unused pwm_faraday_runtime_suspend(struct device *dev)

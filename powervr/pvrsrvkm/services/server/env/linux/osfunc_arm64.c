@@ -112,6 +112,13 @@ static inline void FlushRange(void *pvRangeAddrStart,
 			{
 				asm volatile ("dc cvac, %0" :: "r" (pbBase));
 			}
+/* b/459774673: Apply CMOs twice on MBU */
+#if defined(CONFIG_POWERVR_MBU)
+			for (pbBase = pbStart; pbBase < pbEnd; pbBase += ui32CacheLineSize)
+			{
+				asm volatile ("dc cvac, %0" :: "r" (pbBase));
+			}
+#endif
 			break;
 		case PVRSRV_CACHE_OP_INVALIDATE:
 		case PVRSRV_CACHE_OP_FLUSH:
@@ -119,6 +126,13 @@ static inline void FlushRange(void *pvRangeAddrStart,
 			{
 				asm volatile ("dc civac, %0" :: "r" (pbBase));
 			}
+/* b/459774673: Apply CMOs twice on MBU */
+#if defined(CONFIG_POWERVR_MBU)
+			for (pbBase = pbStart; pbBase < pbEnd; pbBase += ui32CacheLineSize)
+			{
+				asm volatile ("dc civac, %0" :: "r" (pbBase));
+			}
+#endif
 			break;
 		default:
 			PVR_DPF((PVR_DBG_ERROR,
@@ -190,26 +204,8 @@ void OSCPUCacheInvalidateRangeKM(PVRSRV_DEVICE_NODE *psDevNode,
 								 IMG_CPU_PHYADDR sCPUPhysStart,
 								 IMG_CPU_PHYADDR sCPUPhysEnd)
 {
-	struct device *dev;
-
-	if (pvVirtStart)
-	{
-		FlushRange(pvVirtStart, pvVirtEnd, PVRSRV_CACHE_OP_INVALIDATE);
-		return;
-	}
-
-	dev = psDevNode->psDevConfig->pvOSDevice;
-
-	if (dev)
-	{
-		dma_sync_single_for_cpu(dev, sCPUPhysStart.uiAddr,
-								sCPUPhysEnd.uiAddr - sCPUPhysStart.uiAddr,
-								DMA_FROM_DEVICE);
-	}
-	else
-	{
-		PVR_DPF((PVR_DBG_ERROR, "Cache operation cannot be completed!"));
-	}
+	/* We default to flush here to ensure that client side can't issue invalidates on memory written by KMD */
+	OSCPUCacheFlushRangeKM(psDevNode, pvVirtStart, pvVirtEnd, sCPUPhysStart, sCPUPhysEnd);
 }
 
 

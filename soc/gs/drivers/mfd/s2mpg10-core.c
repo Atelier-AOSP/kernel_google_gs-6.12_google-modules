@@ -148,8 +148,8 @@ u8 s2mpg10_get_rev_id(void)
 }
 EXPORT_SYMBOL_GPL(s2mpg10_get_rev_id);
 
-struct i2c_client *s2mpg10_get_i2c_client(struct s2mpg10_dev *dev,
-					  unsigned int reg)
+static struct i2c_client *s2mpg10_get_i2c_client(struct s2mpg10_dev *dev,
+						 unsigned int reg)
 {
 	struct i2c_client *client = NULL;
 
@@ -165,8 +165,8 @@ struct i2c_client *s2mpg10_get_i2c_client(struct s2mpg10_dev *dev,
 	return client;
 }
 
-int s2mpg10_regmap_read_reg(void *context, unsigned int reg,
-			    unsigned int *dest)
+static int s2mpg10_regmap_read_reg(void *context, unsigned int reg,
+				   unsigned int *dest)
 {
 	u8 ureg = reg;
 	u8 *udest = (u8 *)dest;
@@ -180,8 +180,8 @@ int s2mpg10_regmap_read_reg(void *context, unsigned int reg,
 	return s2mpg10_read_reg(client, ureg, udest);
 }
 
-int s2mpg10_regmap_write_reg(void *context, unsigned int reg,
-			     unsigned int value)
+static int s2mpg10_regmap_write_reg(void *context, unsigned int reg,
+				    unsigned int value)
 {
 	u8 ureg = reg;
 	u8 uvalue = value;

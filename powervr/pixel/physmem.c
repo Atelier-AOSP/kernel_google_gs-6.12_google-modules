@@ -34,7 +34,7 @@ static PVRSRV_ERROR get_dev_pa(PMR_IMPL_PRIVDATA priv_data, u32 log2_page_size,
 	(void)ipa_policy, (void)ipa_clear_mask;
 #endif
 
-	dev_dbg(data->platform_dev, "%s: mapping %u pages", __func__, npages);
+	PVR_DPF((PVR_DBG_CUSTOMER, "%s: mapping %u pages", __func__, npages));
 
 	PVR_LOG_RETURN_IF_FALSE(npages != 0, "unexpected page count", PVRSRV_ERROR_OUT_OF_RANGE);
 	PVR_LOG_RETURN_IF_FALSE(PAGE_SHIFT == log2_page_size, "unexpected page size",
@@ -66,9 +66,9 @@ static PVRSRV_ERROR get_dev_pa(PMR_IMPL_PRIVDATA priv_data, u32 log2_page_size,
 		dev_pa[i].uiAddr =
 			data->pa_ranges[range_idx].pa + (page_idx << PAGE_SHIFT) + page_offset;
 
-		dev_dbg(data->platform_dev,
+		PVR_DPF((PVR_DBG_CUSTOMER,
 			"%s: pa: 0x%llx, raw_offset: 0x%llx, page_offset: 0x%llx", __func__,
-			dev_pa[i].uiAddr, offset[i], page_offset);
+			dev_pa[i].uiAddr, offset[i], page_offset));
 	}
 
 	return PVRSRV_OK;

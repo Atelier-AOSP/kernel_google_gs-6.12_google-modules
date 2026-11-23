@@ -24,6 +24,7 @@
  */
 #include <typedefs.h>
 #include <osl.h>
+#include <bcmstdlib_s.h>
 #include <bcmutils.h>
 #include <bcmendian.h>
 #include <dngl_stats.h>

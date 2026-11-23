@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  *
- * (C) COPYRIGHT 2010-2025 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2010-2026 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -434,9 +434,10 @@ enum kbase_page_status {
 /**
  * struct kbase_page_metadata - Metadata for each page in kbase
  *
- * @data.mem_pool.kbdev:    Pointer to kbase device.
+ * @kbdev:                  Pointer to kbase device.
  * @dma_addr:               DMA address mapped to page.
  * @migrate_lock:           A spinlock to protect the private metadata.
+ * @cpu_map_lock:           A semaphore used to sync CPU map/unmap operations.
  * @data:                   Member in union valid based on @status.
  * @status:                 Status to keep track if page can be migrated at any
  *                          given moment. MSB will indicate if page is isolated.
@@ -449,22 +450,26 @@ enum kbase_page_status {
  * migration functionality as well as address for DMA mapping.
  */
 struct kbase_page_metadata {
+	struct kbase_device *kbdev;
 	dma_addr_t dma_addr;
 	spinlock_t migrate_lock;
+	struct semaphore cpu_map_lock;
 
 	union {
 		struct {
 			struct kbase_mem_pool *pool;
-			/* Pool could be terminated after page is isolated and therefore
-			 * won't be able to get reference to kbase device.
-			 */
-			struct kbase_device *kbdev;
 		} mem_pool;
 		struct {
 			struct kbase_va_region *reg;
 			struct kbase_mmu_table *mmut;
 			/* GPU virtual page frame number, in GPU_PAGE_SIZE units */
 			u64 vpfn;
+			/*
+			 * @kctx_id: Id of Kbase context the page belongs to.
+			 *           Set this field with the id when page is mapped.
+			 *           Otherwise set to RESERVED_CONTEXT_ID.
+			 */
+			u32 kctx_id;
 		} mapped;
 		struct {
 			struct kbase_mmu_table *mmut;
@@ -491,19 +496,34 @@ struct kbase_page_metadata {
 			 */
 			s8 num_allocated_sub_pages;
 #endif
+			/*
+			 * @kctx_id: Id of Kbase context the page belongs to.
+			 *           Set this field with the id when pt_page is mapped.
+			 *           Otherwise set to RESERVED_CONTEXT_ID.
+			 */
+			u32 kctx_id;
 		} pt_mapped;
-		struct {
-			struct kbase_device *kbdev;
-		} free_isolated;
-		struct {
-			struct kbase_device *kbdev;
-		} free_pt_isolated;
 	} data;
 
 	u8 status;
 	u8 vmap_count;
 	u8 group_id;
 };
+
+/**
+ * kbase_clear_page_metadata_kctx_id - Clear kctx_id in page metadata.
+ *
+ * @page_md:  Pointer to the page metadata
+ *
+ * kctx_id is set with kctx id when the page is assicoated with a kctx.
+ * When @page_md is newly allocated or its association with a kctx is gone
+ * clear kctx_id in metadata.
+ */
+static inline void kbase_clear_page_metadata_kctx_id(struct kbase_page_metadata *page_md)
+{
+	page_md->data.mapped.kctx_id = RESERVED_CONTEXT_ID;
+	page_md->data.pt_mapped.kctx_id = RESERVED_CONTEXT_ID;
+}
 
 /**
  * enum kbase_jit_report_flags - Flags for just-in-time memory allocation
@@ -951,6 +971,12 @@ static inline int kbase_reg_prepare_native(struct kbase_va_region *reg, struct k
 
 	reg->cpu_alloc->imported.native.kctx = kctx;
 	if (kbase_ctx_flag(kctx, KCTX_INFINITE_CACHE) && (reg->flags & KBASE_REG_CPU_CACHED)) {
+		if (WARN_ON_ONCE(kbase_is_page_migration_enabled())) {
+			kbase_mem_phy_alloc_put(reg->cpu_alloc);
+			reg->cpu_alloc = NULL;
+			return -EINVAL;
+		}
+
 		reg->gpu_alloc =
 			kbase_alloc_create(kctx, reg->nr_pages, KBASE_MEM_TYPE_NATIVE, group_id);
 		if (IS_ERR_OR_NULL(reg->gpu_alloc)) {
@@ -1137,6 +1163,17 @@ struct page *kbase_mem_pool_alloc_locked(struct kbase_mem_pool *pool);
  * kbase_mem_pool_free_locked() instead.
  */
 void kbase_mem_pool_free(struct kbase_mem_pool *pool, struct page *page, bool dirty);
+
+/**
+ * kbase_mem_pool_free_lite_defer - Same as kbase_mem_pool_free(), except the
+ *                                  handlling on defer restricted to only
+ *                                  adding the page insitu if required
+ * @pool:  Memory pool where page should be freed
+ * @page:  Page to free to the pool
+ * @dirty: Whether some of the page may be dirty in the cache.
+ *
+ */
+void kbase_mem_pool_free_lite_defer(struct kbase_mem_pool *pool, struct page *page, bool dirty);
 
 /**
  * kbase_mem_pool_free_locked - Free a page to memory pool

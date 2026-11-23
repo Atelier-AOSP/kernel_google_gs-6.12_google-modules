@@ -31,6 +31,7 @@
 #include <dhd_dbg.h>
 #include <dhd_linux_priv.h>
 #include <dhd_proto.h>
+#include <bcmstdlib_s.h>
 #ifdef PWRSTATS_SYSFS
 #include <wldev_common.h>
 #endif /* PWRSTATS_SYSFS */

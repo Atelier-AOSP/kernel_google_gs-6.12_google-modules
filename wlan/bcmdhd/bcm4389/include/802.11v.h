@@ -55,7 +55,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_bsstrans_query {
 	uint8 action;			/* WNM action: trans_query (6) */
 	uint8 token;			/* dialog token */
 	uint8 reason;			/* transition query reason */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);	/* Elements */
+	uint8 data[BCM_FLEX_ARRAY];	/* Elements */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_bsstrans_query dot11_bsstrans_query_t;
 #define DOT11_BSSTRANS_QUERY_LEN 4	/* Fixed length */
@@ -91,7 +91,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_bsstrans_req {
 	uint8 reqmode;			/* transition request mode */
 	uint16 disassoc_tmr;		/* disassociation timer */
 	uint8 validity_intrvl;		/* validity interval */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);	/* optional: BSS term duration, ... */
+	uint8 data[BCM_FLEX_ARRAY];	/* optional: BSS term duration, ... */
 					/* ...session info URL, candidate list */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_bsstrans_req dot11_bsstrans_req_t;
@@ -112,7 +112,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_bsstrans_resp {
 	uint8 token;			/* dialog token */
 	uint8 status;			/* transition status */
 	uint8 term_delay;		/* validity interval */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);	/* optional: BSSID target, candidate list */
+	uint8 data[BCM_FLEX_ARRAY];	/* optional: BSSID target, candidate list */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_bsstrans_resp dot11_bsstrans_resp_t;
 #define DOT11_BSSTRANS_RESP_LEN 5	/* Fixed length */
@@ -188,7 +188,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_timbc_req {
 	uint8 category;				/* category of action frame (10) */
 	uint8 action;				/* WNM action: DOT11_WNM_ACTION_TIMBC_REQ(18) */
 	uint8 token;				/* dialog token */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);		/* TIM broadcast request element */
+	uint8 data[BCM_FLEX_ARRAY];		/* TIM broadcast request element */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_timbc_req dot11_timbc_req_t;
 #define DOT11_TIMBC_REQ_LEN		3	/* Fixed length */
@@ -218,7 +218,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_timbc_resp {
 	uint8 category;			/* category of action frame (10) */
 	uint8 action;			/* action: DOT11_WNM_ACTION_TIMBC_RESP(19) */
 	uint8 token;			/* dialog token */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);	/* TIM broadcast response element */
+	uint8 data[BCM_FLEX_ARRAY];	/* TIM broadcast response element */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_timbc_resp dot11_timbc_resp_t;
 #define DOT11_TIMBC_RESP_LEN	3	/* Fixed length */
@@ -242,7 +242,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_tfs_req_ie {
 	uint8 len;
 	uint8 tfs_id;
 	uint8 actcode;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_tfs_req_ie dot11_tfs_req_ie_t;
 #define DOT11_TFS_REQ_IE_LEN		2	/* Fixed length, without id and len */
@@ -259,7 +259,7 @@ typedef struct dot11_tfs_req_ie dot11_tfs_req_ie_t;
 BWL_PRE_PACKED_STRUCT struct dot11_tfs_se {
 	uint8 sub_id;
 	uint8 len;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);		/* TCLAS element(s) + optional TCLAS proc */
+	uint8 data[BCM_FLEX_ARRAY];		/* TCLAS element(s) + optional TCLAS proc */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_tfs_se dot11_tfs_se_t;
 
@@ -268,7 +268,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_tfs_resp_ie {
 	uint8 id;				/* 92, DOT11_MNG_TFS_RESPONSE_ID */
 	uint8 len;
 	uint8 tfs_id;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_tfs_resp_ie dot11_tfs_resp_ie_t;
 #define DOT11_TFS_RESP_IE_LEN		1u	/* Fixed length, without id and len */
@@ -283,7 +283,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_tfs_status_se {
 	uint8 sub_id;				/* 92, DOT11_MNG_TFS_RESPONSE_ID */
 	uint8 len;
 	uint8 resp_st;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);		/* Potential dot11_tfs_se_t included */
+	uint8 data[BCM_FLEX_ARRAY];		/* Potential dot11_tfs_se_t included */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_tfs_status_se dot11_tfs_status_se_t;
 #define DOT11_TFS_STATUS_SE_LEN			1	/* Fixed length, without id and len */
@@ -320,7 +320,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_tfs_req {
 	uint8 category;				/* category of action frame (10) */
 	uint8 action;				/* WNM action: TFS request (13) */
 	uint8 token;				/* dialog token */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);		/* Elements */
+	uint8 data[BCM_FLEX_ARRAY];		/* Elements */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_tfs_req dot11_tfs_req_t;
 #define DOT11_TFS_REQ_LEN		3	/* Fixed length */
@@ -330,7 +330,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_tfs_resp {
 	uint8 category;				/* category of action frame (10) */
 	uint8 action;				/* WNM action: TFS request (14) */
 	uint8 token;				/* dialog token */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);		/* Elements */
+	uint8 data[BCM_FLEX_ARRAY];		/* Elements */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_tfs_resp dot11_tfs_resp_t;
 #define DOT11_TFS_RESP_LEN		3	/* Fixed length */
@@ -340,7 +340,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_tfs_notify_req {
 	uint8 category;				/* category of action frame (10) */
 	uint8 action;				/* WNM action: TFS notify request (15) */
 	uint8 tfs_id_cnt;			/* TFS IDs count */
-	BCM_DECLARE_FLEX_ARRAY(uint8, tfs_id);		/* Array of TFS IDs */
+	uint8 tfs_id[BCM_FLEX_ARRAY];		/* Array of TFS IDs */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_tfs_notify_req dot11_tfs_notify_req_t;
 #define DOT11_TFS_NOTIFY_REQ_LEN	3	/* Fixed length */
@@ -350,7 +350,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_tfs_notify_resp {
 	uint8 category;				/* category of action frame (10) */
 	uint8 action;				/* WNM action: TFS notify response (28) */
 	uint8 tfs_id_cnt;			/* TFS IDs count */
-	BCM_DECLARE_FLEX_ARRAY(uint8, tfs_id);		/* Array of TFS IDs */
+	uint8 tfs_id[BCM_FLEX_ARRAY];		/* Array of TFS IDs */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_tfs_notify_resp dot11_tfs_notify_resp_t;
 #define DOT11_TFS_NOTIFY_RESP_LEN	3	/* Fixed length */
@@ -360,7 +360,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_wnm_sleep_req {
 	uint8 category;				/* category of action frame (10) */
 	uint8 action;				/* WNM action: wnm-sleep request (16) */
 	uint8 token;				/* dialog token */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);		/* Elements */
+	uint8 data[BCM_FLEX_ARRAY];		/* Elements */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_wnm_sleep_req dot11_wnm_sleep_req_t;
 #define DOT11_WNM_SLEEP_REQ_LEN		3	/* Fixed length */
@@ -371,7 +371,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_wnm_sleep_resp {
 	uint8 action;				/* WNM action: wnm-sleep request (17) */
 	uint8 token;				/* dialog token */
 	uint16 key_len;				/* key data length */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);		/* Elements */
+	uint8 data[BCM_FLEX_ARRAY];		/* Elements */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_wnm_sleep_resp dot11_wnm_sleep_resp_t;
 #define DOT11_WNM_SLEEP_RESP_LEN	5	/* Fixed length */
@@ -385,7 +385,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_wnm_sleep_subelem_gtk {
 	uint16 key_info;
 	uint8 key_length;
 	uint8 rsc[8];
-	BCM_DECLARE_FLEX_ARRAY(uint8, key);
+	uint8 key[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_wnm_sleep_subelem_gtk dot11_wnm_sleep_subelem_gtk_t;
 #define DOT11_WNM_SLEEP_SUBELEM_GTK_FIXED_LEN	11	/* without sub_id, len, and key */
@@ -427,7 +427,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_dms_req {
 	uint8 category;				/* category of action frame (10) */
 	uint8 action;				/* WNM action: dms request (23) */
 	uint8 token;				/* dialog token */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);		/* Elements */
+	uint8 data[BCM_FLEX_ARRAY];		/* Elements */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_dms_req dot11_dms_req_t;
 #define DOT11_DMS_REQ_LEN		3	/* Fixed length */
@@ -437,7 +437,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_dms_resp {
 	uint8 category;				/* category of action frame (10) */
 	uint8 action;				/* WNM action: dms request (24) */
 	uint8 token;				/* dialog token */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);		/* Elements */
+	uint8 data[BCM_FLEX_ARRAY];		/* Elements */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_dms_resp dot11_dms_resp_t;
 #define DOT11_DMS_RESP_LEN		3	/* Fixed length */
@@ -446,7 +446,7 @@ typedef struct dot11_dms_resp dot11_dms_resp_t;
 BWL_PRE_PACKED_STRUCT struct dot11_dms_req_ie {
 	uint8 id;				/* 99, DOT11_MNG_DMS_REQUEST_ID */
 	uint8 len;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_dms_req_ie dot11_dms_req_ie_t;
 #define DOT11_DMS_REQ_IE_LEN		2	/* Fixed length */
@@ -455,7 +455,7 @@ typedef struct dot11_dms_req_ie dot11_dms_req_ie_t;
 BWL_PRE_PACKED_STRUCT struct dot11_dms_resp_ie {
 	uint8 id;				/* 100, DOT11_MNG_DMS_RESPONSE_ID */
 	uint8 len;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_dms_resp_ie dot11_dms_resp_ie_t;
 #define DOT11_DMS_RESP_IE_LEN		2	/* Fixed length */
@@ -465,7 +465,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_dms_req_desc {
 	uint8 dms_id;
 	uint8 len;
 	uint8 type;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_dms_req_desc dot11_dms_req_desc_t;
 #define DOT11_DMS_REQ_DESC_LEN		3	/* Fixed length */
@@ -480,7 +480,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_dms_resp_st {
 	uint8 len;
 	uint8 type;
 	uint16 lsc;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_dms_resp_st dot11_dms_resp_st_t;
 #define DOT11_DMS_RESP_STATUS_LEN	5	/* Fixed length */
@@ -497,7 +497,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_wnm_notif_req {
 	uint8 action;				/* WNM action: Notification request (26) */
 	uint8 token;				/* dialog token */
 	uint8 type;				/* type */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);		/* Sub-elements */
+	uint8 data[BCM_FLEX_ARRAY];		/* Sub-elements */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_wnm_notif_req dot11_wnm_notif_req_t;
 #define DOT11_WNM_NOTIF_REQ_LEN		4	/* Fixed length */
@@ -507,7 +507,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_fms_req {
 	uint8 category;				/* category of action frame (10) */
 	uint8 action;				/* WNM action: fms request (9) */
 	uint8 token;				/* dialog token */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);		/* Elements */
+	uint8 data[BCM_FLEX_ARRAY];		/* Elements */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_fms_req dot11_fms_req_t;
 #define DOT11_FMS_REQ_LEN		3	/* Fixed length */
@@ -517,7 +517,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_fms_resp {
 	uint8 category;				/* category of action frame (10) */
 	uint8 action;				/* WNM action: fms request (10) */
 	uint8 token;				/* dialog token */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);		/* Elements */
+	uint8 data[BCM_FLEX_ARRAY];		/* Elements */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_fms_resp dot11_fms_resp_t;
 #define DOT11_FMS_RESP_LEN		3	/* Fixed length */
@@ -527,7 +527,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_fms_desc {
 	uint8 id;
 	uint8 len;
 	uint8 num_fms_cnt;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_fms_desc dot11_fms_desc_t;
 #define DOT11_FMS_DESC_LEN		1	/* Fixed length */
@@ -543,7 +543,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_fms_req_ie {
 	uint8 id;
 	uint8 len;
 	uint8 fms_token;			/* token used to identify fms stream set */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_fms_req_ie dot11_fms_req_ie_t;
 #define DOT11_FMS_REQ_IE_FIX_LEN		1	/* Fixed length */
@@ -567,7 +567,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_fms_se {
 	uint8 interval;
 	uint8 max_interval;
 	dot11_rate_id_field_t rate;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_fms_se dot11_fms_se_t;
 #define DOT11_FMS_REQ_SE_LEN		6	/* Fixed length */
@@ -580,7 +580,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_fms_resp_ie {
 	uint8 id;
 	uint8 len;
 	uint8 fms_token;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_fms_resp_ie dot11_fms_resp_ie_t;
 #define DOT11_FMS_RESP_IE_FIX_LEN		1	/* Fixed length */
@@ -610,7 +610,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_tclas_status_se {
 	uint8 sub_id;
 	uint8 len;
 	uint8 fmsid;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_tclas_status_se dot11_tclas_status_se_t;
 #define DOT11_TCLAS_STATUS_SE_LEN		1	/* Fixed length */
@@ -619,7 +619,7 @@ typedef struct dot11_tclas_status_se dot11_tclas_status_se_t;
 BWL_PRE_PACKED_STRUCT struct dot11_tclas_fc_hdr {
 	uint8 type;
 	uint8 mask;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_tclas_fc_hdr dot11_tclas_fc_hdr_t;
 #define DOT11_TCLAS_FC_HDR_LEN		2	/* Fixed length */
@@ -684,7 +684,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_tclas_fc_3_filter {
 	uint8 type;
 	uint8 mask;
 	uint16 offset;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_tclas_fc_3_filter dot11_tclas_fc_3_filter_t;
 #define DOT11_TCLAS_FC_3_FILTER_LEN	4

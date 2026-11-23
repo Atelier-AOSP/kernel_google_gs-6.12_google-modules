@@ -11,7 +11,6 @@
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 #include <soc/google/google-cdd.h>
@@ -290,8 +289,18 @@ static void google_cdd_init_ctx(struct device *dev)
 	memset((void *)&cdd_ctx, 0, sizeof(struct google_cdd_ctx));
 	raw_spin_lock_init(&cdd_ctx.ctrl_lock);
 	cdd_ctx.dev = dev;
+	u32 apc_wdt_sub_reason;
 
 	google_cdd_set_sjtag_status();
+
+	if (!of_property_read_u32(dev->of_node, "apc-wdt-sub-reason", &apc_wdt_sub_reason)) {
+		cdd_ctx.apc_wdt_sub_reason =
+			devm_ioremap(dev, apc_wdt_sub_reason, sizeof(apc_wdt_sub_reason));
+		if (!cdd_ctx.apc_wdt_sub_reason)
+			dev_err(dev, "unable to remap apc_wdt_sub_reason\n");
+	} else {
+		dev_err(dev, "%pOF missing apc-wdt-sub-reason property\n\n", dev->of_node);
+	}
 
 	if (of_property_read_u32(dev->of_node, "panic-action", &cdd_ctx.panic_action))
 	    cdd_ctx.panic_action = GO_DEFAULT_ID;
@@ -496,31 +505,6 @@ static const struct attribute_group *cdd_sysfs_groups[] = {
 	NULL,
 };
 
-struct platform_device *google_cdd_get_pdev_handle(struct device *dev,
-						   const char *name, int index)
-{
-	struct device_node *np;
-	struct platform_device *pdev;
-	char prop_name[128];
-
-	if (!dev || !dev->of_node || !name)
-		return ERR_PTR(-EINVAL);
-
-	snprintf(prop_name, sizeof(prop_name), "%s-handle", name);
-
-	np = of_parse_phandle(dev->of_node, prop_name, index);
-	if (!np)
-		return ERR_PTR(-ENODEV);
-
-	pdev = of_find_device_by_node(np);
-	of_node_put(np);
-
-	if (!pdev)
-		return ERR_PTR(-EPROBE_DEFER);
-
-	return pdev;
-}
-
 static int google_cdd_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -534,10 +518,6 @@ static int google_cdd_probe(struct platform_device *pdev)
 		dev_err(dev, "%s failed\n", __func__);
 		return -ENODEV;
 	}
-
-	cdd_ctx.ufs_pdev = google_cdd_get_pdev_handle(dev, "ufs", 0);
-	if (IS_ERR_OR_NULL(cdd_ctx.ufs_pdev))
-		dev_err(dev, "failed to get ufs handle");
 
 	google_cdd_fixmap();
 	google_cdd_init_log();

@@ -92,7 +92,6 @@
 #ifdef OEM_ANDROID
 #include <wl_android.h>
 #endif /* OEM_ANDROID */
-
 #include <wl_cfgvendor.h>
 #ifdef PROP_TXSTATUS
 #include <dhd_wlfc.h>
@@ -2794,6 +2793,14 @@ wl_cfgvendor_rtt_set_config(struct wiphy *wiphy, struct wireless_dev *wdev,
 	bzero(&rtt_param, sizeof(rtt_param));
 
 	WL_DBG(("In\n"));
+#ifdef WL_PMSR
+	if (cfg->pd_wdev) {
+		WL_ERR(("PD Ranging active, command failed\n"));
+		err = BCME_ERROR;
+		goto exit;
+	}
+#endif /* WL_PMSR */
+
 	if (wl_check_wdev(wdev)) {
 		WL_ERR(("Invalid wdev\n"));
 		goto exit;
@@ -10075,6 +10082,11 @@ static int wl_cfgvendor_lstats_get_info(struct wiphy *wiphy,
 		return BCME_UNSUPPORTED;
 	}
 
+	if (wl_get_drv_status(cfg, ROAMING, inet_ndev)) {
+		WL_ERR(("Roaming is in progress, the linkstat can't be fetched\n"));
+		return -EBUSY;
+	}
+
 	if (cfg->nancfg->pairing_in_prog) {
 		WL_ERR((" As NAN pairing is in progress, return busy for linkstats \n"));
 		return BCME_BUSY;
@@ -12133,6 +12145,90 @@ exit:
 }
 #endif /* NDO_CONFIG_SUPPORT */
 
+static int wl_cfgvendor_set_pmk(struct wiphy *wiphy,
+	struct wireless_dev *wdev, const void *data, int len)
+{
+	s32 err = 0;
+	const struct nlattr *iter;
+	int rem, type;
+	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
+	struct net_device *ndev = wdev_to_ndev(wdev);
+	pmkid_list_v3_t *pmk_list;
+	uint32 alloc_len;
+
+	if (cfg->wlc_ver.wlc_ver_major < MIN_PMKID_LIST_V3_FW_MAJOR) {
+		WL_DBG(("wlc_ver_major not supported:%d\n", cfg->wlc_ver.wlc_ver_major));
+		return BCME_VERSION;
+	}
+
+	alloc_len = (uint32)(OFFSETOF(pmkid_list_v3_t, pmkid) + sizeof(pmkid_v3_t));
+	pmk_list = (pmkid_list_v3_t *)MALLOCZ(cfg->osh, alloc_len);
+
+	if (pmk_list == NULL) {
+		return BCME_NOMEM;
+	}
+
+	pmk_list->version = PMKID_LIST_VER_3;
+	pmk_list->length = alloc_len;
+	pmk_list->count = 1; // 1 means single entry operation, 0 means whole list.
+	pmk_list->flag = PMKDB_SET_IOVAR;
+	pmk_list->pmkid->time_left = KEY_PERM_PMK;
+
+	nla_for_each_attr(iter, data, len, rem) {
+		type = nla_type(iter);
+		switch (type) {
+		case BRCM_ATTR_DRIVER_KEY_PMK:
+			err = memcpy_s(&pmk_list->pmkid->pmk, sizeof(pmk_list->pmkid->pmk),
+				(uint8 *)nla_data(iter), nla_len(iter));
+			if (err) {
+				WL_ERR(("Failed to copy pmk: %d\n", err));
+				err = -EINVAL;
+				goto exit;
+			}
+			pmk_list->pmkid->pmk_len = nla_len(iter);
+			break;
+		case BRCM_ATTR_DRIVER_KEY_PMKID:
+			err = memcpy_s(&pmk_list->pmkid->pmkid,
+				sizeof(pmk_list->pmkid->pmkid),
+				(uint8 *)nla_data(iter), nla_len(iter));
+			if (err) {
+				err = -EINVAL;
+				goto exit;
+			}
+			pmk_list->pmkid->pmkid_len = WPA2_PMKID_LEN;
+			prhex("wl_cfgvendor_set_pmk-pmkid:",
+				&pmk_list->pmkid->pmkid[0], 16);
+			break;
+		case BRCM_ATTR_DRIVER_RAND_MAC:
+			(void)memcpy_s(&pmk_list->pmkid->bssid, ETHER_ADDR_LEN,
+				nla_data(iter), ETHER_ADDR_LEN);
+			prhex("wl_cfgvendor_set_pmk-bssid:",
+				&pmk_list->pmkid->bssid.octet[0], 6);
+			break;
+		default:
+			WL_ERR(("Unknown type: %d\n", type));
+			err = BCME_BADARG;
+			goto exit;
+		}
+	}
+
+	err = wldev_iovar_setbuf(ndev, "pmkdb", (char *)pmk_list,
+		alloc_len, cfg->ioctl_buf,
+		WLC_IOCTL_MAXLEN, &cfg->ioctl_buf_sync);
+	if (unlikely(err)) {
+		WL_ERR(("pmkdb set failed. err:%d\n", err));
+	} else {
+		WL_INFORM_MEM(("pmkdb set done for MAC:"MACDBG"\n",
+			MAC2STRDBG(pmk_list->pmkid->bssid.octet)));
+	}
+exit:
+	if (pmk_list) {
+		MFREE(cfg->osh, pmk_list, alloc_len);
+	}
+
+	return err;
+}
+
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 13, 0))
 static int wl_cfgvendor_set_pmk(struct wiphy *wiphy,
 	struct wireless_dev *wdev, const void *data, int len)
@@ -13260,6 +13356,56 @@ static bool wl_cfgvendor_is_nan_instant_mask_set(usable_channel_info_t *u_info)
 }
 #endif /* WL_NAN_INSTANT_MODE */
 
+static bool wl_cfgvendor_check_usability_for_softap(struct bcm_cfg80211 *cfg,
+	uint32 chspec)
+{
+	uint32 cfg_chaninfo;
+	bool ret = FALSE;
+
+	if (wl_cfgscan_get_chan_info(cfg, &cfg_chaninfo, chspec) == BCME_OK) {
+		if (!(cfg_chaninfo &
+			(WL_CHAN_RADAR | WL_CHAN_PASSIVE | WL_CHAN_INDOOR_ONLY))) {
+			ret = TRUE;
+		}
+	}
+
+	return ret;
+}
+
+static bool wl_cfgvendor_check_usability_for_nan(struct bcm_cfg80211 *cfg,
+	uint32 chspec, u32 wl_chan_policy)
+{
+	uint32 cfg_chaninfo;
+	bool ret = FALSE;
+
+	if (wl_cfgscan_get_chan_info(cfg, &cfg_chaninfo, chspec) == BCME_OK) {
+		/* check if clm channel has either radar or passive flag */
+		if (!(cfg_chaninfo & (WL_CHAN_RADAR | WL_CHAN_PASSIVE))) {
+			ret = TRUE;
+		} else {
+			/* check if clm channel has been changed by wl_chan_policy */
+			if (wl_chan_policy & WL_CHAN_CC_AWARE_DFS_EXT) {
+				ret = TRUE;
+			} else {
+				ret = FALSE;
+			}
+		}
+		/* check if clm channel has indoor flag */
+		if (!(cfg_chaninfo & WL_CHAN_INDOOR_ONLY)) {
+			ret = TRUE;
+		} else {
+			/* check if clm channel has been changed by wl_chan_policy */
+			if (wl_chan_policy & WL_CHAN_CC_AWARE_INDOOR_EXT) {
+				ret = TRUE;
+			} else {
+				ret = FALSE;
+			}
+		}
+	}
+
+	return ret;
+}
+
 static int wl_cfgvendor_get_usable_channels_handler(struct bcm_cfg80211 *cfg,
 	usable_channel_info_t *u_info)
 {
@@ -13269,7 +13415,7 @@ static int wl_cfgvendor_get_usable_channels_handler(struct bcm_cfg80211 *cfg,
 	u32 mask = 0;
 	uint32 channel;
 	uint32 freq, width;
-	uint32 chspec, chaninfo, cfg_chaninfo;
+	uint32 chspec, chaninfo;
 	u16 list_count;
 	int found_idx = BCME_NOTFOUND;
 	bool ch_160mhz_5g;
@@ -13292,6 +13438,7 @@ static int wl_cfgvendor_get_usable_channels_handler(struct bcm_cfg80211 *cfg,
 	wl_ap_oper_data_t ap_oper_data = {0};
 	unsigned long flags;
 	struct wl_profile *profile;
+	u32 wl_chan_policy = 0;
 #ifdef WL_NAN_INSTANT_MODE
 	bzero(nan_inst_mode_chspecs, sizeof(nan_inst_mode_chspecs));
 #endif /* WL_NAN_INSTANT_MODE */
@@ -13336,6 +13483,15 @@ static int wl_cfgvendor_get_usable_channels_handler(struct bcm_cfg80211 *cfg,
 		}
 	}
 #endif /* WL_NAN_INSTANT_MODE */
+
+	err = wldev_iovar_getint(bcmcfg_to_prmry_ndev(cfg),
+		"chan_concurrency_policy", &wl_chan_policy);
+	if (err != BCME_OK) {
+		WL_ERR(("Failed to get chan_concurrency_policy: %d\n", err));
+		goto exit;
+	} else {
+		WL_ERR(("wl_chan_policy: %d\n", wl_chan_policy));
+	}
 
 	/* TDLS is supported only for single STA associated case */
 	bzero(chan_array, sizeof(chan_array));
@@ -13499,24 +13655,25 @@ static int wl_cfgvendor_get_usable_channels_handler(struct bcm_cfg80211 *cfg,
 
 					if (CHSPEC_IS2G(chspec) ||
 						(CHSPEC_IS5G(chspec) &&
-						((wl_cfgscan_get_chan_info(cfg,
-						&cfg_chaninfo, chspec) == BCME_OK) &&
-						!((cfg_chaninfo & WL_CHAN_RADAR) ||
-						(cfg_chaninfo & WL_CHAN_PASSIVE))))) {
-						mask |= (1 << WIFI_INTERFACE_SOFTAP);
+						wl_cfgvendor_check_usability_for_softap(cfg,
+							chspec))) {
+							mask |= (1 << WIFI_INTERFACE_SOFTAP);
 					}
+					if (wl_cfgvendor_check_usability_for_nan(cfg,
+						chspec, wl_chan_policy)) {
 #ifdef WL_NAN_INSTANT_MODE
-					if (wl_cfgvendor_is_nan_instant_mask_set(u_info)) {
-						if ((chspec ==
+						if (wl_cfgvendor_is_nan_instant_mask_set(u_info)) {
+							if ((chspec ==
 							nan_inst_mode_chspecs[WLC_BAND_2G]) ||
 							(chspec ==
 							nan_inst_mode_chspecs[WLC_BAND_5G])) {
+								mask |= (1 << WIFI_INTERFACE_NAN);
+							}
+						} else
+#endif /* WL_NAN_INSTANT_MODE */
+						{
 							mask |= (1 << WIFI_INTERFACE_NAN);
 						}
-					} else
-#endif /* WL_NAN_INSTANT_MODE */
-					{
-						mask |= (1 << WIFI_INTERFACE_NAN);
 					}
 				}
 			}
@@ -14206,6 +14363,7 @@ const struct nla_policy brcm_drv_attr_policy[BRCM_ATTR_DRIVER_MAX] = {
 	[BRCM_ATTR_DRIVER_RAND_MAC] = { .type = NLA_BINARY, .len = ETHER_ADDR_LEN },
 	[BRCM_ATTR_SAE_PWE] = { .type = NLA_U32 },
 	[BRCM_ATTR_TD_POLICY] = { .type = NLA_U32 },
+	[BRCM_ATTR_DRIVER_KEY_PMKID] = { .type = NLA_BINARY, .len = WSEC_MAX_PASSPHRASE_LEN },
 };
 
 #ifdef RTT_SUPPORT
@@ -15505,7 +15663,6 @@ static struct wiphy_vendor_command wl_vendor_cmds [] = {
 	 * case if we need to get pmk from supplicant/hostapd for any specific
 	 * securities/use cases.
 	 */
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 13, 0))
 	{
 		{
 			.vendor_id = OUI_BRCM,
@@ -15519,7 +15676,6 @@ static struct wiphy_vendor_command wl_vendor_cmds [] = {
 #endif /* LINUX_VERSION >= 5.3 */
 
 	},
-#endif /* !BCMSUP_4WAY_HANDSHAKE || LINUX_VERSION_CODE < KERNEL_VERSION(4, 13, 0) */
 	{
 		{
 			.vendor_id = OUI_BRCM,

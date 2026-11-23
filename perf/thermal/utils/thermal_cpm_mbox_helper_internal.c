@@ -8,23 +8,162 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <dt-bindings/soc/google/google-thermal-def.h>
 
 #include "thermal_cpm_mbox_helper_internal.h"
 
-static const struct thermal_cpm_mbox_platform_data lga_data = {
-	.tz_cdev_table = {
-		[0] = {.tz_id = HW_THERMAL_ZONE_BIG, .cdev_id = HW_CDEV_BIG, .tz_name = "BIG"},
-		[1] = {.tz_id = HW_THERMAL_ZONE_BIG_MID, .cdev_id = HW_CDEV_BIG_MID,
-		       .tz_name = "BIG_MID"},
-		[2] = {.tz_id = HW_THERMAL_ZONE_MID, .cdev_id = HW_CDEV_MID, .tz_name = "MID"},
-		[3] = {.tz_id = HW_THERMAL_ZONE_LIT, .cdev_id = HW_CDEV_LIT, .tz_name = "LITTLE"},
-		[4] = {.tz_id = HW_THERMAL_ZONE_GPU, .cdev_id = HW_CDEV_GPU, .tz_name = "GPU"},
-		[5] = {.tz_id = HW_THERMAL_ZONE_TPU, .cdev_id = HW_CDEV_TPU, .tz_name = "TPU"},
-		[6] = {.tz_id = HW_THERMAL_ZONE_AUR, .cdev_id = HW_CDEV_AUR, .tz_name = "AUR"},
-		[7] = {.tz_id = HW_THERMAL_ZONE_ISP, .cdev_id = HW_CDEV_ISP, .tz_name = "ISP"},
-		[8] = {.tz_id = HW_THERMAL_ZONE_MEM, .cdev_id = HW_CDEV_MEM, .tz_name = "MEM"},
-		[9] = {.tz_id = HW_THERMAL_ZONE_AOC, .cdev_id = HW_CDEV_AOC, .tz_name = "AOC"},
+static struct tz_cdev_map lga_tz_cdev_table[] = {
+	[0] = {
+		.sensor_id = TZ_BIG,
+		.hw_tzid = HW_THERMAL_ZONE_0,
+		.cdev_id = HW_CDEV_BIG,
+		.tz_name = "BIG"
 	},
+	[1] = {
+		.sensor_id = TZ_BIG_MID,
+		.hw_tzid = HW_THERMAL_ZONE_1,
+		.cdev_id = HW_CDEV_BIG_MID,
+		.tz_name = "BIG_MID"
+	},
+	[2] = {
+		.sensor_id = TZ_MID,
+		.hw_tzid = HW_THERMAL_ZONE_2,
+		.cdev_id = HW_CDEV_MID,
+		.tz_name = "MID"
+	},
+	[3] = {
+		.sensor_id = TZ_LIT,
+		.hw_tzid = HW_THERMAL_ZONE_3,
+		.cdev_id = HW_CDEV_LIT,
+		.tz_name = "LITTLE"
+	},
+	[4] = {
+		.sensor_id = TZ_GPU,
+		.hw_tzid = HW_THERMAL_ZONE_4,
+		.cdev_id = HW_CDEV_GPU,
+		.tz_name = "GPU"
+	},
+	[5] = {
+		.sensor_id = TZ_TPU,
+		.hw_tzid = HW_THERMAL_ZONE_5,
+		.cdev_id = HW_CDEV_TPU,
+		.tz_name = "TPU"
+	},
+	[6] = {
+		.sensor_id = TZ_AUR,
+		.hw_tzid = HW_THERMAL_ZONE_6,
+		.cdev_id = HW_CDEV_AUR,
+		.tz_name = "AUR"
+	},
+	[7] = {
+		.sensor_id = TZ_ISP,
+		.hw_tzid = HW_THERMAL_ZONE_7,
+		.cdev_id = HW_CDEV_ISP,
+		.tz_name = "ISP"
+	},
+	[8] = {
+		.sensor_id = TZ_MEM,
+		.hw_tzid = HW_THERMAL_ZONE_8,
+		.cdev_id = HW_CDEV_MEM,
+		.tz_name = "MEM"
+	},
+	[9] = {
+		.sensor_id = TZ_AOC,
+		.hw_tzid = HW_THERMAL_ZONE_9,
+		.cdev_id = HW_CDEV_AOC,
+		.tz_name = "AOC"
+	},
+};
+
+static const struct thermal_cpm_mbox_platform_data lga_data = {
+	.tz_max = ARRAY_SIZE(lga_tz_cdev_table),
+	.tz_cdev_table = lga_tz_cdev_table,
+};
+
+static struct tz_cdev_map mbu_tz_cdev_table[] = {
+	[0] = {
+		.sensor_id = TZ_BIG,
+		.hw_tzid = HW_THERMAL_ZONE_0,
+		.cdev_id = HW_CDEV_BIG,
+		.tz_name = "BIG"
+	},
+	[1] = {
+		.sensor_id = TZ_MID,
+		.hw_tzid = HW_THERMAL_ZONE_1,
+		.cdev_id = HW_CDEV_MID,
+		.tz_name = "MID"
+	},
+	[2] = {
+		.sensor_id = TZ_MIDLL,
+		.hw_tzid = HW_THERMAL_ZONE_2,
+		.cdev_id = HW_CDEV_MIDLL,
+		.tz_name = "MIDLL"
+	},
+	[3] = {
+		.sensor_id = TZ_CME,
+		.hw_tzid = HW_THERMAL_ZONE_3,
+		.cdev_id = HW_CDEV_CME,
+		.tz_name = "CME"
+	},
+	[4] = {
+		.sensor_id = TZ_DSU,
+		.hw_tzid = HW_THERMAL_ZONE_4,
+		.cdev_id = HW_CDEV_CME,
+		.tz_name = "DSU"
+	},
+	[5] = {
+		.sensor_id = TZ_GPU,
+		.hw_tzid = HW_THERMAL_ZONE_5,
+		.cdev_id = HW_CDEV_GPU,
+		.tz_name = "GPU"
+	},
+	[6] = {
+		.sensor_id = TZ_TPU,
+		.hw_tzid = HW_THERMAL_ZONE_6,
+		.cdev_id = HW_CDEV_TPU,
+		.tz_name = "TPU"
+	},
+	[7] = {
+		.sensor_id = TZ_AUR,
+		.hw_tzid = HW_THERMAL_ZONE_7,
+		.cdev_id = HW_CDEV_AUR,
+		.tz_name = "AUR"
+	},
+	[8] = {
+		.sensor_id = TZ_ISPFE,
+		.hw_tzid = HW_THERMAL_ZONE_8,
+		.cdev_id = HW_CDEV_ISPFE,
+		.tz_name = "ISPFE"
+	},
+	[9] = {
+		.sensor_id = TZ_ISPBE,
+		.hw_tzid = HW_THERMAL_ZONE_9,
+		.cdev_id = HW_CDEV_ISPBE,
+		.tz_name = "ISPBE"
+	},
+	[10] = {
+		.sensor_id = TZ_C3P,
+		.hw_tzid = HW_THERMAL_ZONE_10,
+		.cdev_id = HW_CDEV_C3P,
+		.tz_name = "C3P"
+	},
+	[11] = {
+		.sensor_id = TZ_MEM,
+		.hw_tzid = HW_THERMAL_ZONE_11,
+		.cdev_id = HW_CDEV_MEM,
+		.tz_name = "MEMSS"
+	},
+	[12] = {
+		.sensor_id = TZ_AOSS,
+		.hw_tzid = HW_THERMAL_ZONE_12,
+		.cdev_id = HW_CDEV_AOSS,
+		.tz_name = "AOSS"
+	},
+};
+
+static const struct thermal_cpm_mbox_platform_data mbu_data = {
+	.tz_max = ARRAY_SIZE(mbu_tz_cdev_table),
+	.tz_cdev_table = mbu_tz_cdev_table,
 };
 
 static const struct of_device_id thermal_cpm_mbox_platform_table[] = {
@@ -32,7 +171,11 @@ static const struct of_device_id thermal_cpm_mbox_platform_table[] = {
 		.compatible = "google,lga",
 		.data = &lga_data,
 	},
-	{}
+	{
+		.compatible = "google,malibu",
+		.data = &mbu_data,
+	},
+	{},
 };
 
 int cpm_mbox_parse_soc_data(struct thermal_cpm_mbox_driver_data *drv_data)
@@ -58,36 +201,42 @@ int cpm_mbox_parse_soc_data(struct thermal_cpm_mbox_driver_data *drv_data)
 	return 0;
 }
 
-int tzid_to_rx_cb_type(struct thermal_cpm_mbox_driver_data *drv_data, enum hw_thermal_zone_id tz_id,
-		       enum hw_dev_type *cdev_id)
+#define LOOKUP_TZ_CDEV_TABLE_AND_RETURN(drv_data, key, value, target) \
+	do{ \
+		for (int i = 0; i < drv_data->soc_data->tz_max; ++i) { \
+			if (drv_data->soc_data->tz_cdev_table[i].key == value) { \
+				*target = drv_data->soc_data->tz_cdev_table[i].target; \
+				return 0; \
+			} \
+		} \
+		return -EINVAL; \
+	} while(0)
+
+int sensor_id_to_hw_tzid(struct thermal_cpm_mbox_driver_data *drv_data, int sensor_id,
+			   enum hw_thermal_zone_id *hw_tzid)
 {
-	if (!drv_data || !cdev_id || tz_id >= HW_THERMAL_ZONE_MAX || tz_id < 0)
+	if (!drv_data || !hw_tzid || sensor_id >= TZ_MAX || sensor_id < 0)
 		return -EINVAL;
 
-	for (int i = 0; i < ARRAY_SIZE(drv_data->soc_data->tz_cdev_table); ++i) {
-		if (drv_data->soc_data->tz_cdev_table[i].tz_id == tz_id) {
-			*cdev_id = drv_data->soc_data->tz_cdev_table[i].cdev_id;
-			return 0;
-		}
-	}
-
-	return -EINVAL;
+	LOOKUP_TZ_CDEV_TABLE_AND_RETURN(drv_data, sensor_id, sensor_id, hw_tzid);
 }
 
-int hw_cdev_id_to_tzid(struct thermal_cpm_mbox_driver_data *drv_data, enum hw_dev_type cdev_id,
-		       enum hw_thermal_zone_id *tz_id)
+int hw_tzid_to_rx_cb_type(struct thermal_cpm_mbox_driver_data *drv_data,
+			  enum hw_thermal_zone_id hw_tzid, enum hw_dev_type *cdev_id)
 {
-	if (!drv_data || !tz_id || cdev_id > HW_CDEV_MAX || cdev_id < 0)
+	if (!drv_data || !cdev_id || hw_tzid >= HW_THERMAL_ZONE_MAX || hw_tzid < 0)
 		return -EINVAL;
 
-	for (int i = 0; i < ARRAY_SIZE(drv_data->soc_data->tz_cdev_table); ++i) {
-		if (drv_data->soc_data->tz_cdev_table[i].cdev_id == cdev_id) {
-			*tz_id = drv_data->soc_data->tz_cdev_table[i].tz_id;
-			return 0;
-		}
-	}
+	LOOKUP_TZ_CDEV_TABLE_AND_RETURN(drv_data, hw_tzid, hw_tzid, cdev_id);
+}
 
-	return -EINVAL;
+int hw_cdev_id_to_hw_tzid(struct thermal_cpm_mbox_driver_data *drv_data,
+			  enum hw_dev_type cdev_id, enum hw_thermal_zone_id *hw_tzid)
+{
+	if (!drv_data || !hw_tzid || cdev_id > HW_CDEV_MAX || cdev_id < 0)
+		return -EINVAL;
+
+	LOOKUP_TZ_CDEV_TABLE_AND_RETURN(drv_data, cdev_id, cdev_id, hw_tzid);
 }
 
 int cpm_mbox_send_message(struct thermal_cpm_mbox_driver_data *drv_data,
@@ -137,7 +286,7 @@ void cpm_mbox_rx_callback(u32 context, void *msg, void *priv_data)
 	switch (resp->type) {
 	case THERMAL_REQUEST_THROTTLE:
 	case THERMAL_STATE_NOTIFICATION:
-		ret = tzid_to_rx_cb_type(drv_data, resp->tzid, &hw_rx_cb_type);
+		ret = hw_tzid_to_rx_cb_type(drv_data, resp->tzid, &hw_rx_cb_type);
 		if (ret) {
 			dev_err(drv_data->dev, "Invalid tzid: %u type: %u from CPM: ret=%d\n",
 				resp->tzid, resp->type, ret);
@@ -215,13 +364,13 @@ int cpm_mbox_parse_device_tree(struct thermal_cpm_mbox_driver_data *drv_data)
 }
 
 const char *get_tz_name(struct thermal_cpm_mbox_driver_data *drv_data,
-			enum hw_thermal_zone_id tz_id)
+			enum hw_thermal_zone_id hw_tzid)
 {
-	if (tz_id >= HW_THERMAL_ZONE_MAX)
+	if (hw_tzid >= HW_THERMAL_ZONE_MAX || hw_tzid < 0)
 		return NULL;
 
-	for (int i = 0; i < ARRAY_SIZE(drv_data->soc_data->tz_cdev_table); ++i)
-		if (drv_data->soc_data->tz_cdev_table[i].tz_id == tz_id)
+	for (int i = 0; i < drv_data->soc_data->tz_max; ++i)
+		if (drv_data->soc_data->tz_cdev_table[i].hw_tzid == hw_tzid)
 			return drv_data->soc_data->tz_cdev_table[i].tz_name;
 
 	return NULL;

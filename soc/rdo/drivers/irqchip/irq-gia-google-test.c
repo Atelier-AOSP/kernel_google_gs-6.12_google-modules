@@ -13,6 +13,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/property.h>
+#include <linux/of_platform.h>
 
 #include "irq-gia-lib.h"
 
@@ -65,13 +66,12 @@ static irqreturn_t gia_test_isr(int irq, void *dev_id)
 {
 	struct platform_device *pdev = dev_id;
 
-	complete(&(gia_test_get_line_data(pdev, irq)->irq_received));
-
 	/* TODO move this result storage to a function */
 	gia_test_get_line_data(pdev, irq)->num_triggers += 1;
 	gia_set_clear_trigger_reg(gia_test_get_gia_parent_pdev(pdev), irq_get_irq_data(irq)->hwirq,
 				  false);
 
+	complete(&(gia_test_get_line_data(pdev, irq)->irq_received));
 	dev_dbg(&pdev->dev, "gia_test device interrupt %d received\n", irq);
 
 	return IRQ_HANDLED;
@@ -92,11 +92,10 @@ static irqreturn_t gia_test_threaded_isr(int irq, void *dev_id)
 {
 	struct platform_device *pdev = dev_id;
 
-	complete(&(gia_test_get_line_data(pdev, irq)->irq_received));
-
 	/* TODO move this result storage to a function */
 	gia_test_get_line_data(pdev, irq)->num_triggers += 1;
 
+	complete(&(gia_test_get_line_data(pdev, irq)->irq_received));
 	dev_dbg(&pdev->dev, "gia_test device interrupt %d received in threaded handler\n", irq);
 
 	return IRQ_HANDLED;
@@ -303,6 +302,10 @@ static ssize_t gia_test_parse_input(struct file *file, const char __user *user_b
 		disable_irq(trigger_data->irq);
 	} else if (strncmp(buf, "unmask", 6) == 0) {
 		enable_irq(trigger_data->irq);
+	} else if (strncmp(buf, "enable_wake", 11) == 0) {
+		ret = enable_irq_wake(trigger_data->irq);
+	} else if (strncmp(buf, "disable_wake", 12) == 0) {
+		ret = disable_irq_wake(trigger_data->irq);
 	} else if (strncmp(buf, "power_on", 8) == 0) {
 		ret = pm_runtime_get_sync(&trigger_data->pdev->dev);
 	} else if (strncmp(buf, "power_off", 9) == 0) {
@@ -446,13 +449,11 @@ static int gia_test_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int gia_test_remove(struct platform_device *pdev)
+static void gia_test_remove(struct platform_device *pdev)
 {
 	gia_test_remove_debugfs(pdev);
 
 	pm_runtime_set_suspended(&pdev->dev);
-
-	return 0;
 }
 
 static int gia_test_runtime_suspend(struct device *dev)

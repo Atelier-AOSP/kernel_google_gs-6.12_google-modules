@@ -14,6 +14,7 @@
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
+#include <gcip/gcip-coresight-remote.h>
 #include <gcip/gcip-memory.h>
 #include <gcip/gcip-status-code.h>
 #include <gcip/gcip-telemetry.h>
@@ -67,7 +68,6 @@ static void gxp_kci_inc_cmd_queue_tail(struct gcip_kci *kci, u32 inc)
 
 	gxp_mailbox_inc_cmd_queue_tail_nolock(mbx, inc, KCI_CIRCULAR_QUEUE_WRAP_BIT);
 }
-
 
 static u32 gxp_kci_get_resp_queue_size(struct gcip_kci *kci)
 {
@@ -312,7 +312,7 @@ static inline int gxp_kci_send_cmd(struct gxp_mailbox *mailbox,
 	int ret;
 
 	gxp_pm_busy(mailbox->gxp);
-	ret = gxp_mailbox_send_cmd(mailbox, cmd, NULL, 0);
+	ret = gxp_mailbox_send_cmd(mailbox, cmd, NULL);
 	gxp_pm_idle(mailbox->gxp);
 
 	return ret;
@@ -395,6 +395,7 @@ int gxp_kci_init(struct gxp_mcu *mcu)
 	struct gxp_kci *gkci = &mcu->kci;
 	struct gxp_mailbox_args mbx_args = {
 		.type = GXP_MBOX_TYPE_KCI,
+		.mode = GXP_MBOX_FULL_DUPLEX,
 		.ops = &mbx_ops,
 		.queue_wrap_bit = KCI_CIRCULAR_QUEUE_WRAP_BIT,
 		.cmd_elem_size = sizeof(struct gcip_kci_command_element),
@@ -768,4 +769,45 @@ int gxp_kci_thermal_control(struct gxp_kci *gkci, bool enable)
 		},
 	};
 	return gxp_kci_send_cmd(gkci->mbx, &cmd);
+}
+
+int gxp_kci_send_coresight_remote_cmd(void *data, struct gcip_coresight_remote_bulk_cmds *bulk_cmds,
+				      enum gcip_status_code *rsp)
+{
+	int ret;
+	struct gxp_dev *gxp = data;
+	struct gxp_mcu *mcu = gxp_mcu_of(gxp);
+	struct gxp_kci *gkci = &mcu->kci;
+	struct gcip_kci_command_element kci_cmd = {
+		.code = GCIP_KCI_CODE_CORESIGHT_REMOTE_CMD,
+		.dma = {
+			.address = 0,
+			.size = 0,
+			.flags = 0,
+		},
+	};
+	u32 *cmds;
+
+	if (bulk_cmds->num_commands <=
+	    offsetof(struct gcip_kci_dma_descriptor, flags) / sizeof(u32)) {
+		cmds = (u32 *)&kci_cmd.dma.address;
+		memcpy(cmds, bulk_cmds->commands, bulk_cmds->num_commands * sizeof(u32));
+		kci_cmd.dma.flags =
+			GCIP_CORESIGHT_REMOTE_COMMANDS_IN_KCI_DMA_DESCRIPTOR
+				<< GCIP_CORESIGHT_REMOTE_COMMANDS_IN_KCI_DMA_DESCRIPTOR_SHIFT |
+			(bulk_cmds->num_commands &
+			 GCIP_CORESIGHT_REMOTE_NUM_COMMANDS_IN_KCI_DMA_DESCRIPTOR_MASK);
+		ret = gxp_kci_send_cmd(gkci->mbx, &kci_cmd);
+	} else {
+		ret = gxp_kci_send_cmd_with_data(gkci, GCIP_KCI_CODE_CORESIGHT_REMOTE_CMD,
+						 bulk_cmds,
+						 sizeof(struct gcip_coresight_remote_bulk_cmds));
+	}
+
+	if (ret >= 0) {
+		*rsp = ret;
+		ret = 0;
+	}
+
+	return ret;
 }

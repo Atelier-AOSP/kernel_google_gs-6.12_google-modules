@@ -13,6 +13,7 @@
 #include <linux/time64.h>
 #include <linux/sysfs.h>
 #include <linux/kobject.h>
+#include <linux/vmalloc.h>
 
 struct wlan_ptracker_core;
 

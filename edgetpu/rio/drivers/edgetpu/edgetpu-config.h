@@ -8,6 +8,7 @@
 #ifndef __EDGETPU_CONFIG_H__
 #define __EDGETPU_CONFIG_H__
 
+
 #if IS_ENABLED(CONFIG_RIO)
 
 #include "rio/config.h"
@@ -35,15 +36,19 @@
 #endif
 
 #ifndef EDGETPU_HAS_GSA
+#if IS_ENABLED(CONFIG_GSA) || IS_ENABLED(CONFIG_EDGETPU_TEST)
 #define EDGETPU_HAS_GSA 1
+#else
+#define EDGETPU_HAS_GSA 0
 #endif
+#endif /* !defined(EDGETPU_HAS_GSA) */
 
 #ifndef EDGETPU_ALLOW_NONSECURE_FW
 #define EDGETPU_ALLOW_NONSECURE_FW 0
 #endif
 
-#ifndef EDGETPU_FEATURE_ALWAYS_ON
-#define EDGETPU_FEATURE_ALWAYS_ON 0
+#ifndef EDGETPU_HAS_PQ_FW_AUTH
+#define EDGETPU_HAS_PQ_FW_AUTH 0
 #endif
 
 #ifndef EDGETPU_USE_LITEBUF_VII
@@ -66,17 +71,36 @@
 #define EDGETPU_NUM_VII_CREDITS_PER_CLIENT 8
 #endif
 
-#ifndef EDGETPU_IKV_QUEUE_SIZE
-/* Size of IKV queues (in unit number of elements). */
-#define EDGETPU_IKV_QUEUE_SIZE (EDGETPU_NUM_VII_CREDITS_PER_CLIENT * EDGETPU_NUM_VCIDS)
-#endif
-
 #ifndef EDGETPU_CPU_CACHE_LINE_SIZE
 #define EDGETPU_CPU_CACHE_LINE_SIZE 64
 #endif
 
 #ifndef EDGETPU_USE_HW_WDT
 #define EDGETPU_USE_HW_WDT 0
+#endif
+
+#ifndef EDGETPU_POWER_ISLAND_COUNT
+#define EDGETPU_POWER_ISLAND_COUNT 0
+#endif
+
+/* Whether the IOMMU granularity is same as PAGE_SIZE. */
+#ifndef EDGETPU_MMU_GRANULARITY_IS_PAGE
+#define EDGETPU_MMU_GRANULARITY_IS_PAGE 1
+#endif
+
+/* Whether to use the Common Mailbox Framework. */
+#ifndef EDGETPU_USE_CMF
+#define EDGETPU_USE_CMF 0
+#endif
+
+/* Whether to use the Coresight Remote Interface. */
+#ifndef EDGETPU_USE_CORESIGHT_REMOTE
+#define EDGETPU_USE_CORESIGHT_REMOTE 0
+#endif
+
+/* Offset of the telemetry buffer from the beginning of the shared data region. */
+#ifndef EDGETPU_TELEMETRY_BUFFERS_OFFSET
+#define EDGETPU_TELEMETRY_BUFFERS_OFFSET 0
 #endif
 
 #endif /* __EDGETPU_CONFIG_H__ */

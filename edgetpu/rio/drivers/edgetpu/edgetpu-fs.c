@@ -2,7 +2,7 @@
 /*
  * File operations for EdgeTPU ML accel chips.
  *
- * Copyright (C) 2019-2025 Google LLC
+ * Copyright (C) 2019-2026 Google LLC
  */
 
 #include <linux/atomic.h>
@@ -27,15 +27,19 @@
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/sysfs.h>
+#include <linux/time64.h>
+#include <linux/timekeeping.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <trace/events/edgetpu.h>
 
+#include <gcip/gcip-dma-fence.h>
 #include <gcip/gcip-fence-array.h>
 #include <gcip/gcip-memory.h>
 #include <iif/iif-dma-fence.h>
 #include <soc/google/tpu-ext.h>
 
+#include "edgetpu-client.h"
 #include "edgetpu-config.h"
 #include "edgetpu-device-group.h"
 #include "edgetpu-dmabuf.h"
@@ -45,6 +49,7 @@
 #include "edgetpu-ikv.h"
 #include "edgetpu-internal.h"
 #include "edgetpu-kci.h"
+#include "edgetpu-mailbox.h"
 #include "edgetpu-mapping.h"
 #include "edgetpu-pm.h"
 #include "edgetpu-telemetry.h"
@@ -63,16 +68,156 @@ static atomic_t char_minor = ATOMIC_INIT(-1);
 
 static struct dentry *edgetpu_debugfs_dir;
 
+static void log_event(struct edgetpu_dev *etdev, enum edgetpu_eventlog_eventcode code,
+		      int arg)
+{
+	uint slot = atomic_fetch_inc(&etdev->eventlog.next_slot) % EDGETPU_EVENTLOG_SLOTS;
+
+	ktime_get_real_ts64(&etdev->eventlog.event[slot].timestamp);
+	etdev->eventlog.event[slot].code = code;
+	etdev->eventlog.event[slot].arg = arg;
+}
+
+void edgetpu_eventlog_event(struct edgetpu_dev *etdev, enum edgetpu_eventlog_eventcode code,
+			    void *arg)
+{
+	struct edgetpu_client *client;
+
+	switch (code) {
+	case EVENTLOG_EVENT_CLIENT_CREATE:
+	case EVENTLOG_EVENT_CLIENT_REMOVE:
+	case EVENTLOG_EVENT_WAKELOCK_ACQUIRE_START:
+	case EVENTLOG_EVENT_WAKELOCK_ACQUIRE_END:
+	case EVENTLOG_EVENT_WAKELOCK_RELEASE:
+	case EVENTLOG_EVENT_CLIENT_TRIM_DONE:
+	case EVENTLOG_EVENT_CLIENT_REMAP_DONE:
+	case EVENTLOG_EVENT_CLIENT_ACCESS_FAULT:
+		client = (struct edgetpu_client *)arg;
+		log_event(etdev, code, client->client_id);
+		break;
+	case EVENTLOG_EVENT_POWER_STATE_START:
+	case EVENTLOG_EVENT_POWER_STATE_END:
+	case EVENTLOG_EVENT_POWER_WAITSTATE:
+	case EVENTLOG_EVENT_POWER_RPMDONE:
+		log_event(etdev, code, (uint64_t)arg);
+		break;
+	default:
+		break;
+	}
+}
+
+static ssize_t eventlog_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct edgetpu_dev *etdev = dev_get_drvdata(dev);
+	int slot = atomic_read(&etdev->eventlog.next_slot) % EDGETPU_EVENTLOG_SLOTS;
+	struct timespec64 currtime, evdelta;
+	int i;
+	ssize_t len = 0;
+
+	ktime_get_real_ts64(&currtime);
+
+	for (i = 0; i < EDGETPU_EVENTLOG_SLOTS; i++, slot = (slot + 1) % EDGETPU_EVENTLOG_SLOTS) {
+		if (etdev->eventlog.event[slot].code == EVENTLOG_EMPTY_SLOT)
+			continue;
+
+		evdelta = timespec64_sub(currtime, etdev->eventlog.event[slot].timestamp);
+		len += sysfs_emit_at(buf, len, "%lld.%ld %u %ld\n",
+				     evdelta.tv_sec, evdelta.tv_nsec / 1000000,
+				     etdev->eventlog.event[slot].code,
+				     etdev->eventlog.event[slot].arg);
+	}
+
+	return len;
+}
+static DEVICE_ATTR_RO(eventlog);
+
+static int debugfs_eventlog_show(struct seq_file *s, void *data)
+{
+	struct edgetpu_dev *etdev = s->private;
+	int slot = atomic_read(&etdev->eventlog.next_slot) % EDGETPU_EVENTLOG_SLOTS;
+	struct timespec64 ts;
+	struct tm tm_val;
+	int i;
+	static const char *const event_strings[] = {
+		"none", "client-init", "client-exit", "wake-acquire-start", "wake-acquire-end",
+		"wake-release", "power-start", "power-end", "power-wait", "rpm-done", "trim-done",
+		"remap-done", "access-fault"};
+
+	for (i = 0; i < EDGETPU_EVENTLOG_SLOTS; i++, slot = (slot + 1) % EDGETPU_EVENTLOG_SLOTS) {
+		enum edgetpu_eventlog_eventcode code = etdev->eventlog.event[slot].code;
+		const char *event_s, *arg_tag;
+		char code_s[20];
+
+		if (code == EVENTLOG_EMPTY_SLOT)
+			continue;
+		if (code >= ARRAY_SIZE(event_strings)) {
+			snprintf(code_s, sizeof(code_s), "%u", code);
+			event_s = code_s;
+		} else {
+			event_s = event_strings[code];
+		}
+
+		switch (code) {
+		case EVENTLOG_EVENT_CLIENT_CREATE:
+		case EVENTLOG_EVENT_CLIENT_REMOVE:
+		case EVENTLOG_EVENT_WAKELOCK_ACQUIRE_START:
+		case EVENTLOG_EVENT_WAKELOCK_ACQUIRE_END:
+		case EVENTLOG_EVENT_WAKELOCK_RELEASE:
+		case EVENTLOG_EVENT_CLIENT_TRIM_DONE:
+		case EVENTLOG_EVENT_CLIENT_REMAP_DONE:
+		case EVENTLOG_EVENT_CLIENT_ACCESS_FAULT:
+			arg_tag = "client";
+			break;
+		case EVENTLOG_EVENT_POWER_STATE_START:
+			arg_tag = "state";
+			break;
+		case EVENTLOG_EVENT_POWER_STATE_END:
+		case EVENTLOG_EVENT_POWER_RPMDONE:
+			arg_tag = "result";
+			break;
+		case EVENTLOG_EVENT_POWER_WAITSTATE:
+			arg_tag = "state";
+			break;
+		default:
+			arg_tag = "";
+			break;
+		}
+
+		ts = etdev->eventlog.event[slot].timestamp;
+		time64_to_tm(ts.tv_sec, 0 /* UTC */, &tm_val);
+		seq_printf(s, "%02d-%02d %02d:%02d:%02d.%06ld %s %s %ld\n",
+			   tm_val.tm_mon + 1, tm_val.tm_mday, tm_val.tm_hour, tm_val.tm_min,
+			   tm_val.tm_sec, ts.tv_nsec / NSEC_PER_USEC, event_s, arg_tag,
+			   etdev->eventlog.event[slot].arg);
+	}
+
+	return 0;
+}
+
+static int debugfs_eventlog_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, debugfs_eventlog_show, inode->i_private);
+}
+
+static const struct file_operations debugfs_eventlog_ops = {
+	.open = debugfs_eventlog_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.owner = THIS_MODULE,
+	.release = single_release,
+};
+
 int edgetpu_open(struct edgetpu_dev_iface *etiface, struct file *file)
 {
 	struct edgetpu_client *client;
 
 	/* Set client pointer to NULL if error creating client. */
 	file->private_data = NULL;
-	client = edgetpu_client_add(etiface);
+	client = edgetpu_client_add(etiface->etdev);
 	if (IS_ERR(client))
 		return PTR_ERR(client);
 	file->private_data = client;
+	trace_edgetpu_client_create(client);
 	return 0;
 }
 
@@ -124,6 +269,7 @@ static int edgetpu_fs_release(struct inode *inode, struct file *file)
 		fput(client->limited_interface);
 	}
 
+	trace_edgetpu_client_remove(client);
 	edgetpu_client_remove(client);
 
 	return 0;
@@ -204,16 +350,19 @@ static int edgetpu_ioctl_create_group(struct edgetpu_client *client,
 				      struct edgetpu_mailbox_attr __user *argp)
 {
 	struct edgetpu_mailbox_attr attr;
-	struct edgetpu_device_group *group;
+	int ret;
 
 	if (copy_from_user(&attr, argp, sizeof(attr)))
 		return -EFAULT;
 
-	group = edgetpu_device_group_create(client, &attr);
-	if (IS_ERR(group))
-		return PTR_ERR(group);
+	ret = edgetpu_mailbox_validate_attr(&attr);
+	if (ret)
+		return ret;
 
-	edgetpu_device_group_put(group);
+	ret = edgetpu_client_create_group(client, &attr);
+	if (ret)
+		return ret;
+	trace_edgetpu_client_group_create(client);
 	return 0;
 }
 
@@ -281,13 +430,13 @@ static int edgetpu_ioctl_sync_buffer(struct edgetpu_client *client,
 
 static int
 edgetpu_ioctl_map_dmabuf(struct edgetpu_client *client,
-			 struct edgetpu_map_dmabuf_ioctl __user *argp)
+			 struct edgetpu_map_dmabuf_ioctl __user *argp, bool limited)
 {
 	struct edgetpu_device_group *group;
 	struct edgetpu_map_dmabuf_ioctl ibuf;
 	int ret;
 
-	if (!client->group)
+	if (!client->group || edgetpu_device_group_is_disbanded(client->group))
 		return -EINVAL;
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
 		return -EFAULT;
@@ -295,12 +444,12 @@ edgetpu_ioctl_map_dmabuf(struct edgetpu_client *client,
 	/* to prevent group being released when we perform unmap on fault */
 	group = edgetpu_device_group_get(client->group);
 	trace_edgetpu_map_dmabuf_start(group, &ibuf);
-	ret = edgetpu_map_dmabuf(group, &ibuf);
+	ret = edgetpu_map_dmabuf(group, &ibuf, limited);
 	if (ret)
 		goto out;
 
 	if (copy_to_user(argp, &ibuf, sizeof(ibuf))) {
-		edgetpu_unmap_dmabuf(group, ibuf.device_address);
+		edgetpu_unmap_dmabuf(group, ibuf.device_address, limited);
 		ret = -EFAULT;
 	}
 
@@ -313,17 +462,17 @@ out:
 
 static int
 edgetpu_ioctl_unmap_dmabuf(struct edgetpu_client *client,
-			   struct edgetpu_map_dmabuf_ioctl __user *argp)
+			   struct edgetpu_map_dmabuf_ioctl __user *argp, bool limited)
 {
 	int ret;
 	struct edgetpu_map_dmabuf_ioctl ibuf;
 
-	if (!client->group)
+	if (!client->group || edgetpu_device_group_is_disbanded(client->group))
 		return -EINVAL;
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
 		return -EFAULT;
 	trace_edgetpu_unmap_dmabuf_start(client->group, &ibuf);
-	ret = edgetpu_unmap_dmabuf(client->group, ibuf.device_address);
+	ret = edgetpu_unmap_dmabuf(client->group, ibuf.device_address, limited);
 	trace_edgetpu_unmap_dmabuf_end(client->group, &ibuf);
 	return ret;
 }
@@ -333,20 +482,31 @@ static int edgetpu_ioctl_sync_fence_create(
 	struct edgetpu_create_sync_fence_data __user *datap)
 {
 	struct edgetpu_create_sync_fence_data data;
-	int ret;
+	struct gcip_dma_fence *gfence;
+	int fd;
 
-	if (!client->group) {
-		etdev_err(client->etdev, "client creating sync fence without creating a device group");
+	if (!client->group || edgetpu_device_group_is_disbanded(client->group)) {
+		etdev_err(client->etdev, "client creating sync fence without a valid device group");
 		return -EINVAL;
 	}
+
 	if (copy_from_user(&data, (void __user *)datap, sizeof(data)))
 		return -EFAULT;
-	ret = edgetpu_sync_fence_create(client->etdev, client->group, &data);
-	if (ret)
-		return ret;
+
+	gfence = gcip_dma_fence_create(client->group->gfence_mgr, data.seqno, data.timeline_name);
+	if (IS_ERR(gfence))
+		return PTR_ERR(gfence);
+
+	fd = gcip_dma_fence_install_fd(gfence);
+	gcip_dma_fence_put(gfence);
+	if (fd < 0)
+		return fd;
+
+	data.fence = fd;
 	if (copy_to_user((void __user *)datap, &data, sizeof(data)))
-		ret = -EFAULT;
-	return ret;
+		return -EFAULT;
+
+	return 0;
 }
 
 static int edgetpu_ioctl_sync_fence_signal(
@@ -356,7 +516,8 @@ static int edgetpu_ioctl_sync_fence_signal(
 
 	if (copy_from_user(&data, (void __user *)datap, sizeof(data)))
 		return -EFAULT;
-	return edgetpu_sync_fence_signal(&data);
+
+	return gcip_dma_fence_signal(data.fence, data.error, false);
 }
 
 static int edgetpu_ioctl_sync_fence_status(
@@ -367,7 +528,7 @@ static int edgetpu_ioctl_sync_fence_status(
 
 	if (copy_from_user(&data, (void __user *)datap, sizeof(data)))
 		return -EFAULT;
-	ret = edgetpu_sync_fence_status(&data);
+	ret = gcip_dma_fence_status(data.fence, &data.status);
 	if (ret)
 		return ret;
 	if (copy_to_user((void __user *)datap, &data, sizeof(data)))
@@ -412,29 +573,55 @@ static int edgetpu_ioctl_release_wakelock(struct edgetpu_client *client)
 {
 	int count;
 	enum gcip_pm_flags gcip_pm_flags;
+	int ret;
 
-	trace_edgetpu_release_wakelock_start(client->pid);
+	trace_edgetpu_release_wakelock_start(client);
+	edgetpu_eventlog_event(client->etdev, EVENTLOG_EVENT_WAKELOCK_RELEASE, client);
 
-	edgetpu_wakelock_lock(&client->wakelock);
+	edgetpu_wakelock_lock(client);
+	if (client->wakelock.force_released) {
+		edgetpu_wakelock_unlock(client);
+		etdev_info(client->etdev, "wakelocks already force released for client %s",
+			   client->name);
+		count = 0;
+		ret = 0;
+		goto out;
+	}
+
 	gcip_pm_flags = client->wakelock.suspendable ? GCIP_PM_SUSPENDABLE : 0;
-	count = edgetpu_wakelock_release(&client->wakelock);
+	count = edgetpu_wakelock_release(client);
 	if (count < 0) {
-		edgetpu_wakelock_unlock(&client->wakelock);
-		trace_edgetpu_release_wakelock_end(client->pid, count);
-		return count;
+		edgetpu_wakelock_unlock(client);
+		ret = count;
+		goto out;
 	}
 	if (!count) {
+		/*
+		 * Ensure group status is up-to-date when deciding whether to close client's mbox,
+		 * in case of a race establishing a group before the wakelock lock was taken here.
+		 * If the client establishes a group in a race after we acquire the wakelock lock
+		 * here then that code will decide whether to open a mailbox based on the current
+		 * wakelock request count, which is checked with the wakelock lock held and
+		 * cannot occur until we release the wakelock lock here.
+		 */
+		mutex_lock(&client->group_lock);
 		if (client->group)
 			edgetpu_group_close_and_detach_mailbox(client->group);
+		mutex_unlock(&client->group_lock);
 	}
-	edgetpu_wakelock_unlock(&client->wakelock);
-	edgetpu_pm_put_flags(client->etdev, gcip_pm_flags);
+	edgetpu_wakelock_unlock(client);
+	/* TODO(b/415033638): async PM put when SUSPENDABLE flag is set. */
+	if (gcip_pm_flags)
+		edgetpu_pm_put_flags(client->etdev, gcip_pm_flags);
+	else
+		edgetpu_pm_put_async(client->etdev);
 	etdev_dbg(client->etdev, "%s: wakelock req count = %u", __func__,
 		  count);
+	ret = 0;
 
-	trace_edgetpu_release_wakelock_end(client->pid, count);
-
-	return 0;
+out:
+	trace_edgetpu_release_wakelock_end(client, count);
+	return ret;
 }
 
 static int edgetpu_ioctl_acquire_wakelock(struct edgetpu_client *client, u32 flags)
@@ -444,7 +631,8 @@ static int edgetpu_ioctl_acquire_wakelock(struct edgetpu_client *client, u32 fla
 	struct gcip_thermal *thermal = client->etdev->thermal;
 	bool suspendable;
 
-	trace_edgetpu_acquire_wakelock_start(current->pid, flags);
+	trace_edgetpu_acquire_wakelock_start(client, flags);
+	edgetpu_eventlog_event(client->etdev, EVENTLOG_EVENT_WAKELOCK_ACQUIRE_START, client);
 
 	if (gcip_thermal_is_device_suspended(thermal)) {
 		/* TPU is thermal suspended, so fail acquiring wakelock */
@@ -458,40 +646,56 @@ static int edgetpu_ioctl_acquire_wakelock(struct edgetpu_client *client, u32 fla
 	/* Power up device for the following.  Will switch to suspendable later if needed. */
 	ret = edgetpu_pm_get(client->etdev);
 	if (ret) {
-		etdev_warn(client->etdev, "pm_get failed (%d)", ret);
+		etdev_warn(client->etdev, "client %s power up failed: %d",
+			   client->name, ret);
 		goto error_trace_end;
 	}
 
-	/*
-	 * Update client PID; the client may have been passed from the
-	 * edgetpu service that originally created it to a new process.
-	 * By the time the client holds TPU wakelocks it will have been
-	 * passed to the new owning process.
-	 */
-	client->pid = current->pid;
-	client->tgid = current->tgid;
-	edgetpu_wakelock_lock(&client->wakelock);
-	count = edgetpu_wakelock_acquire(&client->wakelock, flags);
+	/* TODO(b/489208801): Remove when EDGETPU_IDENTIFY_CLIENT in use for all targets. */
+	/* Update client tgid in case client fd passed from HAL to an individual client process. */
+	if (!client->runtime_identified_client && client->tgid != task_tgid_nr(current)) {
+		client->tgid = task_tgid_nr(current);
+		edgetpu_client_update_name(client, client->tgid);
+	}
+
+	edgetpu_wakelock_lock(client);
+	if (client->wakelock.force_released) {
+		etdev_err(client->etdev, "wakelocks are force released for client %s",
+			  client->name);
+		ret = -ECANCELED;
+		goto error_wakelock_unlock;
+	}
+	count = edgetpu_wakelock_acquire(client, flags);
 	suspendable = client->wakelock.suspendable;
 	if (count < 0) {
 		ret = count;
 		goto error_wakelock_unlock;
 	}
 	if (!count) {
+		/*
+		 * Ensure group status is up-to-date when deciding whether to open a mailbox for the
+		 * client, in case of a race establishing a group before the wakelock lock was taken
+		 * here. If the client establishes a group in a race after we acquire the wakelock
+		 * lock here then that code will decide whether to open a mailbox based on the
+		 * current wakelock request count, which is checked with the wakelock lock held and
+		 * cannot occur until we release the wakelock lock here.
+		 */
+		mutex_lock(&client->group_lock);
 		if (client->group)
 			ret = edgetpu_group_attach_and_open_mailbox(client->group);
+		mutex_unlock(&client->group_lock);
 		if (ret) {
 			etdev_warn(client->etdev, "failed to attach mailbox: %d", ret);
-			edgetpu_wakelock_release(&client->wakelock);
+			edgetpu_wakelock_release(client);
 			/* fall through to error handling below */
 		}
 	}
 
 error_wakelock_unlock:
-	edgetpu_wakelock_unlock(&client->wakelock);
+	edgetpu_wakelock_unlock(client);
 
 	if (ret) {
-		etdev_err(client->etdev, "client pid %d failed to acquire wakelock", client->pid);
+		etdev_err(client->etdev, "client %s failed to acquire wakelock", client->name);
 		edgetpu_pm_put(client->etdev);
 	} else {
 		etdev_dbg(client->etdev, "%s: wakelock req count = %u", __func__, count + 1);
@@ -506,7 +710,8 @@ error_wakelock_unlock:
 	}
 
 error_trace_end:
-	trace_edgetpu_acquire_wakelock_end(client->pid, ret ? count : count + 1, ret);
+	trace_edgetpu_acquire_wakelock_end(client, ret ? count : count + 1, ret);
+	edgetpu_eventlog_event(client->etdev, EVENTLOG_EVENT_WAKELOCK_ACQUIRE_END, client);
 
 	return ret;
 }
@@ -523,8 +728,8 @@ edgetpu_ioctl_acquire_ext_mailbox(struct edgetpu_client *client,
 
 	ret = edgetpu_acquire_ext_mailbox(client, &ext_mailbox);
 	if (ret)
-		etdev_err(client->etdev, "client pid %d failed to acquire ext mailbox",
-			  client->pid);
+		etdev_err(client->etdev, "client %s failed to acquire ext mailbox: %d",
+			  client->name, ret);
 	return ret;
 }
 
@@ -1045,6 +1250,45 @@ err_unlock_client:
 	return ret;
 }
 
+/**
+ * edgetpu_ioctl_get_interface_version() - The handler of EDGETPU_GET_INTERFACE_VERSION ioctl.
+ * @client: The client that submits the ioctl.
+ * @argp: The user space pointer to the data in type edgetpu_interface_version_ioctl.
+ *
+ * Output the version number and the commit id to the user.
+ * If the EDGETPU_INTERFACE_VERSION_BUFFER_SIZE is too small to hold commit id, we will still return
+ * success but with a warning message and output only partial commit id with version numbers.
+ *
+ * Return: 0 on success or an errno otherwise.
+ */
+static int edgetpu_ioctl_get_interface_version(struct edgetpu_client *client,
+					       struct edgetpu_interface_version_ioctl __user *argp)
+{
+	int ret;
+	const int buf_size = EDGETPU_INTERFACE_VERSION_BUFFER_SIZE;
+	struct edgetpu_interface_version_ioctl ibuf = {
+		.version_major = _EDGETPU_INTERFACE_VERSION_MAJOR,
+		.version_minor = _EDGETPU_INTERFACE_VERSION_MINOR,
+	};
+
+	ret = snprintf(ibuf.version_build, buf_size, "%s", client->etdev->commit_hash);
+
+	if (ret < 0) {
+		etdev_warn(client->etdev, "Failed to copy version_build: %d", ret);
+		return ret;
+	}
+
+	/* Do not return error and still output the partial commit id in @ibuf.version_build. */
+	if (ret >= buf_size)
+		etdev_warn(client->etdev, "Buffer size too small to hold build info (size=%d)",
+			   ret);
+
+	if (copy_to_user(argp, &ibuf, sizeof(ibuf)))
+		return -EFAULT;
+
+	return 0;
+}
+
 long edgetpu_ioctl(struct file *file, uint cmd, ulong arg)
 {
 	struct edgetpu_client *client = file->private_data;
@@ -1089,10 +1333,10 @@ long edgetpu_ioctl(struct file *file, uint cmd, ulong arg)
 		ret = edgetpu_ioctl_sync_buffer(client, argp);
 		break;
 	case EDGETPU_MAP_DMABUF:
-		ret = edgetpu_ioctl_map_dmabuf(client, argp);
+		ret = edgetpu_ioctl_map_dmabuf(client, argp, /*limited=*/false);
 		break;
 	case EDGETPU_UNMAP_DMABUF:
-		ret = edgetpu_ioctl_unmap_dmabuf(client, argp);
+		ret = edgetpu_ioctl_unmap_dmabuf(client, argp, /*limited=*/false);
 		break;
 	case EDGETPU_ALLOCATE_DEVICE_BUFFER:
 		ret = -ENOTTY;
@@ -1160,8 +1404,19 @@ long edgetpu_ioctl(struct file *file, uint cmd, ulong arg)
 	case EDGETPU_ADD_LIMITED_INTERFACE:
 		ret = edgetpu_ioctl_add_limited_interface(client, arg);
 		break;
-	case EDGETPU_REMAP_BUFFERS:
+	case EDGETPU_TRIM_REMAP:
 		ret = edgetpu_group_remap_buffers(client);
+		break;
+	case EDGETPU_GET_INTERFACE_VERSION:
+		ret = edgetpu_ioctl_get_interface_version(client, argp);
+		break;
+	case EDGETPU_TRIM_ENABLE:
+		edgetpu_client_trim_enable(client, arg);
+		ret = 0;
+		break;
+	case EDGETPU_IDENTIFY_CLIENT:
+		edgetpu_client_set_tgid(client, arg);
+		ret = 0;
 		break;
 	default:
 		/*
@@ -1190,74 +1445,75 @@ static int edgetpu_fs_mmap(struct file *file, struct vm_area_struct *vma)
 	return edgetpu_mmap(client, vma);
 }
 
-static void show_client(struct edgetpu_device_group *group, struct seq_file *s)
+static void show_client(struct edgetpu_client *client, struct seq_file *s)
 {
+	struct edgetpu_device_group *group = client->group;
 	struct edgetpu_iommu_domain *etdomain;
-	struct edgetpu_client *client;
+	struct timespec64 curr;
+	struct timespec64 total_plus_curr;
 	static const char * const ext_mbox_str[] = { "dsp", "aoc" };
 	static const char * const grp_status_str[] = {
 		"initing", "ready", "errored", "disbanding" };
 
-	down_read(&group->lock);
-	seq_printf(s, "client %u pasid ", group->group_id);
+	seq_printf(s, "client %s", client->name);
 
-	etdomain = edgetpu_group_domain_locked(group);
-	if (edgetpu_mmu_domain_detached(etdomain))
-		seq_puts(s, "detached ");
-	else
-		seq_printf(s, "%u ", etdomain->pasid);
+	if (!group) {
+		seq_puts(s, " nogroup ");
+	} else {
+		down_read(&group->lock);
+		etdomain = edgetpu_group_domain_locked(group);
+		if (edgetpu_mmu_domain_detached(etdomain))
+			seq_puts(s, " pasid detached ");
+		else
+			seq_printf(s, " pasid %u ", etdomain->pasid);
 
-	if (group->ext_mailbox)
-		seq_printf(s, "%s ", ext_mbox_str[group->ext_mailbox->mbox_type]);
+		if (group->ext_mailbox)
+			seq_printf(s, "%s ", ext_mbox_str[group->ext_mailbox->mbox_type]);
 
-	seq_printf(s, "%s ", grp_status_str[group->status]);
-	if (group->status == EDGETPU_DEVICE_GROUP_ERRORED)
-		seq_printf(s, "%#x ", group->fatal_errors);
+		seq_printf(s, "%s ", grp_status_str[group->status]);
+		if (group->status == EDGETPU_DEVICE_GROUP_ERRORED)
+			seq_printf(s, "%#x ", group->fatal_errors);
+		if (client->inactive_count)
+			seq_printf(s, "inactive %u ", client->inactive_count);
 
-	seq_printf(s, "vcid %u\n", group->vcid);
-
-	client = group->client;
-	if (client) {
-		struct timespec64 curr;
-		struct timespec64 total_plus_curr;
-
-		total_plus_curr = client->wakelock.total_acquired_time;
-		if (client->wakelock.req_count) {
-			ktime_get_ts64(&curr);
-			curr = timespec64_sub(curr, client->wakelock.current_acquire_timestamp);
-			total_plus_curr = timespec64_add(total_plus_curr, curr);
-		}
-
-		seq_printf(
-			s,
-			"    tgid %d pid %d limited_tgid %d limited_pid %d wakelock req=%d total=%lu curr=%lu flags=%c\n",
-			client->tgid, client->pid, client->limited_tgid, client->limited_pid,
-			client->wakelock.req_count, (unsigned long)total_plus_curr.tv_sec,
-			client->wakelock.req_count ? (unsigned long)curr.tv_sec : 0,
-			client->wakelock.suspendable ? 's' : ' ');
+		seq_printf(s, "vcid %u ", group->vcid);
 	}
 
-	seq_printf(s, "    mappings count=%zd total=%zd total32=%zd totalcow=%zd\n",
-		   group->host_mappings.count + group->dmabuf_mappings.count,
-		   edgetpu_group_mappings_total_size(group, false, false),
-		   edgetpu_group_mappings_total_size(group, true, false),
-		   edgetpu_group_mappings_total_size(group, false, true));
+	seq_printf(s, "trimmable=%c\n", client->trim_enabled ? 'y' : 'n');
 
-	up_read(&group->lock);
+	total_plus_curr = client->wakelock.total_acquired_time;
+	if (client->wakelock.req_count) {
+		ktime_get_real_ts64(&curr);
+		curr = timespec64_sub(curr, client->wakelock.current_acquire_timestamp);
+		total_plus_curr = timespec64_add(total_plus_curr, curr);
+	}
+
+	seq_printf(s,
+		   "    tgid %d wakelock req=%d total=%lu curr=%lu flags=%c%c\n",
+		   client->tgid, client->wakelock.req_count, (unsigned long)total_plus_curr.tv_sec,
+		   client->wakelock.req_count ? (unsigned long)curr.tv_sec : 0,
+		   client->wakelock.suspendable ? 's' : ' ',
+		   client->wakelock.force_released ? 'f' : ' ');
+
+	if (group) {
+		seq_printf(s, "    mappings count=%zd total=%zd total32=%zd totalcow=%zd\n",
+			   group->host_mappings.count + group->dmabuf_mappings.count,
+			   edgetpu_group_mappings_total_size(group, false, false),
+			   edgetpu_group_mappings_total_size(group, true, false),
+			   edgetpu_group_mappings_total_size(group, false, true));
+		up_read(&group->lock);
+	}
 }
 
 static int debugfs_clients_show(struct seq_file *s, void *data)
 {
 	struct edgetpu_dev *etdev = s->private;
-	struct edgetpu_list_group *l;
-	struct edgetpu_device_group *group;
+	struct edgetpu_list_device_client *lc;
 
 	mutex_lock(&etdev->clients_lock);
 	mutex_lock(&etdev->groups_lock);
-
-	etdev_for_each_group(etdev, l, group)
-		show_client(group, s);
-
+	for_each_list_device_client(etdev, lc)
+		show_client(lc->client, s);
 	mutex_unlock(&etdev->groups_lock);
 	mutex_unlock(&etdev->clients_lock);
 	return 0;
@@ -1310,9 +1566,23 @@ static const struct file_operations mappings_ops = {
 	.release = single_release,
 };
 
+static int syncfences_show(struct seq_file *s, void *unused)
+{
+	struct edgetpu_dev *etdev = s->private;
+	struct edgetpu_list_group *list_entry;
+	struct edgetpu_device_group *group;
+
+	mutex_lock(&etdev->groups_lock);
+	etdev_for_each_group(etdev, list_entry, group)
+		gcip_dma_fence_manager_show(group->gfence_mgr, s);
+	mutex_unlock(&etdev->groups_lock);
+
+	return 0;
+}
+
 static int syncfences_open(struct inode *inode, struct file *file)
 {
-	return single_open(file, edgetpu_sync_fence_debugfs_show, inode->i_private);
+	return single_open(file, syncfences_show, inode->i_private);
 }
 
 static const struct file_operations syncfences_ops = {
@@ -1328,16 +1598,18 @@ static int debugfs_wakelock_acquire(struct edgetpu_dev *etdev, uint flags)
 	struct edgetpu_client *client;
 
 	if (!etdev->debugfs_wakelock_client) {
-		client = edgetpu_client_add(etdev->etiface);
+		client = edgetpu_client_add(etdev);
 		if (IS_ERR(client))
 			return PTR_ERR(client);
-		etdev->debugfs_wakelock_client = client;
+		etdev->debugfs_wakelock_client = edgetpu_client_get(client);
 	}
 	return edgetpu_ioctl_acquire_wakelock(etdev->debugfs_wakelock_client, flags);
 }
 
 static int debugfs_wakelock_release(struct edgetpu_dev *etdev)
 {
+	if (!etdev->debugfs_wakelock_client)
+		return 0;
 	return edgetpu_ioctl_release_wakelock(etdev->debugfs_wakelock_client);
 }
 
@@ -1354,6 +1626,15 @@ static int edgetpu_pm_debugfs_set_wakelock(void *data, u64 val)
 }
 DEFINE_DEBUGFS_ATTRIBUTE(fops_wakelock, NULL, edgetpu_pm_debugfs_set_wakelock,
 			 "%llu\n");
+
+static void edgetpu_debugfs_wakelock_remove(struct edgetpu_dev *etdev)
+{
+	if (etdev->debugfs_wakelock_client) {
+		edgetpu_client_remove(etdev->debugfs_wakelock_client);
+		edgetpu_client_put(etdev->debugfs_wakelock_client);
+		etdev->debugfs_wakelock_client = NULL;
+	}
+}
 
 static int trimstatus_show(struct seq_file *s, void *data)
 {
@@ -1387,8 +1668,8 @@ static int trimstatus_show(struct seq_file *s, void *data)
 
 		if (!trimmable_buffer_count)
 			continue;
-		seq_printf(s, "group %d: %u buffers (%zuB) trimmable, %u (%zuB) trimmed\n",
-			   group->group_id, trimmable_buffer_count, trimmable_bytes,
+		seq_printf(s, "client %s: %u buffers (%zuB) trimmable, %u (%zuB) trimmed\n",
+			   group->client->name, trimmable_buffer_count, trimmable_bytes,
 			   trimmed_buffer_count, trimmed_bytes);
 		total_trimmable_buffer_count += trimmable_buffer_count;
 		total_trimmed_buffer_count += trimmed_buffer_count;
@@ -1424,15 +1705,24 @@ static int trim_set(void *data, u64 val)
 }
 DEFINE_DEBUGFS_ATTRIBUTE(trim_fops, NULL, trim_set, "%llu\n");
 
-static void edgetpu_fs_setup_debugfs(struct edgetpu_dev *etdev)
+static int fw_log_state_get(void *data, u64 *val)
+{
+	struct edgetpu_dev *etdev = data;
+
+	edgetpu_firmware_log_state(etdev);
+	*val = 0;
+	return 0;
+}
+DEFINE_DEBUGFS_ATTRIBUTE(fw_log_state_fops, fw_log_state_get, NULL, "%llu\n");
+
+void edgetpu_fs_setup_debugfs(struct edgetpu_dev *etdev)
 {
 	etdev->d_entry =
 		debugfs_create_dir(etdev->dev_name, edgetpu_debugfs_dir);
-	if (IS_ERR_OR_NULL(etdev->d_entry)) {
-		etdev_warn(etdev, "Failed to setup debugfs\n");
+	if (IS_ERR_OR_NULL(etdev->d_entry))
 		return;
-	}
-	debugfs_create_file("clients", 0220, etdev->d_entry, etdev, &debugfs_clients_ops);
+	debugfs_create_file("clients", 0444, etdev->d_entry, etdev, &debugfs_clients_ops);
+	debugfs_create_file("eventlog", 0444, etdev->d_entry, etdev, &debugfs_eventlog_ops);
 	debugfs_create_file("mappings", 0444, etdev->d_entry,
 			    etdev, &mappings_ops);
 	debugfs_create_file("syncfences", 0444, etdev->d_entry, etdev, &syncfences_ops);
@@ -1442,6 +1732,8 @@ static void edgetpu_fs_setup_debugfs(struct edgetpu_dev *etdev)
 			    &trim_fops);
 	debugfs_create_file("trimstatus", 0440, etdev->d_entry, etdev,
 			    &trimstatus_fops);
+	debugfs_create_file("fw_log_state", 0440, etdev->d_entry, etdev,
+			    &fw_log_state_fops);
 }
 
 static ssize_t firmware_crash_count_show(
@@ -1474,9 +1766,7 @@ static ssize_t clients_show(
 
 	mutex_lock(&etdev->clients_lock);
 	for_each_list_device_client(etdev, lc) {
-		int pid = lc->client->pid;
 		int tgid = lc->client->tgid;
-		struct edgetpu_device_group *group = lc->client->group;
 		struct timespec64 curr;
 		struct timespec64 total_plus_curr;
 		unsigned long wakelock_curr_secs = 0;
@@ -1484,20 +1774,17 @@ static ssize_t clients_show(
 		total_plus_curr = lc->client->wakelock.total_acquired_time;
 
 		if (lc->client->wakelock.req_count) {
-			ktime_get_ts64(&curr);
+			ktime_get_real_ts64(&curr);
 			curr = timespec64_sub(curr, lc->client->wakelock.current_acquire_timestamp);
 			wakelock_curr_secs = (unsigned long)curr.tv_sec;
 			total_plus_curr = timespec64_add(total_plus_curr, curr);
 		}
 
-		if (lc->client == etdev->debugfs_wakelock_client) {
-			pid = -1;
+		if (lc->client == etdev->debugfs_wakelock_client)
 			tgid = -1;
-		}
 
-		ret += sysfs_emit_at(buf, ret, "%d %d %d %d %d %d %lu %lu %u\n", pid, tgid,
-				     lc->client->limited_pid, lc->client->limited_tgid,
-				     group ? group->group_id : -1, lc->client->wakelock.req_count,
+		ret += sysfs_emit_at(buf, ret, "%d %u %d %lu %lu %u\n", tgid,
+				     lc->client->client_id, lc->client->wakelock.req_count,
 				     (unsigned long)total_plus_curr.tv_sec, wakelock_curr_secs,
 				     lc->client->wakelock.suspendable);
 	}
@@ -1519,7 +1806,7 @@ static void show_group(struct edgetpu_dev *etdev, struct edgetpu_device_group *g
 		ext_mbox_type = group->ext_mailbox->mbox_type;
 
 	*len += sysfs_emit_at(buf, *len, "%u %u %#x %d %u %d %zd %zd %zd %zd\n",
-			      group->group_id, group->status, group->fatal_errors, pasid,
+			      group->client->client_id, group->status, group->fatal_errors, pasid,
 			      group->vcid, ext_mbox_type,
 			      group->host_mappings.count + group->dmabuf_mappings.count,
 			      edgetpu_group_mappings_total_size(group, false, false),
@@ -1569,6 +1856,7 @@ static struct attribute *edgetpu_dev_attrs[] = {
 	&dev_attr_clients.attr,
 	&dev_attr_groups.attr,
 	&dev_attr_dmabuf_hiorder_map.attr,
+	&dev_attr_eventlog.attr,
 	NULL,
 };
 
@@ -1633,16 +1921,18 @@ static long edgetpu_limited_ioctl(struct file *file, uint cmd, ulong arg)
 		goto out;
 	}
 
-	/* Update the PID of whatever process is using the limited interface FD. */
-	client->limited_pid = current->pid;
-	client->limited_tgid = current->tgid;
-
 	switch (cmd) {
 	case EDGETPU_MAP_BUFFER:
 		ret = edgetpu_ioctl_map_buffer(client, argp, /*limited=*/true);
 		break;
 	case EDGETPU_UNMAP_BUFFER:
 		ret = edgetpu_ioctl_unmap_buffer(client, argp, /*limited=*/true);
+		break;
+	case EDGETPU_MAP_DMABUF:
+		ret = edgetpu_ioctl_map_dmabuf(client, argp, /*limited=*/true);
+		break;
+	case EDGETPU_UNMAP_DMABUF:
+		ret = edgetpu_ioctl_unmap_dmabuf(client, argp, /*limited=*/true);
 		break;
 	default:
 		ret = -ENOTTY; /* unknown command */
@@ -1711,6 +2001,15 @@ static int edgeptu_fs_add_interface(struct edgetpu_dev *etdev, struct edgetpu_de
 	return 0;
 }
 
+static void edgetpu_fs_remove_interface(struct edgetpu_dev *etdev,
+					struct edgetpu_dev_iface *etiface)
+{
+	debugfs_remove(etiface->d_entry);
+	device_destroy(edgetpu_class, etiface->devno);
+	etiface->etcdev = NULL;
+	cdev_del(&etiface->cdev);
+}
+
 /* Called from edgetpu core to add new edgetpu device files. */
 int edgetpu_fs_add(struct edgetpu_dev *etdev, const struct edgetpu_iface_params *etiparams,
 		   int num_ifaces)
@@ -1725,39 +2024,36 @@ int edgetpu_fs_add(struct edgetpu_dev *etdev, const struct edgetpu_iface_params 
 		etdev->etiface[i].etdev = etdev;
 		ret = edgeptu_fs_add_interface(etdev, &etdev->etiface[i], &etiparams[i]);
 		if (ret)
-			return ret;
+			goto err_remove_interfaces;
 		etdev->num_ifaces++;
 	}
 
 	ret = device_add_group(etdev->dev, &edgetpu_attr_group);
-	edgetpu_fs_setup_debugfs(etdev);
 	if (ret)
 		etdev_warn(etdev, "edgetpu attr group create failed: %d", ret);
 	return 0;
+
+err_remove_interfaces:
+	while (i--)
+		edgetpu_fs_remove_interface(etdev, &etdev->etiface[i]);
+
+	return ret;
 }
 
 void edgetpu_fs_remove(struct edgetpu_dev *etdev)
 {
 	int i;
+
+	edgetpu_debugfs_wakelock_remove(etdev);
 	device_remove_group(etdev->dev, &edgetpu_attr_group);
 	for (i = 0; i < etdev->num_ifaces; i++) {
-		struct edgetpu_dev_iface *etiface = &etdev->etiface[i];
-
-		debugfs_remove(etiface->d_entry);
-		device_destroy(edgetpu_class, etiface->devno);
-		etiface->etcdev = NULL;
-		cdev_del(&etiface->cdev);
+		edgetpu_fs_remove_interface(etdev, &etdev->etiface[i]);
 	}
-	debugfs_remove_recursive(etdev->d_entry);
 }
 
 static void edgetpu_debugfs_global_setup(void)
 {
 	edgetpu_debugfs_dir = debugfs_create_dir("edgetpu", NULL);
-	if (IS_ERR_OR_NULL(edgetpu_debugfs_dir)) {
-		pr_warn(DRIVER_NAME " error creating edgetpu debugfs dir\n");
-		return;
-	}
 }
 
 int __init edgetpu_fs_init(void)

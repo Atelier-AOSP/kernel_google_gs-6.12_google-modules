@@ -1,5 +1,5 @@
 /*************************************************************************/ /*!
-@File
+@File           devicemem_typedefs.h
 @Title          Device Memory Management
 @Copyright      Copyright (c) Imagination Technologies Ltd. All Rights Reserved
 @Description    Client side part of device memory management -- this file
@@ -99,19 +99,6 @@ typedef struct
        mapped support it. */
     IMG_DEVMEM_LOG2ALIGN_T uiLog2ContiguityGuarantee;
 } DEVMEM_EXPORTCOOKIE;
-
-/* Enum that describes the operation associated with changing sparse memory */
-typedef IMG_UINT32 SPARSE_MEM_RESIZE_FLAGS;
-
-/* This should be set to indicate the change needs allocation */
-#define SPARSE_RESIZE_ALLOC 1U
-
-/* This should be set to indicate the change needs free */
-#define SPARSE_RESIZE_FREE 2U
-
-#if defined(PVRSRV_ENABLE_DEPRECATED_SPARSE_BOTH)
-#define SPARSE_RESIZE_BOTH (SPARSE_RESIZE_ALLOC | SPARSE_RESIZE_FREE)
-#endif
 
 /* To use with DevmemSubAllocate() as the default factor if no over-allocation
  * is desired.

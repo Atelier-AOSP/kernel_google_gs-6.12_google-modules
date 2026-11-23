@@ -26,6 +26,11 @@
 
 #define MBA_RES_DATA_NOT_READY (-3)
 
+#define CALC_INC_POWER(data, fact) ((data * fact) >> DATA_RIGHT_SHIFTER)
+
+static struct google_odpm *kern_if_odpm;
+static struct odpm_rail_energy kern_odpm_re[ODPM_CHANNEL_NUM] = {0};
+
 static void google_odpm_mba_rx_callback(u32 context, void *msg, void *priv_data)
 {
 	struct google_odpm *odpm = priv_data;
@@ -71,7 +76,7 @@ static int google_odpm_mba_resp_hdl(const u32 data[], struct google_odpm *odpm)
 	default:
 		/* If the response is correct, data[1] and data[2] should be 0 */
 		if (data[1] != 0 || data[2] != 0)
-			dev_err(odpm->dev, "The mba response is incorrect.\n");
+			dev_err(odpm->dev, "Incorrect MBA response: %u\n", mba_msg_type);
 		break;
 	}
 
@@ -99,7 +104,7 @@ static int google_odpm_send(struct google_odpm *odpm, u32 type, u32 value0, u32 
 	/* Send the message */
 	ret = cpm_send_message(odpm->client, &cpm_req);
 	if (ret < 0) {
-		dev_err(odpm->dev, "Send cpm message failed (%d)\n", ret);
+		dev_err(odpm->dev, "Send cpm message failed: type=%u ret=%d\n", type, ret);
 		return ret;
 	}
 
@@ -420,6 +425,86 @@ ext_sampling_rate_store_exit:
 	return ret == 0 ? count : ret;
 }
 
+static int energy_value_read(struct google_odpm *odpm)
+{
+	u64 acc_read_start_ms, acc_read_duration_ms, acc_read_interval_ms, current_ms;
+	int ret = 0;
+
+	if (!odpm->config_cpl) {
+		dev_err(odpm->dev, "odpm: initial configuration is in progress, please do the sysfs operation again.\n");
+		return -EAGAIN;
+	}
+
+	acc_read_start_ms = ktime_to_ms(ktime_get_boottime());
+	if (odpm->chip.acc_timestamp_ms && odpm->rate_limit_ms) {
+		acc_read_interval_ms = ktime_sub(acc_read_start_ms, odpm->chip.acc_timestamp_ms);
+		if (ktime_compare(acc_read_interval_ms, odpm->rate_limit_ms) < 0)
+			return -EAGAIN;
+	}
+
+	ret = google_odpm_send(odpm, ODPM_MBA_MSG_TYPE_PMIC_TRANS, ODPM_TRANS_ACC, 0);
+	if (ret != 0)
+		return ret;
+
+	odpm->chip.acc_transfer_started = true;
+	odpm->chip.acc_data_ready = false;
+
+	ret = google_odpm_send(odpm, ODPM_MBA_MSG_TYPE_DATA, ODPM_ACC_MODE, 0);
+	if (ret != 0)
+		return ret;
+
+	while (!odpm->chip.acc_data_ready) {
+		//TODO(b/414547668): Expose polling cycle and timeout data
+		current_ms = ktime_to_ms(ktime_get_boottime());
+		acc_read_duration_ms = ktime_sub(current_ms, acc_read_start_ms);
+		if (ktime_compare(acc_read_duration_ms, ACC_READ_TIMEOUT_MS) > 0) {
+			dev_err(odpm->dev, "ACC read latency exceeds allowed time: %llums\n",
+				acc_read_duration_ms);
+			return -ETIMEDOUT;
+		}
+
+		ret = google_odpm_send(odpm, ODPM_MBA_MSG_TYPE_DATA, ODPM_ACC_MODE, 0);
+		if (ret != 0)
+			return ret;
+
+		usleep_range(ACC_READ_POLLING_MIN_US, ACC_READ_POLLING_MAX_US);
+	}
+
+	google_read_shared_memory(odpm, ODPM_ACC_MODE, ODPM_POWER);
+	odpm->chip.acc_timestamp_ms = ktime_to_ms(ktime_get_boottime());
+
+	return ret;
+}
+
+static void energy_value_update_acc_power(int ch, struct google_odpm *odpm)
+{
+	int rail_idx;
+	u64 newly_increased_power = 0;
+	u32 sampling_rate;
+
+	rail_idx = odpm->channels[ch].rail_idx;
+	if (odpm->chip.rails[rail_idx].rail_type == ODPM_RAIL_TYPE_LDO)
+		newly_increased_power =
+	    CALC_INC_POWER(odpm->channels[ch].data_read, DATA_POWER_LDO_FACTOR);
+	else
+		newly_increased_power =
+		CALC_INC_POWER(odpm->channels[ch].data_read, DATA_POWER_FACTOR);
+
+	if (odpm->chip.rails[rail_idx].power_coefficient)
+		newly_increased_power =
+		CALC_INC_POWER(newly_increased_power, odpm->chip.rails[rail_idx].power_coefficient);
+
+	sampling_rate =
+		odpm->channels[ch].external ?
+		odpm->chip.sampling_rate_ext_uhz[odpm->chip.ext_sampling_rate_index] :
+		odpm->chip.sampling_rate_int_uhz[odpm->chip.int_sampling_rate_index];
+
+	odpm->chip.rails[rail_idx].acc_power +=
+		newly_increased_power * UHZ_PER_HZ / sampling_rate;
+
+	odpm->channels[ch].data_read = 0;
+}
+
 static ssize_t energy_value_show(struct device *dev,
 				 struct device_attribute *attr, char *buf)
 {
@@ -428,56 +513,15 @@ static ssize_t energy_value_show(struct device *dev,
 	ssize_t count = 0;
 	int ch, ret;
 	int rail_idx, telem_channel_idx;
-	u32 sampling_rate;
-	u64 start_ms, duration_ms, newly_increased_power;
-	u64 acc_read_start_ms, acc_read_duration_ms;
+	u64 start_ms, duration_ms;
 
 	ret = mutex_lock_interruptible(&odpm->lock);
 	if (ret)
 		return ret;
 
-	if (!odpm->config_cpl) {
-		dev_err(odpm->dev, "odpm: initial configuration is in progress, please do the sysfs operation again.\n");
-		goto energy_value_show_exit;
-	}
-
-	acc_read_start_ms = ktime_to_ms(ktime_get_boottime());
-	if (odpm->chip.acc_timestamp_ms && odpm->rate_limit_ms) {
-		if (acc_read_start_ms - odpm->chip.acc_timestamp_ms < odpm->rate_limit_ms) {
-			mutex_unlock(&odpm->lock);
-			goto energy_value_show_exit;
-		}
-	}
-
-	ret = google_odpm_send(odpm, ODPM_MBA_MSG_TYPE_PMIC_TRANS, ODPM_TRANS_ACC, 0);
+	ret = energy_value_read(odpm);
 	if (ret)
 		goto energy_value_show_exit;
-
-	odpm->chip.acc_transfer_started = true;
-	odpm->chip.acc_data_ready = false;
-
-	while (!odpm->chip.acc_data_ready) {
-		ret = google_odpm_send(odpm, ODPM_MBA_MSG_TYPE_DATA, ODPM_ACC_MODE, 0);
-		if (ret)
-			goto energy_value_show_exit;
-
-		//TODO(b/414547668): Expose polling cycle and timeout data
-		acc_read_duration_ms = ktime_to_ms(ktime_get_boottime()) - acc_read_start_ms;
-		if (acc_read_duration_ms > ACC_READ_TIMEOUT_MS) {
-			dev_err(odpm->dev, "ACC read latency exceeds allowed time: %llums\n",
-				acc_read_duration_ms);
-			break;
-		}
-		usleep_range(ACC_READ_POLLING_MIN_US, ACC_READ_POLLING_MAX_US);
-	}
-
-	google_read_shared_memory(odpm, ODPM_ACC_MODE, ODPM_POWER);
-	odpm->chip.acc_timestamp_ms = ktime_to_ms(ktime_get_boottime());
-
-energy_value_show_exit:
-	mutex_unlock(&odpm->lock);
-	if (ret)
-		return ret;
 
 	/*
 	 * Output format:
@@ -492,26 +536,8 @@ energy_value_show_exit:
 		telem_channel_idx = odpm->channels[ch].telem_channel_idx;
 		start_ms = odpm->chip.rails[rail_idx].measurement_start_ms;
 		duration_ms = odpm->chip.acc_timestamp_ms - start_ms;
-		newly_increased_power = 0;
-		if (odpm->chip.rails[rail_idx].rail_type == ODPM_RAIL_TYPE_LDO)
-			newly_increased_power = (odpm->channels[ch].data_read *
-				DATA_POWER_LDO_FACTOR) >> DATA_RIGHT_SHIFTER;
-		else
-			newly_increased_power = (odpm->channels[ch].data_read *
-				DATA_POWER_FACTOR) >> DATA_RIGHT_SHIFTER;
 
-		if (odpm->chip.rails[rail_idx].power_coefficient)
-			newly_increased_power = (newly_increased_power *
-				odpm->chip.rails[rail_idx].power_coefficient) >>
-					DATA_RIGHT_SHIFTER;
-
-		sampling_rate =
-			odpm->channels[ch].external ?
-			odpm->chip.sampling_rate_ext_uhz[odpm->chip.ext_sampling_rate_index] :
-			odpm->chip.sampling_rate_int_uhz[odpm->chip.int_sampling_rate_index];
-
-		odpm->chip.rails[rail_idx].acc_power +=
-				newly_increased_power * UHZ_PER_HZ / sampling_rate;
+		energy_value_update_acc_power(ch, odpm);
 
 		count += scnprintf(buf + count, PAGE_SIZE - count,
 				   "CH%d(T=%llu)[%s], %llu\n", telem_channel_idx,
@@ -519,8 +545,111 @@ energy_value_show_exit:
 				   odpm->chip.rails[rail_idx].schematic_name,
 				   odpm->chip.rails[rail_idx].acc_power);
 
-		odpm->channels[ch].data_read = 0;
 	}
+
+energy_value_show_exit:
+	mutex_unlock(&odpm->lock);
+	if (ret)
+		return ret;
+
+	return count;
+}
+
+const struct odpm_rail_energy *google_odpm_get_rail_energy(void)
+{
+	int ch, ret;
+	int rail_idx;
+	u64 start_ms, duration_ms;
+
+	if (!kern_if_odpm)
+		return NULL;
+
+	ret = mutex_lock_interruptible(&kern_if_odpm->lock);
+	if (ret)
+		return NULL;
+
+	ret = energy_value_read(kern_if_odpm);
+	if (ret)
+		goto google_odpm_get_rail_energy_exit;
+
+	for (ch = 0; ch < ODPM_CHANNEL_NUM; ++ch) {
+		rail_idx = kern_if_odpm->channels[ch].rail_idx;
+		start_ms = kern_if_odpm->chip.rails[rail_idx].measurement_start_ms;
+		duration_ms = kern_if_odpm->chip.acc_timestamp_ms - start_ms;
+
+		energy_value_update_acc_power(ch, kern_if_odpm);
+
+		kern_odpm_re[ch].regulator_name = kern_if_odpm->chip.rails[rail_idx].regulator_name;
+		kern_odpm_re[ch].schematic_name = kern_if_odpm->chip.rails[rail_idx].schematic_name;
+		kern_odpm_re[ch].subsystem_name = kern_if_odpm->chip.rails[rail_idx].subsystem_name;
+		kern_odpm_re[ch].pmic_type      = kern_if_odpm->chip.rails[rail_idx].pmic_type;
+		kern_odpm_re[ch].rail_type      = kern_if_odpm->chip.rails[rail_idx].rail_type;
+		kern_odpm_re[ch].acc_energy     = kern_if_odpm->chip.rails[rail_idx].acc_power;
+		kern_odpm_re[ch].timestamp_ms   = duration_ms;
+	}
+
+google_odpm_get_rail_energy_exit:
+	mutex_unlock(&kern_if_odpm->lock);
+	if (ret)
+		return NULL;
+
+	return kern_odpm_re;
+}
+EXPORT_SYMBOL_GPL(google_odpm_get_rail_energy);
+
+static ssize_t virt_nodes_show(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
+	struct google_odpm *odpm = iio_priv(indio_dev);
+	ssize_t count = 0;
+	int ch, vn, tci, ret = 0;
+	int ch_idx, rail_idx;
+	u64 start_ms, rail_duration_ms, duration_ms;
+
+	if (odpm->support_virt_nodes == false)
+		return ret;
+
+	ret = mutex_lock_interruptible(&odpm->lock);
+	if (ret)
+		return ret;
+
+	ret = energy_value_read(odpm);
+	if (ret)
+		goto virt_nodes_show_exit;
+
+	for (ch = 0; ch < ODPM_CHANNEL_NUM; ++ch)
+		energy_value_update_acc_power(ch, odpm);
+
+	count += scnprintf(buf + count, PAGE_SIZE - count, "t=%llu\n",
+			   odpm->chip.acc_timestamp_ms);
+
+	for (vn = 0; vn < ODPM_VNODE_NUM; ++vn) {
+		odpm->virt_nodes[vn].total_acc_power = 0;
+		duration_ms = 0;
+		for (tci = 0; tci < odpm->virt_nodes[vn].telem_channel_idx_count; ++tci) {
+			ch_idx = google_odpm_get_channel_idx(
+				odpm->virt_nodes[vn].telem_channel_idx[tci]);
+			rail_idx = odpm->channels[ch_idx].rail_idx;
+			odpm->virt_nodes[vn].total_acc_power +=
+				odpm->chip.rails[rail_idx].acc_power;
+			start_ms = odpm->chip.rails[rail_idx].measurement_start_ms;
+			rail_duration_ms = odpm->chip.acc_timestamp_ms - start_ms;
+			duration_ms = max(duration_ms, rail_duration_ms);
+		}
+
+		count += scnprintf(buf + count, PAGE_SIZE - count,
+				   "VN%d(T=%llu)[%s], %llu\n",
+				   vn + 1,
+				   duration_ms,
+				   odpm->virt_nodes[vn].node_name,
+				   odpm->virt_nodes[vn].total_acc_power);
+	}
+
+virt_nodes_show_exit:
+	mutex_unlock(&odpm->lock);
+	if (ret)
+		return ret;
 
 	return count;
 }
@@ -1007,6 +1136,7 @@ static IIO_DEVICE_ATTR_RO(inst_power, 0);
 static IIO_DEVICE_ATTR_RO(debug_stats, 0);
 static IIO_DEVICE_ATTR_RO(sample_count, 0);
 static IIO_DEVICE_ATTR_RW(rate_limit_ms, 0);
+static IIO_DEVICE_ATTR_RO(virt_nodes, 0);
 
 #define ODPM_DEV_ATTR(name) (&iio_dev_attr_##name.dev_attr.attr)
 
@@ -1025,6 +1155,7 @@ static struct attribute *odpm_custom_attributes[] = {
 	ODPM_DEV_ATTR(debug_stats),
 	ODPM_DEV_ATTR(sample_count),
 	ODPM_DEV_ATTR(rate_limit_ms),
+	ODPM_DEV_ATTR(virt_nodes),
 	NULL
 };
 
@@ -1281,6 +1412,84 @@ static int google_odpm_parse_dt_rails(struct google_odpm *odpm, struct device_no
 	return 0;
 }
 
+static int google_odpm_parse_dt_virt_nodes(struct device_node *odpm_np, struct google_odpm *odpm)
+{
+	struct device_node *virt_nodes_np, *iter_np;
+	int idx = 0, ret = 0, tci;
+
+	virt_nodes_np = of_find_node_by_name(odpm_np, "virt_nodes");
+	if (!virt_nodes_np) {
+		odpm->support_virt_nodes = false;
+		dev_warn(odpm->dev, "odpm: cannot find virtual nodes DT node!\n");
+		return ret;
+	}
+
+	odpm->support_virt_nodes = true;
+	for_each_child_of_node(virt_nodes_np, iter_np) {
+		if (idx >= ODPM_VNODE_NUM) {
+			dev_err(odpm->dev, "odpm: invalid index in virtual node parsing\n");
+			ret = -EINVAL;
+			goto parse_dt_virt_nodes_error_exit;
+		}
+
+		odpm->virt_nodes[idx].total_acc_power = 0;
+
+		if (of_property_read_string(iter_np, "node-name",
+				    &odpm->virt_nodes[idx].node_name)) {
+			dev_err(odpm->dev, "odpm: cannot read virtual node name\n");
+			ret = -EINVAL;
+			goto parse_dt_virt_nodes_error_exit;
+		}
+
+		if (of_property_read_u32(iter_np, "chan-idxs-count",
+				 &odpm->virt_nodes[idx].telem_channel_idx_count)) {
+			dev_err(odpm->dev, "odpm: cannot read chan-idxs-count\n");
+			ret = -EINVAL;
+			goto parse_dt_virt_nodes_error_exit;
+		}
+
+		odpm->virt_nodes[idx].telem_channel_idx =
+			devm_kcalloc(odpm->dev, odpm->virt_nodes[idx].telem_channel_idx_count,
+					sizeof(u32), GFP_KERNEL);
+
+		if (!odpm->virt_nodes[idx].telem_channel_idx) {
+			dev_err(odpm->dev, "odpm: failed to allocate telem_channel_idx\n");
+			ret = -ENOMEM;
+			goto parse_dt_virt_nodes_error_exit;
+		}
+
+		if (of_property_read_u32_array(iter_np, "chan-idxs",
+				       odpm->virt_nodes[idx].telem_channel_idx,
+				       odpm->virt_nodes[idx].telem_channel_idx_count)) {
+			dev_err(odpm->dev, "odpm: cannot read virtual node channel idxs\n");
+			ret = -EINVAL;
+			goto parse_dt_virt_nodes_error_exit;
+		}
+
+		for (tci = 0; tci < odpm->virt_nodes[idx].telem_channel_idx_count; ++tci) {
+			if (!google_odpm_telem_channel_valid(
+				odpm->virt_nodes[idx].telem_channel_idx[tci])) {
+				dev_err(odpm->dev,
+					"odpm: VN%d: Channel must be within [%d, %d] or [%d, %d]\n",
+					idx + 1,
+					ODPM_CHANNEL_M_MIN, ODPM_CHANNEL_M_MAX,
+					ODPM_CHANNEL_S_MIN, ODPM_CHANNEL_S_MAX);
+				ret = -EINVAL;
+				goto parse_dt_virt_nodes_error_exit;
+			}
+		}
+		idx++;
+	}
+	goto parse_dt_virt_nodes_exit;
+
+parse_dt_virt_nodes_error_exit:
+	of_node_put(iter_np);
+parse_dt_virt_nodes_exit:
+	of_node_put(virt_nodes_np);
+
+	return ret;
+}
+
 static int google_odpm_parse_dt(struct device *dev, struct google_odpm *odpm)
 {
 	struct device_node *odpm_np = dev->of_node;
@@ -1373,7 +1582,15 @@ static int google_odpm_parse_dt(struct device *dev, struct google_odpm *odpm)
 		return -ENODEV;
 	}
 
-	return google_odpm_parse_dt_channels(channels_np, odpm);
+	ret = google_odpm_parse_dt_channels(channels_np, odpm);
+	if (ret != 0)
+		return ret;
+
+	ret = google_odpm_parse_dt_virt_nodes(odpm_np, odpm);
+	if (ret != 0)
+		return ret;
+
+	return 0;
 }
 
 static inline void google_odpm_mbox_free(struct google_odpm *odpm)
@@ -1382,7 +1599,7 @@ static inline void google_odpm_mbox_free(struct google_odpm *odpm)
 		cpm_iface_free_client(odpm->client);
 }
 
-static int google_odpm_platform_remove(struct platform_device *pdev)
+static void google_odpm_platform_remove(struct platform_device *pdev)
 {
 	struct iio_dev *indio_dev = dev_get_drvdata(&pdev->dev);
 	struct google_odpm *odpm = iio_priv(indio_dev);
@@ -1394,8 +1611,6 @@ static int google_odpm_platform_remove(struct platform_device *pdev)
 	}
 
 	google_odpm_mbox_free(odpm);
-
-	return 0;
 }
 
 static void wq_resp_handler(struct work_struct *work)
@@ -1502,7 +1717,7 @@ static int google_odpm_platform_probe(struct platform_device *pdev)
 	 * Point our chip info structure towards
 	 * the address freshly allocated
 	 */
-	odpm = iio_priv(indio_dev);
+	odpm = kern_if_odpm = iio_priv(indio_dev);
 	odpm->dev = dev;
 	ret = google_odpm_parse_dt(dev, odpm);
 	if (ret != 0) {

@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -20,6 +25,21 @@ ddk_headers(
         # keep sorted
         ":__subpackages__",
         "//private/google-modules/touch/common:__subpackages__",
+    ],
+)
+
+ddk_headers(
+    name = "aoc_common_header",
+    hdrs = [
+        "aoc_common.h",
+    ],
+    includes = [
+        ".",
+    ],
+    visibility = [
+        # keep sorted
+        ":__subpackages__",
+        "//private/google-modules/aoc_ipc:__subpackages__",
     ],
 )
 
@@ -44,7 +64,7 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/aoc_ipc:ddk_headers",
+        "//private/google-modules/aoc_ipc",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/trusty:trusty_headers",
@@ -58,10 +78,12 @@ ddk_module(
     ]) + [
         "aoc.c",
         "aoc_firmware.c",
-        "aoc_ipc_core.c",
         "aoc_service_core.c",
-        "ion_physical_heap.c",
-    ],
+    ] + select({
+        "//conditions:default": [
+            "ion_physical_heap.c",
+        ],
+    }),
     out = "aoc_core.ko",
     conditional_srcs = {
         "CONFIG_AOC_V1": {
@@ -74,22 +96,46 @@ ddk_module(
                 "aoc_lga.c",
             ],
         },
+        "CONFIG_AOC_MBU": {
+            True: [
+                "aoc_mbu.c",
+                "aoss_ssr.c",
+            ],
+        },
     },
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/google-modules/aoc:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
-        "//private/google-modules/aoc_ipc:ddk_headers",
-        "//private/google-modules/soc/gs:gs_soc_module",
+        "//private/google-modules/aoc_ipc",
         "//private/google-modules/soc/gs:headers",
+        "//private/google-modules/soc/gs/drivers/dma-buf/heaps/samsung:headers",
+        "//private/google-modules/soc/gs/drivers/dma-buf/heaps/samsung:samsung_dma_heap",
         "//private/google-modules/soc/gs/drivers/soc/google/gsa:gsa_ko",
+        "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/trusty:trusty_headers",
     ] + select({
-        "//private/devices/google/common:soc_is_laguna_or_later": [
-            "//private/google-modules/soc/rdo:rdo_soc_headers",
-            "//private/google-modules/soc/rdo:rdo_soc_module",
+        "//private/devices/google/common:soc_is_zumapro_or_before": [
+            "//private/google-modules/soc/gs/drivers/soc/google:exynos-cpupm",
+            "//private/google-modules/soc/gs/drivers/soc/google:exynos-pmu-if",
+            "//private/google-modules/soc/gs/drivers/soc/google:gs-chipid",
+            "//private/google-modules/soc/gs/drivers/soc/google/acpm:gs_acpm",
+            "//private/google-modules/soc/gs/drivers/soc/google/debug:dss",
+            "//private/google-modules/soc/gs/drivers/soc/google/debug:itmon",
+        ],
+        "//conditions:default": [],
+    }) + select({
+        "//private/devices/google/common:soc_is_malibu": [
+            "//private/google-modules/soc/rdo/aoss-ssr-notifier:aoss_ssr_notifier",
+            "//private/google-modules/soc/rdo/drivers/soc/google:goog-mba-cpm-iface",
+            "//private/google-modules/soc/rdo/drivers/soc/google:goog-mba-gdmc-iface",
+            "//private/google-modules/soc/rdo/drivers/soc/google:google_gtc",
+        ],
+        "//private/devices/google/common:soc_is_laguna": [
+            "//private/google-modules/soc/rdo/aoss-ssr-notifier:aoss_ssr_notifier",
+            "//private/google-modules/soc/rdo/drivers/pinctrl/google:pinctrl",
+            "//private/google-modules/soc/rdo/drivers/soc/google:goog-mba-cpm-iface",
+            "//private/google-modules/soc/rdo/drivers/soc/google:goog-mba-gdmc-iface",
+            "//private/google-modules/soc/rdo/drivers/soc/google:google_gtc",
         ],
         "//conditions:default": [],
     }),
@@ -107,7 +153,7 @@ ddk_module(
     deps = [
         ":aoc_core",
         "//common:all_headers_aarch64",
-        "//private/google-modules/aoc_ipc:ddk_headers",
+        "//private/google-modules/aoc_ipc",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/trusty:trusty_headers",
@@ -126,7 +172,7 @@ ddk_module(
     deps = [
         ":aoc_core",
         "//common:all_headers_aarch64",
-        "//private/google-modules/aoc_ipc:ddk_headers",
+        "//private/google-modules/aoc_ipc",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/trusty:trusty_headers",
@@ -145,7 +191,7 @@ ddk_module(
     deps = [
         ":aoc_core",
         "//common:all_headers_aarch64",
-        "//private/google-modules/aoc_ipc:ddk_headers",
+        "//private/google-modules/aoc_ipc",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/trusty:trusty_headers",
@@ -164,7 +210,7 @@ ddk_module(
     deps = [
         ":aoc_uwb_service_dev",
         "//common:all_headers_aarch64",
-        "//private/google-modules/aoc_ipc:ddk_headers",
+        "//private/google-modules/aoc_ipc",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/trusty:trusty_headers",
@@ -183,7 +229,7 @@ ddk_module(
     deps = [
         ":aoc_core",
         "//common:all_headers_aarch64",
-        "//private/google-modules/aoc_ipc:ddk_headers",
+        "//private/google-modules/aoc_ipc",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/trusty:trusty_headers",
@@ -199,16 +245,30 @@ ddk_module(
     ],
     out = "aoc_tbn_service_dev.ko",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/google-modules/touch/common:__subpackages__",
-    ],
     deps = [
         ":aoc_core",
         "//common:all_headers_aarch64",
-        "//private/google-modules/aoc_ipc:ddk_headers",
+        "//private/google-modules/aoc_ipc",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/trusty:trusty_headers",
+    ],
+)
+
+ddk_module(
+    name = "aoc_mbox_full_sdev",
+    srcs = glob([
+        "**/*.h",
+    ]) + [
+        "aoc_mbox_full_service_dev.c",
+    ],
+    out = "aoc_mbox_full_service_dev.ko",
+    kernel_build = "//private/devices/google/common:kernel",
+    deps = [
+        ":aoc_core",
+        "//common:all_headers_aarch64",
+        "//private/google-modules/aoc_ipc",
+        "//private/google-modules/soc/gs:headers",
     ],
 )
 
@@ -224,27 +284,9 @@ ddk_module(
     deps = [
         ":aoc_core",
         "//common:all_headers_aarch64",
-        "//private/google-modules/aoc_ipc:ddk_headers",
+        "//private/google-modules/aoc_ipc",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
         "//private/google-modules/trusty:trusty_headers",
-    ],
-)
-
-kernel_module_group(
-    name = "aoc",
-    srcs = [
-        ":aoc_channel_dev",
-        ":aoc_char_dev",
-        ":aoc_control_dev",
-        ":aoc_core",
-        ":aoc_tbn_service_dev",
-        ":aoc_unit_test_dev",
-        ":aoc_uwb_platform_drv",
-        ":aoc_uwb_service_dev",
-        ":mailbox-wc",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
     ],
 )

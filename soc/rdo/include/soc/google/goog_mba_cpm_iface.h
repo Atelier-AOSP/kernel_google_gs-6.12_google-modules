@@ -6,6 +6,9 @@
 #ifndef _GOOG_MBA_CPM_IFACE_H_
 #define _GOOG_MBA_CPM_IFACE_H_
 
+#include <linux/types.h>
+
+struct device;
 struct cpm_iface_client;
 
 /*
@@ -34,12 +37,39 @@ struct cpm_iface_payload {
 	u32 payload[GOOG_MBA_PAYLOAD_SIZE];
 };
 
+enum cpm_iface_events {
+	CPM_IFACE_REQ_ENQUEUE,	/* event when client's request be put into software queue */
+	CPM_IFACE_SUBMIT_MSG,	/* event when client's request be sent to MBA hardware queue slot */
+	/*
+	 * CPM_IFACE_TX_DONE: event when client get tx done notification.
+	 *                    Only be captured for oneway message.
+	 * CPM_IFACE_RESP_CB: event when CPM interface processing response message from CPM.
+	 *                    Only be capture for two-way messages.
+	 *
+	 * Notice: these event definitions share the same enum values. For some cases, MSG and ACK
+	 *         interrupts are pending at the same time before AP to handle them. The order to
+	 *         handle MSG or ACK interrupt can't be guaranteed so we skip recording to event of
+	 *         CPM_IFACE_TX_DONE when transaction message is two-way message to make timestamp
+	 *         monotonic.
+	 */
+	CPM_IFACE_TX_DONE,
+	CPM_IFACE_RESP_CB = CPM_IFACE_TX_DONE,
+	CPM_IFACE_SEND_MESSAGE,	/* event when client finish message sending */
+	MAX_CPM_IFACE_EVENTS,
+};
+
+struct cpm_iface_event_timestamps {
+	ktime_t events[MAX_CPM_IFACE_EVENTS];
+};
+
 /*
  * struct cpm_iface_req		Represents a request within the CPM interface
  * @msg_type:			Specifies the message type (see `enum cpm_iface_msg_type`).
  * @req_msg:			The request message payload.
  * @resp_msg:			Buffer to receive a response.
  *				(Effective when @msg_type is REQUEST_MSG)
+ * @timestamps:			Structure to record transaction timestamps. Client give valid
+ *				pointer to get result of timestamps; Leave it NULL if don't need.
  * @dst_id:			Destination service ID within the CPM host.
  * @tout_ms:			Request timeout in milliseconds (0 indicates no timeout).
  * @resp_context:		Context for responding to CPM-initiated messages (used when
@@ -49,6 +79,7 @@ struct cpm_iface_req {
 	enum cpm_iface_msg_type msg_type;
 	struct cpm_iface_payload *req_msg;
 	struct cpm_iface_payload *resp_msg;
+	struct cpm_iface_event_timestamps *timestamps;
 	int dst_id;
 	unsigned long tout_ms;
 	u32 resp_context;

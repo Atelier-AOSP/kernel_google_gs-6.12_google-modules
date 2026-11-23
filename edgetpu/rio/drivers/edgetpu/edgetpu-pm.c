@@ -11,11 +11,13 @@
 #include <linux/mutex.h>
 #include <linux/pm_runtime.h>
 #include <linux/pm_wakeup.h>
+#include <trace/events/edgetpu.h>
 
 #include <gcip/gcip-pm.h>
 #include <gcip/gcip-status-code.h>
 #include <gcip/gcip-thermal.h>
 
+#include "edgetpu-client.h"
 #include "edgetpu-config.h"
 #include "edgetpu-firmware.h"
 #include "edgetpu-gsa.h"
@@ -39,11 +41,6 @@
 #define POLL_BLOCK_OFF_DELAY_US_MIN 200
 #define POLL_BLOCK_OFF_DELAY_US_MAX 200
 #define POLL_BLOCK_OFF_MAX_DELAY_COUNT 20
-
-static bool edgetpu_always_on(void)
-{
-	return IS_ENABLED(CONFIG_EDGETPU_TEST) || EDGETPU_FEATURE_ALWAYS_ON;
-}
 
 static bool edgetpu_poll_block_off(struct edgetpu_dev *etdev)
 {
@@ -123,6 +120,7 @@ static int edgetpu_pm_debugfs_state_get(void *data, u64 *val)
 {
 	struct edgetpu_dev *etdev = data;
 
+	gcip_pm_flush_put_work(etdev->pm->gpm);
 	mutex_lock(&etdev->pm->state_lock);
 	*val = edgetpu_pm_get_count(etdev);
 	mutex_unlock(&etdev->pm->state_lock);
@@ -133,7 +131,7 @@ DEFINE_DEBUGFS_ATTRIBUTE(fops_tpu_pwr_state, edgetpu_pm_debugfs_state_get, NULL,
 
 static int mobile_pwr_policy_set(void *data, u64 val)
 {
-	struct edgetpu_dev *etdev = (typeof(etdev))data;
+	struct edgetpu_dev *etdev = data;
 	int ret = -EAGAIN;
 
 	mutex_lock(&etdev->pm->policy_lock);
@@ -156,7 +154,7 @@ static int mobile_pwr_policy_set(void *data, u64 val)
 
 static int mobile_pwr_policy_get(void *data, u64 *val)
 {
-	struct edgetpu_dev *etdev = (typeof(etdev))data;
+	struct edgetpu_dev *etdev = data;
 
 	mutex_lock(&etdev->pm->policy_lock);
 	*val = etdev->pm->curr_policy;
@@ -169,19 +167,30 @@ DEFINE_DEBUGFS_ATTRIBUTE(fops_tpu_pwr_policy, mobile_pwr_policy_get, mobile_pwr_
 
 static int mobile_power_down(void *data);
 
+static void edgetpu_pm_enable_mailbox_irqs(struct edgetpu_dev *etdev, bool enable)
+{
+	edgetpu_mailbox_irq_enable(etdev->etkci->mailbox, enable);
+	edgetpu_mailbox_irq_enable(etdev->etikv->mbx_hardware, enable);
+	if (etdev->etiif->mbx_hardware)
+		edgetpu_mailbox_irq_enable(etdev->etiif->mbx_hardware, enable);
+}
 
 /*
  * Disable mailbox IRQs during the power up sequence just in case old firmware is still
  * running, avoid potential RFW access violation during state restore.
  */
-static int edgetpu_pm_get_irqs_disabled(struct edgetpu_dev *etdev)
+static int edgetpu_pm_runtime_get_irqs_disabled(struct edgetpu_dev *etdev)
 {
 	int ret;
 
-	edgetpu_mailbox_irqs_enable(etdev, false);
+	edgetpu_pm_enable_mailbox_irqs(etdev, false);
+	trace_edgetpu_pm_runtime_get_sync_start(etdev);
 	ret = pm_runtime_get_sync(etdev->dev);
+	trace_edgetpu_pm_runtime_get_sync_end(etdev, ret);
+	edgetpu_eventlog_event(etdev, EVENTLOG_EVENT_POWER_RPMDONE,
+			       (void *)edgetpu_soc_pm_is_block_off(etdev));
 	/* Re-enable mailbox IRQs. */
-	edgetpu_mailbox_irqs_enable(etdev, true);
+	edgetpu_pm_enable_mailbox_irqs(etdev, true);
 	return ret;
 }
 
@@ -208,10 +217,8 @@ static int try_force_power_domain_reboot(struct edgetpu_dev *etdev)
 	}
 
 	ret = pm_runtime_put_sync(etdev->dev);
-	if (ret) {
-		etdev_err(etdev, "pm_runtime_put failed for forced reboot %d", ret);
-		return ret;
-	}
+	if (ret)
+		etdev_warn(etdev, "forced reboot pm_runtime_put_sync returned %d", ret);
 
 	do {
 		if (edgetpu_poll_block_off(etdev))
@@ -229,9 +236,8 @@ static int try_force_power_domain_reboot(struct edgetpu_dev *etdev)
 	return 0;
 }
 
-static int mobile_power_up(void *data)
+static int do_power_up(struct edgetpu_dev *etdev)
 {
-	struct edgetpu_dev *etdev = (struct edgetpu_dev *)data;
 	int times = 0;
 	int ret;
 
@@ -241,12 +247,15 @@ static int mobile_power_up(void *data)
 		return -EAGAIN;
 	}
 
-	if (!edgetpu_always_on()) {
+	if (!edgetpu_pm_always_on(etdev)) {
 		do {
 			if (edgetpu_poll_block_off(etdev))
 				break;
 			usleep_range(BLOCK_DOWN_MIN_DELAY_US, BLOCK_DOWN_MAX_DELAY_US);
 		} while (++times < BLOCK_DOWN_RETRY_TIMES);
+		if (times)
+			edgetpu_eventlog_event(etdev, EVENTLOG_EVENT_POWER_WAITSTATE,
+					       (void *)edgetpu_soc_pm_is_block_off(etdev));
 		if (times >= BLOCK_DOWN_RETRY_TIMES && !edgetpu_poll_block_off(etdev)) {
 			etdev_err(
 				etdev,
@@ -270,13 +279,14 @@ static int mobile_power_up(void *data)
 	}
 
 	etdev_info(etdev, "Powering up\n");
-	ret = edgetpu_pm_get_irqs_disabled(etdev);
+	ret = edgetpu_pm_runtime_get_irqs_disabled(etdev);
 	if (ret < 0) {
 		pm_runtime_put_noidle(etdev->dev);
 		etdev_err(etdev, "pm_runtime_get_sync returned %d\n", ret);
 		return ret;
 	}
 
+	trace_edgetpu_power_state(1);
 	edgetpu_soc_pm_lpm_up(etdev);
 
 	/* TODO(b/269374029) Do *_reinit() results need to be checked? */
@@ -341,14 +351,28 @@ static int mobile_power_up(void *data)
 
 out:
 	if (!ret) {
-		edgetpu_mailbox_restore_active_mailbox_queues(etdev);
+		edgetpu_mailbox_restore_active_ext_mailbox_queues(etdev);
 		mutex_lock(&etdev->pm->freq_limits_lock);
 		/* Only send limits to FW if at least one has been set. */
 		if (etdev->pm->min_freq || etdev->pm->max_freq)
 			mobile_pwr_update_freq_limits_locked(etdev);
+		/* Restore Coresight remote tracing state if enabled. */
+		if (!IS_ERR_OR_NULL(etdev->coresight_remote))
+			gcip_coresight_remote_restore_state(etdev->coresight_remote);
 		mutex_unlock(&etdev->pm->freq_limits_lock);
 	}
 
+	return ret;
+}
+
+static int mobile_power_up(void *data)
+{
+	struct edgetpu_dev *etdev = (struct edgetpu_dev *)data;
+	uintptr_t ret;
+
+	edgetpu_eventlog_event(etdev, EVENTLOG_EVENT_POWER_STATE_START, (void *)1);
+	ret = do_power_up(etdev);
+	edgetpu_eventlog_event(etdev, EVENTLOG_EVENT_POWER_STATE_END, (void *)ret);
 	return ret;
 }
 
@@ -356,7 +380,7 @@ static void mobile_firmware_down(struct edgetpu_dev *etdev)
 {
 	int ret = 0;
 
-	if (!edgetpu_always_on())
+	if (!edgetpu_pm_always_on(etdev))
 		ret = edgetpu_kci_shutdown(etdev->etkci);
 
 	if (!ret)
@@ -369,17 +393,17 @@ static void mobile_firmware_down(struct edgetpu_dev *etdev)
 		etdev_warn(etdev, "firmware shutdown retry failed (%d)", ret);
 }
 
-static int mobile_power_down(void *data)
+static int do_power_down(struct edgetpu_dev *etdev)
 {
-	struct edgetpu_dev *etdev = (struct edgetpu_dev *)data;
 	struct edgetpu_mobile_platform_dev *etmdev = to_mobile_dev(etdev);
 	int res = 0;
 
 	etdev_info(etdev, "Powering down\n");
+	trace_edgetpu_power_state(0);
 
 	edgetpu_sw_wdt_stop(etdev);
 
-	if (!edgetpu_always_on() && edgetpu_soc_pm_is_block_off(etdev)) {
+	if (!edgetpu_pm_always_on(etdev) && edgetpu_soc_pm_is_block_off(etdev)) {
 		etdev_dbg(etdev, "Device already off, skipping shutdown\n");
 		return 0;
 	}
@@ -392,7 +416,7 @@ static int mobile_power_down(void *data)
 			edgetpu_kci_update_usage_locked(etdev);
 			mobile_firmware_down(etdev);
 			/* Ensure firmware is completely off */
-			if (!edgetpu_always_on())
+			if (!edgetpu_pm_always_on(etdev))
 				edgetpu_soc_pm_lpm_down(etdev);
 			/* Indicate firmware is no longer running */
 			etdev->state = ETDEV_STATE_NOFW;
@@ -418,10 +442,10 @@ static int mobile_power_down(void *data)
 	}
 
 	res = pm_runtime_put_sync(etdev->dev);
-	if (res) {
-		etdev_err(etdev, "pm_runtime_put_sync returned %d\n", res);
-		return res;
-	}
+	edgetpu_eventlog_event(etdev, EVENTLOG_EVENT_POWER_RPMDONE,
+			       (void *)edgetpu_soc_pm_is_block_off(etdev));
+	if (res)
+		etdev_warn(etdev, "power down: pm_runtime_put_sync returned %d\n", res);
 
 	edgetpu_soc_pm_power_down(etdev);
 
@@ -434,6 +458,17 @@ static int mobile_power_down(void *data)
 	etmdev->secure_client = NULL;
 
 	return 0;
+}
+
+static int mobile_power_down(void *data)
+{
+	struct edgetpu_dev *etdev = (struct edgetpu_dev *)data;
+	uintptr_t ret;
+
+	edgetpu_eventlog_event(etdev, EVENTLOG_EVENT_POWER_STATE_START, (void *)0);
+	ret = do_power_down(etdev);
+	edgetpu_eventlog_event(etdev, EVENTLOG_EVENT_POWER_STATE_END, (void *)ret);
+	return ret;
 }
 
 static int mobile_pm_after_create(void *data)
@@ -454,10 +489,7 @@ static int mobile_pm_after_create(void *data)
 	mutex_init(&etdev->pm->freq_limits_lock);
 
 	etdev->pm->debugfs_dir = debugfs_create_dir("power", edgetpu_fs_debugfs_dir());
-	if (IS_ERR_OR_NULL(etdev->pm->debugfs_dir)) {
-		dev_warn(etdev->dev, "Failed to create debug FS power");
-		/* don't fail the procedure on debug FS creation fails */
-	} else {
+	if (!IS_ERR_OR_NULL(etdev->pm->debugfs_dir)) {
 		debugfs_create_file("state", 0660, etdev->pm->debugfs_dir, etdev,
 				    &fops_tpu_pwr_state);
 		debugfs_create_file("policy", 0660, etdev->pm->debugfs_dir, etdev,
@@ -522,6 +554,9 @@ int edgetpu_pm_create(struct edgetpu_dev *etdev)
 
 	mutex_init(&etdev->pm->policy_lock);
 	etdev->pm->curr_policy = etdev->max_active_state;
+	/* Set always_on for unit tests. */
+	if (IS_ENABLED(CONFIG_EDGETPU_TEST))
+		etdev->pm->always_on = true;
 	etdev->pm->gpm = gcip_pm_create(&args);
 	if (IS_ERR(etdev->pm->gpm)) {
 		ret = PTR_ERR(etdev->pm->gpm);
@@ -584,9 +619,8 @@ static int __maybe_unused edgetpu_pm_suspend(struct device *dev)
 		else
 			etdev_warn_ratelimited(
 				etdev,
-				"client pid %d tgid %d limited_pid %d limited_tgid %d count %d\n",
-				lc->client->pid, lc->client->tgid, lc->client->limited_pid,
-				lc->client->limited_tgid, lc->client->wakelock.req_count);
+				"client %s tgid %d count %d\n",
+				lc->client->name, lc->client->tgid, lc->client->wakelock.req_count);
 	}
 	mutex_unlock(&etdev->clients_lock);
 	return -EAGAIN;

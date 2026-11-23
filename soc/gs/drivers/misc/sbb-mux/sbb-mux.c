@@ -13,7 +13,6 @@
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_gpio.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
@@ -618,12 +617,12 @@ static void sbb_mux_cleanup_gpio_tracker(struct sbb_gpio_tracker *tracker)
 	if (!tracker->sysfs_folder)
 		return;
 
-	kobject_put(tracker->sysfs_folder);
-	tracker->sysfs_folder = NULL;
-
 	sbb_mux_cleanup_sysfs_file(tracker->sysfs_folder,
 				   &tracker->tracked_signal_file);
 	sbb_mux_cleanup_sysfs_file(tracker->sysfs_folder, &tracker->value_file);
+
+	kobject_put(tracker->sysfs_folder);
+	tracker->sysfs_folder = NULL;
 }
 
 static void sbb_gpio_refresh_all(void)
@@ -735,13 +734,11 @@ static void sbb_mux_drv_undo_probe(struct sbb_gpio_tracker **gpio_trackers_ptr)
 	*gpio_trackers_ptr = NULL;
 }
 
-static int sbb_mux_drv_remove(struct platform_device *dev)
+static void sbb_mux_drv_remove(struct platform_device *dev)
 {
 	pr_info("sbb-mux: Calling %s!\n", __func__);
 
 	sbb_mux_drv_undo_probe(&gpio_trackers);
-
-	return 0;
 }
 
 static int __init sbb_mux_init(void)

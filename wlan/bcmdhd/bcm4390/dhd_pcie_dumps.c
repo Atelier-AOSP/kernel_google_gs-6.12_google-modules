@@ -390,7 +390,7 @@ dhd_bus_dump_console_buffer(dhd_bus_t *bus)
 			 * will truncate a lot of the printfs
 			 */
 
-			DHD_FWLOG(("CONSOLE: %s\n", line));
+			DHD_PRINT(("CONSOLE: %s\n", line));
 		}
 	}
 

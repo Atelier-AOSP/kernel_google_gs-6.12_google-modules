@@ -65,7 +65,8 @@
 #if IS_ENABLED(CONFIG_SOC_LGA)
 #include <ip-idle-notifier/google_ip_idle_notifier.h>
 #endif
-#if IS_ENABLED(CONFIG_PKVM_S2MPU_V9) || IS_ENABLED(CONFIG_PKVM_S2MPU)
+#if IS_ENABLED(CONFIG_PKVM_S2MPU_V9) || IS_ENABLED(CONFIG_PKVM_S2MPU) || \
+	IS_ENABLED(CONFIG_S2MPU_BYPASS)
 #include <soc/google/pkvm-s2mpu.h>
 #endif
 
@@ -1401,7 +1402,7 @@ static void eh_setup_dcmd(struct eh_device *eh_dev, unsigned int index,
 				  virt_to_phys(&eh_dev->decompr_status[index]));
 #endif
 
-	src_data = (__ffs(alignment) - 5) << EH_DCMD_BUF_SIZE_SHIFT;
+	src_data = (__ffs(alignment) - 5UL) << EH_DCMD_BUF_SIZE_SHIFT;
 	src_data |= src_paddr;
 	eh_write_register(eh_dev, EH_REG_DCMD_BUF0(index), src_data);
 	eh_write_register(eh_dev, EH_REG_DCMD_BUF1(index), 0);
@@ -1547,7 +1548,7 @@ static int eh_of_probe(struct platform_device *pdev)
 	if (ret)
 		goto free_ehdev;
 
-#if IS_ENABLED(CONFIG_PKVM_S2MPU_V9)
+#if IS_ENABLED(CONFIG_PKVM_S2MPU_V9) || IS_ENABLED(CONFIG_S2MPU_BYPASS)
 	ret = pkvm_s2mpu_of_link_v9(&pdev->dev);
 #elif IS_ENABLED(CONFIG_PKVM_S2MPU)
 	ret = pkvm_s2mpu_of_link(&pdev->dev);
@@ -1619,7 +1620,7 @@ free_ehdev:
 	return ret;
 }
 
-static int eh_of_remove(struct platform_device *pdev)
+static void eh_of_remove(struct platform_device *pdev)
 {
 	struct eh_device *eh_dev = platform_get_drvdata(pdev);
 
@@ -1629,9 +1630,10 @@ static int eh_of_remove(struct platform_device *pdev)
 	clk_put(eh_dev->clk);
 	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
-
+	spin_lock(&eh_dev_list_lock);
+	list_del(&eh_dev->eh_dev_list);
+	spin_unlock(&eh_dev_list_lock);
 	kobject_put(&eh_dev->kobj);
-	return 0;
 }
 
 static int eh_suspend(struct device *dev)

@@ -1,6 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0 only
 /*
- * Copyright 2025 Google LLC.
+ * da918x_bcl_tests.c Google BCL DA918x tests
+ *
+ * Copyright (c) 2025 Google LLC.
+ *
  */
 
 #include <linux/err.h>
@@ -14,6 +17,7 @@ static void verify_convert_pre_uvlo_lvl(struct kunit *test, int input,
 					int rise_th, int fall_th)
 {
 	int converted = convert_pre_uvlo_lvl(input);
+
 	KUNIT_EXPECT_EQ_MSG(test, (converted >> 4) & 0xF, rise_th,
 			    "convert_pre_uvlo_lvl(%d) rise_th", input);
 	KUNIT_EXPECT_EQ_MSG(test, converted & 0xF, fall_th,
@@ -70,10 +74,13 @@ static void convert_pre_ocp_lvl_full_test_idx(struct kunit *test, int idx,
 
 	/* Test conversion accuracy */
 	convert_pre_ocp_lvl_test_value(test, min, idx, 0xFF);
-	convert_pre_ocp_lvl_test_value(test, min + step - 1, idx, 0xFF);
+	convert_pre_ocp_lvl_test_value(test, min + step - 1, idx,
+				       0xFF);
 	convert_pre_ocp_lvl_test_value(test, min + step, idx, 0xEE);
-	convert_pre_ocp_lvl_test_value(test, min + 15 * step - 1, idx, 0x11);
-	convert_pre_ocp_lvl_test_value(test, min + 15 * step, idx, 0x00);
+	convert_pre_ocp_lvl_test_value(test, min + 15 * step - 1, idx,
+				       0x11);
+	convert_pre_ocp_lvl_test_value(test, min + 15 * step, idx,
+				       0x00);
 	convert_pre_ocp_lvl_test_value(test, max, idx, 0x00);
 }
 

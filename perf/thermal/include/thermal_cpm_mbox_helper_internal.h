@@ -18,10 +18,12 @@ void cpm_mbox_rx_callback(u32 context, void *msg, void *priv_data);
 int cpm_mbox_init(struct thermal_cpm_mbox_driver_data *drv_data);
 void thermal_cpm_mbox_init_notifier(struct thermal_cpm_mbox_driver_data *drv_data);
 void thermal_cpm_mbox_free(struct thermal_cpm_mbox_driver_data *drv_data);
-int tzid_to_rx_cb_type(struct thermal_cpm_mbox_driver_data *drv_data, enum hw_thermal_zone_id tz_id,
-		       enum hw_dev_type *cdev_id);
-int hw_cdev_id_to_tzid(struct thermal_cpm_mbox_driver_data *drv_data, enum hw_dev_type cdev_id,
-		       enum hw_thermal_zone_id *tz_id);
+int sensor_id_to_hw_tzid(struct thermal_cpm_mbox_driver_data *drv_data, int sensor_id,
+			   enum hw_thermal_zone_id *hw_tzid);
+int hw_tzid_to_rx_cb_type(struct thermal_cpm_mbox_driver_data *drv_data,
+			  enum hw_thermal_zone_id hw_tzid, enum hw_dev_type *cdev_id);
+int hw_cdev_id_to_hw_tzid(struct thermal_cpm_mbox_driver_data *drv_data,
+			  enum hw_dev_type cdev_id, enum hw_thermal_zone_id *hw_tzid);
 const char *get_tz_name(struct thermal_cpm_mbox_driver_data *drv_data,
 			enum hw_thermal_zone_id tz_id);
 #endif  // _THERMAL_CPM_MBOX_HELPER_INTERNAL_H_

@@ -140,7 +140,7 @@ BWL_PRE_PACKED_STRUCT struct do11_ap_chrep {
 	uint8 id;
 	uint8 len;
 	uint8 reg;
-	BCM_DECLARE_FLEX_ARRAY(uint8, chanlist);
+	uint8 chanlist[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct do11_ap_chrep dot11_ap_chrep_t;
 
@@ -157,7 +157,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_rm_action {
 	uint8 category;				/* category of action frame (5) */
 	uint8 action;				/* radio measurement action */
 	uint8 token;				/* dialog token */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_rm_action dot11_rm_action_t;
 #define DOT11_RM_ACTION_LEN 3
@@ -167,7 +167,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_rmreq {
 	uint8 action;				/* radio measurement action */
 	uint8 token;				/* dialog token */
 	uint16 reps;				/* no. of repetitions */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_rmreq dot11_rmreq_t;
 #define DOT11_RMREQ_LEN	5
@@ -760,7 +760,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_rmreq_ftm_range {
 	uint8 type;
 	uint16 max_init_delay;		/* maximum random initial delay */
 	uint8 min_ap_count;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 	/* neighbor report sub-elements */
 	/* optional sub-elements */
 } BWL_POST_PACKED_STRUCT;
@@ -880,7 +880,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_neighbor_rep_ie {
 	uint8 reg;		/* Operating class */
 	uint8 channel;
 	uint8 phytype;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);	/* Variable size subelements */
+	uint8 data[BCM_FLEX_ARRAY];	/* Variable size subelements */
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_neighbor_rep_ie dot11_neighbor_rep_ie_t;
 #define DOT11_NEIGHBOR_REP_IE_FIXED_LEN	13u

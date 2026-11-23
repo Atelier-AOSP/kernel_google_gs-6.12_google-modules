@@ -3,27 +3,98 @@
  * Copyright 2022-2024 Google LLC
  */
 
+#include <linux/pci-pwrctrl.h>
 #include <linux/pcie_google_if.h>
 #include "pcie-google.h"
-
-/* TOP region offsets */
-#define PCIE_RESET_STATUS	0x38
-#define APP_INIT_RST		BIT(27)
 
 struct google_pcie_debug {
 	char base_dirname[8];
 	struct dentry *base_dir;
 };
 
+struct google_pcie_debug_pwrctrl {
+	struct pci_pwrctrl pwrctrl;
+	struct device dev;
+};
+
+static inline struct pci_pwrctrl *to_pwrctrl(struct device *dev)
+{
+	struct google_pcie_debug_pwrctrl *debug_pwrctrl;
+
+	debug_pwrctrl = container_of(dev, struct google_pcie_debug_pwrctrl, dev);
+
+	return &debug_pwrctrl->pwrctrl;
+}
+
+#define GOOGLE_PWRCTRL_DEBUGFS_NAME "debug-pwrctrl"
+
+static void gpcie_debug_pwrctrl_release(struct device *dev)
+{
+	struct google_pcie_debug_pwrctrl *debug_pwrctrl;
+
+	debug_pwrctrl = container_of(dev, struct google_pcie_debug_pwrctrl, dev);
+
+	kfree(debug_pwrctrl);
+}
+
+static struct pci_pwrctrl *gpcie_get_debug_pwrctrl(struct google_pcie *gpcie)
+{
+	struct pci_host_bridge *bridge = gpcie->pci->pp.bridge;
+	struct google_pcie_debug_pwrctrl *debug_pwrctrl;
+	struct device *dev;
+	int ret;
+
+	dev = device_find_child_by_name(&bridge->dev, GOOGLE_PWRCTRL_DEBUGFS_NAME);
+	if (dev) {
+		put_device(dev);
+		return to_pwrctrl(dev);
+	}
+
+	debug_pwrctrl = kzalloc(sizeof(*debug_pwrctrl), GFP_KERNEL);
+	if (!debug_pwrctrl)
+		return NULL;
+
+	dev = &debug_pwrctrl->dev;
+
+	dev_set_name(dev, GOOGLE_PWRCTRL_DEBUGFS_NAME);
+	dev->parent = &bridge->dev;
+	dev->release = gpcie_debug_pwrctrl_release;
+
+	ret = device_register(dev);
+	if (ret) {
+		dev_err(gpcie->dev, "Failed to register pwrctrl device: %d\n", ret);
+		put_device(dev);
+		return NULL;
+	}
+
+	pci_pwrctrl_init(&debug_pwrctrl->pwrctrl, dev);
+
+	return &debug_pwrctrl->pwrctrl;
+}
+
 static int gpcie_set_power(void *data, u64 val)
 {
 	struct google_pcie *gpcie = (struct google_pcie *)data;
+	struct pci_pwrctrl *pwrctrl = gpcie_get_debug_pwrctrl(gpcie);
+	int ret;
 
 	if (val == 1) {
 		dev_dbg(gpcie->dev, "Request for power ON from debugfs\n");
-		return google_pcie_rc_poweron(gpcie->domain);
+
+		ret = google_pcie_rc_poweron(gpcie->domain);
+		if (ret)
+			return ret;
+
+		if (!gpcie->power_ready && pwrctrl)
+			return pci_pwrctrl_device_set_ready(pwrctrl);
+
+		return 0;
 	} else if (val == 0) {
 		dev_dbg(gpcie->dev, "Request for power OFF from debugfs\n");
+
+		if (gpcie->power_ready && pwrctrl)
+			pci_pwrctrl_device_unset_ready(pwrctrl);
+
 		return google_pcie_rc_poweroff(gpcie->domain);
 	}
 
@@ -154,7 +225,6 @@ DEFINE_DEBUGFS_ATTRIBUTE(gpcie_fops_force_cpl_timeout, NULL,
 static int gpcie_force_link_down(void *data, u64 val)
 {
 	struct google_pcie *gpcie = data;
-	u32 reg;
 
 	dev_info(gpcie->dev, "forcing link down\n");
 
@@ -165,15 +235,27 @@ static int gpcie_force_link_down(void *data, u64 val)
 		return -ENODEV;
 	}
 
-	reg = readl(gpcie->top_base + PCIE_RESET_STATUS);
-	reg |= APP_INIT_RST;
-	writel(reg, gpcie->top_base + PCIE_RESET_STATUS);
+	google_pcie_hot_reset(gpcie);
+
 	mutex_unlock(&gpcie->link_lock);
 
 	return 0;
 }
 DEFINE_DEBUGFS_ATTRIBUTE(gpcie_fops_force_link_down, NULL,
 			 gpcie_force_link_down, "%llu\n");
+
+static int gpcie_force_trigger_coredump(void *data, u64 val)
+{
+	struct google_pcie *gpcie = data;
+
+	dev_info(gpcie->dev, "forcing trigger devcoredump\n");
+
+	google_pcie_create_devcoredump(gpcie);
+
+	return 0;
+}
+DEFINE_DEBUGFS_ATTRIBUTE(gpcie_fops_force_trigger_coredump, NULL,
+			 gpcie_force_trigger_coredump, "%llu\n");
 
 int google_pcie_init_debugfs(struct google_pcie *gpcie)
 {
@@ -206,6 +288,8 @@ int google_pcie_init_debugfs(struct google_pcie *gpcie)
 			    gpcie, &gpcie_fops_force_cpl_timeout);
 	debugfs_create_file("force_link_down", 0220, dbg->base_dir,
 			    gpcie, &gpcie_fops_force_link_down);
+	debugfs_create_file("force_trigger_coredump", 0220, dbg->base_dir,
+			    gpcie, &gpcie_fops_force_trigger_coredump);
 
 	dev_dbg(gpcie->dev, "Created debugfs files\n");
 	gpcie->debugfs = dbg;

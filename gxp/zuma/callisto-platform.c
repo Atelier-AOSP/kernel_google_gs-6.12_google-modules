@@ -2,7 +2,7 @@
 /*
  * Platform device driver for Callisto.
  *
- * Copyright (C) 2022-2024 Google LLC
+ * Copyright (C) 2022-2025 Google LLC
  */
 
 #include <linux/device.h>
@@ -31,11 +31,6 @@ void gxp_iommu_setup_shareability(struct gxp_dev *gxp)
 		       addr + GXP_SYSREG_AUR0_SHAREABILITY);
 	writel_relaxed(SHAREABLE_WRITE | SHAREABLE_READ | INNER_SHAREABLE,
 		       addr + GXP_SYSREG_AUR1_SHAREABILITY);
-}
-
-int gxp_iommu_get_max_vd_activation(struct gxp_dev *gxp)
-{
-	return gcip_iommu_domain_pool_get_num_pasid(gxp->domain_pool);
 }
 
 static int callisto_platform_parse_dt(struct platform_device *pdev,
@@ -154,7 +149,7 @@ MODULE_DEVICE_TABLE(of, gxp_of_match);
 
 static struct platform_driver gxp_platform_driver = {
 	.probe = gxp_platform_probe,
-	.remove_new = gxp_common_platform_remove,
+	.remove = gxp_common_platform_remove,
 	.driver = {
 			.name = GXP_DRIVER_NAME,
 			.of_match_table = of_match_ptr(gxp_of_match),
@@ -182,6 +177,7 @@ static void __exit gxp_platform_exit(void)
 }
 
 MODULE_DESCRIPTION("Google GXP platform driver");
+MODULE_IMPORT_NS(DMA_BUF);
 MODULE_LICENSE("GPL");
 #ifdef GIT_REPO_TAG
 MODULE_INFO(gitinfo, GIT_REPO_TAG);

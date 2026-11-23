@@ -107,13 +107,6 @@ static const struct of_device_id img_pdp_of_match[] = {
 
 MODULE_DEVICE_TABLE(of, img_pdp_of_match);
 
-struct pdp_gem_private *pdp_gem_get_private(struct drm_device *dev)
-{
-	struct pdp_drm_private *dev_priv = dev->dev_private;
-
-	return dev_priv->gem_priv;
-}
-
 static void pdp_irq_handler(void *data)
 {
 	struct drm_device *dev = data;
@@ -217,10 +210,9 @@ static int pdp_early_load(struct drm_device *dev)
 	}
 #endif
 
-	dev_priv->gem_priv = pdp_gem_init(dev, 0);
-	if (!dev_priv->gem_priv) {
-		DRM_ERROR("gem initialisation failed\n");
-		err = -ENOMEM;
+	err = pdp_gem_init_devres(dev);
+	if (err) {
+		DRM_ERROR("gem initialisation failed (err=%d)\n", err);
 		goto err_disable_parent_device;
 	}
 
@@ -228,7 +220,7 @@ static int pdp_early_load(struct drm_device *dev)
 	if (err) {
 		DRM_ERROR("early modeset initialisation failed (err=%d)\n",
 			  err);
-		goto err_gem_cleanup;
+		goto err_disable_parent_device;
 	}
 
 	err = drm_vblank_init(dev_priv->dev, 1);
@@ -310,8 +302,6 @@ err_uninstall_interrupt_handle:
 err_vblank_cleanup:
 err_modeset_late_cleanup:
 	pdp_modeset_late_cleanup(dev_priv);
-err_gem_cleanup:
-	pdp_gem_cleanup(dev_priv->gem_priv);
 err_disable_parent_device:
 	if (dev_priv->version == PDP_VERSION_APOLLO ||
 		dev_priv->version == PDP_VERSION_ODIN) {
@@ -380,7 +370,6 @@ static void pdp_late_unload(struct drm_device *dev)
 #endif
 
 	pdp_modeset_late_cleanup(dev_priv);
-	pdp_gem_cleanup(dev_priv->gem_priv);
 
 	if (dev_priv->version == PDP_VERSION_APOLLO ||
 		dev_priv->version == PDP_VERSION_ODIN) {
@@ -473,37 +462,6 @@ static void pdp_disable_vblank(struct drm_device *dev, unsigned int pipe)
 	}
 
 	DRM_DEBUG("vblank interrupts disabled for crtc %d\n", pipe);
-}
-
-static int pdp_gem_object_create_ioctl(struct drm_device *dev,
-				       void *data,
-				       struct drm_file *file)
-{
-	struct pdp_drm_private *dev_priv = dev->dev_private;
-
-	return pdp_gem_object_create_ioctl_priv(dev,
-						dev_priv->gem_priv,
-						data,
-						file);
-}
-
-static int pdp_gem_dumb_create(struct drm_file *file,
-			       struct drm_device *dev,
-			       struct drm_mode_create_dumb *args)
-{
-	struct pdp_drm_private *dev_priv = dev->dev_private;
-
-	return pdp_gem_dumb_create_priv(file,
-					dev,
-					dev_priv->gem_priv,
-					args);
-}
-
-void pdp_gem_object_free(struct drm_gem_object *obj)
-{
-	struct pdp_drm_private *dev_priv = obj->dev->dev_private;
-
-	pdp_gem_object_free_priv(dev_priv->gem_priv, obj);
 }
 
 static const struct drm_ioctl_desc pdp_ioctls[] = {
@@ -599,7 +557,6 @@ static struct drm_driver pdp_drm_driver = {
 
     // Set dumb_create to NULL to avoid xorg owning the display (if xorg is running).
 	.dumb_create			= pdp_gem_dumb_create,
-	.dumb_map_offset		= pdp_gem_dumb_map_offset,
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 15, 0))
 	PDP_FBDEV_DRIVER_OPS,

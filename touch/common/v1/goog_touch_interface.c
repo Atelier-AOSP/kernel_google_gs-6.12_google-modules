@@ -26,6 +26,7 @@
 
 #include "goog_touch_interface.h"
 #include "touch_bus_negotiator.h"
+#include "gti_sim.h"
 
 static struct class *gti_class;
 static u8 gti_dev_num;
@@ -169,6 +170,10 @@ static int goog_proc_heatmap_process(struct seq_file *m, void *v, enum gti_senso
 	struct gti_sensor_data_cmd *cmd = &gti->cmd.manual_sensor_data_cmd;
 	int ret = 0;
 
+	/* Only run the vendor command once. */
+	if (m->size != PAGE_SIZE)
+		return ret;
+
 	ret = goog_precheck_heatmap(gti);
 	if (ret) {
 		seq_puts(m, "N/A!\n");
@@ -291,6 +296,11 @@ static int goog_proc_dump_show(struct seq_file *m, void *v)
 			gti->offload.coords[slot].pressure,
 			gti->offload.coords[slot].major, gti->offload.coords[slot].minor);
 	}
+	seq_puts(m, "\n");
+
+	seq_puts(m, "\t### Time Delta(MS) from MONO to BOOT ###\n");
+	seq_printf(m, "%14lld",
+		ktime_ms_delta(ktime_get_boottime(), ktime_get()));
 	seq_puts(m, "\n");
 
 	mutex_unlock(&gti->input_process_lock);
@@ -524,6 +534,10 @@ static ssize_t reset_show(struct device *dev,
 		struct device_attribute *attr, char *buf);
 static ssize_t reset_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size);
+static ssize_t rr_show(struct device *dev,
+		struct device_attribute *attr, char *buf);
+static ssize_t rr_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size);
 static ssize_t scan_mode_show(struct device *dev,
 		struct device_attribute *attr, char *buf);
 static ssize_t scan_mode_store(struct device *dev,
@@ -575,7 +589,9 @@ static DEVICE_ATTR_RW(offload_enabled);
 static DEVICE_ATTR_ADMIN_RO(offload_id);
 static DEVICE_ATTR_ADMIN_RO(panel_id);
 static DEVICE_ATTR_RO(ping);
+static DEVICE_ATTR_RW(resample_latency_us);
 static DEVICE_ATTR_RW(reset);
+static DEVICE_ATTR_RW(rr);
 static DEVICE_ATTR_RW(scan_mode);
 static DEVICE_ATTR_RW(screen_protector_mode_enabled);
 static DEVICE_ATTR_RO(self_test);
@@ -585,7 +601,6 @@ static DEVICE_ATTR_RW(timestamp_correction_enabled);
 static DEVICE_ATTR_RW(v4l2_enabled);
 static DEVICE_ATTR_RW(vrr_enabled);
 static DEVICE_ATTR_RW(interactive_calibrate);
-static DEVICE_ATTR_RW(resample_latency_us);
 
 static struct attribute *goog_attributes[] = {
 	&dev_attr_config_name.attr,
@@ -602,7 +617,9 @@ static struct attribute *goog_attributes[] = {
 	&dev_attr_offload_id.attr,
 	&dev_attr_panel_id.attr,
 	&dev_attr_ping.attr,
+	&dev_attr_resample_latency_us.attr,
 	&dev_attr_reset.attr,
+	&dev_attr_rr.attr,
 	&dev_attr_scan_mode.attr,
 	&dev_attr_screen_protector_mode_enabled.attr,
 	&dev_attr_self_test.attr,
@@ -612,7 +629,6 @@ static struct attribute *goog_attributes[] = {
 	&dev_attr_v4l2_enabled.attr,
 	&dev_attr_vrr_enabled.attr,
 	&dev_attr_interactive_calibrate.attr,
-	&dev_attr_resample_latency_us.attr,
 	NULL,
 };
 
@@ -1238,6 +1254,54 @@ static ssize_t scan_mode_show(struct device *dev,
 	return buf_idx;
 }
 
+static ssize_t rr_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct goog_touch_interface *gti = dev_get_drvdata(dev);
+	struct gti_report_rate_cmd *cmd = &gti->cmd.report_rate_cmd;
+	ssize_t buf_idx = 0;
+	int ret = 0;
+
+	ret = goog_process_vendor_cmd(gti, GTI_CMD_GET_REPORT_RATE);
+	if (ret == -EOPNOTSUPP) {
+		buf_idx += scnprintf(buf + buf_idx, PAGE_SIZE - buf_idx, "error: not supported!\n");
+	} else if (ret) {
+		buf_idx += scnprintf(buf + buf_idx, PAGE_SIZE - buf_idx, "error: %d!\n", ret);
+	} else {
+		buf_idx +=
+			scnprintf(buf + buf_idx, PAGE_SIZE - buf_idx, "result: %d", cmd->setting);
+	}
+
+	return buf_idx;
+}
+
+static ssize_t rr_store(struct device *dev, struct device_attribute *attr, const char *buf,
+			size_t size)
+{
+	struct goog_touch_interface *gti = dev_get_drvdata(dev);
+	u32 value;
+	int ret;
+
+	ret = kstrtou32(buf, 10, &value);
+	if (ret) {
+		GOOG_LOGE(gti, "error: invalid input!\n");
+		return -EINVAL;
+	}
+
+	struct gti_report_rate_cmd *cmd = &gti->cmd.report_rate_cmd;
+
+	cmd->setting = value;
+	ret = goog_process_vendor_cmd(gti, GTI_CMD_SET_REPORT_RATE);
+
+	if (ret == -EOPNOTSUPP)
+		GOOG_LOGE(gti, "error: not supported!\n");
+	else if (ret)
+		GOOG_LOGE(gti, "error: %d!\n", ret);
+	else
+		GOOG_LOGI(gti, "report_rate: %u\n", gti->cmd.report_rate_cmd.setting);
+
+	return size;
+}
+
 static ssize_t scan_mode_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t size)
 {
@@ -1528,8 +1592,7 @@ static ssize_t vrr_enabled_store(struct device *dev,
  * state as the final operation status. Transition back to the IDLE state will
  * occur automatically.
  */
-bool ical_state_idle(struct goog_touch_interface *gti, u32 next_state,
-			 u64 elapsed)
+static bool ical_state_idle(struct goog_touch_interface *gti, u32 next_state, u64 elapsed)
 {
 	/* Valid next-states are 'INIT_X', or 'IDLE' */
 	if (next_state == ICAL_STATE_IDLE) {
@@ -1554,8 +1617,7 @@ bool ical_state_idle(struct goog_touch_interface *gti, u32 next_state,
 	return true;
 }
 
-void ical_state_init_cal(struct goog_touch_interface *gti, u32 next_state,
-			 u64 elapsed)
+static void ical_state_init_cal(struct goog_touch_interface *gti, u32 next_state, u64 elapsed)
 {
 	int pm_ret = 0;
 	u32 ret;
@@ -1614,8 +1676,7 @@ void ical_state_init_cal(struct goog_touch_interface *gti, u32 next_state,
 
 }
 
-void ical_state_run_cal(struct goog_touch_interface *gti, u32 next_state,
-			 u64 elapsed)
+static void ical_state_run_cal(struct goog_touch_interface *gti, u32 next_state, u64 elapsed)
 {
 	/* only valid next-state is 'END_CAL', as long as time elapsed
 	 * is within ranged.
@@ -1640,8 +1701,7 @@ void ical_state_run_cal(struct goog_touch_interface *gti, u32 next_state,
 	}
 }
 
-void ical_state_end_cal(struct goog_touch_interface *gti, u32 next_state,
-			 u64 elapsed)
+static void ical_state_end_cal(struct goog_touch_interface *gti, u32 next_state, u64 elapsed)
 {
 	/* Nothing to do but accept a transition back to IDLE.
 	 * Necessary because the interface only executes when called
@@ -1660,8 +1720,7 @@ void ical_state_end_cal(struct goog_touch_interface *gti, u32 next_state,
 	gti->ical_state = ICAL_STATE_IDLE;
 }
 
-void ical_state_init_test(struct goog_touch_interface *gti, u32 next_state,
-			  u64 elapsed)
+static void ical_state_init_test(struct goog_touch_interface *gti, u32 next_state, u64 elapsed)
 {
 	int pm_ret = 0;
 	u32 ret;
@@ -1731,8 +1790,7 @@ void ical_state_init_test(struct goog_touch_interface *gti, u32 next_state,
 
 }
 
-void ical_state_run_test(struct goog_touch_interface *gti, u32 next_state,
-			  u64 elapsed)
+static void ical_state_run_test(struct goog_touch_interface *gti, u32 next_state, u64 elapsed)
 {
 	/* only valid next-state is 'END_TEST', as long as time elapsed
 	 * is within ranged.
@@ -1754,8 +1812,7 @@ void ical_state_run_test(struct goog_touch_interface *gti, u32 next_state,
 	}
 }
 
-void ical_state_end_test(struct goog_touch_interface *gti, u32 next_state,
-			  u64 elapsed)
+static void ical_state_end_test(struct goog_touch_interface *gti, u32 next_state, u64 elapsed)
 {
 	/* Nothing to do but accept a transition back to IDLE.
 	 * Necessary because the interface only executes when called
@@ -1774,8 +1831,7 @@ void ical_state_end_test(struct goog_touch_interface *gti, u32 next_state,
 	gti->ical_state = ICAL_STATE_IDLE;
 }
 
-void ical_state_init_reset(struct goog_touch_interface *gti, u32 next_state,
-			  u64 elapsed)
+static void ical_state_init_reset(struct goog_touch_interface *gti, u32 next_state, u64 elapsed)
 {
 	int pm_ret = 0;
 	u32 ret;
@@ -1822,8 +1878,7 @@ void ical_state_init_reset(struct goog_touch_interface *gti, u32 next_state,
 
 }
 
-void ical_state_run_reset(struct goog_touch_interface *gti, u32 next_state,
-			  u64 elapsed)
+static void ical_state_run_reset(struct goog_touch_interface *gti, u32 next_state, u64 elapsed)
 {
 	/* only valid next-state is 'END_RESET', as long as time elapsed
 	 * is within ranged.
@@ -1844,8 +1899,7 @@ void ical_state_run_reset(struct goog_touch_interface *gti, u32 next_state,
 	}
 }
 
-void ical_state_end_reset(struct goog_touch_interface *gti, u32 next_state,
-			  u64 elapsed)
+static void ical_state_end_reset(struct goog_touch_interface *gti, u32 next_state, u64 elapsed)
 {
 	/* Nothing to do but accept a transition back to IDLE.
 	 * Necessary because the interface only executes when called
@@ -2186,7 +2240,7 @@ void gti_debug_input_dump(struct goog_touch_interface *gti)
 /*-----------------------------------------------------------------------------
  * DRM: functions and structures.
  */
-struct drm_connector *get_bridge_connector(struct drm_bridge *bridge)
+static struct drm_connector *get_bridge_connector(struct drm_bridge *bridge)
 {
 	struct drm_connector *connector;
 	struct drm_connector_list_iter conn_iter;
@@ -2225,7 +2279,7 @@ static int panel_notifier_call(
 	GOOG_LOGI(gti, "\n");
 
 	if (!gti->connector || !gti->connector->state)
-		gti->connector = get_bridge_connector(&gti->panel_bridge);
+		gti->connector = get_bridge_connector(gti->panel_bridge);
 
 	if (!gti->connector) return 0;
 
@@ -2253,12 +2307,11 @@ static int panel_notifier_call(
 
 static int panel_bridge_attach(struct drm_bridge *bridge, enum drm_bridge_attach_flags flags)
 {
-	struct goog_touch_interface *gti =
-		container_of(bridge, struct goog_touch_interface, panel_bridge);
+	struct goog_touch_interface *gti = bridge->driver_private;
 
 	if (gti->panel_notifier_enabled) {
 		if (!gti->connector || !gti->connector->state)
-			gti->connector = get_bridge_connector(&gti->panel_bridge);
+			gti->connector = get_bridge_connector(gti->panel_bridge);
 
 		if (!gti->connector) {
 			GOOG_LOGW(gti, "can't get panel connector to resgister notification!\n");
@@ -2281,12 +2334,11 @@ static int panel_bridge_attach(struct drm_bridge *bridge, enum drm_bridge_attach
 
 static void panel_bridge_detach(struct drm_bridge *bridge)
 {
-	struct goog_touch_interface *gti =
-		container_of(bridge, struct goog_touch_interface, panel_bridge);
+	struct goog_touch_interface *gti = bridge->driver_private;
 
 	if (gti->panel_notifier_enabled) {
 		if (!gti->connector || !gti->connector->state)
-			gti->connector = get_bridge_connector(&gti->panel_bridge);
+			gti->connector = get_bridge_connector(gti->panel_bridge);
 
 		if (!gti->connector) return;
 
@@ -2301,10 +2353,9 @@ static void panel_bridge_detach(struct drm_bridge *bridge)
 	}
 }
 
-static void panel_bridge_enable(struct drm_bridge *bridge)
+static void panel_bridge_atomic_enable_internal(struct drm_bridge *bridge)
 {
-	struct goog_touch_interface *gti =
-		container_of(bridge, struct goog_touch_interface, panel_bridge);
+	struct goog_touch_interface *gti = bridge->driver_private;
 
 	if (gti->aod_mode != AOD_MODE_DISABLED) {
 		GOOG_DBG(gti, "skip screen-on because of aod_mode = %d!\n", gti->aod_mode);
@@ -2314,10 +2365,10 @@ static void panel_bridge_enable(struct drm_bridge *bridge)
 	goog_set_display_state(gti, GTI_DISPLAY_STATE_ON);
 }
 
-static void panel_bridge_disable(struct drm_bridge *bridge)
+static void panel_bridge_atomic_disable(struct drm_bridge *bridge,
+					__always_unused struct drm_bridge_state *old_state)
 {
-	struct goog_touch_interface *gti =
-		container_of(bridge, struct goog_touch_interface, panel_bridge);
+	struct goog_touch_interface *gti = bridge->driver_private;
 
 	if (bridge->encoder && bridge->encoder->crtc) {
 		const struct drm_crtc_state *crtc_state = bridge->encoder->crtc->state;
@@ -2370,8 +2421,7 @@ static void panel_bridge_mode_set(struct drm_bridge *bridge,
 {
 	int ret = 0;
 	bool panel_is_lp_mode;
-	struct goog_touch_interface *gti =
-		container_of(bridge, struct goog_touch_interface, panel_bridge);
+	struct goog_touch_interface *gti = bridge->driver_private;
 
 	if (!gti->connector || !gti->connector->state)
 		gti->connector = get_bridge_connector(bridge);
@@ -2408,13 +2458,34 @@ static void panel_bridge_mode_set(struct drm_bridge *bridge,
 	}
 }
 
+static void panel_bridge_atomic_enable(struct drm_bridge *bridge,
+				       __always_unused struct drm_bridge_state *old_state)
+{
+	struct goog_touch_interface *gti = bridge->driver_private;
+	struct drm_connector *connector;
+	struct drm_crtc_state *crtc_state;
+
+	if (!IS_ENABLED(CONFIG_GOOGLE_DRM_BRIDGE_MODE_SET)) {
+		if (!gti->connector || !gti->connector->state)
+			gti->connector = get_bridge_connector(bridge);
+
+		connector = gti->connector;
+		if (connector && connector->state && connector->state->crtc) {
+			crtc_state = connector->state->crtc->state;
+			panel_bridge_mode_set(bridge, &crtc_state->mode,
+					      &crtc_state->adjusted_mode);
+		}
+	}
+
+	panel_bridge_atomic_enable_internal(bridge);
+}
+
 static int panel_bridge_atomic_check(struct drm_bridge *bridge,
 					struct drm_bridge_state *bridge_state,
 					struct drm_crtc_state *new_crtc_state,
 					struct drm_connector_state *conn_state)
 {
-	struct goog_touch_interface *gti =
-		container_of(bridge, struct goog_touch_interface, panel_bridge);
+	struct goog_touch_interface *gti = bridge->driver_private;
 	bool panel_is_mp_mode;
 
 	panel_is_mp_mode = panel_bridge_is_mp_mode(conn_state);
@@ -2436,9 +2507,11 @@ static int panel_bridge_atomic_check(struct drm_bridge *bridge,
 static const struct drm_bridge_funcs panel_bridge_funcs = {
 	.attach = panel_bridge_attach,
 	.detach = panel_bridge_detach,
-	.enable = panel_bridge_enable,
-	.disable = panel_bridge_disable,
+	.atomic_enable = panel_bridge_atomic_enable,
+	.atomic_disable = panel_bridge_atomic_disable,
+#if IS_ENABLED(CONFIG_GOOGLE_DRM_BRIDGE_MODE_SET)
 	.mode_set = panel_bridge_mode_set,
+#endif
 	.atomic_duplicate_state = drm_atomic_helper_bridge_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_bridge_destroy_state,
 	.atomic_reset = drm_atomic_helper_bridge_reset,
@@ -2451,19 +2524,30 @@ static int register_panel_bridge(struct goog_touch_interface *gti)
 
 	INIT_WORK(&gti->set_op_hz_work, panel_set_op_hz);
 
-#ifdef CONFIG_OF
-	gti->panel_bridge.of_node = gti->vendor_dev->of_node;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0) //refer to pa/3446481
+	gti->panel_bridge = __devm_drm_bridge_alloc(gti->dev, sizeof(struct drm_bridge), 0,
+						    &panel_bridge_funcs);
+#else
+	gti->panel_bridge = devm_kzalloc(gti->dev, sizeof(struct drm_bridge), GFP_KERNEL);
+	if (gti->panel_bridge)
+		gti->panel_bridge->funcs = &panel_bridge_funcs;
 #endif
-	gti->panel_bridge.funcs = &panel_bridge_funcs;
-	drm_bridge_add(&gti->panel_bridge);
+
+	if (IS_ERR(gti->panel_bridge))
+		return PTR_ERR(gti->panel_bridge);
+
+	gti->panel_bridge->driver_private = gti;
+#ifdef CONFIG_OF
+	gti->panel_bridge->of_node = gti->vendor_dev->of_node;
+#endif
+	drm_bridge_add(gti->panel_bridge);
 
 	return 0;
 }
 
 static void unregister_panel_bridge(struct drm_bridge *bridge)
 {
-	struct goog_touch_interface *gti =
-		container_of(bridge, struct goog_touch_interface, panel_bridge);
+	struct goog_touch_interface *gti = bridge->driver_private;
 	struct drm_bridge *node;
 
 	GOOG_LOGI(gti, "\n");
@@ -2641,7 +2725,7 @@ int goog_get_firmware_name(struct device_node *node, int id, char *name, size_t 
 
 	err = of_property_read_string_index(node, "goog,firmware_names", id, &fw_name);
 	if (err == 0) {
-		strlcpy(name, fw_name, size);
+		strscpy(name, fw_name, size);
 		pr_info("%s: found firmware name: %s\n", __func__, name);
 	} else {
 		pr_warn("%s: Fail to find firmware name!\n", __func__);
@@ -2726,6 +2810,9 @@ int goog_process_vendor_cmd(struct goog_touch_interface *gti, enum gti_cmd_type 
 	case GTI_CMD_GET_PANEL_ID:
 		ret = gti->options.get_panel_id(
 			private_data, &gti->cmd.panel_id_cmd);
+		break;
+	case GTI_CMD_GET_REPORT_RATE:
+		ret = gti->options.get_report_rate(private_data, &gti->cmd.report_rate_cmd);
 		break;
 	case GTI_CMD_GET_SCAN_MODE:
 		ret = gti->options.get_scan_mode(private_data, &gti->cmd.scan_cmd);
@@ -2842,7 +2929,7 @@ int goog_process_vendor_cmd(struct goog_touch_interface *gti, enum gti_cmd_type 
 	return ret;
 }
 
-void goog_update_motion_filter(struct goog_touch_interface *gti, unsigned long slot_bit)
+static void goog_update_motion_filter(struct goog_touch_interface *gti, unsigned long slot_bit)
 {
 	int ret = 0;
 	const u32 mf_timeout_ms = 500;
@@ -2910,7 +2997,7 @@ void goog_update_motion_filter(struct goog_touch_interface *gti, unsigned long s
 		gti->mf_state = next_state;
 }
 
-bool goog_v4l2_read_frame_cb(struct v4l2_heatmap *v4l2)
+static bool goog_v4l2_read_frame_cb(struct v4l2_heatmap *v4l2)
 {
 	struct goog_touch_interface *gti = container_of(v4l2, struct goog_touch_interface, v4l2);
 	bool ret = false;
@@ -2927,7 +3014,7 @@ bool goog_v4l2_read_frame_cb(struct v4l2_heatmap *v4l2)
 	return ret;
 }
 
-void goog_v4l2_read(struct goog_touch_interface *gti, ktime_t timestamp, u64 frame_index)
+static void goog_v4l2_read(struct goog_touch_interface *gti, ktime_t timestamp, u64 frame_index)
 {
 	if (gti->v4l2_enabled) {
 		/*
@@ -2942,8 +3029,8 @@ void goog_v4l2_read(struct goog_touch_interface *gti, ktime_t timestamp, u64 fra
 	}
 }
 
-int goog_get_driver_status(struct goog_touch_interface *gti,
-		struct gti_context_driver_cmd *driver_cmd)
+static int goog_get_driver_status(struct goog_touch_interface *gti,
+				  struct gti_context_driver_cmd *driver_cmd)
 {
 	gti->context_changed.offload_timestamp = 1;
 
@@ -2960,8 +3047,8 @@ int goog_get_driver_status(struct goog_touch_interface *gti,
 	return goog_process_vendor_cmd(gti, GTI_CMD_GET_CONTEXT_DRIVER);
 }
 
-int goog_offload_populate_coordinate_channel(struct goog_touch_interface *gti,
-		struct touch_offload_frame *frame, int channel)
+static int goog_offload_populate_coordinate_channel(struct goog_touch_interface *gti,
+						    struct touch_offload_frame *frame, int channel)
 {
 	int i;
 	struct TouchOffloadDataCoord *dc;
@@ -2989,8 +3076,9 @@ int goog_offload_populate_coordinate_channel(struct goog_touch_interface *gti,
 	return 0;
 }
 
-int goog_offload_populate_mutual_channel(struct goog_touch_interface *gti,
-		struct touch_offload_frame *frame, int channel, u8 *buffer, u32 size)
+static int goog_offload_populate_mutual_channel(struct goog_touch_interface *gti,
+						struct touch_offload_frame *frame, int channel,
+						u8 *buffer, u32 size)
 {
 	struct TouchOffloadData2d *mutual;
 
@@ -3015,8 +3103,9 @@ int goog_offload_populate_mutual_channel(struct goog_touch_interface *gti,
 	return 0;
 }
 
-int goog_offload_populate_self_channel(struct goog_touch_interface *gti,
-		struct touch_offload_frame *frame, int channel, u8 *buffer, u32 size)
+static int goog_offload_populate_self_channel(struct goog_touch_interface *gti,
+					      struct touch_offload_frame *frame, int channel,
+					      u8 *buffer, u32 size)
 {
 	struct TouchOffloadData1d *self;
 
@@ -3144,8 +3233,8 @@ exit:
 	return ret;
 }
 
-void goog_offload_populate_frame(struct goog_touch_interface *gti,
-		struct touch_offload_frame *frame, bool reset_data)
+static void goog_offload_populate_frame(struct goog_touch_interface *gti,
+					struct touch_offload_frame *frame, bool reset_data)
 {
 	char trace_tag[128];
 	u32 channel_type;
@@ -3238,7 +3327,7 @@ void goog_offload_populate_frame(struct goog_touch_interface *gti,
 	ATRACE_END();
 }
 
-void goog_update_fw_settings(struct goog_touch_interface *gti, bool force_update)
+static void goog_update_fw_settings(struct goog_touch_interface *gti, bool force_update)
 {
 	int error;
 	int ret = 0;
@@ -3453,7 +3542,7 @@ static void goog_lptw_cancel_delayed_work(struct work_struct *work)
 	goog_report_lptw_cancel(gti, 1);
 }
 
-void goog_save_tracking_slot(struct goog_touch_interface *gti, u16 x, u16 y, int slot_bit)
+static void goog_save_tracking_slot(struct goog_touch_interface *gti, u16 x, u16 y, int slot_bit)
 {
 	if ((x > gti->lptw_track_min_x) && (x < gti->lptw_track_max_x) &&
 		(y > gti->lptw_track_min_y) && (y < gti->lptw_track_max_y)) {
@@ -3467,17 +3556,18 @@ void goog_save_tracking_slot(struct goog_touch_interface *gti, u16 x, u16 y, int
 	}
 }
 
-void goog_offload_input_report(void *handle,
-		 struct TouchOffloadIocReport *report)
+static void goog_offload_input_report(void *handle, struct TouchOffloadIocReport *report)
 {
 	struct goog_touch_interface *gti = (struct goog_touch_interface *)handle;
 	bool touch_down = 0;
 	unsigned int tool_type = MT_TOOL_FINGER;
 	int i;
+	int dx, dy;
 	int error;
 	unsigned long slot_bit_active = 0;
 	unsigned long slot_bit_cancel = 0;
 	char trace_tag[128];
+	char slot_trace_tag[128];
 	ktime_t ktime = ktime_get();
 
 	scnprintf(trace_tag, sizeof(trace_tag),
@@ -3532,6 +3622,20 @@ void goog_offload_input_report(void *handle,
 					GOOG_DBG(gti, "Skip reporting lptw tracking slot %d", i);
 					continue;
 				}
+			}
+
+			if (gti->vendor_input_dev->mt &&
+			    input_mt_is_active(&gti->vendor_input_dev->mt->slots[i])) {
+				dx = report->coords[i].x -
+				     input_mt_get_value(&gti->vendor_input_dev->mt->slots[i],
+							ABS_MT_POSITION_X);
+				dy = report->coords[i].y -
+				     input_mt_get_value(&gti->vendor_input_dev->mt->slots[i],
+							ABS_MT_POSITION_Y);
+				scnprintf(slot_trace_tag, sizeof(slot_trace_tag),
+					  "Slot[%d] dx:%d dy:%d", i, dx, dy);
+				ATRACE_BEGIN(slot_trace_tag);
+				ATRACE_END();
 			}
 
 			input_mt_slot(gti->vendor_input_dev, i);
@@ -3635,8 +3739,7 @@ static int gti_update_charger_state(struct goog_touch_interface *gti,
 	return ret;
 }
 
-int gti_charger_state_change(struct notifier_block *nb, unsigned long action,
-			     void *data)
+static int gti_charger_state_change(struct notifier_block *nb, unsigned long action, void *data)
 {
 	struct goog_touch_interface *gti =
 		(struct goog_touch_interface *)container_of(nb,
@@ -3651,7 +3754,7 @@ int gti_charger_state_change(struct notifier_block *nb, unsigned long action,
 	return NOTIFY_DONE;
 }
 
-int goog_offload_probe(struct goog_touch_interface *gti)
+static int goog_offload_probe(struct goog_touch_interface *gti)
 {
 	int ret = 0;
 	int err = 0;
@@ -3845,9 +3948,9 @@ int goog_offload_probe(struct goog_touch_interface *gti)
 		gti->v4l2.width, gti->v4l2.height, gti->v4l2_enabled);
 
 	if (!of_property_read_string(np, "goog,usb-psy-name", &usb_psy_name))
-		strlcpy(gti->usb_psy_name, usb_psy_name, sizeof(gti->usb_psy_name));
+		strscpy(gti->usb_psy_name, usb_psy_name, sizeof(gti->usb_psy_name));
 	else
-		strlcpy(gti->usb_psy_name, "usb", sizeof(gti->usb_psy_name));
+		strscpy(gti->usb_psy_name, "usb", sizeof(gti->usb_psy_name));
 
 	/* Register for charger plugging status */
 	gti->charger_notifier.notifier_call = gti_charger_state_change;
@@ -3864,7 +3967,7 @@ err_offload_probe:
 	return ret;
 }
 
-void goog_offload_remove(struct goog_touch_interface *gti)
+static void goog_offload_remove(struct goog_touch_interface *gti)
 {
 	gti->offload_enabled = false;
 	gti->v4l2_enabled = false;
@@ -4220,18 +4323,26 @@ void goog_input_report_abs(
 
 	switch (code) {
 	case ABS_MT_POSITION_X:
-		gti->offload.coords[gti->slot].x = value;
 		if ((value > gti->abs_x_max) || (value < gti->abs_x_min)) {
 			GOOG_WARN(gti, "Unexpected x-coord (slot#%d range#(%d, %d)), x: %d!",
 					gti->slot, gti->abs_x_min, gti->abs_x_max, value);
+			if (value > gti->abs_x_max)
+				value = gti->abs_x_max;
+			else
+				value = gti->abs_x_min;
 		}
+		gti->offload.coords[gti->slot].x = value;
 		break;
 	case ABS_MT_POSITION_Y:
-		gti->offload.coords[gti->slot].y = value;
 		if ((value > gti->abs_y_max) || (value < gti->abs_y_min)) {
 			GOOG_WARN(gti, "Unexpected y-coord (slot#%d range#(%d, %d)), y: %d!",
 					gti->slot, gti->abs_y_min, gti->abs_y_max, value);
+			if (value > gti->abs_y_max)
+				value = gti->abs_y_max;
+			else
+				value = gti->abs_y_min;
 		}
+		gti->offload.coords[gti->slot].y = value;
 		break;
 	case ABS_MT_TOUCH_MAJOR:
 		gti->offload.coords[gti->slot].major =
@@ -4273,7 +4384,7 @@ void goog_input_sync(struct goog_touch_interface *gti, struct input_dev *dev)
 }
 EXPORT_SYMBOL_GPL(goog_input_sync);
 
-void goog_input_release_all_fingers(struct goog_touch_interface *gti)
+static void goog_input_release_all_fingers(struct goog_touch_interface *gti)
 {
 	int i;
 
@@ -4293,7 +4404,7 @@ void goog_input_release_all_fingers(struct goog_touch_interface *gti)
 	goog_input_process(gti, true);
 }
 
-void goog_register_tbn(struct goog_touch_interface *gti)
+static void goog_register_tbn(struct goog_touch_interface *gti)
 {
 	struct device_node *np = gti->vendor_dev->of_node;
 
@@ -4368,6 +4479,12 @@ static int goog_get_palm_mode_nop(
 
 static int goog_get_panel_id_nop(
 		void *private_data, struct gti_panel_id_cmd *cmd)
+{
+	return -ESRCH;
+}
+
+static int goog_get_report_rate_nop(
+		void *private_data, struct gti_report_rate_cmd *cmd)
 {
 	return -ESRCH;
 }
@@ -4498,7 +4615,7 @@ static int goog_set_sensing_mode_nop(
 	return -ESRCH;
 }
 
-void goog_init_input(struct goog_touch_interface *gti)
+static void goog_init_input(struct goog_touch_interface *gti)
 {
 	int i;
 
@@ -4571,8 +4688,8 @@ void goog_init_input(struct goog_touch_interface *gti)
 	}
 }
 
-void goog_init_options(struct goog_touch_interface *gti,
-		struct gti_optional_configuration *options)
+static void goog_init_options(struct goog_touch_interface *gti,
+			      struct gti_optional_configuration *options)
 {
 	u32 coords[4];
 	u16 display_resolution[2];
@@ -4594,6 +4711,7 @@ void goog_init_options(struct goog_touch_interface *gti,
 	gti->options.get_self_sensor_data = goog_get_self_sensor_data_nop;
 	gti->options.get_sensing_mode = goog_get_sensing_mode_nop;
 	gti->options.get_panel_id = goog_get_panel_id_nop;
+	gti->options.get_report_rate = goog_get_report_rate_nop;
 	gti->options.notify_display_state = goog_notify_display_state_nop;
 	gti->options.notify_display_vrefresh = goog_notify_display_vrefresh_nop;
 	gti->options.ping = goog_ping_nop;
@@ -4642,6 +4760,8 @@ void goog_init_options(struct goog_touch_interface *gti,
 			gti->options.get_sensing_mode = options->get_sensing_mode;
 		if (options->get_panel_id)
 			gti->options.get_panel_id = options->get_panel_id;
+		if (options->get_report_rate)
+			gti->options.get_report_rate = options->get_report_rate;
 		if (options->notify_display_state)
 			gti->options.notify_display_state = options->notify_display_state;
 		if (options->notify_display_vrefresh) {
@@ -4996,7 +5116,8 @@ err_tbn:
 	ATRACE_END();
 }
 
-void goog_pm_state_update_work(struct work_struct *work) {
+static void goog_pm_state_update_work(struct work_struct *work)
+{
 	struct gti_pm *pm = container_of(work, struct gti_pm, state_update_work);
 	enum gti_pm_state new_state;
 
@@ -5658,7 +5779,7 @@ exit:
 	return ret;
 }
 
-struct touch_sim *touch_sim_probe(struct goog_touch_interface *gti)
+static struct touch_sim *touch_sim_probe(struct goog_touch_interface *gti)
 {
 	int ret = 0;
 	struct touch_sim *sim;
@@ -5720,7 +5841,7 @@ err_touch_sim_probe:
 	return NULL;
 }
 
-void touch_sim_remove(struct goog_touch_interface *gti)
+static void touch_sim_remove(struct goog_touch_interface *gti)
 {
 	if (gti->sim) {
 		touch_sim_stop(gti->sim);
@@ -5842,7 +5963,7 @@ int goog_touch_interface_remove(struct goog_touch_interface *gti)
 		gti->event_wq = NULL;
 	}
 
-	unregister_panel_bridge(&gti->panel_bridge);
+	unregister_panel_bridge(gti->panel_bridge);
 	goog_pm_remove(gti);
 
 	if (gti->tbn_enabled && gti->tbn_register_mask)

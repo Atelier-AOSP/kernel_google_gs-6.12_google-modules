@@ -40,6 +40,12 @@ enum gdmc_mba_service_id {
 	GDMC_MBA_SERVICE_ID_EHLD = 24,
 	/* Volatile Debug Unlock service */
 	GDMC_MBA_SERVICE_ID_VDU = 25,
+	/* SEM service */
+	GDMC_MBA_SERVICE_ID_SEM_CTRL = 26,
+	/* FWMT service */
+	GDMC_MBA_SERVICE_ID_FWMT = 27,
+	/* Modem UART service */
+	GDMC_MBA_SERVICE_ID_MODEM_UART = 28,
 	GDMC_NUM_MBA_SERVICES
 };
 
@@ -53,11 +59,13 @@ enum gdmc_mba_service_id {
  * Service IDs:
  * APC_CRITICAL_GDMC_AOC_WATCHDOG_SERVICE:	AOC watchdog service.
  * APC_CRITICAL_GDMC_EHLD_SERVICE:		EHLD service.
+ * APC_CRITICAL_GDMC_DPA_WATCHDOG_SERVICE:	DPA watchdog service.
  * APC_CRITICAL_GDMC_FWTP_SERVICE:		FWTP service.
  */
 enum apc_critical_gdmc_mba_service_id {
 	APC_CRITICAL_GDMC_MAILBOX_SERVICE_LAST = 0x38,
 	APC_CRITICAL_GDMC_FWTP_SERVICE = 0x6D,
+	APC_CRITICAL_GDMC_DPA_WATCHDOG_SERVICE = 0x6E,
 	APC_CRITICAL_GDMC_EHLD_SERVICE = 0x6F,
 	APC_CRITICAL_GDMC_AOC_WATCHDOG_SERVICE = 0x70,
 	APC_CRITICAL_GDMC_MAILBOX_SERVICE_FIRST = 0x70,
@@ -109,23 +117,53 @@ enum gdmc_mba_dhub_cmd_id {
 };
 
 /**
- * enum gdmc_mba_dhub_uart_id - UART identifiers.
+ * enum gdmc_mba_mbu_dhub_uart_id - UART identifiers.
  */
-enum gdmc_mba_dhub_uart_id {
-	GDMC_MBA_DHUB_UART_ID_NONE = 0,
-	GDMC_MBA_DHUB_UART_ID_CPM = 1,
-	GDMC_MBA_DHUB_UART_ID_APC = 2,
-	GDMC_MBA_DHUB_UART_ID_AOC = 3,
-	GDMC_MBA_DHUB_UART_ID_BMSM = 4,
-	GDMC_MBA_DHUB_UART_ID_GSA = 5,
-	GDMC_MBA_DHUB_UART_ID_ISPFE = 6,
-	GDMC_MBA_DHUB_UART_ID_AURDSP = 7,
-	GDMC_MBA_DHUB_UART_ID_TPU = 8,
-	GDMC_MBA_DHUB_UART_ID_MODEM = 9,
-	GDMC_MBA_DHUB_UART_ID_GSC = 10,
-	GDMC_MBA_DHUB_UART_ID_GDMC = 11,
-	GDMC_MBA_DHUB_UART_ID_MAX,
-	GDMC_MBA_DHUB_UART_ID_VIRTUALIZED = 0xff,
+enum gdmc_mba_mbu_dhub_uart_id {
+	GDMC_MBA_MBU_DHUB_UART_ID_AOSS_CPM_M55 = 1,
+	GDMC_MBA_MBU_DHUB_UART_ID_APC = 2,
+	GDMC_MBA_MBU_DHUB_UART_ID_AOSS_A32 = 3,
+	GDMC_MBA_MBU_DHUB_UART_ID_BMSM = 4,
+	GDMC_MBA_MBU_DHUB_UART_ID_GSA = 5,
+	GDMC_MBA_MBU_DHUB_UART_ID_AOSS_CPM_M0P = 6,
+	GDMC_MBA_MBU_DHUB_UART_ID_AURDSP = 7,
+	GDMC_MBA_MBU_DHUB_UART_ID_TPU = 8,
+	GDMC_MBA_MBU_DHUB_UART_ID_MODEM = 9,
+	GDMC_MBA_MBU_DHUB_UART_ID_GSC = 10,
+	GDMC_MBA_MBU_DHUB_UART_ID_GDMC = 11,
+	GDMC_MBA_MBU_DHUB_UART_ID_AOSS_SENSOR_CORE = 12,
+	GDMC_MBA_MBU_DHUB_UART_ID_NANO_TPU = 13,
+	GDMC_MBA_MBU_DHUB_UART_ID_CPUACC_SSU = 14,
+	GDMC_MBA_MBU_DHUB_UART_ID_HSION_EBU_M0P = 15,
+	GDMC_MBA_MBU_DHUB_UART_ID_PCIE_DPA0 = 16,
+	GDMC_MBA_MBU_DHUB_UART_ID_PCIE_DPA1 = 17,
+	GDMC_MBA_MBU_DHUB_UART_ID_MAX,
+};
+
+/**
+ * enum gdmc_mba_lga_dhub_uart_id - UART identifiers.
+ */
+enum gdmc_mba_lga_dhub_uart_id {
+	GDMC_MBA_LGA_DHUB_UART_ID_CPM = 1,
+	GDMC_MBA_LGA_DHUB_UART_ID_APC = 2,
+	GDMC_MBA_LGA_DHUB_UART_ID_AOC = 3,
+	GDMC_MBA_LGA_DHUB_UART_ID_BMSM = 4,
+	GDMC_MBA_LGA_DHUB_UART_ID_GSA = 5,
+	GDMC_MBA_LGA_DHUB_UART_ID_ISPFE = 6,
+	GDMC_MBA_LGA_DHUB_UART_ID_AURDSP = 7,
+	GDMC_MBA_LGA_DHUB_UART_ID_TPU = 8,
+	GDMC_MBA_LGA_DHUB_UART_ID_MODEM = 9,
+	GDMC_MBA_LGA_DHUB_UART_ID_GSC = 10,
+	GDMC_MBA_LGA_DHUB_UART_ID_GDMC = 11,
+	GDMC_MBA_LGA_DHUB_UART_ID_MAX,
+};
+
+/**
+ * enum gdmc_mba_dhub_uart_mux_id- UART MUX identifiers.
+ */
+enum gdmc_mba_dhub_uart_mux_id {
+	GDMC_MBA_DHUB_UART_MUX_ID_NONE = 0,
+	GDMC_MBA_DHUB_UART_MUX_ID_VIRTUALIZED = 0xff,
 };
 
 #define GDMC_MBA_DHUB_VIRT_MASK_EN	BIT(0)
@@ -159,6 +197,22 @@ enum apc_critical_gdmc_mba_ehld_cpu_state {
 	EHLD_STATE_WARN = 0x1,
 	EHLD_STATE_LOCKUP_SW = 0x2,
 	EHLD_STATE_LOCKUP_HW = 0x3,
+};
+
+/**
+ * enum gdmc_mba_crash_reset_cmd - Crash reset service Commands (CMD)
+ *
+ * The GDMC_MBA_SERVICE_ID_CRASH_RESET is used to query or configure crash reset parameters.
+ *
+ * The CMD field in the header identifies the action to perform
+ * and the three remaining words are command-specific parameters.
+ */
+
+enum gdmc_mba_crash_reset_cmd {
+	GDMC_MBA_CRASH_RESET_CMD_GET_STATUS = 0,
+	GDMC_MBA_CRASH_RESET_CMD_GET_BREADCRUMB = 1,
+	GDMC_MBA_CRASH_RESET_CMD_GET_REBOOT_REASON = 2,
+	GDMC_MBA_CRASH_RESET_CMD_SET_SKIP_S2M_VOTE = 3,
 };
 
 #endif /* __GOOG_GDMC_SERVICE_ID_H */

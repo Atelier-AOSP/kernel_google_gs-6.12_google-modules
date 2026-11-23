@@ -27,6 +27,7 @@ struct dvfs_domain_info {
 int dvfs_helper_get_domain_info(struct device * const dev, struct device_node * const node,
 				struct dvfs_domain_info **info);
 int dvfs_helper_add_opps_to_device(struct device *dev, struct device_node *node);
+int dvfs_helper_add_opps_to_device_by_name(struct device * const dev, const char *name);
 const char *dvfs_helper_domain_id_to_name(u16 domain_idx);
 s64 dvfs_helper_round_rate(struct dvfs_domain_info const * const di, const u64 Hz);
 s64 dvfs_helper_lvl_to_freq_exact(struct dvfs_domain_info const * const di, const unsigned int lvl);
@@ -38,4 +39,5 @@ int dvfs_helper_freq_to_lvl_floor(struct dvfs_domain_info const * const di, cons
 s64 dvfs_helper_get_domain_opp_frequency_mhz(u16 domain_idx, const unsigned int lvl);
 struct dvfs_domain_info *dvfs_helper_get_domain(const char *name);
 struct dvfs_domain_info *dvfs_helper_get_domain_from_id(u16 domain_idx);
+bool dvfs_helper_ready(void);
 #endif /* _GOOGLE_DVFS_HELPER_H */

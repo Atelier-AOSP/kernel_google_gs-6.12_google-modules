@@ -16,10 +16,13 @@
 #include <linux/types.h>
 #include <linux/wait.h>
 
-#include <gcip/gcip-fault-injection.h>
+#include <gcip/gcip-coresight-remote.h>
+#include <gcip/gcip-fault-inject.h>
 #include <gcip/gcip-kci.h>
 #include <gcip/gcip-memory.h>
 
+#include "edgetpu-config.h"
+#include "edgetpu-firmware-metadata.h"
 #include "edgetpu-firmware.h"
 #include "edgetpu-internal.h"
 #include "edgetpu-mailbox.h"
@@ -28,7 +31,7 @@
  * Maximum number of outstanding KCI requests from firmware
  * This is used to size a circular buffer, so it must be a power of 2
  */
-#define REVERSE_KCI_BUFFER_SIZE		(32)
+#define REVERSE_KCI_BUFFER_SIZE (32)
 
 /* Edgetpu KCI structure */
 struct edgetpu_kci {
@@ -45,17 +48,9 @@ struct edgetpu_kci {
 struct edgetpu_vii_response_element {
 	u64 seq;
 	u16 code;
-	u8 reserved[6];	/* padding */
+	u8 reserved[6]; /* padding */
 	u64 retval;
 } __packed;
-
-struct edgetpu_kci_device_group_detail {
-	u8 n_dies;
-	/* virtual ID from 0 ~ n_dies - 1 */
-	/* ID 0 for the group master */
-	u8 vid;
-	u8 reserved[6]; /* padding */
-};
 
 struct edgetpu_kci_open_device_detail {
 	/* The client privilege level. */
@@ -117,7 +112,7 @@ struct edgetpu_kci_release_vmbox_detail {
 /* BCL mitigation config shared definition with firmware. */
 #define BCL_MITIGATION_CONFIG_VERSION 1
 struct edgetpu_kci_bcl_mitigation_config {
-	u32 version;			/* BCL_MITIGATION_CONFIG_VERSION */
+	u32 version; /* BCL_MITIGATION_CONFIG_VERSION */
 	/* Value 0xdeadfeed for any of the following means the value is not set here. */
 	u32 mitigation_response_en;
 	u32 mitigation_response_type;
@@ -132,9 +127,9 @@ struct edgetpu_kci_bcl_mitigation_config {
 /*
  * Initializes a KCI object.
  *
- * Will request a mailbox from @mgr and allocate cmd/resp queues.
+ * Will find the KCI mailbox and allocate an edgetpu_mailbox and cmd/resp queues for it.
  */
-int edgetpu_kci_init(struct edgetpu_mailbox_manager *mgr, struct edgetpu_kci *etkci);
+int edgetpu_kci_init(struct edgetpu_dev *etdev, struct edgetpu_kci *etkci);
 /*
  * Re-initializes the initialized KCI object.
  *
@@ -198,6 +193,13 @@ int edgetpu_kci_map_log_buffer(const struct gcip_telemetry_kci_args *args);
  * Returns the code of response, or a negative errno on error.
  */
 int edgetpu_kci_map_trace_buffer(const struct gcip_telemetry_kci_args *args);
+
+/*
+ * Sends the "Map HWTRACE Buffer" command and waits for remote response.
+ *
+ * Returns the code of response, or a negative errno on error.
+ */
+int edgetpu_kci_map_hwtrace_buffer(const struct gcip_telemetry_kci_args *args);
 
 /* debugfs mappings dump */
 void edgetpu_kci_mappings_show(struct edgetpu_dev *etdev, struct seq_file *s);
@@ -318,12 +320,12 @@ static inline void edgetpu_kci_update_usage_async(struct edgetpu_kci *etkci)
 }
 
 /**
- * edgetpu_kci_fault_injection() - Sends the fault injection KCI command to the firmware.
+ * edgetpu_kci_fault_inject() - Sends the fault injection KCI command to the firmware.
  * @injection: The container of fault injection data.
  *
  * Return: 0 if the command is sent successfully.
  */
-int edgetpu_kci_fault_injection(struct gcip_fault_inject *injection);
+int edgetpu_kci_fault_inject(struct gcip_fault_inject *injection);
 
 /**
  * Send BCL mitigation config via KCI to firmware.
@@ -333,6 +335,11 @@ int edgetpu_kci_fault_injection(struct gcip_fault_inject *injection);
  */
 int edgetpu_kci_bcl_mitigation(struct edgetpu_kci *etkci,
 			       struct edgetpu_kci_bcl_mitigation_config *config);
+
+/**
+ * Send "log state info" KCI.
+ */
+void edgetpu_kci_fw_log_state(struct edgetpu_dev *etdev);
 
 /**
  * edgetpu_kci_fw_debug_cmd() - Send firmware debug service command data.
@@ -353,5 +360,41 @@ int edgetpu_kci_fw_debug_reset(struct edgetpu_dev *etdev);
  * @count: size of debug memory area
  */
 void edgetpu_kci_fw_send_debug_init(struct edgetpu_dev *etdev, dma_addr_t daddr, size_t count);
+
+/**
+ * edgetpu_kci_send_coresight_remote_cmd() - Send coresight remote commands via KCI.
+ * @data: Pointer to the EdgeTPU device structure (void * to match callback signature).
+ * @bulk_cmds: Pointer to the gcip_coresight_remote_bulk command structure.
+ * @rsp: Pointer to store the response status code returned by the firmware.
+ *
+ * Return: 0 on success, or a negative error code on failure.
+ */
+int edgetpu_kci_send_coresight_remote_cmd(void *data,
+					  struct gcip_coresight_remote_bulk_cmds *bulk_cmds,
+					  enum gcip_status_code *rsp);
+
+#if EDGETPU_USE_CMF
+static inline u32 edgetpu_get_firmware_boot_stage(struct edgetpu_dev *etdev)
+{
+	return EDGETPU_FIRMWARE_METADATA_READ(etdev, fw_boot_stage);
+}
+
+static inline void edgetpu_set_kd_version(struct edgetpu_dev *etdev, u32 version)
+{
+	EDGETPU_FIRMWARE_METADATA_WRITE(etdev, kd_version, version);
+}
+
+#else
+static inline u32 edgetpu_get_firmware_boot_stage(struct edgetpu_dev *etdev)
+{
+	return EDGETPU_MAILBOX_CONTEXT_READ(etdev->etkci->mailbox, config_spare_1);
+}
+
+static inline void edgetpu_set_kd_version(struct edgetpu_dev *etdev, u32 version)
+{
+	EDGETPU_MAILBOX_CONTEXT_WRITE(etdev->etkci->mailbox, config_spare_0, version);
+}
+
+#endif /* EDGETPU_USE_CMF */
 
 #endif /* __EDGETPU_KCI_H__ */

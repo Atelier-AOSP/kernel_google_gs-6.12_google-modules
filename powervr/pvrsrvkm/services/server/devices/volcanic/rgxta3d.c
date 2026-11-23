@@ -69,16 +69,13 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "htbserver.h"
 
 #include "rgxdefs_km.h"
+#include "rgx_bvnc_defs_km.h"
 #include "rgx_fwif_km.h"
 #include "physmem.h"
 #include "sync_server.h"
 #include "sync_internal.h"
 #include "sync.h"
 #include "process_stats.h"
-
-#if !defined(PM_INTERACTIVE_MODE)
-#include "rgxpmdefs.h"
-#endif
 
 #include "rgxtimerquery.h"
 
@@ -1325,6 +1322,8 @@ static PVRSRV_ERROR RGXCreateHWRTData_aux(CONNECTION_DATA		*psConnection,
 
 	PVR_UNREFERENCED_PARAMETER(psConnection);
 
+	OSLockHeldAssert(psHWRTDataCommonCookie->hLock);
+
 	/* Prepare the HW RT DataSet struct */
 	psKMHWRTDataSet = OSAllocZMem(sizeof(*psKMHWRTDataSet));
 	if (psKMHWRTDataSet == NULL)
@@ -1344,6 +1343,7 @@ static PVRSRV_ERROR RGXCreateHWRTData_aux(CONNECTION_DATA		*psConnection,
 	 * Therefore the GPU cache doesn't need coherency and write-combine will
 	 * suffice on the CPU side. (WC buffer will be flushed at the first TA-kick)
 	 */
+	PDUMPCOMMENT(psDeviceNode, "Allocate FwHwRTData");
 	eError = DevmemFwAllocate(psDevInfo,
 	                          sizeof(RGXFWIF_HWRTDATA),
 	                          RGX_FWCOMCTX_ALLOCFLAGS,
@@ -1559,20 +1559,25 @@ _WritePMStateBuffer(PMR* psRenderStatesPMR,
 	PVRSRV_ERROR eError;
 
 	size_t uiNbBytes;
-	IMG_UINT32 asRenderStateBuffer[RGX_PM_MAX_RSTATE_SIZE_DWORDS] = {0};
+	RGX_PM_RENDERSTATE_BUFFER sRenderStateBuffer = {0};
 
 	PVR_ASSERT(PVRSRV_IS_FEATURE_SUPPORTED(PMR_DeviceNode(psRenderStatesPMR), PM_BYTE_ALIGNED_BASE_ADDRESSES));
 	PVR_ASSERT((sMListDevVAddr.uiAddr & (RGX_PM_MLIST_BASE_ADDR_MAX_ALIGNSIZE - 1)) == 0);
 	PVR_ASSERT((sVHeapTableDevVAddr.uiAddr & (RGX_PM_VHEAP_BASE_ADDR_MAX_ALIGNSIZE - 1)) == 0);
 
 	/* Initialise the Mlist base and Vheap base */
-	_RGX_PM_RENDERSTATE_BUFFER_SET_MLIST_BASE_ADDR(asRenderStateBuffer, sMListDevVAddr.uiAddr);
-	_RGX_PM_RENDERSTATE_BUFFER_SET_VHEAP_BASE_ADDR(asRenderStateBuffer, sVHeapTableDevVAddr.uiAddr);
+	RGX_PM_RENDERSTATE_BUFFER_SET_MLIST_BASE_ADDR(sRenderStateBuffer, sMListDevVAddr.uiAddr >> RGX_PM_RENDERSTATE_BUFFER_MLIST_BASE_ADDR_ALIGNSHIFT);
+#if defined(RGX_FEATURE_PM_REGISTER_CONFIG_MODE_ARRAY_INDEX)
+	if (PVRSRV_IS_FEATURE_SUPPORTED(PMR_DeviceNode(psRenderStatesPMR), PM_REGISTER_CONFIG_MODE))
+	{
+		RGX_PM_RENDERSTATE_BUFFER_SET_VHEAP_BASE_ADDR(sRenderStateBuffer, sVHeapTableDevVAddr.uiAddr >> RGX_PM_RENDERSTATE_BUFFER_VHEAP_BASE_ADDR_ALIGNSHIFT);
+	}
+#endif
 
 	eError = PMR_WriteBytes(psRenderStatesPMR,
 	                        ui64Offset,
-	                        (IMG_UINT8*)&asRenderStateBuffer,
-	                        sizeof(asRenderStateBuffer),
+	                        (IMG_UINT8*)&sRenderStateBuffer,
+	                        sizeof(sRenderStateBuffer),
 	                        &uiNbBytes);
 	if (eError != PVRSRV_OK)
 	{
@@ -1582,10 +1587,10 @@ _WritePMStateBuffer(PMR* psRenderStatesPMR,
 		goto ErrorExit;
 	}
 
-	PVR_ASSERT(uiNbBytes == sizeof(asRenderStateBuffer));
+	PVR_ASSERT(uiNbBytes == sizeof(sRenderStateBuffer));
 
 	PDUMPCOMMENT(PMR_DeviceNode(psRenderStatesPMR), "PMState buffer");
-	PMRPDumpLoadMem(psRenderStatesPMR, ui64Offset, sizeof(asRenderStateBuffer), PDUMP_FLAGS_CONTINUOUS, false);
+	PMRPDumpLoadMem(psRenderStatesPMR, ui64Offset, sizeof(sRenderStateBuffer), PDUMP_FLAGS_CONTINUOUS, false);
 
 	return PVRSRV_OK;
 ErrorExit:
@@ -1661,6 +1666,15 @@ PVRSRV_ERROR RGXCreateHWRTDataSet(
 		goto err_common_cookie_alloc;
 	}
 
+	eError = OSLockCreate(&psHWRTDataCommonCookie->hLock);
+	if (PVRSRV_OK != eError)
+	{
+		OSFreeMem(psHWRTDataCommonCookie);
+		psHWRTDataCommonCookie = NULL;
+		goto err_common_cookie_alloc;
+	}
+	OSLockAcquire(psHWRTDataCommonCookie->hLock);
+
 	psHWRTDataCommonCookie->psPMStateReservation = psPMStateReservation;
 	psHWRTDataCommonCookie->psPMMListsReservation = psPMMListsReservation;
 
@@ -1707,6 +1721,7 @@ PVRSRV_ERROR RGXCreateHWRTDataSet(
 		psHWRTDataCommonCookie->ui32RefCount += 1;
 	}
 
+	OSLockRelease(psHWRTDataCommonCookie->hLock);
 	return PVRSRV_OK;
 
 err_HWRTDataAlloc:
@@ -1722,6 +1737,8 @@ err_HWRTDataAlloc:
 			}
 		}
 	}
+	OSLockRelease(psHWRTDataCommonCookie->hLock);
+	OSLockDestroy(psHWRTDataCommonCookie->hLock);
 	OSFreeMem(psHWRTDataCommonCookie);
 err_common_cookie_alloc:
 err_validation_devptr:
@@ -1750,6 +1767,7 @@ PVRSRV_ERROR RGXDestroyHWRTDataSet(RGX_KM_HW_RT_DATASET *psKMHWRTDataSet)
 	}
 
 	psCommonCookie = psKMHWRTDataSet->psHWRTDataCommonCookie;
+	OSLockAcquire(psCommonCookie->hLock);
 
 	psDevNode = psKMHWRTDataSet->psDeviceNode;
 
@@ -1758,24 +1776,27 @@ PVRSRV_ERROR RGXDestroyHWRTDataSet(RGX_KM_HW_RT_DATASET *psKMHWRTDataSet)
 	                                     psKMHWRTDataSet->psHWRTDataFwMemDesc,
 										 (!bSharedFL || (psCommonCookie->ui32RefCount == 1)));
 
-	RGX_RETURN_IF_ERROR_AND_DEVICE_RECOVERABLE(psDevNode,
-						   eError,
-						   RGXFWRequestHWRTDataCleanUp);
+	if (RGXIsErrorAndDeviceRecoverable(psDevNode, &eError))
+	{
+		OSLockRelease(psCommonCookie->hLock);
+		return eError;
+	}
+	else if (eError != PVRSRV_OK)
+	{
+		PVR_LOG(("%s: Unexpected error from RGXFWRequestHWRTDataCleanUp(%s)",
+		         __func__, PVRSRVGetErrorString(eError)));
+		/* Device is dead.
+		 * Change error type to make callers destroy the resource handle.
+		 * This is to prevent repeated calls to this function.
+		 */
+		eError = PVRSRV_OK;
+	}
 
 	RGXDestroyHWRTData_aux(psKMHWRTDataSet);
 
 	/* We've got past potential PVRSRV_ERROR_RETRY events, so we are sure
 	   that the HWRTDATA instance will be destroyed during this call.
 	   Consequently, we decrease the ref count for HWRTDataCommonCookie.
-
-	   NOTE: This ref count does not require locks or atomics.
-	   -------------------------------------------------------
-	     HWRTDatas bound into one pair are always destroyed sequentially,
-	     within a single loop on the Client side.
-	     The Common/Cookie objects always belong to only one pair of
-	     HWRTDatas, and ref count is used to ensure that the Common/Cookie
-	     objects will be destroyed after destruction of all HWRTDatas
-	     within a single pair.
 	*/
 	psCommonCookie->ui32RefCount--;
 
@@ -1787,8 +1808,15 @@ PVRSRV_ERROR RGXDestroyHWRTDataSet(RGX_KM_HW_RT_DATASET *psKMHWRTDataSet)
 		UnrefAndReleaseCriticalBuffer(psCommonCookie->psPMStateReservation);
 		UnrefAndReleaseCriticalBuffer(psCommonCookie->psPMMListsReservation);
 
+		OSLockRelease(psCommonCookie->hLock);
+		OSLockDestroy(psCommonCookie->hLock);
 		OSFreeMem(psCommonCookie);
 	}
+	else
+	{
+		OSLockRelease(psCommonCookie->hLock);
+	}
+
 	return PVRSRV_OK;
 }
 
@@ -1817,6 +1845,8 @@ PVRSRV_ERROR RGXCreateFreeList(CONNECTION_DATA       *psConnection,
 	IMG_UINT32          uiFreeListOffset = PVR_ALIGN(
 	                        sizeof(RGX_PM_FREELISTSTATE_BUFFER),
 	                        GET_ROGUE_CACHE_LINE_SIZE(PVRSRV_GET_DEVICE_FEATURE_VALUE(psDeviceNode, SLC_CACHE_LINE_SIZE_BITS)));
+
+	PVR_ASSERT(PVRSRV_IS_FEATURE_SUPPORTED(psDeviceNode, PM_BYTE_ALIGNED_BASE_ADDRESSES));
 
 	if (OSGetPageShift() > RGX_BIF_PM_PHYSICAL_PAGE_ALIGNSHIFT)
 	{
@@ -1925,6 +1955,7 @@ PVRSRV_ERROR RGXCreateFreeList(CONNECTION_DATA       *psConnection,
 	 * Therefore the GPU cache doesn't need coherency, and write-combine will
 	 * suffice on the CPU side (WC buffer will be flushed at the first TA-kick)
 	 */
+	PDUMPCOMMENT(psDeviceNode, "Allocate FwFreeList");
 	eError = DevmemFwAllocate(psDevInfo,
 	                          sizeof(*psFWFreeList),
 	                          PVRSRV_MEMALLOCFLAG_DEVICE_FLAG(PMMETA_PROTECT) |
@@ -2209,13 +2240,11 @@ PVRSRV_ERROR RGXDestroyFreeList(RGX_FREELIST *psFreeList)
 	/* Only issue a firmware cleanup for global freelists - local
 	 * freelists are cleaned during RTData cleanup.
 	 */
-	if ((psFreeList->ui64FreelistGlobalID == 0) ||
-		BITMASK_HAS(psFreeList->psDevInfo->ui32DeviceFlags, RGXKM_DEVICE_STATE_FREELIST_CLEANUP_FALLBACK_EN))
+	if (psFreeList->ui64FreelistGlobalID == 0)
 	{
 		/* Freelist is not in use => start firmware cleanup */
-		eError = RGXFWRequestFreeListCleanUp(psFreeList->psDevInfo,
-											       psFreeList->sFreeListFWDevVAddr,
-												   (psFreeList->ui64FreelistGlobalID == 0));
+		eError = RGXFWRequestGlobalFreeListCleanUp(psFreeList->psDevInfo,
+											       psFreeList->sFreeListFWDevVAddr);
 
 		if (eError != PVRSRV_OK)
 		{
@@ -2228,7 +2257,7 @@ PVRSRV_ERROR RGXDestroyFreeList(RGX_FREELIST *psFreeList)
 				OSLockRelease(psFreeList->psDevInfo->hLockFreeList);
 				return eError;
 			}
-			PVR_LOG(("%s: Unexpected error from RGXFWRequestFreeListCleanUp(%s)",
+			PVR_LOG(("%s: Unexpected error from RGXFWRequestGlobalFreeListCleanUp(%s)",
 					 __func__, PVRSRVGetErrorString(eError)));
 			/* Device is dead. We let it go as if nothing happened.
 			 * Device becomes unrecoverable if the firmware took too long to
@@ -3131,6 +3160,7 @@ PVRSRV_ERROR PVRSRVRGXCreateRenderContextKM(CONNECTION_DATA				*psConnection,
 		Create the FW render context, this has the TA and 3D FW common
 		contexts embedded within it
 	*/
+	PDUMPCOMMENT(psDeviceNode, "Allocate FwRenderContext");
 	eError = DevmemFwAllocate(psDevInfo,
 							  sizeof(RGXFWIF_FWRENDERCONTEXT),
 							  RGX_FWCOMCTX_ALLOCFLAGS,
@@ -3263,12 +3293,46 @@ PVRSRV_ERROR PVRSRVRGXCreateRenderContextKM(CONNECTION_DATA				*psConnection,
 		OSWRLockAcquireWrite(psDevInfo->hRenderCtxListLock);
 		dllist_add_to_tail(&(psDevInfo->sRenderCtxtListHead), &(psRenderContext->sListNode));
 		OSWRLockReleaseWrite(psDevInfo->hRenderCtxListLock);
+
+#if defined(RGX_FEATURE_ERYX_TOP_INFRASTRUCTURE)
+		if (psDevInfo->psUVBSpillMemDesc == NULL)
+		{
+			IMG_DEV_VIRTADDR sDevVirtAddr;
+			/* Allocate global shared buffer if not yet allocated.
+			   Note this is intended to be destroyed at driver unload rather
+			   than context destruction time. */
+			eError = DevmemAllocateAndMap(psDevInfo->psUVBSpillHeap,
+			                              /* 64MB */
+			                              0x4000000,
+			                              0,
+			                              PVRSRV_MEMALLOCFLAG_GPU_READABLE |
+			                              PVRSRV_MEMALLOCFLAG_GPU_WRITEABLE |
+			                              PVRSRV_MEMALLOCFLAG_GPU_CACHE_INCOHERENT |
+			                              PVRSRV_MEMALLOCFLAG_OS_LINUX_DENY_MOVE |
+			                              PVRSRV_MEMALLOCFLAG_PHYS_HEAP_HINT(GPU_PRIVATE),
+			                              "Global UVB Spill Buffer",
+			                              &psDevInfo->psUVBSpillMemDesc,
+			                              &sDevVirtAddr);
+			if (eError != PVRSRV_OK)
+			{
+				PVR_DPF((PVR_DBG_ERROR,
+				        "%s: DevmemAllocate for Global UVB Spill buffer failed",
+				        __func__));
+				goto fail_uvb_spill_alloc;
+			}
+			PVR_ASSERT(sDevVirtAddr.uiAddr == psDevInfo->psUVBSpillHeap->sBaseAddress.uiAddr);
+		}
+#endif
 	}
 
 	*ppsRenderContext = psRenderContext;
 	return PVRSRV_OK;
 
+#if defined(RGX_FEATURE_ERYX_TOP_INFRASTRUCTURE)
+fail_uvb_spill_alloc:
+#endif
 #if defined(SUPPORT_BUFFER_SYNC)
+	pvr_buffer_sync_context_destroy(psRenderContext->psBufferSyncContext);
 fail_buffer_sync_context_create:
 #endif
 fail_acquire_cpu_mapping:

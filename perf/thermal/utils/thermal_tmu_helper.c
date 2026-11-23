@@ -226,10 +226,43 @@ int __thermal_tmu_parse_tzd_dt(struct google_sensor_data *sensor)
 		}
 	}
 
-	/* temp LUT */
-	if (of_property_read_bool(tmu_np, "temp-lut-enable"))
+	/* temp lut */
+	if (of_property_read_bool(tmu_np, "temp-lut-enable")) {
+		struct tmu_temp_state_st *table = NULL;
+		int dt_arr_size, table_len;
+
 		set_bit(TMU_GOV_TEMP_LUT_SELECT, &tmu_data->gov_select);
 
+		/* only parse temp state table from dts when temp lut gov is enabled */
+		dt_arr_size = of_property_count_u32_elems(tmu_np, "temp-state-table");
+		if ((dt_arr_size <= 0) || (dt_arr_size % 2 != 0) ||
+			(dt_arr_size > 2*THERMAL_TEMP_LUT_MAX_ENTRIES)) {
+			dev_warn(dev,
+				"Invalid input temp_state_table length: %d\n", dt_arr_size);
+		} else {
+			table_len = dt_arr_size / 2;
+			table = devm_kcalloc(dev, table_len,
+					sizeof(*table), GFP_KERNEL);
+			if (!table)
+				return -ENOMEM;
+
+			ret = of_property_read_u32_array(tmu_np,
+				"temp-state-table", (u32 *)table, dt_arr_size);
+			if (ret) {
+				dev_err(dev, "Cannot load temp_state_table: ret=%d\n", ret);
+				return ret;
+			}
+
+			tmu_data->temp_state_table_len = table_len;
+			tmu_data->temp_state_table = table;
+			dev_dbg(dev, "temp_state_table dts:");
+			for (int i = 0; i < table_len; i++)
+				dev_dbg(dev, "(%d, %d) ",
+					tmu_data->temp_state_table[i].temp,
+					tmu_data->temp_state_table[i].state);
+			dev_dbg(dev, "\n");
+		}
+	}
 exit:
 	of_node_put(tmu_np);
 	return ret;
@@ -339,6 +372,222 @@ int __thermal_tmu_gov_early_throttle_init(struct device *dev, u8 tz_id,
 }
 
 /*
+ * __thermal_tmu_clear_temp_state_table - clear temp_state_table from TMU configuration
+ *
+ * @dev: pointer to the thermal sensor device which the TMU belongs to
+ * @tz_id: id of the TMU tz
+ * @data: data structure of the TMU configuration
+ *
+ * Return: 0 on success
+ */
+static void __thermal_tmu_clear_temp_state_table(struct device *dev, u8 tz_id,
+					struct tmu_sensor_data *data)
+{
+	if (!dev || !data)
+		return;
+
+	data->temp_state_table_len = 0;
+	if (!data->temp_state_table)
+		return;
+
+	devm_kfree(dev, data->temp_state_table);
+	data->temp_state_table = NULL;
+}
+
+/*
+ * __thermal_tmu_set_temp_state_table - set temp_state_table to CPM
+ *
+ * This function copies temp_state_table from TMU configuration to CPM, then
+ * does a self cleanup
+ *
+ * @dev: pointer to the thermal sensor device which the TMU belongs to
+ * @tz_id: id of the TMU tz
+ * @data: data structure of the TMU configuration
+ *
+ * Return: 0 on success
+ */
+static int __thermal_tmu_set_temp_state_table(struct device *dev, u8 tz_id,
+					struct tmu_sensor_data *data)
+{
+	int i, ret = 0;
+
+	if (!dev || !data ||
+		(data->temp_state_table_len && !data->temp_state_table))
+		return -EINVAL;
+
+	/* If temp_state_table_len is 0,
+	 * it means an empty temp-lut-table, which is a valid state.
+	 * No action is needed in this case.
+	 */
+	if (data->temp_state_table_len == 0)
+		goto exit;
+
+	for (i = 0; i < data->temp_state_table_len; ++i) {
+		ret = tmu_set_temp_lut(tz_id, (u8)data->temp_state_table[i].temp,
+			(u8)data->temp_state_table[i].state, !!i);
+		if (ret) {
+			dev_err(dev,
+				"Failed to message temp_lut to tz %u: ret=%d",
+				tz_id, ret);
+			break;
+		}
+		if (data->temp_state_table[i].temp >= __UINT8_MAX__)
+			break;
+	}
+exit:
+	__thermal_tmu_clear_temp_state_table(dev, tz_id, data);
+	return ret;
+}
+
+/*
+ * __thermal_tmu_get_temp_state_table - get temp_state_table from CPM
+ *
+ * This function copies temp_state_table to TMU configuration from CPM
+ *
+ * @dev: pointer to the thermal sensor device which the TMU belongs to
+ * @tz_id: id of the TMU tz
+ * @data: data structure of the TMU configuration
+ *
+ * Return: 0 on success
+ */
+static int __thermal_tmu_get_temp_state_table(struct device *dev, u8 tz_id,
+					struct tmu_sensor_data *data)
+{
+	int index;
+	int ret = 0;
+	struct tmu_temp_state_st table_buffer[THERMAL_TEMP_LUT_MAX_ENTRIES];
+	struct tmu_temp_state_st *table = NULL;
+
+	if (!dev || !data)
+		return -EINVAL;
+
+	for (index = 0; index < THERMAL_TEMP_LUT_MAX_ENTRIES; ++index) {
+		ret = tmu_get_temp_lut(tz_id, index, (u8 *)&table_buffer[index].temp,
+			(u8 *)&table_buffer[index].state);
+		if (ret) {
+			dev_err(dev,
+				"Failed to message temp_lut to tz %u: ret=%d",
+				tz_id, ret);
+			return ret;
+		}
+		if (table_buffer[index].state == __UINT8_MAX__)
+			break;
+	}
+	if ((index > 0) && (index <= THERMAL_TEMP_LUT_MAX_ENTRIES)) {
+		table = devm_kmemdup_array(dev, table_buffer, index,
+					   sizeof(*table), GFP_KERNEL);
+		if (!table)
+			return -ENOMEM;
+	} else {
+		table = NULL;
+	}
+
+	data->temp_state_table_len = index;
+	if (data->temp_state_table)
+		devm_kfree(dev, data->temp_state_table);
+	data->temp_state_table = table;
+
+	return 0;
+}
+
+/*
+ * __thermal_tmu_gov_temp_lut_init - initialize temp lut governor
+ *
+ * This function sends messages to initialize TMU temp lut governor parameters.
+ *
+ * @dev: pointer to the thermal sensor device which the TMU belongs to
+ * @data: data structure of the TMU configuration
+ *
+ * Return: 0 on success
+ */
+int __thermal_tmu_gov_temp_lut_init(struct device *dev, u8 tz_id,
+				    struct tmu_sensor_data *data)
+{
+	int ret = 0;
+
+	if (!dev || !data)
+		return -EINVAL;
+
+	ret = __thermal_tmu_set_temp_state_table(dev, tz_id, data);
+	if (ret) {
+		dev_warn(dev,
+			"temp lut governor not supported on tz %u: ret=%d",
+			tz_id, ret);
+	}
+
+	/* it's ok for a thermal zone not to support temp-lut */
+	return 0;
+}
+
+enum thermal_tmu_trip_walk_op {
+	THERMAL_TMU_GET_TRIPS,
+	THERMAL_TMU_SET_TRIP_TEMP,
+	THERMAL_TMU_SET_OFFSETS,
+};
+
+struct thermal_tmu_trip_walk_data {
+	/* input */
+	struct thermal_zone_device *tzd;
+	const struct thermal_trip *trip;
+	int temp;
+	int hyst;
+	s32 *offsets;
+	enum thermal_tmu_trip_walk_op op;
+
+	/* output */
+	u8 trip_temps[THERMAL_TMU_NR_TRIPS];
+	u8 trip_hysts[THERMAL_TMU_NR_TRIPS];
+	u8 trip_types[THERMAL_TMU_NR_TRIPS];
+	int num_trips;
+};
+
+static int thermal_tmu_trip_walk_cb(struct thermal_trip *trip, void *data)
+{
+	struct thermal_tmu_trip_walk_data * const twd = data;
+	int trip_id = twd->num_trips++;
+
+	/* Count trip number only, when there are too many trips. */
+	if (trip_id >= THERMAL_TMU_NR_TRIPS)
+		return 0;
+
+	if (twd->op == THERMAL_TMU_SET_TRIP_TEMP && !twd->trip)
+		return -EINVAL;
+
+	if (twd->op == THERMAL_TMU_SET_OFFSETS && !twd->offsets)
+		return -EINVAL;
+
+	if (twd->op == THERMAL_TMU_SET_OFFSETS)
+		twd->trip_temps[trip_id] = (trip->temperature + twd->offsets[trip_id]) / MILLI;
+	else if (twd->op == THERMAL_TMU_SET_TRIP_TEMP && trip == twd->trip)
+		twd->trip_temps[trip_id] = twd->temp / MILLI;
+	else
+		twd->trip_temps[trip_id] = trip->temperature / MILLI;
+
+	twd->trip_hysts[trip_id] = trip->hysteresis / MILLI;
+
+	switch (trip->type) {
+	case THERMAL_TRIP_ACTIVE:
+		twd->trip_types[trip_id] = TMU_TRIP_TYPE_ACTIVE;
+		break;
+	case THERMAL_TRIP_PASSIVE:
+		twd->trip_types[trip_id] = TMU_TRIP_TYPE_PASSIVE;
+		break;
+	case THERMAL_TRIP_HOT:
+		twd->trip_types[trip_id] = TMU_TRIP_TYPE_HOT;
+		break;
+	case THERMAL_TRIP_CRITICAL:
+		twd->trip_types[trip_id] = TMU_TRIP_TYPE_CRITICAL;
+		break;
+	default:
+		pr_err("tz %s: unknown thermal trip for tmu: %d",
+		       thermal_zone_device_type(twd->tzd), trip->type);
+		break;
+	}
+
+	return 0;
+}
+
+/*
  * __thermal_tmu_trip_points_init - initialize TMU trip points with tzd dt config
  *
  * @sensor: pointer to the TMU sensor data structure
@@ -351,68 +600,44 @@ int __thermal_tmu_trip_points_init(struct google_sensor_data *sensor)
 {
 	struct thermal_zone_device *tzd = NULL;
 	struct device *dev = NULL;
+	struct tmu_sensor_data *tmu_data;
 	u8 tz_id;
-	u8 trip_temps[THERMAL_TMU_NR_TRIPS] = {0},
-	   trip_hysts[THERMAL_TMU_NR_TRIPS] = {0},
-	   trip_types[THERMAL_TMU_NR_TRIPS] = {0};
-	struct thermal_trip trip;
-	int tz_trip_count, ret;
+	struct thermal_tmu_trip_walk_data twd = {
+		.op = THERMAL_TMU_GET_TRIPS,
+	};
+	int ret;
 
-	if (!sensor)
+	if (!sensor || !sensor->sens_priv_data)
 		return -EINVAL;
 
+	tmu_data = sensor->sens_priv_data;
 	tzd = sensor->tzd;
 	dev = sensor->dev;
-	tz_id = (u8)sensor->sensor_id;
+	tz_id = (u8)tmu_data->hw_tzid;
 
-	tz_trip_count = thermal_zone_get_num_trips(tzd);
-	if (tz_trip_count != THERMAL_TMU_NR_TRIPS) {
+	twd.tzd = tzd;
+
+	for_each_thermal_zone_trip(tzd, thermal_tmu_trip_walk_cb, &twd);
+
+	if (twd.num_trips != THERMAL_TMU_NR_TRIPS) {
 		dev_err(dev,
 			"%s: %d trips found in device tree but %d are expected",
-			thermal_zone_device_type(tzd), tz_trip_count, THERMAL_TMU_NR_TRIPS);
+			thermal_zone_device_type(tzd), twd.num_trips, THERMAL_TMU_NR_TRIPS);
 		return -EINVAL;
 	}
-	for (int i = 0; i < tz_trip_count; ++i) {
-		ret = get_thermal_zone_trip(tzd, i, &trip);
-		if (ret) {
-			dev_err(dev, "Failed to set trip %d from tz: %s: ret=%d", i,
-				thermal_zone_device_type(tzd), ret);
-			return ret;
-		}
-		trip_temps[i] = (u8)(trip.temperature / MILLI);
-		trip_hysts[i] = (u8)(trip.hysteresis / MILLI);
-		switch (trip.type) {
-		case THERMAL_TRIP_ACTIVE:
-			trip_types[i] = (u8)TMU_TRIP_TYPE_ACTIVE;
-			break;
-		case THERMAL_TRIP_PASSIVE:
-			trip_types[i] = (u8)TMU_TRIP_TYPE_PASSIVE;
-			break;
-		case THERMAL_TRIP_HOT:
-			trip_types[i] = (u8)TMU_TRIP_TYPE_HOT;
-			break;
-		case THERMAL_TRIP_CRITICAL:
-			trip_types[i] = (u8)TMU_TRIP_TYPE_CRITICAL;
-			break;
-		default:
-			dev_err(dev, "tz %s: unknown thermal trip for tmu: %d",
-				thermal_zone_device_type(tzd), trip.type);
-			break;
-		}
-	}
-	ret = tmu_set_trip_temp(tz_id, trip_temps, THERMAL_TMU_NR_TRIPS);
+	ret = tmu_set_trip_temp(tz_id, twd.trip_temps, THERMAL_TMU_NR_TRIPS);
 	if (ret) {
 		dev_err(dev, "tz %s: Failed to set trip temperature. ret:%d\n",
 			thermal_zone_device_type(tzd), ret);
 		return ret;
 	}
-	ret = tmu_set_trip_hyst(tz_id, trip_hysts, THERMAL_TMU_NR_TRIPS);
+	ret = tmu_set_trip_hyst(tz_id, twd.trip_hysts, THERMAL_TMU_NR_TRIPS);
 	if (ret) {
 		dev_err(dev, "tz %s: Failed to set trip hysteresis. ret:%d\n",
 			thermal_zone_device_type(tzd), ret);
 		return ret;
 	}
-	ret = tmu_set_trip_type(tz_id, trip_types, THERMAL_TMU_NR_TRIPS);
+	ret = tmu_set_trip_type(tz_id, twd.trip_types, THERMAL_TMU_NR_TRIPS);
 	if (ret) {
 		dev_err(dev, "tz %s: Failed to set trip type. ret:%d\n",
 			thermal_zone_device_type(tzd), ret);
@@ -446,7 +671,7 @@ int thermal_tmu_set_polling_delay_ms(struct google_sensor_data *sensor, u32 val)
 	if (!tmu_data)
 		return -EINVAL;
 
-	tz_id = (u8)sensor->sensor_id;
+	tz_id = (u8)tmu_data->hw_tzid;
 	dev = sensor->dev;
 	tzd = sensor->tzd;
 
@@ -513,7 +738,7 @@ int __thermal_tmu_send_init_msg(struct google_sensor_data *sensor)
 	if (!tmu_data)
 		return -EINVAL;
 
-	tz_id = (u8)sensor->sensor_id;
+	tz_id = (u8)tmu_data->hw_tzid;
 	dev = sensor->dev;
 
 	ret = thermal_tmu_set_polling_delay_ms(sensor, tmu_data->polling_delay_ms);
@@ -536,6 +761,11 @@ int __thermal_tmu_send_init_msg(struct google_sensor_data *sensor)
 
 	/* send early throttle parameters */
 	ret = __thermal_tmu_gov_early_throttle_init(dev, tz_id, tmu_data);
+	if (ret)
+		return ret;
+
+	/* send temp lut parameters */
+	ret = __thermal_tmu_gov_temp_lut_init(dev, tz_id, tmu_data);
 	if (ret)
 		return ret;
 
@@ -691,9 +921,17 @@ int thermal_tmu_configure_sensor(struct google_sensor_data *sensor)
 	struct device *dev = NULL;
 	struct tmu_sensor_data *tmu_data = NULL;
 	int ret = 0;
+	enum hw_thermal_zone_id hw_tzid;
 
 	if (!sensor)
 		return -EINVAL;
+
+	/* map tmu thermal sensor id to CPM mbox tz id */
+	if (thermal_cpm_mbox_sensor_id_to_hw_tzid(sensor->sensor_id, &hw_tzid)) {
+		dev_err(sensor->dev, "TZ: %s: Failed to map HW thermal zone",
+			thermal_zone_device_type(sensor->tzd));
+		return -ENODEV;
+	}
 
 	dev = sensor->dev;
 	tmu_data = devm_kzalloc(dev, sizeof(*tmu_data), GFP_KERNEL);
@@ -702,6 +940,7 @@ int thermal_tmu_configure_sensor(struct google_sensor_data *sensor)
 			thermal_zone_device_type(sensor->tzd));
 		return -ENOMEM;
 	}
+	tmu_data->hw_tzid = hw_tzid;
 	sensor->sens_priv_data = (void *)tmu_data;
 
 	/* read from device tree and update sensor->sens_data.tmu_data*/
@@ -781,9 +1020,14 @@ int thermal_tmu_cleanup_sensor(struct google_sensor_data *sensor)
 int thermal_tmu_get_temp(struct thermal_zone_device *tzd, int *temp)
 {
 	struct google_sensor_data *sens = thermal_zone_device_priv(tzd);
-	u8 tz_id = (u8)sens->sensor_id, temp_c;
+	struct tmu_sensor_data *tmu_data = sens->sens_priv_data;
+	u8 tz_id, temp_c;
 	int ret = 0;
 
+	if (!tmu_data)
+		return -EINVAL;
+
+	tz_id = (u8)tmu_data->hw_tzid;
 	ret = tmu_get_temp(tz_id, &temp_c);
 	if (ret) {
 		if (ret == -ENODATA) {
@@ -803,95 +1047,39 @@ int thermal_tmu_get_temp(struct thermal_zone_device *tzd, int *temp)
  * This function is registered to a thermal zone for updating trip temperature
  *
  * @tzd: thermal zone device pointer
- * @trip_id: the trip point to set
+ * @trip: the trip point to set
  * @temp: new trip point temperature
  *
  * Return: 0 on success.
  */
-int __thermal_tmu_set_trip_temp(struct thermal_zone_device *tzd, int trip_id, int temp)
+int __thermal_tmu_set_trip_temp(struct thermal_zone_device *tzd, const struct thermal_trip *trip,
+				int temp)
 {
 	struct google_sensor_data *sens = thermal_zone_device_priv(tzd);
-	struct device *dev = sens->dev;
-	struct thermal_trip trip;
-	int ret;
-	u8 tz_id = (u8)sens->sensor_id,
-	   trip_temps[THERMAL_TMU_NR_TRIPS] = {0};
+	struct tmu_sensor_data *tmu_data = sens->sens_priv_data;
+	u8 tz_id;
+	struct thermal_tmu_trip_walk_data twd = {
+		.tzd = tzd,
+		.trip = trip,
+		.temp = temp,
+		.op = THERMAL_TMU_SET_TRIP_TEMP,
+	};
 
-	if (trip_id < 0 || trip_id >= THERMAL_TMU_NR_TRIPS)
+	if (!tmu_data)
 		return -EINVAL;
 
-	for (int i = 0; i < THERMAL_TMU_NR_TRIPS; ++i) {
-		if (i == trip_id)
-			trip_temps[i] = (u8)(temp / MILLI);
-		else {
-			ret = get_thermal_zone_trip(tzd, i, &trip);
-			if (ret) {
-				dev_err(dev, "TZ: %s: Failed to get trip temp: %d, ret=%d",
-					thermal_zone_device_type(tzd), i, ret);
-				return ret;
-			}
-			trip_temps[i] = (u8)(trip.temperature / MILLI);
-		}
-	}
+	for_each_thermal_trip(tzd, thermal_tmu_trip_walk_cb, &twd);
 
-	return tmu_set_trip_temp(tz_id, trip_temps, THERMAL_TMU_NR_TRIPS);
+	tz_id = (u8)tmu_data->hw_tzid;
+	return tmu_set_trip_temp(tz_id, twd.trip_temps, THERMAL_TMU_NR_TRIPS);
 }
 
-int thermal_tmu_set_trip_temp(struct thermal_zone_device *tzd, int trip_id, int temp)
+int thermal_tmu_set_trip_temp(struct thermal_zone_device *tzd, const struct thermal_trip *trip,
+			      int temp)
 {
 	/* Enable changing the trip temperature only for userdebug build. */
 #if IS_ENABLED(CONFIG_DEBUG_FS)
-	return __thermal_tmu_set_trip_temp(tzd, trip_id, temp);
-#else
-	return 0;
-#endif
-}
-
-/*
- * __thermal_tmu_set_trip_hyst - thermal zone device ops callback
- *
- * This function is registered to a thermal zone for updating trip hysteresis
- *
- * @tzd: thermal zone device pointer
- * @trip_id: the trip point to set
- * @hyst: new trip point hysteresis
- *
- * Return: 0 on success.
- */
-int __thermal_tmu_set_trip_hyst(struct thermal_zone_device *tzd, int trip_id, int hyst)
-{
-	struct google_sensor_data *sens = thermal_zone_device_priv(tzd);
-	struct device *dev = sens->dev;
-	struct thermal_trip trip;
-	int ret;
-	u8 tz_id = (u8)sens->sensor_id,
-	   trip_hysts[THERMAL_TMU_NR_TRIPS] = {0};
-
-	if (trip_id < 0 || trip_id >= THERMAL_TMU_NR_TRIPS)
-		return -EINVAL;
-
-	for (int i = 0; i < THERMAL_TMU_NR_TRIPS; ++i) {
-		if (i == trip_id)
-			trip_hysts[i] = (u8)(hyst / MILLI);
-		else {
-			ret = get_thermal_zone_trip(tzd, i, &trip);
-			if (ret) {
-				dev_err(dev, "TZ: %s: Failed to get trip hyst: %d, ret=%d",
-					thermal_zone_device_type(tzd), i, ret);
-				return ret;
-			}
-			trip_hysts[i] = (u8)(trip.hysteresis / MILLI);
-		}
-	}
-
-	return tmu_set_trip_hyst(tz_id, trip_hysts, THERMAL_TMU_NR_TRIPS);
-}
-
-int thermal_tmu_set_trip_hyst(struct thermal_zone_device *tzd, int trip_id, int hyst)
-{
-	/* Enable changing the trip hysteresis only for userdebug build. */
-#if IS_ENABLED(CONFIG_DEBUG_FS)
-	return __thermal_tmu_set_trip_hyst(tzd, trip_id, hyst);
+	return __thermal_tmu_set_trip_temp(tzd, trip, temp);
 #else
 	return 0;
 #endif
@@ -920,8 +1108,11 @@ int __thermal_tmu_offset_enable(bool enable)
 		goto unlock;
 
 	list_for_each_entry(sensor, tmu_sensor_list, node) {
-		u8 trip_temps[8] = {0};
+		u8 tz_id;
 		struct tmu_sensor_data *tmu_data = sensor->sens_priv_data;
+		struct thermal_tmu_trip_walk_data twd = {
+			.op = THERMAL_TMU_GET_TRIPS,
+		};
 
 		if (!tmu_data) {
 			dev_err(sensor->dev, "TZ: %s: Invalid sensor data",
@@ -932,28 +1123,15 @@ int __thermal_tmu_offset_enable(bool enable)
 		if (tmu_data->skip_junction_offset)
 			continue;
 
-		for (int i = 0; i < THERMAL_TMU_NR_TRIPS; ++i) {
-			struct thermal_trip trip;
-			int new_trip_temp;
+		tz_id = (u8)tmu_data->hw_tzid;
 
-			ret = get_thermal_zone_trip(sensor->tzd, i, &trip);
-			if (ret) {
-				dev_err(sensor->dev, "TZ: %s: Failed to get trip temp: %d, ret=%d",
-					thermal_zone_device_type(sensor->tzd), i, ret);
-				goto unlock;
-			}
-			if (enable)
-				new_trip_temp = trip.temperature + tmu_data->junction_offset[i];
-			else
-				new_trip_temp = trip.temperature;
-
-			dev_dbg(sensor->dev, "TZ %s: trip_temp_%d change from %d to %d",
-				thermal_zone_device_type(sensor->tzd), i, trip.temperature,
-				new_trip_temp);
-
-			trip_temps[i] = (u8)(new_trip_temp / MILLI);
+		if (enable) {
+			twd.op = THERMAL_TMU_SET_OFFSETS;
+			twd.offsets = tmu_data->junction_offset;
 		}
-		ret = tmu_set_trip_temp((u8)sensor->sensor_id, trip_temps, THERMAL_TMU_NR_TRIPS);
+
+		for_each_thermal_zone_trip(sensor->tzd, thermal_tmu_trip_walk_cb, &twd);
+		ret = tmu_set_trip_temp(tz_id, twd.trip_temps, THERMAL_TMU_NR_TRIPS);
 		if (ret) {
 			dev_err(sensor->dev, "TZ: %s: Failed to set trip temp offset: ret=%d",
 				thermal_zone_device_type(sensor->tzd), ret);
@@ -961,8 +1139,8 @@ int __thermal_tmu_offset_enable(bool enable)
 		}
 		pr_info("TMU TZ %s: Trip offset applied: trip_temp(C): %d %d %d %d %d %d %d %d",
 			thermal_zone_device_type(sensor->tzd),
-			trip_temps[0], trip_temps[1], trip_temps[2], trip_temps[3],
-			trip_temps[4], trip_temps[5], trip_temps[6], trip_temps[7]);
+			twd.trip_temps[0], twd.trip_temps[1], twd.trip_temps[2], twd.trip_temps[3],
+			twd.trip_temps[4], twd.trip_temps[5], twd.trip_temps[6], twd.trip_temps[7]);
 	}
 	is_offset_enabled = enable;
 unlock:
@@ -1029,6 +1207,91 @@ int thermal_tmu_get_junction_offset(struct google_sensor_data *sensor, int offse
 }
 
 /*
+ * thermal_tmu_set_temp_state_table - set temp_state_table to CPM from debugfs node
+ *
+ * If the table is invalid or not supported, temp lut gov select is not changed here.
+ *
+ * @sensor: google sensor data structure
+ * @table: temp_state_table input
+ * @len: size of temp_state_table array
+ *
+ * Return: 0 on success
+ *	-EINVAL: invalid argument
+ */
+int thermal_tmu_set_temp_state_table(struct google_sensor_data *sensor,
+				const struct tmu_temp_state_st *table, int len)
+{
+	/* enable setting temp_state_table to CPM for userdebug build only. */
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+	struct tmu_sensor_data *tmu_data = NULL;
+	struct device *dev = NULL;
+	u8 tz_id;
+
+	if (!sensor || !table || len <= 0 || len > THERMAL_TEMP_LUT_MAX_ENTRIES)
+		return -EINVAL;
+
+	tmu_data = sensor->sens_priv_data;
+	dev = sensor->dev;
+	tz_id = (u8)tmu_data->hw_tzid;
+
+	if (!tmu_data || !dev)
+		return -EINVAL;
+
+	tmu_data->temp_state_table_len = len;
+	tmu_data->temp_state_table = devm_kmemdup_array(dev, table, len,
+							sizeof(*tmu_data->temp_state_table),
+							GFP_KERNEL);
+	if (!tmu_data->temp_state_table) {
+		dev_err(dev, "Failed to allocate memory for temp_state_table\n");
+		return -ENOMEM;
+	}
+	return __thermal_tmu_set_temp_state_table(dev, tz_id, tmu_data);
+#else
+	return 0;
+#endif
+}
+
+/*
+ * thermal_tmu_get_temp_state_table - get temp_state_table from CPM for debugfs
+ *
+ * @sensor: google sensor data structure
+ * @table: temp_state_table output buffer
+ * @len: output param, size of temp_state_table array
+ *
+ * Return: 0 on success
+ *	-EINVAL: invalid argument
+ */
+int thermal_tmu_get_temp_state_table(struct google_sensor_data *sensor,
+				struct tmu_temp_state_st *table, int *len)
+{
+	struct tmu_sensor_data *tmu_data = NULL;
+	struct device *dev = NULL;
+	u8 tz_id;
+	int ret;
+
+	if (!sensor || !table || !len)
+		return -EINVAL;
+
+	tmu_data = sensor->sens_priv_data;
+	dev = sensor->dev;
+	tz_id = (u8)tmu_data->hw_tzid;
+
+	if (!tmu_data || !dev)
+		return -EINVAL;
+
+	ret = __thermal_tmu_get_temp_state_table(dev, tz_id, tmu_data);
+	if (ret)
+		return ret;
+
+	*len = tmu_data->temp_state_table_len;
+	memcpy(table, tmu_data->temp_state_table,
+		(sizeof(struct tmu_temp_state_st) * *len));
+
+	__thermal_tmu_clear_temp_state_table(dev, tz_id, tmu_data);
+	return 0;
+}
+
+/*
  * __thermal_tmu_trip_counter_init - initialize trip counter shared memory and sysfs node
  *
  * @dev: pointer to the thermal sensor device which the TMU belongs to
@@ -1088,7 +1351,7 @@ int __thermal_tmu_get_trip_counter(struct device_attribute *attr,
 	mutex_lock(&trip_counter_lock);
 	list_for_each_entry(sensor, tmu_sensor_list, node) {
 		struct tmu_sensor_data *tmu_data = sensor->sens_priv_data;
-		u8 tz_id = sensor->sensor_id;
+		u8 tz_id = (u8)tmu_data->hw_tzid;
 
 		if (attr == &tmu_data->dev_attr_trip_counter) {
 			ret = tmu_get_trip_counter_snapshot(tz_id);

@@ -164,7 +164,16 @@ BCMFASTPATH(osl_alloc_skb)(osl_t *osh, unsigned int len)
 #endif /* DHD_USE_ATOMIC_PKTGET */
 	skb = __dev_alloc_skb(len, flags);
 #else
+
+#ifdef GOOGLE_DAL_CORE
+#define GOOGLE_DAL_OVERHEAD 64u
+	/* Extend extra space to store information for offload mode */
+	skb = dev_alloc_skb(len + GOOGLE_DAL_OVERHEAD);
+	if (likely(skb))
+		skb_reserve(skb, GOOGLE_DAL_OVERHEAD);
+#else
 	skb = dev_alloc_skb(len);
+#endif /* GOOGLE_DAL_CORE */
 #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 25) */
 
 	return skb;
@@ -881,6 +890,7 @@ osl_pkt_orphan_partial(struct sk_buff *skb)
 
 	if (!skb->destructor || skb->destructor == sock_wfree)
 		return;
+
 
 	if (unlikely(!p_tcp_wfree)) {
 		/* this is a hack to get tcp_wfree pointer since it's not

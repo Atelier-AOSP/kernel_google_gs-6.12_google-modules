@@ -24,6 +24,7 @@
 #ifndef _wl_cfgnan_h_
 #define _wl_cfgnan_h_
 #include <nan.h>
+#include <bcmiov.h>
 
 /* NAN structs versioning b/w DHD and HAL
 * define new version if any change in any of the shared structs
@@ -422,9 +423,6 @@ enum nan_pairing_bs_role {
 /* attr_hdr(3)+dialog_token(1)+type_status(1)+ reason_code(1)+method(2) */
 #define NAN_NPBA_ATTR_MIN_LEN           8u
 
-/* attr_hdr(3) */
-#define SDEA_INFO_LEN_FIELD_SIZE	3u
-
 #define NAN_PAIRING_FUP_TOKEN		190u
 
 enum nan_pairing_states {
@@ -634,7 +632,6 @@ typedef struct nan_config_cmd_data {
 	uint16 cluster_high;
 	wl_nan_disc_bcn_interval_t disc_bcn_interval;
 	uint32 dw_early_termination;
-	uint32 instant_mode_en;
 	chanspec_t instant_chspec;
 	uint8 chre_req;
 	wl_nan_instance_id_t svc_id;
@@ -950,7 +947,16 @@ typedef struct wl_nancfg
 	struct	delayed_work nan_pairing; /* WQ for pairing event timeout handling */
 	uint32	nan_pairing_timeout;
 	uint32  pending_txs_token; /* Pending txs followup token */
+	uint32 instant_mode_en;
 } wl_nancfg_t;
+
+/* NAN Vendor Response messages */
+typedef struct nan_vendor_resp_msg {
+	/* length of response data */
+	u16 rsp_len;
+	/* response data */
+	u8 *rsp_data;
+} nan_vendor_resp_msg_t;
 
 #define NAN_RTT_ENABLED(cfg) (wl_cfgnan_is_enabled(cfg) && \
 		(cfg->nancfg->ranging_enable == TRUE))
@@ -995,6 +1001,11 @@ int wl_cfgnan_data_path_end_handler(struct net_device *ndev,
 	struct bcm_cfg80211 *cfg, nan_data_path_id ndp_instance_id,
 	int *status);
 const char * nan_event_to_str(u16 cmd);
+int wl_cfgnan_execute_ioctl(struct net_device *ndev, struct bcm_cfg80211 *cfg,
+	bcm_iov_batch_buf_t *nan_buf, uint16 nan_buf_size, uint32 *status,
+	uint8 *resp_buf, uint16 resp_buf_size);
+int wl_cfg_nan_check_cmd_len(uint16 nan_iov_len, uint16 data_size,
+	uint16 *subcmd_len);
 
 #ifdef WL_NAN_DISC_CACHE
 int wl_cfgnan_sec_info_handler(struct bcm_cfg80211 *cfg,
@@ -1065,6 +1076,7 @@ int wl_cfgnan_pairing_request_n_response(struct net_device *ndev, struct bcm_cfg
 int wl_cfgnan_pairing_end_handler(struct net_device *ndev,
 	struct bcm_cfg80211 *cfg, wl_nan_instance_id_t pairing_id, int *status);
 int wl_cfgnan_process_resp_buf(void *iov_resp, uint8 *instance_id, uint16 sub_cmd_id);
+
 
 typedef enum {
 	NAN_ATTRIBUTE_INVALID				= 0,

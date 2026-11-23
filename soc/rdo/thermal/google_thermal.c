@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2023 Google LLC */
 #include <linux/device.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/pm_opp.h>
 #include <linux/pm_qos.h>
 #include <linux/units.h>
@@ -17,7 +19,7 @@
 
 static int google_get_temp(struct thermal_zone_device *tz, int *temperature)
 {
-	struct thermal_data *data = tz->devdata;
+	struct thermal_data *data = thermal_zone_device_priv(tz);
 	struct google_cpm_thermal *cpm_thermal = data->cpm_thermal;
 	int temp = cpm_thermal->ops->get_temp(cpm_thermal, data->id);
 
@@ -31,44 +33,27 @@ static int google_get_temp(struct thermal_zone_device *tz, int *temperature)
 	return 0;
 }
 
-static int google_set_trip_temp(struct thermal_zone_device *tz, int trip, int temp)
+static int google_set_trip_temp(struct thermal_zone_device *tz,
+				const struct thermal_trip *trip, int temp)
 {
-	struct thermal_data *data = tz->devdata;
+	struct thermal_data *data = thermal_zone_device_priv(tz);
 	struct google_cpm_thermal *cpm_thermal = data->cpm_thermal;
 	s8 temp_list[NR_TRIPS];
 	u8 trip_id;
 
 	for (trip_id = 0; trip_id < tz->num_trips; ++trip_id) {
-		if (trip_id == trip)
+		if (&tz->trips[trip_id].trip == trip)
 			temp_list[trip_id] = (s8)(temp / MCELSIUS);
 		else
-			temp_list[trip_id] = (s8)(tz->trips[trip_id].temperature / MCELSIUS);
+			temp_list[trip_id] = (s8)(tz->trips[trip_id].trip.temperature / MCELSIUS);
 	}
 
 	return cpm_thermal->ops->set_trip_temp(cpm_thermal, data->id, temp_list);
 }
 
-static int google_set_trip_hyst(struct thermal_zone_device *tz, int trip, int hyst)
-{
-	struct thermal_data *data = tz->devdata;
-	struct google_cpm_thermal *cpm_thermal = data->cpm_thermal;
-	u8 hyst_list[NR_TRIPS];
-	u8 trip_id;
-
-	for (trip_id = 0; trip_id < tz->num_trips; ++trip_id) {
-		if (trip_id == trip)
-			hyst_list[trip_id] = (u8)(hyst / MCELSIUS);
-		else
-			hyst_list[trip_id] = (u8)(tz->trips[trip_id].hysteresis / MCELSIUS);
-	}
-
-	return cpm_thermal->ops->set_trip_hyst(cpm_thermal, data->id, hyst_list);
-}
-
 static const struct thermal_zone_device_ops google_thermal_ops = {
 	.get_temp = google_get_temp,
 	.set_trip_temp = google_set_trip_temp,
-	.set_trip_hyst = google_set_trip_hyst,
 };
 
 static void google_thermal_callback(struct thermal_data *data, int level)
@@ -206,7 +191,7 @@ static void google_thermal_get_sm(struct thermal_data *data)
 
 static int google_thermal_initialize(struct thermal_zone_device *tz)
 {
-	struct thermal_data *data = tz->devdata;
+	struct thermal_data *data = thermal_zone_device_priv(tz);
 	struct google_cpm_thermal *cpm_thermal = data->cpm_thermal;
 	u8 hyst_list[NR_TRIPS];
 	s8 temp_list[NR_TRIPS];
@@ -215,9 +200,9 @@ static int google_thermal_initialize(struct thermal_zone_device *tz)
 	int ret;
 
 	for (trip_id = 0; trip_id < tz->num_trips; ++trip_id) {
-		temp_list[trip_id] = (s8)(tz->trips[trip_id].temperature / MCELSIUS);
-		hyst_list[trip_id] = (u8)(tz->trips[trip_id].hysteresis / MCELSIUS);
-		if (tz->trips[trip_id].type == THERMAL_TRIP_PASSIVE)
+		temp_list[trip_id] = (s8)(tz->trips[trip_id].trip.temperature / MCELSIUS);
+		hyst_list[trip_id] = (u8)(tz->trips[trip_id].trip.hysteresis / MCELSIUS);
+		if (tz->trips[trip_id].trip.type == THERMAL_TRIP_PASSIVE)
 			continue;
 		inten |= 1 << trip_id;
 	}
@@ -594,7 +579,7 @@ error:
 	return ret;
 }
 
-static int google_thermal_platform_remove(struct platform_device *pdev)
+static void google_thermal_platform_remove(struct platform_device *pdev)
 {
 	struct thermal_data *data = platform_get_drvdata(pdev);
 	int ret;
@@ -602,17 +587,12 @@ static int google_thermal_platform_remove(struct platform_device *pdev)
 	ret = data->cpm_thermal->ops->unregister_thermal_zone(data->cpm_thermal, data->tz);
 	if (ret) {
 		dev_err(data->dev, "failed unregister thermal zone in cpm_thermal\n");
-		goto error;
+		return;
 	}
 
 	debugfs_remove_recursive(data->debugfs_root);
 
 	google_thermal_remove_pm_qos(data);
-
-	return 0;
-
-error:
-	return ret;
 }
 
 static const struct of_device_id google_thermal_of_match_table[] = {

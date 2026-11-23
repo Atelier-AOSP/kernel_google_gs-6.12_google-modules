@@ -93,6 +93,7 @@ struct modem_boot_duration_item {
 	u64 total_success_duration_ms;
 	u64 average_success_duration_ms;
 	u64 max_success_duration_ms;
+	u64 last_success_duration_ms;
 };
 
 /**

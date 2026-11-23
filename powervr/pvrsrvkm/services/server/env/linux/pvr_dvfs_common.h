@@ -100,6 +100,29 @@ int FindOPPFreq(struct device *dev,
                 unsigned long *freq_table,
                 unsigned long freq,
                 unsigned int *level);
+
+/*************************************************************************/ /*!
+@Function       FindOPPFreqNearest
+
+@Description    Common code to look up the OPP entry nearest to the given
+                frequency and its level in the devicetree OPP table.
+                Returns 0 if the nearest freq exists, -ENODATA otherwise.
+                Requires CONFIG_PM_OPP support in the kernel.
+
+@Input          dev        OS Device node
+@Input          freq_table  array of valid frequency points
+@Input          freq       Clock freq (Hz)
+@Output         level      OPP table index
+@Return			0 on success
+*/ /**************************************************************************/
+int FindOPPFreqNearest(struct device *dev,
+                       unsigned int *level,
+                       unsigned long *freq);
+
+PVRSRV_ERROR
+PVRSRVFindOPPFreqNearest(PPVRSRV_DEVICE_NODE psDeviceNode,
+						 IMG_UINT32 *pui32Level,
+						 IMG_UINT32 *pui32Freq);
 #endif
 
 /*************************************************************************/ /*!

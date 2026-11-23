@@ -219,11 +219,11 @@ static void SysDevFeatureDepInit(PVRSRV_DEVICE_CONFIG *psDevConfig, IMG_UINT64 u
 #if defined(SUPPORT_AXI_ACE_TEST)
 		if ( ui64Features & RGX_FEATURE_AXI_ACELITE_BIT_MASK)
 		{
-			psDevConfig->eCacheSnoopingMode		= PVRSRV_DEVICE_SNOOP_CPU_ONLY;
+			psDevConfig->eSystemCoherencyMode = PVRSRV_DEVICE_SNOOP_CPU_ONLY;
 		}else
 #endif
 		{
-			psDevConfig->eCacheSnoopingMode		= PVRSRV_DEVICE_SNOOP_NONE;
+			psDevConfig->eSystemCoherencyMode = PVRSRV_DEVICE_SNOOP_NONE;
 		}
 }
 

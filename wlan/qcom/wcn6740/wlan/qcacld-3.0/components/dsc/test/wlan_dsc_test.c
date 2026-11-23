@@ -400,7 +400,7 @@ struct thread_ctx {
 	uint32_t step;
 };
 
-static QDF_STATUS dsc_thread_ops(void *context)
+static int dsc_thread_ops(void *context)
 {
 	struct thread_ctx *ctx = context;
 	struct dsc_driver *driver = ctx->driver;
@@ -442,10 +442,10 @@ static QDF_STATUS dsc_thread_ops(void *context)
 
 	dsc_exit();
 
-	return QDF_STATUS_SUCCESS;
+	return 0;
 }
 
-static QDF_STATUS dsc_thread_vdev_trans(void *context)
+static int dsc_thread_vdev_trans(void *context)
 {
 	struct thread_ctx *ctx = context;
 	struct dsc_driver *driver = ctx->driver;
@@ -483,10 +483,10 @@ static QDF_STATUS dsc_thread_vdev_trans(void *context)
 
 	dsc_exit();
 
-	return QDF_STATUS_SUCCESS;
+	return 0;
 }
 
-static QDF_STATUS dsc_thread_vdev_wait(void *context)
+static int dsc_thread_vdev_wait(void *context)
 {
 	struct thread_ctx *ctx = context;
 	struct dsc_vdev *vdev = nth_vdev(nth_psoc(ctx->driver, 1), 1);
@@ -508,10 +508,10 @@ static QDF_STATUS dsc_thread_vdev_wait(void *context)
 
 	dsc_exit();
 
-	return QDF_STATUS_SUCCESS;
+	return 0;
 }
 
-static QDF_STATUS dsc_thread_psoc_wait(void *context)
+static int dsc_thread_psoc_wait(void *context)
 {
 	struct thread_ctx *ctx = context;
 	struct dsc_psoc *psoc = nth_psoc(ctx->driver, 1);
@@ -535,10 +535,10 @@ static QDF_STATUS dsc_thread_psoc_wait(void *context)
 
 	dsc_exit();
 
-	return QDF_STATUS_SUCCESS;
+	return 0;
 }
 
-static QDF_STATUS dsc_thread_driver_wait(void *context)
+static int dsc_thread_driver_wait(void *context)
 {
 	struct thread_ctx *ctx = context;
 	struct dsc_driver *driver = ctx->driver;
@@ -562,7 +562,7 @@ static QDF_STATUS dsc_thread_driver_wait(void *context)
 
 	dsc_exit();
 
-	return QDF_STATUS_SUCCESS;
+	return 0;
 }
 
 static uint32_t dsc_test_trans_wait(void)

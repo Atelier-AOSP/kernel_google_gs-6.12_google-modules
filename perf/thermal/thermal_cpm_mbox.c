@@ -41,17 +41,23 @@ void thermal_cpm_mbox_unregister_notification(enum hw_dev_type type,
 }
 EXPORT_SYMBOL_GPL(thermal_cpm_mbox_unregister_notification);
 
-int thermal_cpm_mbox_cdev_to_tz_id(enum hw_dev_type cdev_id, enum hw_thermal_zone_id *tz_id)
+int thermal_cpm_mbox_cdev_to_hw_tzid(enum hw_dev_type cdev_id, enum hw_thermal_zone_id *hw_tzid)
 {
-	return hw_cdev_id_to_tzid(thermal_cpm_data, cdev_id, tz_id);
+	return hw_cdev_id_to_hw_tzid(thermal_cpm_data, cdev_id, hw_tzid);
 }
-EXPORT_SYMBOL_GPL(thermal_cpm_mbox_cdev_to_tz_id);
+EXPORT_SYMBOL_GPL(thermal_cpm_mbox_cdev_to_hw_tzid);
 
-const char *thermal_cpm_mbox_get_tz_name(enum hw_thermal_zone_id tz_id)
+const char *thermal_cpm_mbox_get_tz_name(enum hw_thermal_zone_id hw_tzid)
 {
-	return get_tz_name(thermal_cpm_data, tz_id);
+	return get_tz_name(thermal_cpm_data, hw_tzid);
 }
 EXPORT_SYMBOL_GPL(thermal_cpm_mbox_get_tz_name);
+
+int thermal_cpm_mbox_sensor_id_to_hw_tzid(int sensor_tzid, enum hw_thermal_zone_id *hw_tzid)
+{
+	return sensor_id_to_hw_tzid(thermal_cpm_data, sensor_tzid, hw_tzid);
+}
+EXPORT_SYMBOL_GPL(thermal_cpm_mbox_sensor_id_to_hw_tzid);
 
 static int thermal_cpm_mbox_platform_probe(struct platform_device *pdev)
 {

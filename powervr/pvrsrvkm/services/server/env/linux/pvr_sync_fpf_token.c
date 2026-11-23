@@ -1,7 +1,6 @@
 /*************************************************************************/ /*!
 @File           pvr_sync_fpf_token.c
 @Title          Common functions for fast path fence sync token handling.
-@Codingstyle    LinuxKernel
 @Copyright      Copyright (c) Imagination Technologies Ltd. All Rights Reserved
 @Description    Common functions for fast path fence sync token operations..
 @License        Dual MIT/GPLv2
@@ -69,7 +68,7 @@ struct fpf_token_generator_context
 	spinlock_t context_lock;
 	/* Skip list of uint64 representing 64 bitmap entries in the below list */
 	uint64_t skiplist[TOKEN_CONTEXT_SKIPLIST_MAX];
-	/*Bit map of tokens in the unsigned uint16 range */
+	/* Bit map of tokens in the unsigned uint16 range */
 	uint64_t bitmap[TOKEN_CONTEXT_BITMAP_MAX];
 };
 

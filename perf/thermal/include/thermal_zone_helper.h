@@ -52,9 +52,13 @@ struct google_sensor_data {
 
 typedef int (set_fault_trip_handler)(struct thermal_zone_device *, int);
 
+#if IS_ENABLED(CONFIG_KUNIT)
+void tzh_register_tz_id_irq_wakeable(int tz_id);
+#endif // CONFIG_KUNIT
+
 int thermal_register_sensors(struct device *dev, int sensor_ct,
-			    const struct thermal_zone_device_ops *ops,
-			    struct list_head *head);
+			     const struct thermal_zone_device_ops *ops, struct list_head *head,
+			     bool ignore_genl, bool irq_wakeable);
 int thermal_unregister_sensors(struct device *dev, struct list_head *head);
 
 int thermal_fetch_and_register_irq(struct platform_device *pdev,

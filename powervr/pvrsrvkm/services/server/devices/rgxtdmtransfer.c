@@ -61,8 +61,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "ospvr_gputrace.h"
 #include "rgxshader.h"
 
-#include "pdump_km.h"
-
 #include "sync_server.h"
 #include "sync_internal.h"
 #include "sync.h"
@@ -248,6 +246,7 @@ PVRSRV_ERROR PVRSRVRGXTDMCreateTransferContextKM(
 		Create the FW transfer context, this has the TDM common
 		context embedded within it
 	 */
+	PDUMPCOMMENT(psDeviceNode, "Allocate FwTransferContext");
 	eError = DevmemFwAllocate(psDevInfo,
 			sizeof(RGXFWIF_FWTDMCONTEXT),
 			RGX_FWCOMCTX_ALLOCFLAGS,
@@ -762,38 +761,6 @@ PVRSRV_ERROR PVRSRVRGXTDMSubmitTransferKM(
 				goto fail_create_output_fence;
 			}
 
-			/* Resolve the iExportFenceToSignal (if required) */
-			if (iExportFenceToSignal != PVRSRV_NO_FENCE)
-			{
-				IMG_UINT32 iii;
-
-				CHKPT_DBG((PVR_DBG_ERROR, "%s: SyncCheckpointResolveExportFence(iExportFenceToSignal=%d), ui32FenceSyncCheckpointCount=%d", __func__, iExportFenceToSignal, ui32FenceSyncCheckpointCount));
-				eError = SyncCheckpointResolveExportFence(iExportFenceToSignal,
-														  psTransferContext->psDeviceNode->hSyncCheckpointContext,
-														  &psExportFenceSyncCheckpoint,
-														  ui32PDumpFlags);
-				if (eError != PVRSRV_OK)
-				{
-					CHKPT_DBG((PVR_DBG_ERROR, "%s: ...returned error (%s) psExportFenceSyncCheckpoint=<%p>", __func__, PVRSRVGetErrorString(eError), psExportFenceSyncCheckpoint));
-					goto fail_resolve_export_fence;
-				}
-
-				/* Check that the export fence was not also included as part of the
-				 * check fence (which is an error and would lead to a stalled kick).
-				 */
-				for (iii=0; iii<ui32FenceSyncCheckpointCount; iii++)
-				{
-					if (apsFenceSyncCheckpoints[iii] == psExportFenceSyncCheckpoint)
-					{
-						CHKPT_DBG((PVR_DBG_ERROR, "%s: apsFenceSyncCheckpoints[%d]=<%p>, FWAddr=0x%x", __func__, iii, apsFenceSyncCheckpoints[iii], SyncCheckpointGetFirmwareAddr(apsFenceSyncCheckpoints[iii])));
-						CHKPT_DBG((PVR_DBG_ERROR, "%s: ERROR psExportFenceSyncCheckpoint=<%p>", __func__, psExportFenceSyncCheckpoint));
-						eError = PVRSRV_ERROR_INVALID_PARAMS;
-						PVR_DPF((PVR_DBG_ERROR, " %s - iCheckFence includes iExportFenceToSignal", PVRSRVGetErrorString(eError)));
-						goto fail_check_fence_includes_export_fence;
-					}
-				}
-			}
-
 			/* Append the sync prim update for the timeline (if required) */
 			if (psFenceTimelineUpdateSync)
 			{
@@ -846,6 +813,21 @@ PVRSRV_ERROR PVRSRVRGXTDMSubmitTransferKM(
 #endif
 				/* Ensure paui32IntUpdateValue is now pointing to our new array of update values */
 				paui32IntUpdateValue = pui32IntAllocatedUpdateValues;
+			}
+		}
+
+		/* Resolve the iExportFenceToSignal (if required) */
+		if (iExportFenceToSignal != PVRSRV_NO_FENCE)
+		{
+			CHKPT_DBG((PVR_DBG_ERROR, "%s: SyncCheckpointResolveExportFence(iExportFenceToSignal=%d), ui32FenceSyncCheckpointCount=%d", __func__, iExportFenceToSignal, ui32FenceSyncCheckpointCount));
+			eError = SyncCheckpointResolveExportFence(iExportFenceToSignal,
+			                                          psTransferContext->psDeviceNode->hSyncCheckpointContext,
+			                                          &psExportFenceSyncCheckpoint,
+			                                          ui32PDumpFlags);
+			if (eError != PVRSRV_OK)
+			{
+				CHKPT_DBG((PVR_DBG_ERROR, "%s: ...returned error (%s) psExportFenceSyncCheckpoint=<%p>", __func__, PVRSRVGetErrorString(eError), psExportFenceSyncCheckpoint));
+				goto fail_resolve_export_fence;
 			}
 		}
 
@@ -1242,14 +1224,6 @@ fail_invalfbsc:
 	SyncAddrListRollbackCheckpoints(psTransferContext->psDeviceNode, &psTransferContext->sSyncAddrListFence);
 	SyncAddrListRollbackCheckpoints(psTransferContext->psDeviceNode, &psTransferContext->sSyncAddrListUpdate);
 
-	/* Free memory allocated to hold the internal list of update values */
-	if (pui32IntAllocatedUpdateValues)
-	{
-		OSFreeMem(pui32IntAllocatedUpdateValues);
-		pui32IntAllocatedUpdateValues = NULL;
-	}
-fail_alloc_update_values_mem:
-fail_check_fence_includes_export_fence:
 	if (psExportFenceSyncCheckpoint)
 	{
 		/* Drop the extra reference taken by SyncCheckpointResolveExportFence */
@@ -1257,6 +1231,13 @@ fail_check_fence_includes_export_fence:
 		SyncCheckpointRollbackExportFence(iExportFenceToSignal);
 	}
 fail_resolve_export_fence:
+	/* Free memory allocated to hold the internal list of update values */
+	if (pui32IntAllocatedUpdateValues)
+	{
+		OSFreeMem(pui32IntAllocatedUpdateValues);
+		pui32IntAllocatedUpdateValues = NULL;
+	}
+fail_alloc_update_values_mem:
 	if (iUpdateFence != PVRSRV_NO_FENCE)
 	{
 		SyncCheckpointRollbackFenceData(iUpdateFence, pvUpdateFenceFinaliseData);

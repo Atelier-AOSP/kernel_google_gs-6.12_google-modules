@@ -546,17 +546,18 @@ static int google_icc_helper_mock_client_platform_probe(struct platform_device *
 	if (ret < 0)
 		goto out_free;
 
+	dev_info(dev, "device probed successfully\n");
+
 out_free:
 	devm_kfree(dev, path_name);
 out:
 	return ret;
 }
 
-static int
+static void
 google_icc_helper_mock_client_platform_remove(struct platform_device *pdev)
 {
 	debugfs_remove(base_dir);
-	return 0;
 }
 
 static const struct of_device_id google_icc_helper_mock_client_of_match_table[] = {

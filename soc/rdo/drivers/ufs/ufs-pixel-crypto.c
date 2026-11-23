@@ -6,19 +6,19 @@
  * Copyright 2020 Google LLC
  */
 
-#include <linux/gsa/gsa_kdn.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
-#include <ufs/ufshcd.h>
-#include <core/ufshcd-crypto.h>
-
-#include "ufs-pixel.h"
-#include "ufs-pixel-crypto.h"
-
-#undef CREATE_TRACE_POINTS
 #include <trace/hooks/ufshcd.h>
+#include <ufs/ufshcd.h>
+
+#include <linux/gsa/gsa_kdn.h>
+
+#include <drivers/ufs/core/ufshcd-crypto.h>
+
+#include "ufs-pixel-crypto.h"
+#include "ufs-pixel.h"
 
 /*
  * Determine the number of pending commands by counting the bits in the SCSI
@@ -95,6 +95,12 @@ static int pixel_ufs_keyslot_program(struct blk_crypto_profile *profile,
 		 slot, key->size);
 
 	/*
+	 * Keyslot operations require the HSIO_S to be out of deep hibernate.
+	 * We use pm_runtime_get_sync() to wake the HSIO_S from Deep H8.
+	 */
+	pm_runtime_get_sync(hba->dev);
+
+	/*
 	 * This hardware doesn't allow any encrypted I/O at all while a keyslot
 	 * is being modified.
 	 */
@@ -110,6 +116,8 @@ static int pixel_ufs_keyslot_program(struct blk_crypto_profile *profile,
 
 	ufshcd_resume_io(hba);
 
+	pm_runtime_put_sync(hba->dev);
+
 	return err;
 }
 
@@ -123,6 +131,13 @@ static int pixel_ufs_keyslot_evict(struct blk_crypto_profile *profile,
 	int err;
 
 	dev_info(ufs->dev, "kdn: evicting keyslot %u\n", slot);
+
+	/*
+	 * TODO: Initialize PM framework prior to KDN ops (b/461905110)
+	 * We don't call pm_runtime_get_sync() here to prevent a system crash
+	 * during the driver's probe sequence, as the device is already active
+	 * but the PM framework is not yet fully initialized.
+	 */
 
 	/*
 	 * This hardware doesn't allow any encrypted I/O at all while a keyslot
@@ -154,9 +169,16 @@ static int pixel_ufs_derive_sw_secret(struct blk_crypto_profile *profile,
 		 "kdn: deriving %u-byte raw secret from %zu-byte wrapped key\n",
 		 BLK_CRYPTO_SW_SECRET_SIZE, eph_key_size);
 
+	/*
+	 * Keyslot operations require the HSIO_S to be out of deep hibernate.
+	 * We use pm_runtime_get_sync() to wake the HSIO_S from Deep H8.
+	 */
+	pm_runtime_get_sync(hba->dev);
 	ret = gsa_kdn_derive_raw_secret(ufs->gsa_dev, sw_secret,
 					BLK_CRYPTO_SW_SECRET_SIZE,
 					eph_key, eph_key_size);
+	pm_runtime_put_sync(hba->dev);
+
 	if (ret != BLK_CRYPTO_SW_SECRET_SIZE) {
 		dev_err(ufs->dev, "kdn: failed to derive raw secret; ret=%d\n",
 			ret);
@@ -251,14 +273,14 @@ int pixel_ufs_crypto_init(struct ufs_hba *hba)
 	 * program/evict wrapped keys via the KDN, and secondly in order to
 	 * declare wrapped key support rather than standard key support.
 	 */
-	hba->android_quirks |= UFSHCD_ANDROID_QUIRK_CUSTOM_CRYPTO_PROFILE;
+	hba->quirks |= UFSHCD_QUIRK_CUSTOM_CRYPTO_PROFILE;
 
 	/*
 	 * This host controller doesn't support the standard
 	 * CRYPTO_GENERAL_ENABLE bit in REG_CONTROLLER_ENABLE.  Instead it just
 	 * always has crypto support enabled.
 	 */
-	hba->android_quirks |= UFSHCD_ANDROID_QUIRK_BROKEN_CRYPTO_ENABLE;
+	hba->quirks |= UFSHCD_QUIRK_BROKEN_CRYPTO_ENABLE;
 
 	/* Advertise crypto capabilities to the block layer. */
 	err = devm_blk_crypto_profile_init(hba->dev, &hba->crypto_profile,
@@ -299,16 +321,26 @@ int pixel_ufs_crypto_resume(struct ufs_hba *hba)
 	int ret;
 	unsigned int i;
 
+	/*
+	 * Keyslot operations require the HSIO_S to be out of deep hibernate.
+	 * We use pm_runtime_get_sync() to wake the HSIO_S from Deep H8.
+	 */
+	pm_runtime_get_sync(hba->dev);
+
 	ret = gsa_kdn_restore_keys(ufs->gsa_dev);
+
 	if (ret) {
 		dev_err(hba->dev, "gsa_kdn_restore_keys failed, ret=%d\n", ret);
-		return ret;
+		goto release_resources;
 	}
 
 	for (i = 0; i < KDN_SLOT_NUM; i++) {
 		if (ufs->crypto_slot_in_use[i])
 			pixel_ufs_set_crypto_csr(hba, i);
 	}
+
+release_resources:
+	pm_runtime_put_sync(hba->dev);
 
 	return ret;
 }

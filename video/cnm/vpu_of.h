@@ -11,6 +11,7 @@
 #include "vpu_priv.h"
 
 int vpu_of_dt_parse(struct vpu_core *core);
-void vpu_of_dt_release(struct vpu_core *core);
+int vpu_of_devfreq_init(struct vpu_core *core);
+void vpu_of_devfreq_deinit(struct vpu_core *core);
 
 #endif // _VPU_OF_H_

@@ -47,14 +47,20 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "handle.h"
 #include "osfunc.h"
 
+/*! Allocate private data for the given connection */
 PVRSRV_ERROR OSConnectionPrivateDataInit(IMG_HANDLE *phOsPrivateData, void *pvOSData);
+
+/*! Release private data for the given connection */
 void OSConnectionPrivateDataDeInit(IMG_HANDLE hOsPrivateData);
 
+/*! Allow an OS layer to provide a handle-specific set of handle options for a given connection */
 PVRSRV_ERROR OSConnectionSetHandleOptions(PVRSRV_HANDLE_BASE *psHandleBase);
 
+/*! Return the device node associated with the connection */
 PVRSRV_DEVICE_NODE* OSGetDevNode(CONNECTION_DATA *psConnection);
 
 struct drm_file;
+/*! Return a pointer to the DRM file associated with the connection */
 struct drm_file* OSGetDRMFile(CONNECTION_DATA *psConnection);
 
 #endif /* OSCONNECTION_SERVER_H */

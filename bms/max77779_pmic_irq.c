@@ -237,8 +237,8 @@ static int max77779_pmic_irq_probe(struct platform_device *pdev)
 	}
 
 	info->trig_type = 0x00000000;
-	info->domain = irq_domain_add_linear(dev->of_node, MAX77779_NUM_IRQS,
-			&irq_domain_simple_ops, info);
+	info->domain = irq_domain_create_linear(dev_fwnode(dev), MAX77779_NUM_IRQS,
+						&irq_domain_simple_ops, info);
 	if (!info->domain) {
 		dev_err(info->dev, "Unable to get irq domain\n");
 		return -ENODEV;
@@ -292,10 +292,9 @@ static int max77779_pmic_irq_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int max77779_pmic_irq_remove(struct platform_device *pdev)
+static void max77779_pmic_irq_remove(struct platform_device *pdev)
 {
 	device_init_wakeup(&pdev->dev, false);
-	return 0;
 }
 
 static const struct platform_device_id max77779_pmic_irq_id[] = {

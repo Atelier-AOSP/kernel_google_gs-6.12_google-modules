@@ -111,6 +111,13 @@ properties:
       value is used, unless one is sure of their choice and wants to customise
       the functionality.
 
+  io-vreg-supply:
+    $ref: /schemas/regulator/regulator.yaml#
+    description: |
+      Phandle to an optional regulator that supplies power for the I2C bus's
+      external high keeper or pull-ups. This regulator is typically used to
+      ensure proper voltage levels on the I2C bus lines.
+
 unevaluatedProperties: false
 
 required:

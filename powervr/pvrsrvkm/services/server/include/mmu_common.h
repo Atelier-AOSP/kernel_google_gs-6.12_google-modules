@@ -111,6 +111,12 @@ typedef enum
 
 typedef struct _MMU_CONTEXT_ MMU_CONTEXT;
 
+/* If a device supports the `RESIDENT` bit for the MMU mappings it should set
+ * this feature in MMU_DEVICEATTRIBS::eFeatures field. This should be done
+ * when the MMU attributes are initialised (e.g. in RGXMMUInit_Register()). */
+#define MMU_FEATURE_NON_RESIDENT_SUPPORT (1<<0)
+
+typedef IMG_UINT32 MMU_FEATURES;
 
 /*
 	P(C/D/T) Entry Config:
@@ -194,6 +200,9 @@ typedef struct _MMU_DEVICEATTRIBS_
 	/*! Name string of the PDUMP memory space to use */
 	IMG_CHAR *pszMMUPxPDumpMemSpaceName;
 
+	/*! Features supported by the MMU */
+	MMU_FEATURES eFeatures;
+
 	/*! Alignment requirement of the top/base object */
 	IMG_UINT32 ui32BaseAlign;
 
@@ -260,6 +269,7 @@ typedef IMG_UINT32 MMU_PROTFLAGS_T;
 #define MMU_PROTFLAGS_WRITEABLE					(1U<<1)
 #define MMU_PROTFLAGS_CACHE_COHERENT			(1U<<2)
 #define MMU_PROTFLAGS_CACHED					(1U<<3)
+#define MMU_PROTFLAGS_NON_RESIDENT				(1U<<4)
 
 /* Device specific flags */
 #define MMU_PROTFLAGS_DEVICE_OFFSET		16

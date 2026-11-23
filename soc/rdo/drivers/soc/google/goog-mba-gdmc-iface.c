@@ -83,9 +83,9 @@ void gdmc_unregister_host_cb(struct gdmc_iface *gdmc_iface, int service_id)
 }
 EXPORT_SYMBOL_GPL(gdmc_unregister_host_cb);
 
-int goog_mba_gdmc_iface_send_message(struct gdmc_iface *gdmc_iface, bool crit, u32 *req_buf,
-				     u32 *resp_buf, gdmc_async_resp_cb_t async_resp_cb,
-				     unsigned long tout_ms, void *prv_data)
+static int goog_mba_gdmc_iface_send_message(struct gdmc_iface *gdmc_iface, bool crit, u32 *req_buf,
+					    u32 *resp_buf, gdmc_async_resp_cb_t async_resp_cb,
+					    unsigned long tout_ms, void *prv_data)
 {
 	struct device *dev = gdmc_iface->dev;
 	struct goog_mba_aggr_service *gservice;
@@ -162,8 +162,9 @@ int gdmc_send_message_critical_async(struct gdmc_iface *gdmc_iface,
 }
 EXPORT_SYMBOL_GPL(gdmc_send_message_critical_async);
 
-int gdmc_dhub_uart_mux_get(struct gdmc_iface *gdmc_iface, u32 *uart_num)
+static int gdmc_dhub_uart_mux_get(struct gdmc_dhub_iface *dhub_iface, u32 *uart_num)
 {
+	struct gdmc_iface *gdmc_iface = container_of(dhub_iface, struct gdmc_iface, dhub_iface);
 	struct device *dev = gdmc_iface->dev;
 	u32 payload[GDMC_MBA_DHUB_PAYLOAD_SIZE] = { 0 };
 	int ret;
@@ -188,10 +189,10 @@ int gdmc_dhub_uart_mux_get(struct gdmc_iface *gdmc_iface, u32 *uart_num)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(gdmc_dhub_uart_mux_get);
 
-int gdmc_dhub_uart_mux_set(struct gdmc_iface *gdmc_iface, u32 uart_num)
+static int gdmc_dhub_uart_mux_set(struct gdmc_dhub_iface *dhub_iface, u32 uart_num)
 {
+	struct gdmc_iface *gdmc_iface = container_of(dhub_iface, struct gdmc_iface, dhub_iface);
 	struct device *dev = gdmc_iface->dev;
 	u32 payload[GDMC_MBA_DHUB_PAYLOAD_SIZE] = { 0 };
 	int ret;
@@ -216,10 +217,11 @@ int gdmc_dhub_uart_mux_set(struct gdmc_iface *gdmc_iface, u32 uart_num)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(gdmc_dhub_uart_mux_set);
 
-int gdmc_dhub_uart_baudrate_get(struct gdmc_iface *gdmc_iface, u32 uart_num, u32 *baudrate)
+static int gdmc_dhub_uart_baudrate_get(struct gdmc_dhub_iface *dhub_iface,
+				 u32 uart_num, u32 *baudrate)
 {
+	struct gdmc_iface *gdmc_iface = container_of(dhub_iface, struct gdmc_iface, dhub_iface);
 	struct device *dev = gdmc_iface->dev;
 	u32 payload[GDMC_MBA_DHUB_PAYLOAD_SIZE] = { 0 };
 	int ret;
@@ -246,10 +248,11 @@ int gdmc_dhub_uart_baudrate_get(struct gdmc_iface *gdmc_iface, u32 uart_num, u32
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(gdmc_dhub_uart_baudrate_get);
 
-int gdmc_dhub_uart_baudrate_set(struct gdmc_iface *gdmc_iface, u32 uart_num, u32 baudrate)
+static int gdmc_dhub_uart_baudrate_set(struct gdmc_dhub_iface *dhub_iface,
+				 u32 uart_num, u32 baudrate)
 {
+	struct gdmc_iface *gdmc_iface = container_of(dhub_iface, struct gdmc_iface, dhub_iface);
 	struct device *dev = gdmc_iface->dev;
 	u32 payload[GDMC_MBA_DHUB_PAYLOAD_SIZE] = { 0 };
 	int ret;
@@ -275,10 +278,10 @@ int gdmc_dhub_uart_baudrate_set(struct gdmc_iface *gdmc_iface, u32 uart_num, u32
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(gdmc_dhub_uart_baudrate_set);
 
-int gdmc_dhub_virt_en_get(struct gdmc_iface *gdmc_iface, u32 *mask)
+static int gdmc_dhub_virt_en_get(struct gdmc_dhub_iface *dhub_iface, u32 *mask)
 {
+	struct gdmc_iface *gdmc_iface = container_of(dhub_iface, struct gdmc_iface, dhub_iface);
 	struct device *dev = gdmc_iface->dev;
 	u32 payload[GDMC_MBA_DHUB_PAYLOAD_SIZE] = { 0 };
 	int ret;
@@ -303,10 +306,10 @@ int gdmc_dhub_virt_en_get(struct gdmc_iface *gdmc_iface, u32 *mask)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(gdmc_dhub_virt_en_get);
 
-int gdmc_dhub_virt_en_set(struct gdmc_iface *gdmc_iface, u32 mask)
+static int gdmc_dhub_virt_en_set(struct gdmc_dhub_iface *dhub_iface, u32 mask)
 {
+	struct gdmc_iface *gdmc_iface = container_of(dhub_iface, struct gdmc_iface, dhub_iface);
 	struct device *dev = gdmc_iface->dev;
 	u32 payload[GDMC_MBA_DHUB_PAYLOAD_SIZE] = { 0 };
 	int ret;
@@ -331,7 +334,6 @@ int gdmc_dhub_virt_en_set(struct gdmc_iface *gdmc_iface, u32 mask)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(gdmc_dhub_virt_en_set);
 
 int gdmc_ping(struct gdmc_iface *gdmc_iface)
 {
@@ -544,6 +546,100 @@ exit:
 }
 EXPORT_SYMBOL_GPL(gdmc_register_aoc_reset_notifier);
 
+static void goog_mba_gdmc_dpa_reset_handler(struct work_struct *work)
+{
+	struct gdmc_dpa_notify *gdmc_notify =
+			container_of(work, struct gdmc_dpa_notify, work);
+	struct gdmc_iface *gdmc_iface = gdmc_notify->gdmc_iface;
+	struct gdmc_mba_cmd_get_regdump_msg *gdmc_regdump_msg;
+	void *shared_buf = NULL;
+	unsigned int shared_buf_size = 0;
+	u32 payload[4];
+
+	gdmc_regdump_msg = (struct gdmc_mba_cmd_get_regdump_msg *)payload;
+	gdmc_regdump_msg->header = goog_mba_nq_xport_create_hdr(GDMC_MBA_SERVICE_ID_GET_REGDUMP,
+								GDMC_MBA_REGDUMP_ID_DPA);
+	gdmc_regdump_msg->pa_low = (u32)gdmc_notify->shared_buf_phys_addr;
+	gdmc_regdump_msg->pa_high = (u32)(gdmc_notify->shared_buf_phys_addr >> 32);
+	gdmc_regdump_msg->size = gdmc_notify->shared_buf_size;
+
+	if (gdmc_send_message(gdmc_iface, payload) == 0) {
+		shared_buf = gdmc_notify->shared_buf;
+		shared_buf_size = gdmc_notify->shared_buf_size;
+	}
+	gdmc_notify->dpa_reset_fn(shared_buf, shared_buf_size, gdmc_notify->client_prv_data);
+}
+
+static void goog_mba_gdmc_dpa_reset_cb(void *msg, void *priv_data)
+{
+	struct gdmc_dpa_notify *gdmc_notify = priv_data;
+
+	schedule_work(&gdmc_notify->work);
+}
+
+void gdmc_unregister_dpa_reset_notifier(struct gdmc_iface *gdmc_iface)
+{
+	struct device *dev = gdmc_iface->dev;
+	struct goog_mba_gdmc_service_handler *service_handler;
+	struct gdmc_dpa_notify *gdmc_notify;
+	const int service_id = APC_CRITICAL_GDMC_DPA_WATCHDOG_SERVICE;
+
+	service_handler = gdmc_get_service_handler(gdmc_iface, service_id);
+	if (!service_handler || !service_handler->host_cb)
+		return;
+
+	gdmc_notify = service_handler->priv_data;
+	gdmc_unregister_host_cb(gdmc_iface, service_id);
+	dmam_free_coherent(dev, sizeof(*gdmc_notify->shared_buf), gdmc_notify->shared_buf,
+			   gdmc_notify->shared_buf_phys_addr);
+	devm_kfree(dev, gdmc_notify);
+}
+EXPORT_SYMBOL_GPL(gdmc_unregister_dpa_reset_notifier);
+
+int gdmc_register_dpa_reset_notifier(struct gdmc_iface *gdmc_iface,
+				     gdmc_dpa_reset_cb_t dpa_reset_cb,
+				     void *prv_data)
+{
+	struct device *dev = gdmc_iface->dev;
+	struct gdmc_dpa_notify *gdmc_notify;
+	struct gdmc_mba_dpa_register_dump *regdump_data;
+	dma_addr_t dma_phys_addr;
+	int ret;
+
+	gdmc_notify = devm_kzalloc(dev, sizeof(*gdmc_notify), GFP_KERNEL);
+	if (!gdmc_notify)
+		return -ENOMEM;
+
+	regdump_data = dmam_alloc_coherent(dev, sizeof(*regdump_data), &dma_phys_addr, GFP_KERNEL);
+	if (!regdump_data || !dma_phys_addr) {
+		ret = -ENOMEM;
+		goto exit;
+	}
+
+	gdmc_notify->gdmc_iface = gdmc_iface;
+	gdmc_notify->dpa_reset_fn = dpa_reset_cb;
+	gdmc_notify->client_prv_data = prv_data;
+	INIT_WORK(&gdmc_notify->work, goog_mba_gdmc_dpa_reset_handler);
+	gdmc_notify->shared_buf_phys_addr = dma_phys_addr;
+	gdmc_notify->shared_buf = regdump_data;
+	gdmc_notify->shared_buf_size = sizeof(*regdump_data);
+
+	ret = gdmc_register_host_cb(gdmc_iface, APC_CRITICAL_GDMC_DPA_WATCHDOG_SERVICE,
+				    goog_mba_gdmc_dpa_reset_cb, gdmc_notify);
+	if (ret < 0)
+		goto fail_registration;
+
+	return 0;
+
+fail_registration:
+	dmam_free_coherent(dev, sizeof(*regdump_data), regdump_data, dma_phys_addr);
+exit:
+	devm_kfree(dev, gdmc_notify);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(gdmc_register_dpa_reset_notifier);
+
 struct gdmc_iface *gdmc_iface_get(struct device *dev)
 {
 	struct device_node *np;
@@ -582,6 +678,25 @@ void gdmc_iface_put(struct gdmc_iface *gdmc_iface)
 }
 EXPORT_SYMBOL_GPL(gdmc_iface_put);
 
+struct gdmc_dhub_iface *dhub_iface_get(struct device *dev)
+{
+	struct gdmc_iface *gdmc_iface = gdmc_iface_get(dev);
+
+	if (IS_ERR(gdmc_iface))
+		return ERR_CAST(gdmc_iface);
+
+	return &gdmc_iface->dhub_iface;
+}
+EXPORT_SYMBOL_GPL(dhub_iface_get);
+
+void dhub_iface_put(struct gdmc_dhub_iface *dhub_iface)
+{
+	struct gdmc_iface *gdmc_iface = container_of(dhub_iface, struct gdmc_iface, dhub_iface);
+
+	gdmc_iface_put(gdmc_iface);
+}
+EXPORT_SYMBOL_GPL(dhub_iface_put);
+
 const char *gdmc_iface_default_events[] = {
 	"gdmc_register_host_cb",
 	"gdmc_unregister_host_cb",
@@ -606,8 +721,8 @@ static void goog_mba_gdmc_create_ftrace_instance(struct gdmc_iface *gdmc_iface)
 	int i;
 	int ret;
 
-	tr = trace_array_get_by_name_ext("goog_nq_mailbox",
-					 "goog_mba_ctrl,goog_mba_aggr,goog_mba_gdmc_iface");
+	tr = trace_array_get_by_name("goog_nq_mailbox",
+				     "goog_mba_ctrl,goog_mba_aggr,goog_mba_gdmc_iface");
 	if (!tr) {
 		dev_err(dev, "Failed to create trace array\n");
 		return;
@@ -663,6 +778,13 @@ static int goog_mba_gdmc_iface_probe(struct platform_device *pdev)
 	}
 
 	goog_mba_gdmc_create_ftrace_instance(gdmc_iface);
+
+	gdmc_iface->dhub_iface.dhub_mux_get = gdmc_dhub_uart_mux_get;
+	gdmc_iface->dhub_iface.dhub_mux_set = gdmc_dhub_uart_mux_set;
+	gdmc_iface->dhub_iface.dhub_baudrate_get = gdmc_dhub_uart_baudrate_get;
+	gdmc_iface->dhub_iface.dhub_baudrate_set = gdmc_dhub_uart_baudrate_set;
+	gdmc_iface->dhub_iface.dhub_virt_en_get = gdmc_dhub_virt_en_get;
+	gdmc_iface->dhub_iface.dhub_virt_en_set = gdmc_dhub_virt_en_set;
 
 	platform_set_drvdata(pdev, gdmc_iface);
 

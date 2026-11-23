@@ -1,7 +1,7 @@
 /*
  * DHD WiFi BT RegON Coordinator - WBRC
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -199,9 +199,6 @@ wbrc_bt_dev_write(struct file *filep, const char *buffer,
 	int err = 0;
 	wbrc_ext_msg_t *extmsg = NULL;
 #endif /* BT_FW_DWNLD */
-#ifdef WBRC_TEST
-	unsigned char stub_msg = FALSE;
-#endif
 
 	WBRC_LOCK(wbrc_mutex);
 	wbrc_data = g_wbrc_data;
@@ -218,19 +215,7 @@ wbrc_bt_dev_write(struct file *filep, const char *buffer,
 		goto exit;
 	}
 
-#ifdef WBRC_TEST
-	BCM_REFERENCE(stub_msg);
-	if (offset && *offset == 0xDEADFACE) {
-		memcpy(&msg, buffer, WBRC_MSG_LEN);
-		pr_err("%s: msg from wbrc stub: %x %x %x %x \n", __func__,
-			msg.hdr, msg.len, msg.type, msg.val);
-		stub_msg = TRUE;
-	} else {
-		err_count = copy_from_user(&msg, buffer, WBRC_MSG_LEN);
-	}
-#else
 	err_count = copy_from_user(&msg, buffer, WBRC_MSG_LEN);
-#endif /* WBRC_TEST */
 	if (err_count) {
 		pr_err("%s: copy_from_user failed:%d\n", __func__, err_count);
 		ret = -EFAULT;
@@ -247,17 +232,7 @@ wbrc_bt_dev_write(struct file *filep, const char *buffer,
 	if (msg.len & WBRC_EXT_MSG_LEN) {
 #ifdef BT_FW_DWNLD
 		/* copy the full ext msg including BT FW blob */
-#ifdef WBRC_TEST
-		if (stub_msg) {
-			memcpy_s(wbrc_data->bt2wbrc_ext_msgbuf, WBRC_MSG_BUF_MAXLEN,
-				buffer, len);
-		} else {
-			err_count = copy_from_user(wbrc_data->bt2wbrc_ext_msgbuf,
-				buffer, len);
-		}
-#else
 		err_count = copy_from_user(wbrc_data->bt2wbrc_ext_msgbuf, buffer, len);
-#endif /* WBRC_TEST */
 		extmsg = (wbrc_ext_msg_t *)wbrc_data->bt2wbrc_ext_msgbuf;
 		if (extmsg->type == WBRC_TYPE_BT2WBRC_CMD) {
 			if (err_count) {
@@ -372,6 +347,9 @@ wbrc_bt_dev_open(struct inode *inodep, struct file *filep)
 	struct wbrc_pvt_data *wbrc_data;
 	int ret = 0, tmo_ret = 0;
 	int state = 0;
+	int err = 0;
+
+	BCM_REFERENCE(err);
 
 	WBRC_LOCK(wbrc_mutex);
 	wbrc_data = g_wbrc_data;
@@ -415,7 +393,11 @@ wbrc_bt_dev_open(struct inode *inodep, struct file *filep)
 			WBRC_WAIT_TIMEOUT, &wbrc_data->state, IDLE);
 		if (tmo_ret <= 0) {
 			pr_err("%s: WLAN ON/OFF timed out !\n", __func__);
-			goto exit;
+			/* return error if WLAN ON times out, else there is a chance
+			 * that BTHal can proceed with BT FW dwnld without
+			 * WLAN FW running first
+			 */
+			return -EFAULT;
 		} else {
 			pr_err("%s: WLAN ON/OFF finished\n", __func__);
 		}
@@ -430,8 +412,9 @@ wbrc_bt_dev_open(struct inode *inodep, struct file *filep)
 #ifdef WBRC_WLAN_ON_FIRST_ALWAYS
 	/* turn on wlan - will return immediately if wlan is already on */
 	pr_err("%s: turn WLAN ON ... \n", __func__);
-	if (wbrc2wl_wlan_on_request(wbrc_data->wl_hdl)) {
-		pr_err("%s: WLAN failed to turn ON ! \n", __func__);
+	err = wbrc2wl_wlan_on_request(wbrc_data->wl_hdl);
+	if (err) {
+		pr_err("%s: WLAN failed to turn ON ! err=%d\n", __func__, err);
 	} else {
 		pr_err("%s: WLAN is ON \n", __func__);
 	}
@@ -442,6 +425,15 @@ wbrc_bt_dev_open(struct inode *inodep, struct file *filep)
 	wbrc_data->state = IDLE;
 	pr_err("%s: state -> IDLE \n", __func__);
 	WBRC_STATE_UNLOCK(wbrc_data);
+
+#ifdef WBRC_WLAN_ON_FIRST_ALWAYS
+	/* return error if wlan fails to turn on, else BTHal will
+	 * proceed with BT FW dwnld without WLAN FW running first
+	 */
+	if (err) {
+		return -EFAULT;
+	}
+#endif /* WBRC_WLAN_ON_FIRST_ALWAYS */
 
 	wake_up(&wbrc_data->state_change_waitq);
 
@@ -541,7 +533,11 @@ wbrc_init(void)
 		goto err_register;
 	}
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))
 	wbrc_data->wbrc_bt_dev_class = class_create(CLASS_NAME);
+#else
+	wbrc_data->wbrc_bt_dev_class = class_create(THIS_MODULE, CLASS_NAME);
+#endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0)) */
 	err = PTR_ERR(wbrc_data->wbrc_bt_dev_class);
 	if (IS_ERR(wbrc_data->wbrc_bt_dev_class)) {
 		pr_alert("Failed to register device class\n");
@@ -780,13 +776,6 @@ bt2wbrc_bt_fw_dwnld(struct wbrc_pvt_data *wbrc_data, void *fwblob, uint len)
 		ret = WBRC_ERR;
 	}
 
-#ifdef WBRC_TEST
-	if (wbrc_test_get_error() == WBRC_DELAY_BT_FW_DWNLD) {
-		pr_err("%s: induce_error DELAY_BT_FW_DWNLD, sleep 5s \n", __func__);
-		msleep(5000);
-	}
-#endif /* WBRC_TEST */
-
 	/* change state back to IDLE */
 	WBRC_STATE_LOCK(wbrc_data);
 	wbrc_data->state = IDLE;
@@ -838,13 +827,6 @@ wl2wbrc_wlan_off(void)
 	wbrc_data->state = WLAN_OFF_IN_PROGRESS;
 	pr_err("%s: state -> WLAN_OFF_IN_PROGRESS \n", __func__);
 	WBRC_STATE_UNLOCK(wbrc_data);
-
-#ifdef WBRC_TEST
-	if (wbrc_test_get_error() == WBRC_DELAY_WLAN_OFF) {
-		pr_err("%s: induce_error DELAY_WLAN_OFF, sleep 3s \n", __func__);
-		msleep(3000);
-	}
-#endif /* WBRC_TEST */
 
 	return ret;
 }
@@ -915,14 +897,6 @@ wl2wbrc_req_bt_reset(void)
 
 	return ret;
 }
-
-#ifdef WBRC_TEST
-void *
-wbrc_get_fops(void)
-{
-	return &wbrc_bt_dev_fops;
-}
-#endif /* WBRC_TEST */
 
 #ifdef WBRC_HW_QUIRKS
 void

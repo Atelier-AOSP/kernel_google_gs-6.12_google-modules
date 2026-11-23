@@ -18,7 +18,6 @@
 #include "heatmap.h"
 #include "touch_offload.h"
 #include "uapi/input/touch_offload.h"
-#include "sim.h"
 
 #define GTI_NAME "goog_touch_interface"
 #define GOOG_LOG_NAME(gti) ((gti && gti->dev) ? dev_name(gti->dev) : "gti")
@@ -111,7 +110,15 @@
  * enums.
  */
 
-enum gti_cmd_type : u32 {
+#ifndef __CODESONAR__
+#define ENUM_U32 : u32
+#define ENUM_U8 : u8
+#else
+#define ENUM_U32
+#define ENUM_U8
+#endif
+
+enum gti_cmd_type ENUM_U32 {
 	/* GTI_CMD operations. */
 	GTI_CMD_OPS_START = 0x100,
 	GTI_CMD_CALIBRATE,
@@ -129,6 +136,7 @@ enum gti_cmd_type : u32 {
 	GTI_CMD_GET_IRQ_MODE,
 	GTI_CMD_GET_PALM_MODE,
 	GTI_CMD_GET_PANEL_ID,
+	GTI_CMD_GET_REPORT_RATE,
 	GTI_CMD_GET_SCAN_MODE,
 	GTI_CMD_GET_SCREEN_PROTECTOR_MODE,
 	GTI_CMD_GET_SENSING_MODE,
@@ -156,43 +164,43 @@ enum gti_cmd_type : u32 {
 	GTI_CMD_SET_SENSING_MODE,
 };
 
-enum gti_calibrate_result : u32 {
+enum gti_calibrate_result ENUM_U32 {
 	GTI_CALIBRATE_RESULT_DONE = 0,
 	GTI_CALIBRATE_RESULT_SHELL_CMDS_REDIRECT,
 	GTI_CALIBRATE_RESULT_FAIL,
-	GTI_CALIBRATE_RESULT_NA = 0xFFFFFFFF,
+	GTI_CALIBRATE_RESULT_NA = 0xFFFFFFFFu,
 };
 
-enum gti_continuous_report_setting : u32 {
+enum gti_continuous_report_setting ENUM_U32 {
 	GTI_CONTINUOUS_REPORT_DISABLE = 0,
 	GTI_CONTINUOUS_REPORT_ENABLE,
 	GTI_CONTINUOUS_REPORT_DRIVER_DEFAULT,
 };
 
-enum gti_coord_filter_setting : u32 {
+enum gti_coord_filter_setting ENUM_U32 {
 	GTI_COORD_FILTER_DISABLE = 0,
 	GTI_COORD_FILTER_ENABLE,
 };
 
-enum gti_display_state_setting : u32 {
+enum gti_display_state_setting ENUM_U32 {
 	GTI_DISPLAY_STATE_OFF = 0,
 	GTI_DISPLAY_STATE_ON,
 };
 
-enum gti_grip_setting : u32 {
+enum gti_grip_setting ENUM_U32 {
 	GTI_GRIP_DISABLE = 0,
 	GTI_GRIP_ENABLE,
 };
 
-enum gti_heatmap_setting : u32 {
+enum gti_heatmap_setting ENUM_U32 {
 	GTI_HEATMAP_DISABLE = 0,
 	GTI_HEATMAP_ENABLE,
 };
 
-enum gti_irq_mode : u32 {
+enum gti_irq_mode ENUM_U32 {
 	GTI_IRQ_MODE_DISABLE = 0,
 	GTI_IRQ_MODE_ENABLE,
-	GTI_IRQ_MODE_NA = 0xFFFFFFFF,
+	GTI_IRQ_MODE_NA = 0xFFFFFFFFu,
 };
 
 /**
@@ -203,7 +211,7 @@ enum gti_irq_mode : u32 {
  *   GTI_MF_MODE_AUTO: for development case.
  *   GTI_MF_MODE_FW_CONTROL: touch firmware handles the motion filter.
  */
-enum gti_mf_mode : u32 {
+enum gti_mf_mode ENUM_U32 {
 	GTI_MF_MODE_UNFILTER = 0,
 	GTI_MF_MODE_DEFAULT = 1,
 	GTI_MF_MODE_DYNAMIC = GTI_MF_MODE_DEFAULT,
@@ -219,29 +227,29 @@ enum gti_mf_mode : u32 {
  *   GTI_MF_STATE_FILTERED_LOCKED: filtered coordinates. Locked until
  *                                 touch is lifted or timeout.
  */
-enum gti_mf_state : u32 {
+enum gti_mf_state ENUM_U32 {
 	GTI_MF_STATE_FILTERED = 0,
 	GTI_MF_STATE_UNFILTERED,
 	GTI_MF_STATE_FILTERED_LOCKED,
 };
 
-enum gti_palm_setting : u32 {
+enum gti_palm_setting ENUM_U32 {
 	GTI_PALM_DISABLE = 0,
 	GTI_PALM_ENABLE,
 };
 
-enum gti_panel_speed_mode_setting : u32 {
+enum gti_panel_speed_mode_setting ENUM_U32 {
 	GTI_PANEL_SPEED_MODE_NS = 0,
 	GTI_PANEL_SPEED_MODE_HS,
 };
 
-enum gti_ping_mode : u32 {
+enum gti_ping_mode ENUM_U32 {
 	GTI_PING_NOP = 0,
 	GTI_PING_ENABLE,
-	GTI_PING_NA = 0xFFFFFFFF,
+	GTI_PING_NA = 0xFFFFFFFFu,
 };
 
-enum gti_pm_state : u32 {
+enum gti_pm_state ENUM_U32 {
 	GTI_PM_SUSPEND = 0,
 	GTI_PM_RESUME,
 };
@@ -250,7 +258,7 @@ enum gti_pm_state : u32 {
 /**
  * @brief: wakelock type.
  */
-enum gti_pm_wakelock_type : u32 {
+enum gti_pm_wakelock_type ENUM_U32 {
 	GTI_PM_WAKELOCK_TYPE_SCREEN_ON = (1 << 0),
 	GTI_PM_WAKELOCK_TYPE_IRQ = (1 << 1),
 	GTI_PM_WAKELOCK_TYPE_FW_UPDATE = (1 << 2),
@@ -263,7 +271,7 @@ enum gti_pm_wakelock_type : u32 {
 	GTI_PM_WAKELOCK_TYPE_VENDOR_REQUEST = (1 << 9),
 };
 
-enum gti_proc_type : u32 {
+enum gti_proc_type ENUM_U32 {
 	GTI_PROC_DUMP,
 	GTI_PROC_MS_BASE,
 	GTI_PROC_MS_DIFF,
@@ -274,41 +282,41 @@ enum gti_proc_type : u32 {
 	GTI_PROC_NUM,
 };
 
-enum gti_reset_mode : u32 {
+enum gti_reset_mode ENUM_U32 {
 	GTI_RESET_MODE_NOP = 0,
 	GTI_RESET_MODE_SW = (1 << 0),
 	GTI_RESET_MODE_HW = (1 << 1),
 	GTI_RESET_MODE_AUTO = GTI_RESET_MODE_HW | GTI_RESET_MODE_SW,
-	GTI_RESET_MODE_NA = 0xFFFFFFFF,
+	GTI_RESET_MODE_NA = 0xFFFFFFFFu,
 };
 
-enum gti_scan_mode : u32 {
+enum gti_scan_mode ENUM_U32 {
 	GTI_SCAN_MODE_AUTO = 0,
 	GTI_SCAN_MODE_NORMAL_ACTIVE,
 	GTI_SCAN_MODE_NORMAL_IDLE,
 	GTI_SCAN_MODE_LP_ACTIVE,
 	GTI_SCAN_MODE_LP_IDLE,
-	GTI_SCAN_MODE_NA = 0xFFFFFFFF,
+	GTI_SCAN_MODE_NA = 0xFFFFFFFFu,
 };
 
-enum gti_screen_protector_mode : u32 {
+enum gti_screen_protector_mode ENUM_U32 {
 	GTI_SCREEN_PROTECTOR_MODE_DISABLE = 0,
 	GTI_SCREEN_PROTECTOR_MODE_ENABLE,
-	GTI_SCREEN_PROTECTOR_MODE_NA = 0xFFFFFFFF,
+	GTI_SCREEN_PROTECTOR_MODE_NA = 0xFFFFFFFFu,
 };
 
-enum gti_selftest_result : u32 {
+enum gti_selftest_result ENUM_U32 {
 	GTI_SELFTEST_RESULT_DONE = 0,
 	GTI_SELFTEST_RESULT_PASS = GTI_SELFTEST_RESULT_DONE,
 	GTI_SELFTEST_RESULT_SHELL_CMDS_REDIRECT,
 	GTI_SELFTEST_RESULT_FAIL = 0x80000000,
-	GTI_SELFTEST_RESULT_NA = 0xFFFFFFFF,
+	GTI_SELFTEST_RESULT_NA = 0xFFFFFFFFu,
 };
 
-enum gti_sensing_mode : u32 {
+enum gti_sensing_mode ENUM_U32 {
 	GTI_SENSING_MODE_DISABLE = 0,
 	GTI_SENSING_MODE_ENABLE,
-	GTI_SENSING_MODE_NA = 0xFFFFFFFF,
+	GTI_SENSING_MODE_NA = 0xFFFFFFFFu,
 };
 
 /* Touch read method for automatically reading data from interrupt */
@@ -316,7 +324,7 @@ enum gti_sensing_mode : u32 {
 /* Touch read method for manually reading data from command */
 #define TOUCH_SENSOR_DATA_READ_METHOD_COMMAND 0x20000
 
-enum gti_sensor_data_type : u32 {
+enum gti_sensor_data_type ENUM_U32 {
 	GTI_SENSOR_DATA_TYPE_COORD = TOUCH_DATA_TYPE_COORD,
 	GTI_SENSOR_DATA_TYPE_MS = TOUCH_SENSOR_DATA_READ_METHOD_INT |
 			TOUCH_SCAN_TYPE_MUTUAL | TOUCH_DATA_TYPE_STRENGTH,
@@ -336,7 +344,7 @@ enum gti_sensor_data_type : u32 {
 			TOUCH_SCAN_TYPE_SELF | TOUCH_DATA_TYPE_BASELINE,
 };
 
-enum gti_fw_status : u32 {
+enum gti_fw_status ENUM_U32 {
 	GTI_FW_STATUS_RESET = 0,
 	GTI_FW_STATUS_PALM_ENTER,
 	GTI_FW_STATUS_PALM_EXIT,
@@ -348,7 +356,7 @@ enum gti_fw_status : u32 {
 	GTI_FW_STATUS_GESTURE_EVENT,
 };
 
-enum gti_gesture_params : u8 {
+enum gti_gesture_params ENUM_U8 {
 	GTI_STTW_MIN_X = 0,
 	GTI_STTW_MAX_X,
 	GTI_STTW_MIN_Y,
@@ -381,7 +389,7 @@ enum gti_gesture_params : u8 {
 	GTI_GESTURE_PARAMS_MAX,
 };
 
-enum gti_gesture_type : u8 {
+enum gti_gesture_type ENUM_U8 {
 	GTI_GESTURE_DISABLE = 0,
 	GTI_GESTURE_STTW,
 	GTI_GESTURE_LPTW,
@@ -389,21 +397,21 @@ enum gti_gesture_type : u8 {
 	GTI_GESTURE_TYPE_MAX,
 };
 
-enum gti_noise_mode_level : u8 {
+enum gti_noise_mode_level ENUM_U8 {
 	GTI_NOISE_MODE_EXIT = 0,
 	GTI_NOISE_MODE_LEVEL1,
 	GTI_NOISE_MODE_LEVEL2,
 	GTI_NOISE_MODE_LEVEL3,
 };
 
-enum gti_ical_res : u32 {
+enum gti_ical_res ENUM_U32 {
 	ICAL_RES_SUCCESS = 0,
 	ICAL_RES_FAIL = 0x80000000,
 	ICAL_RES_FAIL_INVALID_BUS_ACCESS = 0x80000001,
-	ICAL_RES_NA = 0xFFFFFFFF,
+	ICAL_RES_NA = 0xFFFFFFFFu,
 };
 
-enum gti_ical_state : u32 {
+enum gti_ical_state ENUM_U32 {
 	ICAL_STATE_IDLE = 0,
 	ICAL_STATE_INIT_CAL = 101,
 	ICAL_STATE_RUN_CAL = 102,
@@ -414,14 +422,17 @@ enum gti_ical_state : u32 {
 	ICAL_STATE_INIT_RESET = 301,
 	ICAL_STATE_RUN_RESET = 302,
 	ICAL_STATE_END_RESET = 303,
-	ICAL_STATE_NA = 0xFFFFFFFF,
+	ICAL_STATE_NA = 0xFFFFFFFFu,
 };
 
-enum gti_aod_mode : u8 {
+enum gti_aod_mode ENUM_U8 {
 	AOD_MODE_DISABLED = 0,
 	AOD_MODE_LP,
 	AOD_MODE_MP,
 };
+
+#undef ENUM_U32
+#undef ENUM_U8
 
 /*-----------------------------------------------------------------------------
  * const char.
@@ -459,6 +470,8 @@ const static char *gesture_params_list[GTI_GESTURE_PARAMS_MAX] = {
 /*-----------------------------------------------------------------------------
  * Structures.
  */
+
+struct touch_sim;
 
 struct gti_calibrate_cmd {
 	enum gti_calibrate_result result;
@@ -709,6 +722,7 @@ struct gti_fw_status_data {
  * @get_mutual_sensor_data: vendor driver operation to get the mutual sensor data.
  * @get_palm_mode: vendor driver operation to get the palm mode setting.
  * @get_panel_id: vendor driver operation to get panel id.
+ * @get_report_rate: vendor driver operation to get report rate.
  * @get_scan_mode: vendor driver operation to get scan mode.
  * @get_screen_protector_mode: vendor driver operation to get screen protector mode.
  * @get_self_sensor_data: vendor driver operation to get the self sensor data.
@@ -747,6 +761,7 @@ struct gti_optional_configuration {
 	int (*get_mutual_sensor_data)(void *private_data, struct gti_sensor_data_cmd *cmd);
 	int (*get_palm_mode)(void *private_data, struct gti_palm_cmd *cmd);
 	int (*get_panel_id)(void *private_data, struct gti_panel_id_cmd *cmd);
+	int (*get_report_rate)(void *private_data, struct gti_report_rate_cmd *cmd);
 	int (*get_scan_mode)(void *private_data, struct gti_scan_cmd *cmd);
 	int (*get_screen_protector_mode)(void *private_data,
 			struct gti_screen_protector_mode_cmd *cmd);
@@ -954,7 +969,7 @@ struct goog_touch_interface {
 	struct touch_offload_context offload;
 	struct touch_offload_frame *offload_frame;
 	struct v4l2_heatmap v4l2;
-	struct drm_bridge panel_bridge;
+	struct drm_bridge *panel_bridge;
 	struct drm_connector *connector;
 	struct gti_union_cmd_data cmd;
 	struct proc_dir_entry *proc_dir;

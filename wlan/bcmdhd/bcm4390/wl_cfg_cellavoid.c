@@ -1660,6 +1660,11 @@ wl_cellavoid_handle_apsta_concurrency(struct bcm_cfg80211 *cfg)
 					WL_INFORM_MEM(("AP %s down to prevent beaconing\n",
 						ndev->name));
 					wl_cfg80211_bss_up(cfg, ndev, bssidx, 0);
+
+					if (delayed_work_pending(&cfg->ap_work)) {
+						dhd_cancel_delayed_work_sync(&cfg->ap_work);
+						WL_DBG(("cancelled ap_work\n"));
+					}
 				}
 			}
 		}
@@ -1791,6 +1796,14 @@ wl_cellavoid_set_cell_channels(struct bcm_cfg80211 *cfg, wl_cellavoid_param_t *p
 		param_ch = param->chan_param[i].center_channel;
 		param_band = param->chan_param[i].chspec_band;
 		param_bw = param->chan_param[i].chspec_bw;
+
+#ifdef CELLAVOID_LIMIT_TXPWRCAP_BW160
+		if (wf_valid_160MHz_center_chan(param_ch, param_band)) {
+			WL_INFORM_MEM(("160MHz channel is not supported ch : %d band %x\n",
+				param_ch, param_band));
+			continue;
+		}
+#endif /* CELLAVOID_LIMIT_TXPWRCAP_BW160 */
 
 		bzero(chspecs, sizeof(chspecs));
 

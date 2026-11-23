@@ -3,6 +3,7 @@
  * Copyright (c) 2020 Samsung Electronics Co., Ltd.
  */
 
+#include <linux/cleanup.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -15,10 +16,10 @@
 #endif
 #include <trace/hooks/systrace.h>
 #if IS_ENABLED(CONFIG_GS_ACPM)
-#include "acpm/acpm.h"
-#include "acpm/acpm_ipc.h"
-#include "cal-if/acpm_dvfs.h"
-#include "cal-if/cmucal.h"
+#include "acpm.h"
+#include "acpm_ipc.h"
+#include "acpm_dvfs.h"
+#include "cmucal.h"
 #endif
 
 #include <soc/google/exynos-dm.h>
@@ -290,7 +291,7 @@ static int exynos_dm_index_validate(int index)
 #ifdef CONFIG_OF
 static int exynos_dm_parse_dt(struct device_node *np, struct exynos_dm_device *dm)
 {
-	struct device_node *child_np, *domain_np = NULL;
+	struct device_node *domain_np __free(device_node) = NULL;
 	const char *name;
 	int ret = 0;
 
@@ -313,7 +314,7 @@ static int exynos_dm_parse_dt(struct device_node *np, struct exynos_dm_device *d
 	if (!dm->domain_order)
 		return -ENOMEM;
 
-	for_each_child_of_node(domain_np, child_np) {
+	for_each_child_of_node_scoped(domain_np, child_np) {
 		int index;
 		const char *available;
 #if IS_ENABLED(CONFIG_GS_ACPM)
@@ -1104,15 +1105,13 @@ err_device:
 	return ret;
 }
 
-static int exynos_dm_remove(struct platform_device *pdev)
+static void exynos_dm_remove(struct platform_device *pdev)
 {
 	struct exynos_dm_device *dm = platform_get_drvdata(pdev);
 
 	sysfs_remove_group(&dm->dev->kobj, &exynos_dm_attr_group);
 	mutex_destroy(&dm->lock);
 	kfree(dm);
-
-	return 0;
 }
 
 static struct platform_device_id exynos_dm_driver_ids[] = {

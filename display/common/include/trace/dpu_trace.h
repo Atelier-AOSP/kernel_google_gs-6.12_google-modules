@@ -12,84 +12,6 @@
 
 #include <linux/tracepoint.h>
 
-TRACE_EVENT_CONDITION(dsi_tx,
-	TP_PROTO(u8 type, const u8 *tx_buf, size_t length, bool last, u32 delay_ms),
-	TP_ARGS(type, tx_buf, length, last, delay_ms),
-	TP_CONDITION(length > 0),
-	TP_STRUCT__entry(
-			__field(u8, type)
-			__dynamic_array(u8, tx_buf, length)
-			__field(bool, last)
-			__field(u32, delay_ms)
-		),
-	TP_fast_assign(
-			__entry->type = type;
-			memcpy(__get_dynamic_array(tx_buf), tx_buf, length);
-			__entry->last = last;
-			__entry->delay_ms = delay_ms;
-		),
-	TP_printk("type=0x%02x length=%u last=%d delay=%d tx=[%s]", __entry->type,
-			  __get_dynamic_array_len(tx_buf), __entry->last, __entry->delay_ms,
-			  __print_hex(__get_dynamic_array(tx_buf),
-				      __get_dynamic_array_len(tx_buf)))
-);
-
-TRACE_EVENT_CONDITION(dsi_rx,
-	TP_PROTO(u8 cmd, const u8 *rx_buf, size_t length),
-	TP_ARGS(cmd, rx_buf, length),
-	TP_CONDITION(length > 0),
-	TP_STRUCT__entry(
-			__field(u8, cmd)
-			__dynamic_array(u8, rx_buf, length)
-		),
-	TP_fast_assign(
-			__entry->cmd = cmd;
-			memcpy(__get_dynamic_array(rx_buf), rx_buf, length);
-		),
-	TP_printk("cmd=0x%02x length=%u rx=[%s]", __entry->cmd,
-			  __get_dynamic_array_len(rx_buf),
-			  __print_hex(__get_dynamic_array(rx_buf),
-				      __get_dynamic_array_len(rx_buf)))
-);
-
-TRACE_EVENT(dsi_cmd_fifo_status,
-	TP_PROTO(u8 header, u16 payload),
-	TP_ARGS(header, payload),
-	TP_STRUCT__entry(
-			__field(u8, header)
-			__field(u16, payload)
-		),
-	TP_fast_assign(
-			__entry->header   = header;
-			__entry->payload  = payload;
-		),
-	TP_printk("header=%d payload=%d", __entry->header, __entry->payload)
-);
-
-TRACE_EVENT(msleep,
-	TP_PROTO(u32 delay_ms),
-	TP_ARGS(delay_ms),
-	TP_STRUCT__entry(__field(u32, delay_ms)),
-	TP_fast_assign(__entry->delay_ms = delay_ms;),
-	TP_printk("delay=%d", __entry->delay_ms)
-);
-
-TRACE_EVENT(dsi_label_scope,
-	TP_PROTO(const char *name, bool begin),
-	TP_ARGS(name, begin),
-	TP_STRUCT__entry(
-			__string(name, name)
-			__field(bool, begin)
-		),
-	TP_fast_assign(
-			__assign_str(name, name);
-			__entry->begin = begin;
-		),
-	TP_printk("%s %s", __get_str(name), __entry->begin ? "begin" : "end")
-);
-#define PANEL_SEQ_LABEL_BEGIN(name) trace_dsi_label_scope(name, true)
-#define PANEL_SEQ_LABEL_END(name) trace_dsi_label_scope(name, false)
-
 TRACE_EVENT(reg_dump_header, TP_PROTO(const char *desc, u32 offset, u32 size),
 	TP_ARGS(desc, offset, size),
 	TP_STRUCT__entry(
@@ -98,7 +20,7 @@ TRACE_EVENT(reg_dump_header, TP_PROTO(const char *desc, u32 offset, u32 size),
 			__field(u32, size)
 		),
 	TP_fast_assign(
-			__assign_str(desc, desc);
+			__assign_str(desc);
 			__entry->offset = offset;
 			__entry->size = size;
 		),
@@ -114,7 +36,7 @@ TRACE_EVENT(reg_dump_line,
 	),
 	TP_fast_assign(
 		__entry->offset = offset;
-		__assign_str(line_buf, line_buf);
+		__assign_str(line_buf);
 	),
 	TP_printk("%08X: %s", __entry->offset, __get_str(line_buf))
 );
@@ -183,6 +105,63 @@ TRACE_EVENT(disp_vblank_irq_enable,
 	TP_printk("id: %d output_id: %d %s",
 		__entry->id, __entry->output_id, __entry->enable ? "enable" : "disable")
 );
+
+DECLARE_EVENT_CLASS(display,
+	TP_PROTO(int display_id, u32 output_id, int frames_pending, int te_count),
+	TP_ARGS(display_id, output_id, frames_pending, te_count),
+	TP_STRUCT__entry(
+		__field(int, display_id)
+		__field(u32, output_id)
+		__field(int, frames_pending)
+		__field(int, te_count)
+	),
+	TP_fast_assign(
+		__entry->display_id = display_id;
+		__entry->output_id = output_id;
+		__entry->frames_pending = frames_pending;
+		__entry->te_count = te_count;
+	),
+	TP_printk("display_id: %d output_id: %u frames_pending: %d te_count: %d",
+		__entry->display_id,  __entry->output_id, __entry->frames_pending,
+		__entry->te_count)
+);
+
+DEFINE_EVENT(display, disp_frame_start_timeout,
+	TP_PROTO(int display_id, u32 output_id, int frames_pending, int te_count),
+	TP_ARGS(display_id, output_id, frames_pending, te_count)
+);
+DEFINE_EVENT(display, disp_frame_start_missing,
+	TP_PROTO(int display_id, u32 output_id, int frames_pending, int te_count),
+	TP_ARGS(display_id, output_id, frames_pending, te_count)
+);
+DEFINE_EVENT(display, disp_frame_done_missing,
+	TP_PROTO(int display_id, u32 output_id, int frames_pending, int te_count),
+	TP_ARGS(display_id, output_id, frames_pending, te_count)
+);
+
+TRACE_EVENT(disp_frame_done_timeout,
+	TP_PROTO(int display_id, u32 output_id, int frames_pending, int te_count,
+		bool during_disable),
+	TP_ARGS(display_id, output_id, frames_pending, te_count, during_disable),
+	TP_STRUCT__entry(
+		__field(int, display_id)
+		__field(u32, output_id)
+		__field(int, frames_pending)
+		__field(int, te_count)
+		__field(bool, during_disable)
+	),
+	TP_fast_assign(
+		__entry->display_id = display_id;
+		__entry->output_id = output_id;
+		__entry->frames_pending = frames_pending;
+		__entry->te_count = te_count;
+		__entry->during_disable = during_disable;
+	),
+	TP_printk("display_id: %d output_id: %d frames_pending: %d te_count: %d%s",
+		__entry->display_id, __entry->output_id, __entry->frames_pending,
+		__entry->te_count, __entry->during_disable ? " during disable" : "")
+);
+
 
 /* extra define flag for the case TRACE_HEAD_MULTI_READ & _DPU_TRACE_H both set */
 #ifndef __DPU_ATRACE_API_DEF_

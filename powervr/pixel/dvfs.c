@@ -41,7 +41,7 @@ static void set_frequency(IMG_HANDLE hSysData, IMG_UINT32 ui32Freq)
 		return;
 	}
 
-	dev_dbg(pixel_dev->dev, "%s: %uHz", __func__, ui32Freq);
+	PVR_DPF((PVR_DBG_CUSTOMER, "%s: %uHz", __func__, ui32Freq));
 }
 
 /**

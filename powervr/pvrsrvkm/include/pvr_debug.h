@@ -49,13 +49,14 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pvrsrv_error.h"
 
 /* If the kernel pre defined macro is present, we will use the definition of HTBLOGK
- * in htbserver.h with the format strings specified in ht_buffer_sf.h. Otherwise,
- * HTBLOGK needs to be defined as empty since it is not used by user-mode code.
+ * in htbserver.h with the format strings specified in ht_buffer_sf.h.
  */
 #if defined(__KERNEL__)
 #	include "htbserver.h"
 #	include "htbuffer_sf.h"
 #else
+/*! host trace buffers logging macro needs to be defined as empty
+ * since it is not used by user-mode code. */
 #	define HTBLOGK(...) ((void) 0)
 #endif
 
@@ -94,7 +95,8 @@ extern "C" {
 #define DBGPRIV_ALLOC     0x040U  /*!< Debug-Alloc. Privately used by pvr_debug. */
 #define DBGPRIV_BUFFERED  0x080U  /*!< Debug-Buffered. Privately used by pvr_debug. */
 #define DBGPRIV_DEBUG     0x100U  /*!< Debug-AdHoc-Debug. Never submitted. Privately used by pvr_debug. */
-#define DBGPRIV_LAST      0x100U  /*!< Always set to highest mask value. Privately used by pvr_debug. */
+#define DBGPRIV_CUSTOMER  0x200U  /*!< Debug-Customer. Privately used by pvr_debug for customer logs. */
+#define DBGPRIV_LAST      0x200U  /*!< Always set to highest mask value. Privately used by pvr_debug. */
 
 /* Enable DPF logging for locally from some make targets */
 #if defined(PVRSRV_NEED_PVR_DPF_LOCAL)
@@ -261,6 +263,7 @@ PVRSRVDebugAssertFail(const IMG_CHAR *pszFile,
 	#define PVR_DBG_ALLOC     DBGPRIV_ALLOC     /*!< Debug level passed to PVRSRVDebugPrintf() for tracking some of drivers memory operations. */
 	#define PVR_DBG_BUFFERED  DBGPRIV_BUFFERED  /*!< Debug level passed to PVRSRVDebugPrintf() when debug should be written to the debug circular buffer. */
 	#define PVR_DBG_DEBUG     DBGPRIV_DEBUG     /*!< Debug level passed to PVRSRVDebugPrintf() for debug messages. */
+	#define PVR_DBG_CUSTOMER  DBGPRIV_CUSTOMER  /*!< Debug level passed to PVRSRVDebugPrintf() for debug messages in customer integration. */
 
 	/* These levels are always on with PVRSRV_NEED_PVR_DPF */
 	/*! @cond Doxygen_Suppress */
@@ -278,6 +281,13 @@ PVRSRVDebugAssertFail(const IMG_CHAR *pszFile,
 #else
 	/* Use an undefined token here to stop compilation dead in the offending module */
 	#define PVR_DPF_0x100U(...) __ERROR__PVR_DBG_DEBUG_is_in_use_but_has_not_been_enabled__Note_Debug_DPF_must_not_be_checked_in__Define_PVR_DPF_ADHOC_DEBUG_ON_for_testing
+#endif
+
+#if defined(PVR_DPF_CUSTOMER_DEBUG_ON)
+	#define PVR_DPF_0x200U(...) PVRSRVDebugPrintf(DBGPRIV_CUSTOMER, __VA_ARGS__)
+#else
+	/* Do nothing if PVR_DPF_CUSTOMER_DEBUG_ON is not defined */
+	#define PVR_DPF_0x200U(...) NULL
 #endif
 
 	/* Some are compiled out completely in release builds */
@@ -992,6 +1002,12 @@ IMG_EXPORT void IMG_CALLCONV PVRSRVTrace(const IMG_CHAR* pszFormat, ... )
 
     @def PVR_WARN_IF_ERROR
     @brief Logs warning if not PVRSRV_OK.
+
+	@def PVR_LOG_RETURN_ERROR
+	@brief Logs an error message and returns the given error value
+
+	@def PVR_LOG_GOTO_ERROR
+	@brief Logs an error message and jumps to the given label
 
     @def PVR_LOG_RETURN_IF_NOMEM
     @brief Logs error if expression is NULL and returns PVRSRV_ERROR_OUT_OF_MEMORY.

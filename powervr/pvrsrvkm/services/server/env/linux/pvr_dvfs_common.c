@@ -217,6 +217,117 @@ int FindOPPFreq(struct device *dev,
 
 	return -ENODATA;
 }
+
+int FindOPPFreqNearest(struct device *dev,
+                       unsigned int *level,
+                       unsigned long *freq)
+{
+	struct dev_pm_opp *opp1;
+	struct dev_pm_opp *opp2;
+	unsigned long freq1;
+	unsigned long freq2;
+	unsigned long d1, d2;
+	int count, err = 0;
+
+	count = dev_pm_opp_get_opp_count(dev);
+	if (count <= 0)
+	{
+		dev_err(dev, "Couldn't fetch OPP count, %d\n", count);
+		return -ENODATA;
+	}
+	freq1 = *freq; /* initial estimate */
+	opp1 = dev_pm_opp_find_freq_floor(dev, &freq1);
+	if (IS_ERR(opp1))
+	{
+		err = PTR_ERR(opp1);
+		dev_err(dev, "Invalid frequency (%d)\n", err);
+		goto e1;
+	}
+
+	freq2 = *freq; /* initial estimate */
+	opp2 = dev_pm_opp_find_freq_ceil(dev, &freq2);
+	if (IS_ERR(opp2))
+	{
+		err = PTR_ERR(opp2);
+		dev_err(dev, "Invalid frequency (%d)\n", err);
+		goto e2;
+	}
+
+	PVR_ASSERT(freq1 <= freq2);
+
+	if (*freq < freq1)
+	{
+		*freq = freq1;
+		*level = dev_pm_opp_get_level(opp1);
+	}
+	else if (*freq > freq2)
+	{
+		*freq = freq2;
+		*level = dev_pm_opp_get_level(opp2);
+	}
+	else
+	{
+		/* Return nearest frequency, we know freq1 <= *freq <= freq2*/
+		d2 = freq2 - *freq;
+		d1 = *freq - freq1;
+		if (d1 < d2)
+		{
+			*freq = freq1;
+			*level = dev_pm_opp_get_level(opp1);
+		}
+		else
+		{
+			*freq = freq2;
+			*level = dev_pm_opp_get_level(opp2);
+		}
+	}
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0))
+	if (*level == U32_MAX)
+	{
+		/* OPP doesn't exist or is disabled */
+		err = -EAGAIN;
+	}
+#endif
+
+	/* Drop refcounts */
+	dev_pm_opp_put(opp2);
+e2:
+	dev_pm_opp_put(opp1);
+e1:
+	return err;
+}
+
+PVRSRV_ERROR
+PVRSRVFindOPPFreqNearest(PPVRSRV_DEVICE_NODE psDeviceNode,
+						 IMG_UINT32 *pui32Level,
+						 IMG_UINT32 *pui32Freq)
+{
+	unsigned long clock_speed = *pui32Freq;
+	unsigned int index = 0;
+	unsigned int count, retry_count = 4;
+	struct device *dev = psDeviceNode->psDevConfig->pvOSDevice;
+	int err;
+
+	for (count=0; count<retry_count; count++)
+	{
+		err = FindOPPFreqNearest(dev, &index, &clock_speed);
+		if (err == 0)
+		{
+			*pui32Level = (IMG_UINT32) index;
+			*pui32Freq = (IMG_UINT32) clock_speed;
+
+			return PVRSRV_OK;
+		}
+		else if (err != -EAGAIN)
+		{
+			break;
+		}
+		/* retry in case an OPP level was unavailable */
+	}
+
+	return PVRSRV_ERROR_NOT_SUPPORTED;
+}
 #endif
 
 /*************************************************************************/ /*!

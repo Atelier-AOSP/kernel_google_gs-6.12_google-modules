@@ -12,11 +12,7 @@
 
 #include <linux/version.h>
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0)
 #include <drm/display/drm_dsc.h>
-#else
-#include <drm/drm_dsc.h>
-#endif
 
 /* customized DRM mode type and flags */
 #define DRM_MODE_FLAG_NS DRM_MODE_FLAG_CLKDIV2
@@ -71,10 +67,11 @@
  * @VSA: Vertical sync
  * @VBP: Vertical back porch
  *
- * This macro calculated the pixel clock for the struct drm_display_mode.
+ * This macro calculates the pixel clock for the struct drm_display_mode.
  */
 #define CALC_DRM_CLOCK_HZ(REFRESH_FREQ, HDISPLAY, HFP, HSA, HBP, VDISPLAY, VFP, VSA, VBP) \
-	((REFRESH_FREQ) * (HDISPLAY + HFP + HSA + HBP) * (VDISPLAY + VFP + VSA + VBP))
+	((s64)(REFRESH_FREQ) * ((HDISPLAY) + (HFP) + (HSA) + (HBP)) *			  \
+	 ((VDISPLAY) + (VFP) + (VSA) + (VBP)))
 
 /**
  * CHECK_DRM_CLOCK_DIVISIBLE_1000() - Checks drm clock value

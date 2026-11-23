@@ -6,6 +6,7 @@
 
 extern const struct vs_dc_info dc_info_9400_316;
 extern const struct vs_dc_info dc_info_9400_32a;
+extern const struct vs_dc_info dc_info_9400_20000005;
 
 static const struct vs_dc_info *dc_infos[] = {
 #if IS_ENABLED(CONFIG_VERISILICON_DC9400_0x316)
@@ -14,6 +15,9 @@ static const struct vs_dc_info *dc_infos[] = {
 #if IS_ENABLED(CONFIG_VERISILICON_DC9400_0x32a)
 	&dc_info_9400_32a,
 #endif /* CONFIG_VERISILICON_DC9400_0x32a */
+#if IS_ENABLED(CONFIG_VERISILICON_DC9400_0x20000005)
+	&dc_info_9400_20000005,
+#endif /* CONFIG_VERISILICON_DC9400_0x20000005 */
 };
 
 const struct vs_dc_info *vs_dc_get_chip_info(u32 chip_id, u32 revision, u32 pid, u32 cid)

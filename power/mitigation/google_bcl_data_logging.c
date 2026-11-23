@@ -13,6 +13,8 @@
 #include "ifpmic/max77779/max77779_irq.h"
 #include "soc/soc_defs.h"
 
+#include <trace/events/bcl_exynos.h>
+
 static void log_ifpmic_power(struct bcl_device *bcl_dev)
 {
 	int idx, ret;
@@ -22,7 +24,7 @@ static void log_ifpmic_power(struct bcl_device *bcl_dev)
 		return;
 	if (bcl_dev->ifpmic != MAX77779)
 		return;
-	ret = bcl_vimon_read(bcl_dev);
+	ret = bcl_dev->ifpmic_ops->vimon_read(bcl_dev->ifpmic_irq_dev);
 	if (ret <= 0)
 		return;
 	for (idx = 0; idx < ret / VIMON_BYTES_PER_ENTRY; idx = idx + 2) {
@@ -98,6 +100,7 @@ void google_bcl_upstream_state(struct bcl_zone *zone, enum MITIGATION_MODE state
 {
 	struct bcl_device *bcl_dev = zone->parent;
 	int idx = zone->idx;
+	static const char * const envp[] = {"TRIG=OILO1", NULL};
 
 	if (!bcl_dev->enabled_br_stats)
 		return;
@@ -113,11 +116,42 @@ void google_bcl_upstream_state(struct bcl_zone *zone, enum MITIGATION_MODE state
 		sysfs_notify(&bcl_dev->mitigation_dev->kobj, "triggered_state", "oilo1_triggered");
 		if (state == LIGHT)
 			log_ifpmic_power(bcl_dev);
-	}
-	else if (idx == BATOILO2)
+		else if (state == HEAVY)
+			kobject_uevent_env(&bcl_dev->device->kobj, KOBJ_CHANGE, (char **)envp);
+	} else if (idx == BATOILO2)
 		sysfs_notify(&bcl_dev->mitigation_dev->kobj, "triggered_state", "oilo2_triggered");
 	else if (idx == PRE_UVLO)
 		sysfs_notify(&bcl_dev->mitigation_dev->kobj, "triggered_state", "smpl_triggered");
+}
+
+static void trace_batt(struct bcl_device *bcl_dev)
+{
+	int ret;
+	int capacity, cycle_count, voltage_now, current_now;
+	union power_supply_propval val;
+
+	if (!bcl_dev->batt_psy)
+		return;
+	if (!trace_clock_set_rate_enabled())
+		return;
+
+	ret = power_supply_get_property(bcl_dev->batt_psy,
+					POWER_SUPPLY_PROP_CAPACITY, &val);
+	capacity = ret ? 0 : val.intval;
+	ret = power_supply_get_property(bcl_dev->batt_psy,
+					POWER_SUPPLY_PROP_CYCLE_COUNT, &val);
+	cycle_count = ret ? 0 : val.intval;
+	ret = power_supply_get_property(bcl_dev->batt_psy,
+					POWER_SUPPLY_PROP_VOLTAGE_NOW, &val);
+	voltage_now = ret ? 0 : val.intval;
+	ret = power_supply_get_property(bcl_dev->batt_psy,
+					POWER_SUPPLY_PROP_CURRENT_NOW, &val);
+	current_now = ret ? 0 : val.intval;
+
+	trace_clock_set_rate("BCL_BATT_CAPACITY", capacity, raw_smp_processor_id());
+	trace_clock_set_rate("BCL_BATT_CYCLE_COUNT", cycle_count, raw_smp_processor_id());
+	trace_clock_set_rate("BCL_BATT_VOLTAGE_NOW", voltage_now, raw_smp_processor_id());
+	trace_clock_set_rate("BCL_BATT_CURRENT_NOW", current_now, raw_smp_processor_id());
 }
 
 void google_bcl_start_data_logging(struct bcl_device *bcl_dev, int idx)
@@ -138,6 +172,8 @@ void google_bcl_start_data_logging(struct bcl_device *bcl_dev, int idx)
 
 	bcl_dev->triggered_idx = idx;
 	sysfs_notify(&bcl_dev->mitigation_dev->kobj, "br_stats", "triggered_idx");
+
+	trace_batt(bcl_dev);
 }
 
 void google_bcl_remove_data_logging(struct bcl_device *bcl_dev)

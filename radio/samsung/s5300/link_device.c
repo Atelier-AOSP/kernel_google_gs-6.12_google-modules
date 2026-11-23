@@ -230,7 +230,8 @@ static void link_trigger_cp_crash(struct mem_link_device *mld, u32 crash_type,
 	}
 
 	if (!reason_done && reason && reason[0] != '\0') {
-		strlcpy(ld->crash_reason.string, reason, CP_CRASH_INFO_SIZE);
+		strscpy(ld->crash_reason.string, reason,
+			sizeof(ld->crash_reason.string));
 		reason_done = true;
 	}
 
@@ -2130,6 +2131,7 @@ static int link_load_gnss_image(struct link_device *ld,
 
 	int ret = 0;
 	struct mem_link_device *mld = to_mem_link_device(ld);
+	size_t gnss_region_size = cp_shmem_get_size(0, SHMEM_GNSS_FW);
 
 	memset(&img, 0, sizeof(struct gnss_image));
 
@@ -2144,6 +2146,23 @@ static int link_load_gnss_image(struct link_device *ld,
 	if (ret) {
 		mif_err("copy_from_user() fail:%d\n", ret);
 		return ret;
+	}
+
+	if (!img.firmware_bin) {
+		mif_err("firmware_bin is NULL!\n");
+		return -EINVAL;
+	}
+
+	if (img.firmware_size == 0) {
+		mif_err("firmware_size is zero!\n");
+		return -EINVAL;
+	}
+
+	if (img.firmware_size > gnss_region_size ||
+			img.offset > gnss_region_size - img.firmware_size) {
+		mif_err("Invalid GNSS image parameters (offset=%u, size=%u)!\n",
+				img.offset, img.firmware_size);
+		return -EFAULT;
 	}
 
 	dst = (void __iomem *)(mld->gnss_v_base + img.offset);
@@ -2163,6 +2182,7 @@ static int link_read_gnss_image(struct link_device *ld,
 	struct gnss_image img;
 	int err = 0;
 	struct mem_link_device *mld = to_mem_link_device(ld);
+	size_t gnss_region_size = cp_shmem_get_size(0, SHMEM_GNSS_FW);
 
 	memset(&img, 0, sizeof(struct gnss_image));
 
@@ -2178,8 +2198,19 @@ static int link_read_gnss_image(struct link_device *ld,
 		return err;
 	}
 
-	if (img.offset + img.firmware_size > cp_shmem_get_size(0, SHMEM_GNSS_FW)) {
-		mif_err("offset:%d size:%d error\n",
+	if (!img.firmware_bin) {
+		mif_err("firmware_bin is NULL!\n");
+		return -EINVAL;
+	}
+
+	if (img.firmware_size == 0) {
+		mif_err("firmware_size is zero!\n");
+		return -EINVAL;
+	}
+
+	if (img.firmware_size > gnss_region_size ||
+		(img.offset > gnss_region_size - img.firmware_size)) {
+		mif_err("offset:%u size:%u error\n",
 			img.offset, img.firmware_size);
 		return -EFAULT;
 	}
@@ -3839,6 +3870,7 @@ static int init_shmem_maps(u32 link_type, struct modem_data *modem,
 
 		of_property_read_u32(np_acpm, "dump-size", &mld->acpm_size);
 		of_property_read_u32(np_acpm, "dump-base", &acpm_addr);
+		of_node_put(np_acpm);
 		mld->acpm_base = cp_shmem_get_nc_region(acpm_addr, mld->acpm_size);
 		if (!mld->acpm_base) {
 			mif_err("Failed to vmap acpm_region\n");

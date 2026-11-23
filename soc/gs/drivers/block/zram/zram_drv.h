@@ -273,4 +273,5 @@ void zram_page_write_endio(struct zram *zram, struct page *page, int err);
 void zram_accessed(struct zram *zram, u32 index);
 int zram_read_page(struct zram *zram, struct page *page, u32 index,
 		   struct bio *parent);
+bool zram_allocated(struct zram *zram, u32 index);
 #endif

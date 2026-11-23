@@ -15,8 +15,12 @@
 #include "vpu_pm.h"
 #include "wave6_regdefine.h"
 #include "vpu_common.h"
+#include "vpu_coredump.h"
 
 #define VPU_BUSY_CHECK_TIMEOUT   500
+#define VCORES_PSM_STATUS_CURR_STATE_MASK GENMASK(3, 0)
+#define VCORES_PSM_STATUS_POWERED_OFF 0x6
+#define VCORES_OFF_CHECK_TIMEOUT 50
 
 static const char * const vpu_dbg_reg_names[] = {
 	"R0", "R1", "R2", "R3", "R4", "R5", "R6", "R7",
@@ -77,7 +81,7 @@ static void vpu_wait_idle_fail(struct vpu_core *core)
 	core->need_reload_fw = true;
 	dump_vcpu_status(core);
 
-	writel(BIT(6), core->qch_base + QCHCTL_ACTIVE_MASK_0_OFFSET);
+	writel(BIT(6), core->qch_base + core->qchctl_active_mask_0_offset);
 }
 
 static int vpu_wait_busy_status(struct vpu_core *core, uint32_t reg)
@@ -106,34 +110,21 @@ static void vpu_wait_idle(struct vpu_core *core)
 
 static void vpu_enable_interrupt(struct vpu_core *core)
 {
-	uint32_t val;
-
-	val  = BIT(INT_WAVE6_ENC_SET_PARAM);
-	val |= BIT(INT_WAVE6_ENC_PIC);
-	val |= BIT(INT_WAVE6_BSBUF_FULL);
-
-	val |= BIT(INT_WAVE6_INIT_SEQ);
-	val |= BIT(INT_WAVE6_DEC_PIC);
-
-	val |= BIT(INT_WAVE6_UPDATE_FB);
-	val |= BIT(INT_WAVE6_SLEEP_VPU);
-
-	WRITE_VPU_REGISTER(core, W6_VPU_VINT_ENABLE, val);
+	WRITE_VPU_REGISTER(core, W6_VPU_VINT_ENABLE, core->restore_regs.vint_enable);
 }
 
 static int vpu_sleep_wakeup(struct vpu_core *core, bool is_sleep)
 {
 	int rc, ret;
+	struct vpu_fw_cmd fw_cmd = {0};
 
 	if (is_sleep) {
 		rc = vpu_wait_busy_status(core, W6_VPU_CMD_BUSY_STATUS);
 		if (rc)
 			return rc;
 
-		WRITE_VPU_REGISTER(core, W6_CMD_INSTANCE_INFO, 0);
-		WRITE_VPU_REGISTER(core, W6_VPU_CMD_BUSY_STATUS, 1);
-		WRITE_VPU_REGISTER(core, W6_COMMAND, W6_SLEEP_VPU);
-		WRITE_VPU_REGISTER(core, W6_VPU_HOST_INT_REQ, 1);
+		fw_cmd.cmd = W6_SLEEP_VPU;
+		vpu_send_fw_cmd_locked(core, &fw_cmd);
 
 		rc = vpu_wait_busy_status(core, W6_VPU_CMD_BUSY_STATUS);
 		if (rc)
@@ -165,9 +156,8 @@ static int vpu_sleep_wakeup(struct vpu_core *core, bool is_sleep)
 	} else {
 		vpu_enable_interrupt(core);
 
-		WRITE_VPU_REGISTER(core, W6_VPU_CMD_BUSY_STATUS, 1);
-		WRITE_VPU_REGISTER(core, W6_COMMAND, W6_WAKEUP_VPU);
-		WRITE_VPU_REGISTER(core, W6_VPU_REMAP_CORE_START, 1);
+		fw_cmd.cmd = W6_WAKEUP_VPU;
+		vpu_send_fw_cmd_locked(core, &fw_cmd);
 
 		rc = vpu_wait_busy_status(core, W6_VPU_CMD_BUSY_STATUS);
 		if (rc)
@@ -212,20 +202,24 @@ static int vpu_wait_interrupt(struct vpu_core *core, uint32_t *reason)
 	return 0;
 }
 
-static void vpu_save_restore_debug_regs(struct vpu_core *core, bool is_save)
+static void vpu_save_restore_cmd_regs(struct vpu_core *core, bool is_save)
 {
+	u32 i;
+
 	if (is_save) {
-		core->restore_regs.debug_option = READ_VPU_REGISTER(core, CMD_COMMON_DEBUG_OPTION);
-		core->restore_regs.debug_wr_ptr =
-					READ_VPU_REGISTER(core, CMD_COMMON_RET_MEM_DEBUG_WR_PTR);
-		core->restore_regs.debug_base = READ_VPU_REGISTER(core, CMD_COMMON_MEM_DEBUG_BASE);
-		core->restore_regs.debug_size = READ_VPU_REGISTER(core, CMD_COMMON_MEM_DEBUG_SIZE);
+		for (i = 0; i < ARRAY_SIZE(core->restore_regs.cmd_regs); ++i) {
+			u32 offset = W6_CMD_REG_BASE + (i * 4);
+
+			core->restore_regs.cmd_regs[i] = READ_VPU_REGISTER(core, offset);
+		}
+		/* restore VINT_ENABLE in vpu_enable_interrupt */
+		core->restore_regs.vint_enable = READ_VPU_REGISTER(core, W6_VPU_VINT_ENABLE);
 	} else {
-		WRITE_VPU_REGISTER(core, CMD_COMMON_DEBUG_OPTION, core->restore_regs.debug_option);
-		WRITE_VPU_REGISTER(core, CMD_COMMON_RET_MEM_DEBUG_WR_PTR,
-								core->restore_regs.debug_wr_ptr);
-		WRITE_VPU_REGISTER(core, CMD_COMMON_MEM_DEBUG_BASE, core->restore_regs.debug_base);
-		WRITE_VPU_REGISTER(core, CMD_COMMON_MEM_DEBUG_SIZE, core->restore_regs.debug_size);
+		for (i = 0; i < ARRAY_SIZE(core->restore_regs.cmd_regs); ++i) {
+			u32 offset = W6_CMD_REG_BASE + (i * 4);
+
+			WRITE_VPU_REGISTER(core, offset, core->restore_regs.cmd_regs[i]);
+		}
 	}
 }
 
@@ -267,14 +261,14 @@ static int vpu_sleep(struct vpu_core *core)
 	}
 
 	vpu_wait_idle(core);
-	vpu_save_restore_debug_regs(core, true);
+	vpu_save_restore_cmd_regs(core, true);
 out:
 	return rc;
 }
 
 static int vpu_wakeup(struct vpu_core *core)
 {
-	vpu_save_restore_debug_regs(core, false);
+	vpu_save_restore_cmd_regs(core, false);
 	return vpu_sleep_wakeup(core, false);
 }
 
@@ -288,21 +282,33 @@ int vpu_runtime_resume(struct device *dev)
 	return 0;
 }
 
+static void vpu_hw_reset(struct vpu_core *core)
+{
+	reset_control_assert(core->vpu_reset);
+	reset_control_deassert(core->vpu_reset);
+}
+
 int vpu_pm_power_on(struct vpu_core *core)
 {
 	int rc = 0;
 
 	mutex_lock(&core->lock);
-	if (core->power_status == POWER_ON) {
-		dev_warn(core->dev, "already powered on\n");
+	if (core->power_status != POWER_OFF_RELEASED) {
+		dev_warn(core->dev, "not powered off\n");
+		rc = -EBUSY;
 		goto out;
 	}
 
-	rc = pm_runtime_resume_and_get(core->pd_dev);
-	if (rc) {
-		dev_err(core->dev, "failed to power on %d", rc);
-		goto out;
+	if (core->pd_dev) {
+		rc = pm_runtime_resume_and_get(core->pd_dev);
+		if (rc) {
+			dev_err(core->dev, "failed to power on %d", rc);
+			goto out;
+		}
 	}
+
+	if (IS_ENABLED(CONFIG_CODEC3P_VPU_RESET))
+		vpu_hw_reset(core);
 
 	core->power_status = POWER_ON;
 	dev_info(core->dev, "powered on\n");
@@ -311,6 +317,40 @@ out:
 	vpu_update_system_state(core);
 	mutex_unlock(&core->lock);
 	return rc;
+}
+
+static bool vpu_check_vcores_off(struct vpu_core *core)
+{
+	uint32_t val;
+	uint32_t curr_state;
+
+	/* Reference step 1 of VCPU FW hang scenario in MBU SSWRP_CODEC3P HPG */
+	val = readl(core->lpcm_base + NS_PSM_C3P_CORE_FSM_STATUS_OFFSET);
+	curr_state = FIELD_GET(VCORES_PSM_STATUS_CURR_STATE_MASK, val);
+	return (curr_state == VCORES_PSM_STATUS_POWERED_OFF);
+}
+
+static bool vpu_wait_vcores_off(struct vpu_core *core)
+{
+	int i;
+
+	for (i = 0; i < VCORES_OFF_CHECK_TIMEOUT; ++i) {
+		if (vpu_check_vcores_off(core))
+			return true;
+		usleep_range(900, 1100);
+	}
+	return false;
+}
+
+static bool vpu_force_vcores_off(struct vpu_core *core)
+{
+	bool ret;
+
+	/* Reference steps 2-5 of VCPU FW hang scenario in MBU SSWRP_CODEC3P HPG */
+	writel(BIT(0), core->lpcm_base + C3P_CONTROL_INPUT_SW_EN_OFFSET);
+	writel(BIT(0) | BIT(1), core->lpcm_base + C3P_CONTROL_INPUT_OFFSET);
+	ret = vpu_wait_vcores_off(core);
+	return ret;
 }
 
 int vpu_pm_power_off(struct vpu_core *core)
@@ -346,10 +386,21 @@ int vpu_pm_power_off(struct vpu_core *core)
 		}
 	}
 
-	rc = pm_runtime_put_sync(core->pd_dev);
-	if (rc) {
-		dev_err(core->dev, "failed to power off %d\n", rc);
-		goto out;
+	if (IS_ENABLED(CONFIG_CODEC3P_VCORE_APG)) {
+		if (!vpu_wait_vcores_off(core)) {
+			dev_warn(core->dev, "power off while vcores on. forcing them off\n");
+			vpu_internal_coredump(core, "force power off VCORE");
+			if (!vpu_force_vcores_off(core))
+				dev_err(core->dev, "could not force vcores off\n");
+		}
+	}
+
+	if (core->pd_dev) {
+		rc = pm_runtime_put_sync(core->pd_dev);
+		if (rc) {
+			dev_err(core->dev, "failed to power off %d\n", rc);
+			goto out;
+		}
 	}
 
 	core->power_status = POWER_OFF_RELEASED;
@@ -375,10 +426,22 @@ int vpu_pm_suspend(struct device *dev)
 		goto out;
 	}
 	core->vpu_power_cycled = false;
-	rc = pm_runtime_put_sync(core->pd_dev);
-	if (rc) {
-		dev_err(core->dev, "failed to power off %d\n", rc);
-		goto out;
+
+	if (IS_ENABLED(CONFIG_CODEC3P_VCORE_APG)) {
+		if (!vpu_wait_vcores_off(core)) {
+			dev_warn(core->dev, "suspend while vcores on. forcing them off\n");
+			vpu_internal_coredump(core, "force power off VCORE");
+			if (!vpu_force_vcores_off(core))
+				dev_err(core->dev, "could not force vcores off\n");
+		}
+	}
+
+	if (core->pd_dev) {
+		rc = pm_runtime_put_sync(core->pd_dev);
+		if (rc) {
+			dev_err(core->dev, "failed to power off %d\n", rc);
+			goto out;
+		}
 	}
 
 	core->power_status = POWER_OFF_SLEEP;
@@ -399,19 +462,33 @@ int vpu_pm_resume(struct device *dev)
 	if (core->user_idle)
 		goto out;
 
-	if (core->power_status != POWER_OFF_SLEEP)
-		goto out;
-
-	rc = pm_runtime_resume_and_get(core->pd_dev);
-	if (rc) {
-		dev_err(core->dev, "failed to power on %d", rc);
+	if (core->power_status != POWER_OFF_SLEEP) {
+		if (core->power_status == POWER_ON)
+			dev_warn(core->dev, "already powered on");
 		goto out;
 	}
 
+	if (core->pd_dev) {
+		rc = pm_runtime_resume_and_get(core->pd_dev);
+		if (rc) {
+			dev_err(core->dev, "failed to power on %d", rc);
+			goto out;
+		}
+	}
+
 	/* TODO: recover the clock if needed */
-	if (core->vpu_power_cycled && vpu_wakeup(core)) {
-		rc = -EAGAIN;
-		goto out;
+	if (core->vpu_power_cycled) {
+		if (vpu_wakeup(core)) {
+			dump_vcpu_status(core);
+			vpu_internal_coredump(core, "wakeup VPU fails");
+			/* wakeup fails, but we don't power off here as it might fail
+			 * the host should trigger SSR to reset VPU HW in this case
+			 */
+			dev_warn(core->dev,
+				"Ignore vpu wakeup error, expect the following command timeout to trigger SSR\n");
+		}
+	} else if (IS_ENABLED(CONFIG_CODEC3P_VCORE_APG)) {
+		writel(0, core->lpcm_base + C3P_CONTROL_INPUT_SW_EN_OFFSET);
 	}
 
 	core->power_status = POWER_ON;
@@ -441,6 +518,12 @@ int vpu_pm_init(struct vpu_core *core)
 {
 	struct device *pd_dev;
 	int rc;
+
+	if (!IS_ENABLED(CONFIG_VPU_POWER_DOMAIN)) {
+		dev_info(core->dev, "power domain disabled via Kconfig\n");
+		core->pd_dev = NULL;
+		return 0;
+	}
 
 	core->genpd_nb.notifier_call = vpu_pd_notifier;
 

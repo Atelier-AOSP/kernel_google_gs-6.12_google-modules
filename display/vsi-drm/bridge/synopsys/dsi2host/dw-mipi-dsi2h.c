@@ -47,6 +47,7 @@
 
 #include "dw-mipi-dsi2h.h"
 #include "dw-mipi-dsi2h-sscd.h"
+#include "dw-mipi-dsi2h-regmap-limits.h"
 #include "gs_panel/dcs_helper.h"
 
 #define DSI2H_AUTOSUPEND_DELAY_MS 20
@@ -56,7 +57,8 @@
  */
 #define DSI2H_ULPS_DWORK_MS 10
 
-#define VERSION_01 0x100
+#define VERSION_01_00 0x100
+#define VERSION_01_10 0x110
 #define CORE_ID 0x3130302A
 
 #define DW_PRI_TRIGGER_REQUEST		1
@@ -414,7 +416,7 @@ static inline struct dw_mipi_dsi2h *bridge_to_dsi(struct drm_bridge *bridge)
  *
  * Return: 0 if the core becomes idle within the timeout, or the CORE_STATUS register content.
  */
-static int dw_dsi2h_wait_core_idle(struct dw_mipi_dsi2h *dsi2h)
+static u32 dw_dsi2h_wait_core_idle(struct dw_mipi_dsi2h *dsi2h)
 {
 	u32 val = 0;
 
@@ -427,32 +429,49 @@ static int dw_dsi2h_wait_core_idle(struct dw_mipi_dsi2h *dsi2h)
 }
 
 /* PRI functions */
-static int dw_dsi2h_wait_pri_not_busy(struct dw_mipi_dsi2h *dsi2h)
+
+/**
+ * dw_dsi2h_wait_pri_not_busy() - Wait for the DSI2H PRI to be not busy.
+ * @dsi2h: The DSI2H device structure.
+ *
+ * This function polls the DW_DSI2H_CORE_STATUS register until the PRI_BUSY
+ * status bit is clear, indicating that the PRI is not busy and ready for
+ * transactions. If the PRI remains busy after timeout, it increments the
+ * ST_PRI_BUSY statistic.
+ *
+ * Return: 0 if the PRI becomes not busy within the timeout, or the CORE_STATUS register content.
+ */
+static u32 dw_dsi2h_wait_pri_not_busy(struct dw_mipi_dsi2h *dsi2h)
 {
 	u32 val = 0;
-	u32 is_busy;
 
 	DPU_ATRACE_BEGIN("Polling PRI Busy");
 	regmap_read_poll_timeout(dsi2h->regs, DW_DSI2H_CORE_STATUS, val, !(val & PRI_BUSY),
 				 DW_DSI2H_PRI_BUSY_INTERVAL_US, DW_DSI2H_PRI_BUSY_TIMEOUT_US);
 	DPU_ATRACE_END("Polling PRI Busy");
-	is_busy = val & PRI_BUSY;
-	if (unlikely(is_busy && dsi2h->stat_data))
-		dsi2h->stat_data[ST_PRI_BUSY]++;
 
-	return is_busy;
+	if (unlikely(val & PRI_BUSY)) {
+		if (dsi2h->stat_data)
+			dsi2h->stat_data[ST_PRI_BUSY]++;
+		return val;
+	}
+
+	return 0;
 }
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 static int dw_dsi2h_pri_trigger_request(struct dw_mipi_dsi2h *dsi2h, u8 request)
 {
+	u32 core_status;
+
 	if (request != PHY_TX_TRIGGER_0 && request != PHY_TX_TRIGGER_1 &&
 	    request != PHY_TX_TRIGGER_2 && request != PHY_TX_TRIGGER_3)
 		return -EINVAL;
 
 	/* Step 1 - PRI busy ? */
-	if (dw_dsi2h_wait_pri_not_busy(dsi2h)) {
-		dev_err(dsi2h->dev, "PRI Busy!\n");
+	core_status = dw_dsi2h_wait_pri_not_busy(dsi2h);
+	if (unlikely(core_status)) {
+		dev_err(dsi2h->dev, "PRI Busy! status = %x\n", core_status);
 		return -EBUSY;
 	}
 
@@ -460,8 +479,11 @@ static int dw_dsi2h_pri_trigger_request(struct dw_mipi_dsi2h *dsi2h, u8 request)
 	dw_dsi2h_write_reg(dsi2h->regs, DW_DSI2H_PRI_TX_CMD, request);
 
 	/* Step 3 - Request was completed ? */
-	if (dw_dsi2h_wait_pri_not_busy(dsi2h)) {
-		dev_err(dsi2h->dev, "PRI didn't leave busy state after sending request!\n");
+	core_status = dw_dsi2h_wait_pri_not_busy(dsi2h);
+	if (unlikely(core_status)) {
+		dev_err(dsi2h->dev,
+			"PRI didn't leave busy state after sending request! status = %x\n",
+			core_status);
 		return -EAGAIN;
 	}
 
@@ -471,12 +493,15 @@ static int dw_dsi2h_pri_trigger_request(struct dw_mipi_dsi2h *dsi2h, u8 request)
 static int dw_dsi2h_pri_calibration(struct dw_mipi_dsi2h *dsi2h,
 				    enum pri_cal_request type, u32 time)
 {
+	u32 core_status;
+
 	if (time > 0x3FFFF)
 		return -EINVAL;
 
 	/* Step 1 - PRI busy ? */
-	if (dw_dsi2h_wait_pri_not_busy(dsi2h)) {
-		dev_err(dsi2h->dev, "PRI Busy!\n");
+	core_status = dw_dsi2h_wait_pri_not_busy(dsi2h);
+	if (unlikely(core_status)) {
+		dev_err(dsi2h->dev, "PRI Busy! status = %x\n", core_status);
 		return -EBUSY;
 	}
 
@@ -490,8 +515,11 @@ static int dw_dsi2h_pri_calibration(struct dw_mipi_dsi2h *dsi2h,
 		dw_dsi2h_write_reg(dsi2h->regs, DW_DSI2H_PRI_TX_CMD, PHY_ALTERNATECAL);
 
 	/* Step 4 - Request was completed ? */
-	if (dw_dsi2h_wait_pri_not_busy(dsi2h)) {
-		dev_err(dsi2h->dev, "PRI didn't leave busy state after sending request!\n");
+	core_status = dw_dsi2h_wait_pri_not_busy(dsi2h);
+	if (unlikely(core_status)) {
+		dev_err(dsi2h->dev,
+			"PRI didn't leave busy state after sending request! status = %x\n",
+			core_status);
 		return -EAGAIN;
 	}
 
@@ -503,6 +531,7 @@ static __maybe_unused int dw_dsi2h_pri_ulps_entry_request(struct dw_mipi_dsi2h *
 							  u8 clk, u8 mode)
 {
 	u32 val = 0;
+	u32 core_status;
 
 	if (clk != 0 && clk != 1)
 		return -EINVAL;
@@ -512,9 +541,9 @@ static __maybe_unused int dw_dsi2h_pri_ulps_entry_request(struct dw_mipi_dsi2h *
 
 	DPU_ATRACE_BEGIN("%s +", __func__);
 	/* Step 1 - PRI busy ? */
-	if (dw_dsi2h_wait_pri_not_busy(dsi2h)) {
-		dev_err(dsi2h->dev, "PRI Busy!\n");
-		DPU_ATRACE_INSTANT("PRI Busy");
+	core_status = dw_dsi2h_wait_pri_not_busy(dsi2h);
+	if (unlikely(core_status)) {
+		dev_err(dsi2h->dev, "PRI Busy! status = %x\n", core_status);
 		DPU_ATRACE_END("%s +", __func__);
 		return -EBUSY;
 	}
@@ -527,9 +556,11 @@ static __maybe_unused int dw_dsi2h_pri_ulps_entry_request(struct dw_mipi_dsi2h *
 	dw_dsi2h_write_reg(dsi2h->regs, DW_DSI2H_PRI_TX_CMD, PHY_ULPS_ENTRY);
 
 	/* Step 4 - Request was completed ? */
-	if (dw_dsi2h_wait_pri_not_busy(dsi2h)) {
-		dev_err(dsi2h->dev, "PRI didn't leave busy state after sending request!\n");
-		DPU_ATRACE_INSTANT("PRI didn't leave busy state after sending request");
+	core_status = dw_dsi2h_wait_pri_not_busy(dsi2h);
+	if (unlikely(core_status)) {
+		dev_err(dsi2h->dev,
+			"PRI didn't leave busy state after sending request! status = %x\n",
+			core_status);
 		DPU_ATRACE_END("%s +", __func__);
 		return -EAGAIN;
 	}
@@ -545,13 +576,14 @@ static __maybe_unused int dw_dsi2h_pri_ulps_entry_request(struct dw_mipi_dsi2h *
 static __maybe_unused int dw_dsi2h_pri_ulps_exit_request(struct dw_mipi_dsi2h *dsi2h, u16 wakeup)
 {
 	u32 val = 0;
+	u32 core_status;
 	/* To the minimum 1ms specified by the spec */
 
 	DPU_ATRACE_BEGIN("%s +", __func__);
 	/* Step 1 - PRI busy ? */
-	if (dw_dsi2h_wait_pri_not_busy(dsi2h)) {
-		dev_err(dsi2h->dev, "PRI Busy!\n");
-		DPU_ATRACE_INSTANT("PRI Busy");
+	core_status = dw_dsi2h_wait_pri_not_busy(dsi2h);
+	if (unlikely(core_status)) {
+		dev_err(dsi2h->dev, "PRI Busy! status = %x\n", core_status);
 		DPU_ATRACE_END("%s +", __func__);
 		return -EBUSY;
 	}
@@ -563,9 +595,11 @@ static __maybe_unused int dw_dsi2h_pri_ulps_exit_request(struct dw_mipi_dsi2h *d
 	dw_dsi2h_write_reg(dsi2h->regs, DW_DSI2H_PRI_TX_CMD, PHY_ULPS_EXIT);
 
 	/* Step 4 - Request was completed ? */
-	if (dw_dsi2h_wait_pri_not_busy(dsi2h)) {
-		dev_err(dsi2h->dev, "PRI didn't leave busy state after sending request!\n");
-		DPU_ATRACE_INSTANT("PRI didn't leave busy state after sending request");
+	core_status = dw_dsi2h_wait_pri_not_busy(dsi2h);
+	if (unlikely(core_status)) {
+		dev_err(dsi2h->dev,
+			"PRI didn't leave busy state after sending request! status = %x\n",
+			core_status);
 		DPU_ATRACE_END("%s +", __func__);
 		return -EAGAIN;
 	}
@@ -581,13 +615,14 @@ static __maybe_unused int dw_dsi2h_pri_ulps_exit_request(struct dw_mipi_dsi2h *d
 static int dw_mipi_dsi2h_enter_ulps(struct dw_mipi_dsi2h *dsi2h)
 {
 	int ret;
+	u32 core_status;
 
 	lockdep_assert_held(&dsi2h->dsi2h_lock);
 
 	DPU_ATRACE_BEGIN("%s +", __func__);
-	if (dw_dsi2h_wait_pri_not_busy(dsi2h)) {
-		dev_err(dsi2h->dev, " %s: PRI Busy!\n", __func__);
-		DPU_ATRACE_INSTANT("PRI Busy");
+	core_status = dw_dsi2h_wait_pri_not_busy(dsi2h);
+	if (unlikely(core_status)) {
+		dev_err(dsi2h->dev, " %s: PRI Busy! status = %x\n", __func__, core_status);
 		DPU_ATRACE_END("%s +", __func__);
 		return -EBUSY;
 	}
@@ -630,13 +665,14 @@ static int dw_mipi_dsi2h_enter_ulps(struct dw_mipi_dsi2h *dsi2h)
 static int dw_mipi_dsi2h_exit_ulps(struct dw_mipi_dsi2h *dsi2h)
 {
 	int ret;
+	u32 core_status;
 
 	lockdep_assert_held(&dsi2h->dsi2h_lock);
 
 	DPU_ATRACE_BEGIN("%s +", __func__);
-	if (dw_dsi2h_wait_pri_not_busy(dsi2h)) {
-		dev_err(dsi2h->dev, "%s: PRI Busy!\n", __func__);
-		DPU_ATRACE_INSTANT("PRI Busy");
+	core_status = dw_dsi2h_wait_pri_not_busy(dsi2h);
+	if (unlikely(core_status)) {
+		dev_err(dsi2h->dev, "%s: PRI Busy! status = %x\n", __func__, core_status);
 		DPU_ATRACE_END("%s +", __func__);
 		return -EBUSY;
 	}
@@ -703,9 +739,12 @@ static int dw_dsi2h_pri_receive_triggers(struct dw_mipi_dsi2h *dsi2h)
 
 static int dw_dsi2h_pri_bta_request(struct dw_mipi_dsi2h *dsi2h)
 {
+	u32 core_status;
+
 	/* Step 1 - PRI busy ? */
-	if (dw_dsi2h_wait_pri_not_busy(dsi2h)) {
-		dev_err(dsi2h->dev, "PRI Busy!\n");
+	core_status = dw_dsi2h_wait_pri_not_busy(dsi2h);
+	if (unlikely(core_status)) {
+		dev_err(dsi2h->dev, "PRI Busy! status = %x\n", core_status);
 		return -EBUSY;
 	}
 
@@ -713,8 +752,11 @@ static int dw_dsi2h_pri_bta_request(struct dw_mipi_dsi2h *dsi2h)
 	dw_dsi2h_write_reg(dsi2h->regs, DW_DSI2H_PRI_TX_CMD, PHY_BTA);
 
 	/* Step 3 - Request was completed ? */
-	if (dw_dsi2h_wait_pri_not_busy(dsi2h)) {
-		dev_err(dsi2h->dev, "PRI didn't leave busy state after sending request!\n");
+	core_status = dw_dsi2h_wait_pri_not_busy(dsi2h);
+	if (unlikely(core_status)) {
+		dev_err(dsi2h->dev,
+			"PRI didn't leave busy state after sending request! status = %x\n",
+			core_status);
 		return -EAGAIN;
 	}
 
@@ -724,20 +766,34 @@ static int dw_dsi2h_pri_bta_request(struct dw_mipi_dsi2h *dsi2h)
 #endif /* CONFIG_DEBUG_FS */
 
 /* CRI functions */
-static int dw_dsi2h_wait_cri_not_busy(struct dw_mipi_dsi2h *dsi2h)
+
+/**
+ * dw_dsi2h_wait_cri_not_busy() - Wait for the DSI2H CRI to be not busy.
+ * @dsi2h: The DSI2H device structure.
+ *
+ * This function polls the DW_DSI2H_CORE_STATUS register until the CRI_BUSY
+ * status bit is clear, indicating that the CRI is not busy and ready for
+ * transactions. If the CRI remains busy after timeout, it increments the
+ * ST_CRI_BUSY statistic.
+ *
+ * Return: 0 if the CRI becomes not busy within the timeout, or the CORE_STATUS register content.
+ */
+static u32 dw_dsi2h_wait_cri_not_busy(struct dw_mipi_dsi2h *dsi2h)
 {
 	u32 val = 0;
-	u32 is_busy;
 
 	DPU_ATRACE_BEGIN("Polling CRI Busy");
 	regmap_read_poll_timeout(dsi2h->regs, DW_DSI2H_CORE_STATUS, val, !(val & CRI_BUSY),
 				 DW_DSI2H_CRI_BUSY_INTERVAL_US, DW_DSI2H_CRI_BUSY_TIMEOUT_US);
 	DPU_ATRACE_END("Polling CRI Busy");
-	is_busy = val & CRI_BUSY;
-	if (unlikely(is_busy && dsi2h->stat_data))
-		dsi2h->stat_data[ST_CRI_BUSY]++;
 
-	return is_busy;
+	if (unlikely(val & CRI_BUSY)) {
+		if (dsi2h->stat_data)
+			dsi2h->stat_data[ST_CRI_BUSY]++;
+		return val;
+	}
+
+	return 0;
 }
 
 /**
@@ -761,7 +817,7 @@ static int dw_dsi2h_cri_rd_data_avail(struct dw_mipi_dsi2h *dsi2h)
 				       DW_DSI2H_CRI_DATA_AVAIL_INTERVAL_US,
 				       DW_DSI2H_CRI_DATA_AVAIL_TIMEOUT_US);
 	if (unlikely(ret))
-		dev_err(dsi2h->dev, "Polling CRI read data failed: %d\n", ret);
+		dev_err(dsi2h->dev, "Polling CRI read data failed %d, status = %x\n", ret, val);
 	DPU_ATRACE_END("Polling CRI read data");
 
 	return val & CRI_RD_DATA_AVAIL;
@@ -899,14 +955,16 @@ static int dw_mipi_dsi2h_host_packet_stack_enable(struct dw_mipi_dsi2h *dsi2h)
 static int dw_mipi_dsi2h_host_packet_stack_flush(struct dw_mipi_dsi2h *dsi2h)
 {
 	u32 flush_packet_stack_flags = 0;
+	u32 core_status;
 
 	dw_dsi2h_write_reg(dsi2h->regs, DW_DSI2H_CRI_TX_CTRL, flush_packet_stack_flags);
 	dsi2h->packet_stack_mode = false;
 	dsi2h->mipi_fifo_pld_used = 0;
 	dsi2h->mipi_fifo_hdr_used = 0;
 
-	if (dw_dsi2h_wait_cri_not_busy(dsi2h)) {
-		dev_err(dsi2h->dev, "CRI Busy!\n");
+	core_status = dw_dsi2h_wait_cri_not_busy(dsi2h);
+	if (unlikely(core_status)) {
+		dev_err(dsi2h->dev, "CRI Busy! status = %x\n", core_status);
 		return -EBUSY;
 	}
 
@@ -1017,7 +1075,7 @@ static void dw_dsi2h_delay_ulps_handler(struct kthread_work *work)
 	if (ret == 0) {	/* dsi2h device not in active state */
 		return;
 	} else if (unlikely(ret < 0)) {
-		dev_err(dsi2h->dev, "%s: failed to runtime resume get\n", __func__);
+		dev_err(dsi2h->dev, "%s: failed to runtime resume get, ret = %d\n", __func__, ret);
 		return;
 	}
 
@@ -1035,7 +1093,8 @@ exit:
 	pm_runtime_mark_last_busy(dsi2h->dev);
 	ret = pm_runtime_put_autosuspend(dsi2h->dev);
 	if (ret < 0)
-		dev_WARN(dsi2h->dev, "%s: failed to runtime put autosuspend %d\n", __func__, ret);
+		dev_WARN(dsi2h->dev, "%s: failed to runtime put autosuspend, ret = %d\n", __func__,
+			 ret);
 }
 
 static int _dw_mipi_dsi2h_host_transfer(struct dw_mipi_dsi2h *dsi2h, const struct mipi_dsi_msg *msg)
@@ -1043,9 +1102,14 @@ static int _dw_mipi_dsi2h_host_transfer(struct dw_mipi_dsi2h *dsi2h, const struc
 	ssize_t num_bytes_transferred = 0;
 	int ret;
 
-	if (!dsi2h->packet_stack_mode && dw_dsi2h_wait_cri_not_busy(dsi2h)) {
-		dev_err(dsi2h->dev, "CRI Busy! %d\n", __LINE__);
-		return -EBUSY;
+	if (!dsi2h->packet_stack_mode) {
+		u32 core_status;
+
+		core_status = dw_dsi2h_wait_cri_not_busy(dsi2h);
+		if (unlikely(core_status)) {
+			dev_err(dsi2h->dev, "CRI Busy! status = %x, %d\n", core_status, __LINE__);
+			return -EBUSY;
+		}
 	}
 
 	if (!dsi2h->packet_stack_mode && (msg->flags & GS_DSI_MSG_QUEUE))
@@ -1143,8 +1207,7 @@ static ssize_t dw_mipi_dsi2h_host_transfer(struct mipi_dsi_host *host,
 
 EXIT:
 	pm_runtime_mark_last_busy(dsi2h->dev);
-	if (pm_runtime_put_autosuspend(dsi2h->dev) < 0)
-		dev_WARN(dsi2h->dev, "failed to runtime put %d\n", ret);
+	pm_runtime_put_autosuspend(dsi2h->dev);
 	mutex_unlock(&dsi2h->dsi2h_lock);
 
 	return ret;
@@ -1264,19 +1327,24 @@ static int dw_dsi2h_start_tear_effect(struct dw_mipi_dsi2h *dsi2h, u32 sw_type, 
 static int dw_dsi2h_finish_tear_effect(struct dw_mipi_dsi2h *dsi2h)
 {
 	u32 reg;
+	u32 core_status;
 
 	/* Check if auto bta is enabled, if not, do it manually*/
 	if (dw_dsi2h_read_field(dsi2h->field_auto_tear_bta_disable)) {
 		/* Automatic tear effect BTA disabled, lets trigger it manually */
-		if (dw_dsi2h_wait_pri_not_busy(dsi2h)) {
-			dev_err(dsi2h->dev, "PRI Busy!\n");
+		core_status = dw_dsi2h_wait_pri_not_busy(dsi2h);
+		if (unlikely(core_status)) {
+			dev_err(dsi2h->dev, "PRI Busy! status = %x\n", core_status);
 			return -EBUSY;
 		}
 
 		dw_dsi2h_write_reg(dsi2h->regs, DW_DSI2H_PRI_TX_CMD, PHY_BTA);
 
-		if (dw_dsi2h_wait_pri_not_busy(dsi2h)) {
-			dev_err(dsi2h->dev, "PRI didn't leave busy state after sending request!\n");
+		core_status = dw_dsi2h_wait_pri_not_busy(dsi2h);
+		if (unlikely(core_status)) {
+			dev_err(dsi2h->dev,
+				"PRI didn't leave busy state after sending request! status = %x\n",
+				core_status);
 			return -EAGAIN;
 		}
 	}
@@ -1391,6 +1459,8 @@ static void dw_dsi_config(struct dw_mipi_dsi2h *dsi2h)
 
 	/* Step 6 - Automatic Tear Effect Configuration */
 	dw_dsi2h_write_field(dsi2h->field_auto_tear_bta_disable, dsi2h->tear_effect);
+	if (dsi2h->hs_link_enable)
+		dw_dsi2h_write_reg(dsi2h->regs, DW_DSI2H_DSI_DS_TX_CFG, 1);
 
 	/* Step 7 - IPI Hibernate Configuration */
 	dw_dsi2h_write_field(dsi2h->field_hib_type, dsi2h->hib_type);
@@ -1706,7 +1776,7 @@ static int dw_opt_mode_select(struct dw_mipi_dsi2h *dsi2h,
 	u32 val = U32_MAX;
 
 	/* Step 1 - Mode Request */
-	dw_dsi2h_write_field(dsi2h->field_mode_ctrl, mode);
+	dw_dsi2h_write_reg(dsi2h->regs, DW_DSI2H_MODE_CTRL, mode);
 
 	/* Step 2 - Controller in requested mode? */
 	regmap_read_poll_timeout(dsi2h->regs, DW_DSI2H_MODE_STATUS, val, (val == mode),
@@ -1941,12 +2011,13 @@ int dw_mipi_dsi2h_disable(struct dw_mipi_dsi2h *dsi2h)
 			dsi2h->pending_datarate);
 		dsi2h->datarate = dsi2h->pending_datarate;
 		dsi2h->pending_datarate = 0;
+		phy_set_speed(dsi2h->phy, dsi2h->datarate);
 	}
 
 	/* wait for the core to be idle */
 	ret = dw_dsi2h_wait_core_idle(dsi2h);
 	if (ret)
-		dev_err(dsi2h->dev, "DSI core not idle, %#x\n", ret);
+		dev_err(dsi2h->dev, "DSI core not idle, status = %x\n", ret);
 
 	phy_power_off(dsi2h->phy);
 	phy_exit(dsi2h->phy);
@@ -2266,7 +2337,8 @@ static void dw_mipi_dsi2h_bridge_atomic_enable(struct drm_bridge *bridge,
 	} else {
 		ret = pm_runtime_resume_and_get(dsi2h->dev);
 		if (unlikely(ret < 0)) {
-			dev_err(dsi2h->dev, "failed to runtime enable during atomic enable\n");
+			dev_err(dsi2h->dev,
+				"failed to runtime enable during atomic enable, ret = %d\n", ret);
 			return;
 		}
 	}
@@ -2326,7 +2398,8 @@ static void dw_mipi_dsi2h_bridge_atomic_enable(struct drm_bridge *bridge,
 		/* remove extra vote taken to keep runtime pm on during psr */
 		ret = pm_runtime_put(dsi2h->dev);
 		if (unlikely(ret < 0))
-			dev_err(dsi2h->dev, "failed to runtime disable out of psr\n");
+			dev_err(dsi2h->dev, "failed to runtime disable out of psr, ret = %d\n",
+				ret);
 
 		dsi2h->psr_rpm_on = false;
 	}
@@ -2386,6 +2459,7 @@ static void dw_mipi_dsi2h_bridge_atomic_post_disable(struct drm_bridge *bridge,
 					dsi2h->pending_datarate);
 				dsi2h->datarate = dsi2h->pending_datarate;
 				dsi2h->pending_datarate = 0;
+				phy_set_speed(dsi2h->phy, dsi2h->datarate);
 			}
 			mutex_unlock(&dsi2h->dsi2h_lock);
 		} else {
@@ -2429,7 +2503,8 @@ static void dw_mipi_dsi2h_bridge_atomic_post_disable(struct drm_bridge *bridge,
 			ret = pm_runtime_put_sync(dsi2h->dev);
 			if (unlikely(ret < 0))
 				dev_err(dsi2h->dev,
-					"failed to runtime disable during atomic disable\n");
+					"failed to runtime disable during atomic disable, ret = %d\n",
+					ret);
 		}
 	}
 }
@@ -2551,6 +2626,7 @@ static int reg_dump_show(struct seq_file *s, void *data)
 	int ret, ret_dump;
 	struct dw_mipi_dsi2h *dw_dsi2h = s->private;
 	struct drm_printer p = drm_seq_file_printer(s);
+	char desc[5];
 
 	ret = pm_runtime_get_if_in_use(dw_dsi2h->dev);
 	if (ret < 0) {
@@ -2563,7 +2639,9 @@ static int reg_dump_show(struct seq_file *s, void *data)
 		return ret;
 	}
 
-	ret_dump = gs_reg_dump("DSI", dw_dsi2h->base, 0x0, dw_dsi2h->reg_size, &p);
+	scnprintf(desc, sizeof(desc), "DSI%u", dw_dsi2h->plat_data->mux_id);
+	ret_dump = gs_reg_dump_with_skips(desc, dw_dsi2h->base, dw_dsi2h->reg_dump_offset,
+					  dw_dsi2h->reg_dump_size, &p, dw_dsi2h->reg_table);
 
 	ret = pm_runtime_put_sync(dw_dsi2h->dev);
 	if (ret < 0) {
@@ -2626,6 +2704,9 @@ static const struct file_operations coredump_trigger_fops = {
 
 static int dw_mipi_dsi2h_debugfs_init(struct dw_mipi_dsi2h *dsi2h)
 {
+	dsi2h->reg_dump_offset = 0;
+	dsi2h->reg_dump_size = dsi2h->reg_size;
+
 	dsi2h->debugfs = debugfs_create_dir(dev_name(dsi2h->dev), NULL);
 	if (IS_ERR(dsi2h->debugfs))
 		return PTR_ERR(dsi2h->debugfs);
@@ -2633,6 +2714,8 @@ static int dw_mipi_dsi2h_debugfs_init(struct dw_mipi_dsi2h *dsi2h)
 	dw_create_debugfs_hwv_files(dsi2h);
 
 	debugfs_create_file("reg_dump", 0444, dsi2h->debugfs, dsi2h, &reg_dump_fops);
+	debugfs_create_x32("reg_dump_offset", 0644, dsi2h->debugfs, &dsi2h->reg_dump_offset);
+	debugfs_create_x32("reg_dump_size", 0644, dsi2h->debugfs, &dsi2h->reg_dump_size);
 	debugfs_create_bool("force_set_hs_clk", 0644, dsi2h->debugfs, &dsi2h->force_set_datarate);
 	debugfs_create_bool("disable_psr_ulps", 0644, dsi2h->debugfs, &dsi2h->disable_psr_ulps);
 	debugfs_create_file("dsi_errors", 0644, dsi2h->debugfs, dsi2h, &dsi_errors_fops);
@@ -2675,7 +2758,8 @@ static int dw_mipi_dsi2h_regmap_fields_init(struct dw_mipi_dsi2h *dsi2h)
 	const struct dw_mipi_dsi2h_variant *variant;
 
 	switch (dsi2h->hw_version & 0xFFF) {
-	case VERSION_01:
+	case VERSION_01_00:
+	case VERSION_01_10:
 		variant = &dw_mipi_dsi2h_lca01_layout;
 		break;
 	default:
@@ -2973,18 +3057,24 @@ static ssize_t hs_clock_store(struct device *dev, struct device_attribute *attr,
 		dev_dbg(dsi2h->dev, "set the same datarate %u\n", datarate);
 		dsi2h->pending_datarate = 0;
 	} else if (!dsi2h->dynamic_hs_clk_en && dsi2h->state != DSI2H_STATE_SUSPEND) {
+		dev_dbg(dsi2h->dev, "dynamic_hs_clk_en=0, set pending_datarate %u\n", datarate);
 		dsi2h->pending_datarate = datarate;
 	} else if (dsi2h->state != DSI2H_STATE_HS_EN && dsi2h->state != DSI2H_STATE_SUSPEND) {
 		dev_dbg(dsi2h->dev, "not in HS state, set pending_datarate %u\n", datarate);
 		dsi2h->pending_datarate = datarate;
 		dsi2h->datarate_changed = true;
 	} else {
-		dev_dbg(dsi2h->dev, "datarate %u will be applied at next dsi2h_enable\n", datarate);
 		dsi2h->pending_datarate = 0;
-		/* This change will take effect at the next time dw_mipi_dsi2h_enable is called. */
 		dsi2h->datarate = datarate;
-		if (dsi2h->dynamic_hs_clk_en)
+		if (dsi2h->dynamic_hs_clk_en && dsi2h->state != DSI2H_STATE_SUSPEND) {
+			dev_dbg(dsi2h->dev,
+				"datarate %u will be applied at next exit ULPS\n", datarate);
 			dsi2h->datarate_changed = true;
+			phy_set_speed(dsi2h->phy, dsi2h->datarate);
+		} else {
+			dev_dbg(dsi2h->dev,
+				"datarate %u will be applied at next dsi2h_enable\n", datarate);
+		}
 	}
 
 	mutex_unlock(&dsi2h->dsi2h_lock);
@@ -3097,6 +3187,8 @@ static struct dw_mipi_dsi2h *__dw_mipi_dsi2h_probe(struct platform_device *pdev,
 		return ERR_CAST(dw_dsi2h->base);
 	}
 
+	dw_dsi2h->reg_table = &dw_dsi2h_dump_reg_table;
+
 	dw_dsi2h->regs = devm_regmap_init_mmio(dev, dw_dsi2h->base, &dw_mipi_dsi2h_regmap_cfg);
 	if (IS_ERR(dw_dsi2h->regs)) {
 		dev_err(dev, "Failed to init regmap: %ld\n", PTR_ERR(dw_dsi2h->regs));
@@ -3115,6 +3207,7 @@ static struct dw_mipi_dsi2h *__dw_mipi_dsi2h_probe(struct platform_device *pdev,
 	dw_dsi2h->is_cphy = pdata->is_cphy;
 	dw_dsi2h->clk_type = pdata->clk_type;
 	dw_dsi2h->auto_calc_off = pdata->auto_calc_off;
+	dw_dsi2h->hs_link_enable = pdata->hs_link_enable;
 	dw_dsi2h->ppi_width = pdata->ppi_width;
 	dw_dsi2h->high_speed = pdata->high_speed;
 	dw_dsi2h->bta = pdata->bta;

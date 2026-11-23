@@ -17,7 +17,12 @@
 #include <linux/platform_device.h>
 #include <linux/mailbox_client.h>
 
-#define GSA_PAGE_SIZE (4096)
+#define GSA_PAGE_SIZE (4096U)
+#define GSA_PQ_IMAGE_HEADER_SIZE (20480U)
+
+/* Number of shared registers mailbox */
+#define MBOX_SR_NUM 16
+#define MBOX_MAX_ARGS_NUM (MBOX_SR_NUM - 3)
 
 /**
  * enum gsa_mbox_cmd - mailbox commands
@@ -93,6 +98,20 @@ enum gsa_mbox_cmd {
 	/* Retrieve trace data */
 	GSA_MB_CMD_RUN_TRACE_DUMP = 270,
 	GSA_MB_CMD_RUN_TRACE_PING = 271,
+
+	/* Post quantum enabled image auth */
+	GSA_MB_CMD_PQ_AUTH_IMG = 0x1A7D0010U,
+
+	/* FFA Interface */
+	GSA_MB_CMD_MEM_PROTECT = 420,
+	GSA_MB_CMD_MEM_UNPROTECT,
+
+	/* IPC interface */
+	GSA_MB_CMD_IPC_CONNECT = 440,
+	GSA_MB_CMD_IPC_GET_EVENT,
+	GSA_MB_CMD_IPC_SEND,
+	GSA_MB_CMD_IPC_RECV,
+	GSA_MB_CMD_IPC_DISCONNECT,
 };
 
 /**
@@ -115,6 +134,33 @@ enum img_loader_args {
 	IMG_LOADER_BODY_ADDR_LO_IDX = 2,
 	IMG_LOADER_BODY_ADDR_HI_IDX = 3,
 	IMG_LOADER_ARGC = 4,
+};
+
+/**
+ * enum pq_img_loader_args - parameter layout for image loading mbox commands
+ * using the PQ-enabled image header
+ * @PQ_IMG_LOADER_HEADER_ADDR_LO_IDX: index of image header low address
+ * parameter
+ * @PQ_IMG_LOADER_HEADER_ADDR_HI_IDX: index of image header high address
+ * parameter
+ * @PQ_IMG_LOADER_BODY_ADDR_LO_IDX:   index of image body low address parameter
+ * @PQ_IMG_LOADER_BODY_ADDR_HI_IDX:   index of image body high address
+ * parameter
+ * @PQ_IMG_LOADER_BODY_SIZE_IDX:      index of image body length parameter
+ * @PQ_IMG_LOADER_HEADER_SIZE_IDX:    index of image header size parameter
+ * @PQ_IMG_LOADER_ARGC:               total number of parameters
+ *
+ * This layout is applicable for the fallowing mailbox commands:
+ *     %GSA_MB_CMD_PQ_AUTH_IMG
+ */
+enum pq_img_loader_args {
+	PQ_IMG_LOADER_HEADER_ADDR_LO_IDX = IMG_LOADER_HEADER_ADDR_LO_IDX,
+	PQ_IMG_LOADER_HEADER_ADDR_HI_IDX = IMG_LOADER_HEADER_ADDR_HI_IDX,
+	PQ_IMG_LOADER_BODY_ADDR_LO_IDX = IMG_LOADER_BODY_ADDR_LO_IDX,
+	PQ_IMG_LOADER_BODY_ADDR_HI_IDX = IMG_LOADER_BODY_ADDR_HI_IDX,
+	PQ_IMG_LOADER_BODY_SIZE_IDX = 4,
+	PQ_IMG_LOADER_HEADER_SIZE_IDX = 5,
+	PQ_IMG_LOADER_ARGC = 6,
 };
 
 enum gsc_tpm_datagram_args {
@@ -259,6 +305,7 @@ enum get_pm_stats_rsp_args {
 
 enum gsa_pm_stats_ver {
 	GSA_PM_STATS_V1 = 1,
+	GSA_PM_STATS_V2,
 };
 
 /**
@@ -297,6 +344,10 @@ struct gsa_pm_stats {
 	uint64_t pg_cnt;
 	uint64_t pg_wakeup_cnt;
 	uint64_t pg_abort_cnt;
+	uint64_t rg_ticks;
+	uint64_t rg_cnt;
+	uint64_t rg_wakeup_cnt;
+	uint64_t rg_abort_cnt;
 	uint64_t longest_awake;
 	uint64_t longest_sleep;
 	uint32_t ap_suspend_cnt;
@@ -349,6 +400,141 @@ enum gsa_trace_dump_rsp_args {
 	GSA_TRACE_DUMP_RSP_ARGC,
 };
 
+/* Shared memory */
+#define PROT_ID_GENERIC_MEM_LEND 0x103
+#define PROT_ID_GENERIC_MEM_SHARE 0x133
+
+enum ext_mem_protect_req_args {
+	GSA_EXT_MEM_PROTECT_REQ_PA_BASE_ADDR_LO_IDX,
+	GSA_EXT_MEM_PROTECT_REQ_PA_BASE_ADDR_HI_IDX,
+	GSA_EXT_MEM_PROTECT_REQ_VA_BASE_ADDR_LO_IDX,
+	GSA_EXT_MEM_PROTECT_REQ_VA_BASE_ADDR_HI_IDX,
+	GSA_EXT_MEM_PROTECT_REQ_SIZE_IDX,
+	GSA_EXT_MEM_PROTECT_REQ_PROT_ID_IDX,
+	GSA_EXT_MEM_PROTECT_REQ_ARGC,
+};
+
+enum ext_mem_protect_rsp_args {
+	GSA_EXT_MEM_PROTECT_RSP_HANDLE_IDX,
+	GSA_EXT_MEM_PROTECT_RSP_ARGC,
+};
+
+enum ext_mem_unprotect_req_args {
+	GSA_EXT_MEM_UNPROTECT_REQ_HANDLE_IDX,
+	GSA_EXT_MEM_UNPROTECT_REQ_ARGC,
+};
+
+/*
+ * GSA IPC
+ */
+enum gsa_ipc_err {
+	GSA_IPC_ERR_NONE = 0,
+	GSA_IPC_ERR_PORT_NOT_FOUND = 2,
+	GSA_IPC_ERR_CHANNEL_NOT_READY = 3,
+	GSA_IPC_ERR_CHANNEL_NO_MSG = 4,
+	GSA_IPC_ERR_CHANNEL_SEND_BLOCKED = 9,
+	GSA_IPC_ERR_CHANNEL_CLOSED = 15,
+	GSA_IPC_ERR_NO_RESOURCES = 41,
+};
+
+/* Connect */
+enum gsa_ipc_connect_req_args {
+	GSA_IPC_CONNECT_REQ_ADDR_LO_IDX = 0,
+	GSA_IPC_CONNECT_REQ_ADDR_HI_IDX,
+	GSA_IPC_CONNECT_REQ_LEN_IDX,
+	GSA_IPC_CONNECT_REQ_COOKIE_LO_IDX,
+	GSA_IPC_CONNECT_REQ_COOKIE_HI_IDX,
+	GSA_IPC_CONNECT_REQ_ARGC,
+};
+
+enum gsa_ipc_connect_rsp_args {
+	GSA_IPC_CONNECT_RSP_ERR_IDX = 0,
+	GSA_IPC_CONNECT_RSP_HANDLE_IDX,
+	GSA_IPC_CONNECT_RSP_ARGC,
+};
+
+/* Disconnect */
+enum gsa_ipc_disconnect_req_args {
+	GSA_IPC_DISCONNECT_REQ_HANDLE_IDX = 0,
+	GSA_IPC_DISCONNECT_REQ_ARGC,
+};
+
+/* Get event */
+enum gsa_ipc_event_enum {
+	GSA_IPC_EVENT_NONE = 0x0,
+	GSA_IPC_EVENT_CONNECTED = 0x1,
+	GSA_IPC_EVENT_ERROR = 0x2,
+	GSA_IPC_EVENT_HUP = 0x4,
+	GSA_IPC_EVENT_MSG = 0x8,
+	GSA_IPC_EVENT_SEND_UNBLOCKED = 0x10,
+};
+
+enum gsa_ipc_get_event_req_args {
+	GSA_IPC_GET_EVENT_REQ_HANDLE_IDX = 0,
+	GSA_IPC_GET_EVENT_REQ_ARGC,
+};
+
+enum gsa_ipc_get_event_rsp_args {
+	GSA_IPC_GET_EVENT_RSP_HANDLE_IDX = 0,
+	GSA_IPC_GET_EVENT_RSP_EVENT_IDX,
+	GSA_IPC_GET_EVENT_RSP_COOKIE_LO_IDX,
+	GSA_IPC_GET_EVENT_RSP_COOKIE_HI_IDX,
+	GSA_IPC_GET_EVENT_RSP_ARGC,
+};
+
+/* Send Msg */
+#define SHM_INF_PG_SZ_SHIFT 12
+
+#define SHM_INF_MEM_ID_SHIFT 56
+#define SHM_INF_MEM_ID_MASK 0xFFUL
+
+#define SHM_INF_PROT_SHIFT 52
+#define SHM_INF_PROT_MASK 0xFUL
+
+#define SHM_INF_PROT_RD (0x1)
+#define SHM_INF_PROT_WR (0x2)
+#define SHM_INF_PROT_RW (0x3)
+
+#define SHM_INF_SIZE_SHIFT 32
+#define SHM_INF_SIZE_MASK 0x000FFFFFUL
+
+#define SHM_INF_OBJ_ID_SHIFT 24
+#define SHM_INF_OBJ_ID_MASK 0xFFUL
+
+#define SHM_INF_OFFSET_SHIFT 0
+#define SHM_INF_OFFSET_MASK 0x000FFFFFU
+
+enum gsa_ipc_send_msg_req_args {
+	GSA_IPC_SEND_REQ_HANDLE_IDX = 0,
+	GSA_IPC_SEND_REQ_MSG_BUF_ADDR_LO_IDX,
+	GSA_IPC_SEND_REQ_MSG_BUF_ADDR_HI_IDX,
+	GSA_IPC_SEND_REQ_MSG_LEN_IDX,
+	GSA_IPC_SEND_REQ_MIN_ARGC,
+	GSA_IPC_SEND_REQ_MSG_SHM_BASE_IDX = GSA_IPC_SEND_REQ_MIN_ARGC,
+	GSA_IPC_SEND_REQ_MAX_ARGC = MBOX_MAX_ARGS_NUM,
+};
+
+enum gsa_ipc_send_msg_rsp_args {
+	GSA_IPC_SEND_RSP_ERR_IDX = 0,
+	GSA_IPC_SEND_RSP_MSG_LEN_IDX,
+	GSA_IPC_SEND_RSP_ARGC,
+};
+
+/* Recv Msg */
+enum gsa_ipc_recv_msg_req_args {
+	GSA_IPC_RECV_REQ_HANDLE_IDX = 0,
+	GSA_IPC_RECV_REQ_MSG_BUF_ADDR_LO_IDX,
+	GSA_IPC_RECV_REQ_MSG_BUF_ADDR_HI_IDX,
+	GSA_IPC_RECV_REQ_MSG_BUF_SIZE_IDX,
+	GSA_IPC_RECV_REQ_ARGC,
+};
+
+enum gsa_ipc_recv_msg_rsp_args {
+	GSA_IPC_RECV_RSP_ERR_IDX = 0,
+	GSA_IPC_RECV_RSP_MSG_LEN_IDX,
+	GSA_IPC_RECV_RSP_ARGC,
+};
+
 /*
  * GSA specific mailbox protocol support
  */
@@ -372,10 +558,15 @@ enum gsa_mb_error {
 	GSA_MB_ERR_INTERNAL = 129U,
 	GSA_MB_ERR_TIMED_OUT = 130U,
 	GSA_MB_ERR_BAD_STATE = 131U,
+
+	/* Success value use by GSA ROM on GSP */
+	GSA_MB_GSP_ROM_SUCCESS = 0x4FD1398BU,
 };
 
 #if IS_ENABLED(CONFIG_GSA_LINUX_MAILBOX)
-#define GSA_MBOX_COUNT 1
+
+#define MBOX_MSG_SLOT_IDX 0
+#define MBOX_DOORBELL_IRQ_SLOT_IDX 1
 
 struct mbox_slot {
 	struct mbox_client client; /* Linux mailbox framework client */
@@ -393,9 +584,17 @@ struct gsa_mbox {
 	u32 wake_ref_cnt;
 	struct device *s2mpu;
 #endif
-	/* Slot for each mailbox.  Only support 1 at the moment. */
-	struct mbox_slot slots[GSA_MBOX_COUNT];
+	/* Message slot */
+	struct mbox_slot msg_slot;
 	int (*send_mbox_msg)(struct mbox_chan *chan, void *mssg);
+
+#if IS_ENABLED(CONFIG_GSA_IPC)
+	/* Doorbell interrupt slot */
+	void (*ipc_irq_handler)(void *args);
+	void *ipc_irq_handler_args;
+
+	struct mbox_slot doorbell_irq_slot;
+#endif
 };
 
 #else
@@ -424,5 +623,9 @@ int gsa_send_mbox_cmd(struct gsa_mbox *mb, u32 cmd,
 void mbox_tx_prepare(struct mbox_client *cl, void *mssg);
 void mbox_tx_done(struct mbox_client *cl, void *mssg, int r);
 void mbox_rx_callback(struct mbox_client *cl, void *mssg);
+
+void mbox_set_ipc_irq_handler(struct gsa_mbox *mb,
+			      void (*handler)(void *),
+			      void *handler_args);
 
 #endif /* __LINUX_GSA_MBOX_H */

@@ -175,6 +175,12 @@ properties:
     type: boolean
     description: Enable external power control instead of auto runtime PM
 
+  aoc-ssr-capable:
+    type: boolean
+    description:
+      Set if SPI controller has to subscribe to AOC/AOSS SSR notifications and
+      disable itself during SSR.
+
   polling-busy-wait-mode:
     type: boolean
     description: Enable polling busy-wait mode instead of interrupt mode

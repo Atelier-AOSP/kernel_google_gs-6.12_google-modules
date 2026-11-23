@@ -27,13 +27,21 @@ enum tbn_bus_owner {
 	TBN_BUS_OWNER_AOC = 1,
 };
 
-enum TbnOperation : __u32 {
+#ifndef __CODESONAR__
+#define ENUM_U32 : __u32
+#else
+#define ENUM_U32
+#endif
+
+enum TbnOperation ENUM_U32 {
 	TBN_OPERATION_IDLE = 0,
 	TBN_OPERATION_AP_RELEASE_BUS,
 	TBN_OPERATION_AP_REQUEST_BUS,
 	TBN_OPERATION_AOC_RESET,
 	TBN_OPERATION_AOC_SEND_LPTW_EVENT,
 };
+
+#undef ENUM_U32
 
 struct TbnEvent {
 	__u32 id;
@@ -74,8 +82,8 @@ struct tbn_context {
 	u32 max_devices;
 	u32 registered_mask;
 	u32 requested_dev_mask;
-	int aoc2ap_gpio;
-	int ap2aoc_gpio;
+	struct gpio_desc *aoc2ap_gpio;
+	struct gpio_desc *ap2aoc_gpio;
 	int aoc2ap_irq;
 	struct task_struct *aoc_channel_task;
 

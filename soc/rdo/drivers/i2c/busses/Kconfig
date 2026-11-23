@@ -11,3 +11,11 @@ config I2C_DW_GOOGLE_QUIRKS
 	select I2C_DW_GOOGLE_CORE
 	help
 	  Enable the upstream I2C designware platform driver
+
+config I2C_DW_GOOGLE_TEST
+	tristate "Test driver for i2C controller"
+	help
+	  Enable I2C test driver which provides debugfs based API
+	  to generate I2C traffic.
+	  Select Y if you have such device.
+	  If unsure select "N".

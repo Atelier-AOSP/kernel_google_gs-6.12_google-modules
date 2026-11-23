@@ -131,8 +131,8 @@ int s2mpg13_update_reg(struct i2c_client *i2c, u8 reg, u8 val, u8 mask)
 }
 EXPORT_SYMBOL_GPL(s2mpg13_update_reg);
 
-struct i2c_client *s2mpg13_get_i2c_client(struct s2mpg13_dev *dev,
-					  unsigned int reg)
+static struct i2c_client *s2mpg13_get_i2c_client(struct s2mpg13_dev *dev,
+						 unsigned int reg)
 {
 	struct i2c_client *client = NULL;
 
@@ -148,8 +148,8 @@ struct i2c_client *s2mpg13_get_i2c_client(struct s2mpg13_dev *dev,
 	return client;
 }
 
-int s2mpg13_regmap_read_reg(void *context, unsigned int reg,
-			    unsigned int *dest)
+static int s2mpg13_regmap_read_reg(void *context, unsigned int reg,
+				   unsigned int *dest)
 {
 	u8 ureg = reg;
 	u8 *udest = (u8 *)dest;
@@ -163,8 +163,8 @@ int s2mpg13_regmap_read_reg(void *context, unsigned int reg,
 	return s2mpg13_read_reg(client, ureg, udest);
 }
 
-int s2mpg13_regmap_write_reg(void *context, unsigned int reg,
-			     unsigned int value)
+static int s2mpg13_regmap_write_reg(void *context, unsigned int reg,
+				    unsigned int value)
 {
 	u8 ureg = reg;
 	u8 uvalue = value;

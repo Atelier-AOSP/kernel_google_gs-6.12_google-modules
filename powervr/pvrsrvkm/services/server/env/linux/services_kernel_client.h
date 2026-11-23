@@ -274,7 +274,9 @@ void SyncCheckpointContextRef(PSYNC_CHECKPOINT_CONTEXT psContext);
 void SyncCheckpointContextUnref(PSYNC_CHECKPOINT_CONTEXT psContext);
 enum PVRSRV_ERROR_TAG SyncCheckpointAlloc(PSYNC_CHECKPOINT_CONTEXT psSyncContext, PVRSRV_TIMELINE timeline, PVRSRV_FENCE fence, const char *pszCheckpointName, PSYNC_CHECKPOINT *ppsSyncCheckpoint);
 enum PVRSRV_ERROR_TAG SyncCheckpointAllocProxy(PSYNC_CHECKPOINT_CONTEXT psSyncContext, PVRSRV_FENCE fence, IMG_HANDLE hEnvFenceObjPtr, IMG_BOOL bIsPVRSWFence, const char *pszCheckpointName, PSYNC_CHECKPOINT *ppsSyncCheckpoint);
+#if defined(SUPPORT_FASTPATH_FENCE) || defined(SUPPORT_FOREIGN_FENCE_TOKEN)
 void SyncCheckpointInjectFFToken(PSYNC_CHECKPOINT psSyncCheckpoint, IMG_UINT16 ui16FFToken);
+#endif
 void SyncCheckpointSignal(PSYNC_CHECKPOINT psSyncCheckpoint, u32 fence_sync_flags);
 void SyncCheckpointError(PSYNC_CHECKPOINT psSyncCheckpoint, u32 fence_sync_flags);
 #if defined(SUPPORT_FASTPATH_FENCE)
@@ -285,6 +287,7 @@ bool SyncCheckpointIsErrored(PSYNC_CHECKPOINT psSyncCheckpoint, u32 fence_sync_f
 enum PVRSRV_ERROR_TAG SyncCheckpointTakeRef(PSYNC_CHECKPOINT psSyncCheckpoint);
 enum PVRSRV_ERROR_TAG SyncCheckpointDropRef(PSYNC_CHECKPOINT psSyncCheckpoint);
 void SyncCheckpointFree(PSYNC_CHECKPOINT psSyncCheckpoint);
+enum PVRSRV_ERROR_TAG SyncCheckpointFreeProxy(PSYNC_CHECKPOINT psSyncCheckpoint);
 __u32 SyncCheckpointGetFirmwareAddr(PSYNC_CHECKPOINT psSyncCheckpoint);
 void SyncCheckpointCCBEnqueued(PSYNC_CHECKPOINT psSyncCheckpoint);
 __u32 SyncCheckpointGetId(PSYNC_CHECKPOINT psSyncCheckpoint);

@@ -21,6 +21,8 @@
  * <<Broadcom-WL-IPTag/Dual:>>
  */
 
+#include <linux/cleanup.h>
+#include <linux/completion.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -30,7 +32,11 @@
 #include <linux/skbuff.h>
 #include <linux/fcntl.h>
 #include <linux/fs.h>
+#include <linux/mod_devicetable.h>
+#include <linux/of.h>
 #include <linux/of_gpio.h>
+#include <linux/pm_runtime.h>
+
 #ifdef CONFIG_WIFI_CONTROL_FUNC
 #include <linux/wlan_plat.h>
 #else
@@ -48,6 +54,10 @@
 #endif  /* CONFIG_PCI_EXYNOS_GS */
 #endif /* CONFIG_SOC_GOOGLE */
 
+#if IS_ENABLED(CONFIG_GOOGLE_CRASH_DEBUG_DUMP)
+#include <soc/google/google-cdd.h>
+#endif
+
 #ifdef DHD_COREDUMP
 #include <linux/platform_data/sscoredump.h>
 #endif /* DHD_COREDUMP */
@@ -55,6 +65,8 @@
 #ifdef DHD_HOST_CPUFREQ_BOOST
 #include <linux/cpufreq.h>
 #endif /* DHD_HOST_CPUFREQ_BOOST */
+
+#include <bcmstdlib_s.h>
 
 #if IS_ENABLED(CONFIG_PCI_EXYNOS_GS)
 #define GOOGLE_PCIE_VENDOR_ID 0x144d
@@ -70,6 +82,11 @@
 #define MSI_MASK_REG 0x3c80082c
 #define MSI_STAT_REG 0x3c800830
 #define PCI_ICDS_REG 0x3c009554
+#endif
+
+#if IS_ENABLED(CONFIG_GOOGLE_CRASH_DEBUG_DUMP)
+#define CDD_WIFI_STAT_PCIE_LINK_UP BIT(0)
+uint32_t gcdd_wifi_stat;
 #endif
 
 #if !IS_ENABLED(CONFIG_PCI_EXYNOS_GS)
@@ -94,29 +111,51 @@ static int wlan_reg_on = -1;
 #define WIFI_WL_REG_ON_PROPNAME		"wl_reg_on"
 
 static int wlan_host_wake_up = -1;
+
+#if IS_ENABLED(CONFIG_SOC_MBU)
+#define GOOG_USE_PWRCTRL
+#endif
+
+#ifdef GOOG_USE_PWRCTRL
+#include <linux/pci-pwrctrl.h>
+/* For pci_dev_is_added() */
+#include "../drivers/pci/pci.h"
+
+/*
+ * Our platform device may not be ready at the same time as the module is
+ * loaded -- for example, with probe deferral.
+ */
+static DECLARE_COMPLETION(goog_plat_complete);
+#define GOOG_PLAT_COMPLETE_TIMEOUT_MS	15000
+#define GOOG_WAIT_FOR_PCI_DEV_MS	10000
+static bool goog_pwrctrl_ready;
+static struct pci_pwrctrl *goog_pwrctrl;
+#endif /* GOOG_USE_PWRCTRL */
+
+/* dhd_plat_pcie_suspend()/resume() calls aren't necessarily balanced. */
+static bool plat_suspended;
+
 #ifdef CONFIG_BCMDHD_OOB_HOST_WAKE
-static int wlan_host_wake_irq = 0;
+static int wlan_host_wake_irq;
 #endif /* CONFIG_BCMDHD_OOB_HOST_WAKE */
 #define WIFI_WLAN_HOST_WAKE_PROPNAME    "wl_host_wake"
 
-#if defined(DHD_CUSTOM_PKT_COUNT_ENABLE)
 static uint64 tx_pkt_cnt;
 static uint64 rx_pkt_cnt;
 static uint64 tx_pkt_timestamp;
 static uint64 rx_pkt_timestamp;
 static uint64 tx_pkt_delta;
 static uint64 rx_pkt_delta;
-#else
-static int resched_streak;
-static int resched_streak_max;
-#endif
 
 static uint64 last_resched_cnt_check_time_ns;
 static uint64 last_affinity_update_time_ns;
 static uint hw_stage_val;
-static bool is_irq_on_big_core = FALSE;
 /* force to switch to small core at beginning */
-static bool is_plat_pcie_resume = TRUE;
+static bool is_irq_on_big_core = TRUE;
+static bool is_plat_pcie_resume = FALSE;
+
+uint affinity_big_core;
+uint affinity_small_core;
 #if IS_ENABLED(CONFIG_PCI_EXYNOS_GS)
 extern int exynos_pcie_register_event(struct exynos_pcie_register_event *reg);
 extern int exynos_pcie_deregister_event(struct exynos_pcie_register_event *reg);
@@ -182,6 +221,27 @@ int pcie_dummy_return(const char *s)
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_GOOGLE_CRASH_DEBUG_DUMP)
+void update_google_cdd_wifi_stat(uint32_t cdd_wifi_bitmap, bool enable)
+{
+	uint32_t value = gcdd_wifi_stat;
+
+	if (enable)
+		value |= cdd_wifi_bitmap;
+	else
+		value &= ~cdd_wifi_bitmap;
+
+	if (value == gcdd_wifi_stat)
+		return;
+
+	gcdd_wifi_stat = value;
+
+	google_cdd_set_system_dev_stat(CDD_SYSTEM_DEVICE_WIFI, gcdd_wifi_stat);
+}
+#else
+#define update_google_cdd_wifi_stat(bitmap, enable)
+#endif /* CONFIG_GOOGLE_CRASH_DEBUG_DUMP */
+
 #if IS_ENABLED(CONFIG_PCI_EXYNOS_GS)
 #define _pcie_pm_resume(ch) exynos_pcie_pm_resume(ch)
 #define _pcie_pm_suspend(ch) exynos_pcie_pm_suspend(ch)
@@ -245,8 +305,9 @@ _pcie_deregister_event(struct dhd_plat_info *p)
 				     PCI_EXP_LNKCAP2_SLS_8_0GB | PCI_EXP_LNKCAP2_SLS_16_0GB | \
 				     PCI_EXP_LNKCAP2_SLS_32_0GB | PCI_EXP_LNKCAP2_SLS_64_0GB)
 static int dhd_pcie_poweron(int ch_num);
+static int dhd_pcie_poweroff(int ch_num);
 #define _pcie_pm_resume(ch) dhd_pcie_poweron(ch)
-#define _pcie_pm_suspend(ch) google_pcie_rc_poweroff(ch)
+#define _pcie_pm_suspend(ch) dhd_pcie_poweroff(ch)
 static int dhd_pcie_l1_exit(int ch_num);
 static int dhd_pcie_l1ss_ctrl(int enable, int ch_num);
 #define _pcie_l1_exit(ch) dhd_pcie_l1_exit(ch)
@@ -257,9 +318,9 @@ static int dhd_pcie_l1ss_ctrl(int enable, int ch_num);
 #ifdef PRINT_WAKEUP_GPIO_STATUS
 #define _pcie_pin_dbg_show(pin, str) PCIE_DUMMY()
 #endif /* PRINT_WAKEUP_GPIO_STATUS */
-#if defined(DHD_TREAT_D3ACKTO_AS_LINKDWN) || defined(DHD_TREAT_D2H_CTO_AS_LINKDOWN)
-#define _pcie_set_skip_config(ch, val) google_pcie_rc_prepare_for_forced_poweroff(ch)
-#endif
+#ifdef DHD_TREAT_D3ACKTO_AS_LINKDWN
+#define _pcie_set_skip_config(ch, val) PCIE_DUMMY()
+#endif /* DHD_TREAT_D3ACKTO_AS_LINKDWN */
 
 static void google_pcie_event_cb(enum google_pcie_callback_type type, void *priv)
 {
@@ -274,8 +335,9 @@ static void google_pcie_event_cb(enum google_pcie_callback_type type, void *priv
 	if (g_pfn && (p->cb_events & BIT(type))) {
 		pdev = p->pdev;
 		DHD_ERROR(("%s(): Invoking DHD call back with pdev %p for event 0x%x\r\n",
-			__func__, pdev, type));
+				__func__, pdev, type));
 		(*(g_pfn))(pdev);
+
 	} else {
 		DHD_ERROR(("%s(): Skip callback for event 0x%x \r\n", __func__, type));
 	}
@@ -295,7 +357,7 @@ int _pcie_register_event(void *plat_info, struct pci_dev *pdev, dhd_pcie_event_c
 	p->cb_events |= BIT(GPCIE_CB_CPL_TIMEOUT);
 #endif /* PCIE_CPL_TIMEOUT_RECOVERY */
 	DHD_TRACE(("%s(): Registering for PCIe events 0x%x with plat_info %p\r\n",
-		__func__, p->cb_events, p));
+			__func__, p->cb_events, p));
 	return google_pcie_register_callback(pdev->bus->domain_nr,
 			google_pcie_event_cb, p);
 }
@@ -343,17 +405,6 @@ typedef struct {
     char sku[MAX_HW_INFO_LEN];
 } sku_info_t;
 
-#if defined(BCM4383_CHIP_DEF)
-sku_info_t sku_table[] = {
-	{ {"G8HHN"}, {"MMW"} },
-	{ {"GLBW0"}, {"MMW"} },
-	{ {"G6GPR"}, {"ROW"} },
-	{ {"GK2MP"}, {"ROW"} },
-	{ {"G576D"}, {"JPN"} },
-	{ {"GL066"}, {"JPN"} },
-	{ {"GKV4X"}, {"NA"} }
-};
-#else
 sku_info_t sku_table[] = {
 	{ {"G9S9B"}, {"MMW"} },
 	{ {"G8V0U"}, {"MMW"} },
@@ -363,6 +414,12 @@ sku_info_t sku_table[] = {
 	{ {"GQML3"}, {"MMW"} },
 	{ {"GKWS6"}, {"MMW"} },
 	{ {"G1MNW"}, {"MMW"} },
+	{ {"GR83Y"}, {"MMW"} },
+	{ {"GGX8B"}, {"MMW"} },
+	{ {"G2YBB"}, {"MMW"} },
+	{ {"GUL82"}, {"MMW"} },
+	{ {"G4QUR"}, {"MMW"} },
+	{ {"GU0NP"}, {"MMW"} },
 	{ {"GB7N6"}, {"ROW"} },
 	{ {"GLU0G"}, {"ROW"} },
 	{ {"GNA8F"}, {"ROW"} },
@@ -371,6 +428,11 @@ sku_info_t sku_table[] = {
 	{ {"GVU6C"}, {"ROW"} },
 	{ {"GPJ41"}, {"ROW"} },
 	{ {"GC3VE"}, {"ROW"} },
+	{ {"GEC77"}, {"ROW"} },
+	{ {"GZC4K"}, {"ROW"} },
+	{ {"GUR25"}, {"ROW"} },
+	{ {"G45RY"}, {"ROW"} },
+	{ {"GEHN3"}, {"ROW"} },
 	{ {"GR1YH"}, {"JPN"} },
 	{ {"GF5KQ"}, {"JPN"} },
 	{ {"GPQ72"}, {"JPN"} },
@@ -379,10 +441,17 @@ sku_info_t sku_table[] = {
 	{ {"G03Z5"}, {"JPN"} },
 	{ {"GE9DP"}, {"JPN"} },
 	{ {"GZPF0"}, {"JPN"} },
+	{ {"GWVK6"}, {"JP"} },
+	{ {"GQ57S"}, {"JP"} },
+	{ {"G1B60"}, {"JP"} },
+	{ {"GYPW4"}, {"JP"} },
+	{ {"GN4F5"}, {"JP"} },
+	{ {"GM66V"}, {"JP"} },
 	{ {"G1AZG"}, {"EU"} },
-	{ {"G9BQD"}, {"NA"} }
+	{ {"G9BQD"}, {"NA"} },
+	{ {"G45RY"}, {"NA"} },
+	{ {"GEHN3"}, {"NA"} }
 };
-#endif /* BCM4383_CHIP_DEF */
 
 static int
 dhd_wlan_get_mac_addr(unsigned char *buf)
@@ -740,12 +809,114 @@ exit:
 }
 #endif /* SUPPORT_MULTIPLE_NVRAM || SUPPORT_MULTIPLE_CLMBLOB */
 
+#ifdef GOOG_USE_PWRCTRL
+
+static void dhd_goog_pwrctrl_set_ready(bool ready)
+{
+	if (!goog_pwrctrl) {
+		DHD_ERROR(("%s: no pwrctrl\n", __FUNCTION__));
+		return;
+	}
+
+	if (ready == goog_pwrctrl_ready)
+		return;
+	goog_pwrctrl_ready = ready;
+
+	if (ready)
+		pci_pwrctrl_device_set_ready(goog_pwrctrl);
+	else
+		pci_pwrctrl_device_unset_ready(goog_pwrctrl);
+}
+
+static int dhd_google_plat_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct pci_pwrctrl *pwrctrl;
+
+	pwrctrl = devm_kzalloc(dev, sizeof(*pwrctrl), GFP_KERNEL);
+	if (!pwrctrl)
+		return -ENOMEM;
+
+	pci_pwrctrl_init(pwrctrl, dev);
+
+	goog_pwrctrl = pwrctrl;
+
+	complete_all(&goog_plat_complete);
+	return 0;
+}
+
+static void dhd_google_plat_remove(struct platform_device *pdev)
+{
+	/*
+	 * Make sure to clear pwrctrl state, even if we didn't power off for
+	 * some reason.
+	 */
+	if (goog_pwrctrl_ready)
+		dhd_goog_pwrctrl_set_ready(false);
+
+	goog_pwrctrl = NULL;
+}
+
+static const struct of_device_id dhd_google_plat_of_match[] = {
+	{
+		.compatible = "pci14e4,4390",
+	},
+	{ }
+};
+MODULE_DEVICE_TABLE(of, dhd_google_plat_of_match);
+
+static struct platform_driver dhd_google_plat_driver = {
+	.driver = {
+		.name = "dhd-google",
+		.of_match_table = dhd_google_plat_of_match,
+	},
+	.probe = dhd_google_plat_probe,
+	.remove = dhd_google_plat_remove,
+};
+
+static int dhd_goog_pwrctrl_init(void)
+{
+	int ret;
+
+	reinit_completion(&goog_plat_complete);
+
+	ret = platform_driver_register(&dhd_google_plat_driver);
+	if (ret) {
+		DHD_ERROR(("%s: failed to register pwrctrl driver: %d\n", __func__, ret));
+		return ret;
+	}
+
+	if (!wait_for_completion_timeout(&goog_plat_complete,
+					 msecs_to_jiffies(GOOG_PLAT_COMPLETE_TIMEOUT_MS))) {
+		DHD_ERROR(("%s: timed out waiting for pwrctrl device\n", __func__));
+		platform_driver_unregister(&dhd_google_plat_driver);
+		return -ETIMEDOUT;
+	}
+
+	return 0;
+}
+
+static void dhd_goog_pwrctrl_uninit(void)
+{
+	platform_driver_unregister(&dhd_google_plat_driver);
+}
+
+#else /* !GOOG_USE_PWRCTRL */
+
+static int dhd_goog_pwrctrl_init(void) { return 0; }
+
+static void dhd_goog_pwrctrl_uninit(void) { }
+
+static void dhd_goog_pwrctrl_set_ready(bool ready) { }
+
+#endif /* GOOG_USE_PWRCTRL */
+
 int
 dhd_wifi_init_gpio(void)
 {
 	int gpio_reg_on_val;
 	/* ========== WLAN_PWR_EN ============ */
-	char *wlan_node = DHD_DT_COMPAT_ENTRY;
+	const char *wlan_node = DHD_DT_COMPAT_ENTRY;
 	struct device_node *root_node = NULL;
 
 	root_node = of_find_compatible_node(NULL, NULL, wlan_node);
@@ -788,6 +959,8 @@ dhd_wifi_init_gpio(void)
 		}
 	}
 
+	dhd_goog_pwrctrl_set_ready(true);
+
 	DHD_PRINT(("%s: WL_REG_ON is pulled up\n", __FUNCTION__));
 
 	/* Wait for WIFI_TURNON_DELAY due to power stability */
@@ -823,7 +996,7 @@ dhd_wlan_power(int onoff)
 {
 	DHD_INFO(("------------------------------------------------\n"));
 	DHD_INFO(("------------------------------------------------\n"));
-	DHD_INFO(("%s Enter: power %s\n", __func__, onoff ? "on" : "off"));
+	DHD_PRINT(("%s Enter: WL_REG_ON %s\n", __func__, onoff ? "pull up" : "pull down"));
 
 	if (onoff) {
 		if (gpio_direction_output(wlan_reg_on, 1)) {
@@ -840,7 +1013,9 @@ dhd_wlan_power(int onoff)
 					"failed to pull up\n", __func__));
 			}
 		}
+		dhd_goog_pwrctrl_set_ready(true);
 	} else {
+		dhd_goog_pwrctrl_set_ready(false);
 		if (gpio_direction_output(wlan_reg_on, 0)) {
 			DHD_ERROR(("%s: WL_REG_ON is failed to pull up\n", __FUNCTION__));
 			return -EIO;
@@ -863,7 +1038,7 @@ static int
 dhd_wlan_set_carddetect(int val)
 {
 	struct device_node *root_node = NULL;
-	char *wlan_node = DHD_DT_COMPAT_ENTRY;
+	const char *wlan_node = DHD_DT_COMPAT_ENTRY;
 
 	root_node = of_find_compatible_node(NULL, NULL, wlan_node);
 	if (!root_node) {
@@ -911,6 +1086,23 @@ void dhd_plat_pcie_deregister_event(void *plat_info)
 	_pcie_deregister_event(plat_info);
 }
 
+void dhd_plat_pm_runtime_init(void *plat_info, struct pci_dev *pdev)
+{
+	dhd_plat_info_t *p = plat_info;
+
+	if (!p->pdev)
+		p->pdev = pdev;
+
+	pm_runtime_put_noidle(&p->pdev->dev);
+}
+
+void dhd_plat_pm_runtime_exit(void *plat_info)
+{
+	dhd_plat_info_t *p = plat_info;
+
+	pm_runtime_get_noresume(&p->pdev->dev);
+}
+
 static int
 set_affinity(unsigned int irq, const struct cpumask *cpumask)
 {
@@ -930,14 +1122,28 @@ uint32 dhd_cpufreq_boost;
 module_param(dhd_cpufreq_boost, uint, 0660);
 
 #define DHD_CPUFREQ_LITTLE      0u
+#if IS_ENABLED(CONFIG_SOC_LGA)
+#define DHD_CPUFREQ_BIG         4u
+#define DHD_CPUFREQ_BIGGER      5u
+#else
+#define DHD_CPUFREQ_BIG         4u
+#define DHD_CPUFREQ_BIGGER      7u
+#endif
+
+#if IS_ENABLED(CONFIG_SOC_LGA)
+#define DHD_LITTLE_CORE_PERF_FREQ   1459000u
+#define DHD_MID_CORE_PERF_FREQ      1267000u
+#define DHD_BIG_CORE_PERF_FREQ      1267000u
+#else
+#define DHD_LITTLE_CORE_PERF_FREQ   1548000u
+#define DHD_MID_CORE_PERF_FREQ      1549000u
+#define DHD_BIG_CORE_PERF_FREQ      2363000u
+#endif
 
 enum core_idx {
 	LITTLE = 0,
-	MID,
-#ifdef DHD_CPUFREQ_MID2
-	MID2,
-#endif
-	BIG,
+	MID = 1,
+	BIG = 2,
 	CORE_IDX_MAX
 };
 
@@ -948,15 +1154,12 @@ typedef struct _dhd_host_cpufreq {
 } dhd_host_cpufreq;
 
 static dhd_host_cpufreq dhd_host_cpufreq_tbl[] = {
-	/* Little Core, */
+	/* Little Core, 0-3 */
 	{DHD_CPUFREQ_LITTLE, 0, DHD_LITTLE_CORE_PERF_FREQ},
-	/* Mid Core, */
-	{DHD_CPUFREQ_MID, 0, DHD_MID_CORE_PERF_FREQ},
-#ifdef DHD_CPUFREQ_MID2
-	{DHD_CPUFREQ_MID2, 0, DHD_MID_CORE_PERF_FREQ},
-#endif
-	/* Big Core  */
-	{DHD_CPUFREQ_BIG, 0, DHD_BIG_CORE_PERF_FREQ}
+	/* Big Core, 4-7 */
+	{DHD_CPUFREQ_BIG, 0, DHD_MID_CORE_PERF_FREQ},
+	/* Bigger Core, 8-11 */
+	{DHD_CPUFREQ_BIGGER, 0, DHD_BIG_CORE_PERF_FREQ}
 };
 
 /*
@@ -965,7 +1168,7 @@ static dhd_host_cpufreq dhd_host_cpufreq_tbl[] = {
  * set to zero when boost mode is disabled.
  * If any cpufreq policy is in boost mode, returns TRUE
  */
-bool dhd_is_cpufreq_boosted(void)
+static bool dhd_is_cpufreq_boosted(void)
 {
 	int i, arr_len;
 
@@ -1053,11 +1256,8 @@ void dhd_set_max_cpufreq(void)
 		}
 	}
 }
-#endif /* DHD_HOST_CPUFREQ_BOOST */
 
-#if defined(DHD_CUSTOM_PKT_COUNT_ENABLE)
-#if defined(DHD_HOST_CPUFREQ_BOOST)
-static void dhd_set_all_cpufreq(void)
+void dhd_set_all_cpufreq(void)
 {
 	struct cpufreq_policy *policy;
 	int i, arr_len;
@@ -1077,37 +1277,31 @@ static void dhd_set_all_cpufreq(void)
 			continue;
 		}
 
+		/* already in boost mode */
+		if (orig_min_freq) {
+			continue;
+		}
+
 		policy = cpufreq_cpu_get(cpuid);
 		if (policy) {
 			/* backup min freq */
-			if (!orig_min_freq)
-				dhd_host_cpufreq_tbl[i].orig_min_freq = policy->min;
+			dhd_host_cpufreq_tbl[i].orig_min_freq = policy->min;
 
 			if (policy->max < dhd_host_cpufreq_tbl[i].target_freq) {
 				policy->min = policy->max;
 			} else {
 				policy->min = dhd_host_cpufreq_tbl[i].target_freq;
 			}
-			if (!orig_min_freq) {
-				DHD_PRINT(("%s: min to max. policy%d cur:%u"
-					" orig_min:%u min:%u max:%u\n",
-					__FUNCTION__, cpuid, policy->cur,
-					dhd_host_cpufreq_tbl[i].orig_min_freq,
-					policy->min, policy->max));
-			} else {
-				DHD_INFO(("%s: min to max. policy%d cur:%u"
-					" orig_min:%u min:%u max:%u\n",
-					__FUNCTION__, cpuid, policy->cur,
-					dhd_host_cpufreq_tbl[i].orig_min_freq,
-					policy->min, policy->max));
-
-			}
+			DHD_PRINT(("%s: min to max. policy%d cur:%u orig_min:%u min:%u max:%u\n",
+				__FUNCTION__, cpuid, policy->cur,
+				dhd_host_cpufreq_tbl[i].orig_min_freq,
+				policy->min, policy->max));
 			cpufreq_cpu_put(policy);
 		}
 	}
 }
 
-static void dhd_set_cpufreq(enum core_idx idx)
+void dhd_set_cpufreq(enum core_idx idx)
 {
 	struct cpufreq_policy *policy;
 	int arr_len;
@@ -1153,7 +1347,7 @@ static void dhd_set_cpufreq(enum core_idx idx)
 	}
 }
 
-static void dhd_plat_reset_trx_pktcount(void)
+void dhd_plat_reset_trx_pktcount(void)
 {
 	tx_pkt_cnt = 0;
 	rx_pkt_cnt = 0;
@@ -1162,13 +1356,99 @@ static void dhd_plat_reset_trx_pktcount(void)
 	tx_pkt_delta = 0;
 	rx_pkt_delta = 0;
 }
-
-static bool is_mid_traffic(void)
+#else
+static bool dhd_is_cpufreq_boosted(void)
 {
-	return  (((tx_pkt_delta < PKT_COUNT_HIGH) && (tx_pkt_delta > PKT_COUNT_MID)) ||
-	     ((rx_pkt_delta < PKT_COUNT_HIGH) && (rx_pkt_delta > PKT_COUNT_MID)));
+	return FALSE;
 }
 #endif /* DHD_HOST_CPUFREQ_BOOST */
+
+static void
+irq_affinity_hysteresis_control(struct pci_dev *pdev,
+	uint64 curr_time_ns)
+{
+	int err = 0;
+
+	bool has_recent_affinity_update = (curr_time_ns - last_affinity_update_time_ns)
+		< (AFFINITY_UPDATE_MIN_PERIOD_SEC * NSEC_PER_SEC);
+	if (!pdev) {
+		DHD_ERROR(("%s : pdev is NULL\n", __FUNCTION__));
+		return;
+	}
+
+#ifdef DHD_HOST_CPUFREQ_BOOST
+	if (!is_irq_on_big_core && !dhd_is_cpufreq_boosted() &&
+	    (((tx_pkt_delta < PKT_COUNT_HIGH) && (tx_pkt_delta > PKT_COUNT_MID)) ||
+	     ((rx_pkt_delta < PKT_COUNT_HIGH) && (rx_pkt_delta > PKT_COUNT_MID)))) {
+		if (dhd_cpufreq_boost) {
+			dhd_set_cpufreq(MID);
+		}
+	}
+#endif /* DHD_HOST_CPUFREQ_BOOST */
+
+	if (!is_irq_on_big_core &&
+	   ((tx_pkt_delta > PKT_COUNT_HIGH) || (rx_pkt_delta > PKT_COUNT_HIGH))) {
+		err = set_affinity(pdev->irq, cpumask_of(affinity_big_core));
+		if (!err) {
+			is_irq_on_big_core = TRUE;
+			last_affinity_update_time_ns = curr_time_ns;
+#ifdef DHD_HOST_CPUFREQ_BOOST
+			if (dhd_cpufreq_boost) {
+				dhd_set_all_cpufreq();
+			}
+#endif /* DHD_HOST_CPUFREQ_BOOST */
+			DHD_INFO(("%s switches to big core %u successfully\n",
+				__FUNCTION__, affinity_big_core));
+		} else {
+			DHD_ERROR(("%s switches to big core unsuccessfully!\n", __FUNCTION__));
+		}
+	}
+	if (is_plat_pcie_resume ||
+		((is_irq_on_big_core || dhd_is_cpufreq_boosted()) &&
+		((tx_pkt_delta < PKT_COUNT_LOW) && (rx_pkt_delta < PKT_COUNT_LOW)) &&
+		!has_recent_affinity_update)) {
+		err = set_affinity(pdev->irq, cpumask_of(affinity_small_core));
+		if (!err) {
+			is_irq_on_big_core = FALSE;
+			is_plat_pcie_resume = FALSE;
+			last_affinity_update_time_ns = curr_time_ns;
+#ifdef DHD_HOST_CPUFREQ_BOOST
+			if (dhd_is_cpufreq_boosted()) {
+				dhd_restore_cpufreq();
+			}
+#endif /* DHD_HOST_CPUFREQ_BOOST */
+			DHD_INFO(("%s switches to small core %u successfully\n",
+				__FUNCTION__, affinity_small_core));
+		} else {
+			DHD_ERROR(("%s switches to all cores unsuccessfully\n", __FUNCTION__));
+		}
+	}
+}
+
+extern uint dhd_force_max_cpu_freq;
+
+static void dhd_force_affinity_cpufreq(struct pci_dev *pdev)
+{
+	int err;
+
+	if (is_plat_pcie_resume || !is_irq_on_big_core) {
+		err = set_affinity(pdev->irq, cpumask_of(affinity_big_core));
+		if (!err) {
+			is_irq_on_big_core = TRUE;
+			is_plat_pcie_resume = FALSE;
+#ifdef DHD_HOST_CPUFREQ_BOOST
+			if (dhd_cpufreq_boost) {
+				dhd_set_max_cpufreq();
+			}
+#endif /* DHD_HOST_CPUFREQ_BOOST */
+			DHD_PRINT(("%s switches to big core %u successfully\n",
+				__FUNCTION__, affinity_big_core));
+		} else {
+			DHD_ERROR(("%s switches to big core unsuccessfully!\n", __FUNCTION__));
+		}
+	}
+
+}
 
 void dhd_plat_tx_pktcount(void *plat_info, uint cnt)
 {
@@ -1238,156 +1518,6 @@ void dhd_plat_rx_pktcount(void *plat_info, uint cnt)
 	}
 }
 
-static bool is_high_traffic(void)
-{
-	return ((tx_pkt_delta > PKT_COUNT_HIGH)||(rx_pkt_delta > PKT_COUNT_HIGH));
-}
-
-static bool is_low_traffic(void)
-{
-	return ((tx_pkt_delta < PKT_COUNT_LOW)&&(rx_pkt_delta < PKT_COUNT_LOW));
-}
-
-#else /* DHD_CUSTOM_PKT_COUNT_ENABLE */
-#if defined(DHD_HOST_CPUFREQ_BOOST)
-static void dhd_set_all_cpufreq(void)
-{
-	dhd_set_max_cpufreq();
-}
-
-static void dhd_set_cpufreq(enum core_idx idx)
-{
-	return;
-}
-
-static void dhd_plat_reset_trx_pktcount(void)
-{
-	return;
-}
-
-static bool is_mid_traffic(void)
-{
-	return false;
-}
-#endif /* DHD_HOST_CPUFREQ_BOOST */
-
-void dhd_plat_tx_pktcount(void *plat_info, uint cnt)
-{
-	return;
-}
-
-void dhd_plat_rx_pktcount(void *plat_info, uint cnt)
-{
-	return;
-}
-
-static bool is_high_traffic(void)
-{
-	return (resched_streak_max >= RESCHED_STREAK_MAX_HIGH);
-}
-
-static bool is_low_traffic(void)
-{
-	return (resched_streak_max <= RESCHED_STREAK_MAX_LOW);
-}
-#endif /* DHD_CUSTOM_PKT_COUNT_ENABLE */
-
-static void
-irq_affinity_hysteresis_control(struct pci_dev *pdev,
-	uint64 curr_time_ns)
-{
-	int err = 0;
-	bool has_recent_affinity_update = (curr_time_ns - last_affinity_update_time_ns)
-		< (AFFINITY_UPDATE_MIN_PERIOD_SEC * NSEC_PER_SEC);
-	/*
-	 * To prevent pingpong effect, 16 times of AFFINITY_UPDATE_MIN_PERIOD_SEC
-	 * is used to drop irq affinity to small core.
-	 */
-	bool has_less_recent_affinity_update = (curr_time_ns - last_affinity_update_time_ns)
-		< ((AFFINITY_UPDATE_MIN_PERIOD_SEC << 4) * NSEC_PER_SEC);
-	if (!pdev) {
-		DHD_ERROR(("%s : pdev is NULL\n", __FUNCTION__));
-		return;
-	}
-
-	if (is_high_traffic() &&
-		(is_irq_on_big_core || !has_recent_affinity_update)) {
-		if (!is_irq_on_big_core) {
-			err = set_affinity(pdev->irq, cpumask_of(IRQ_AFFINITY_BIG_CORE));
-			if (!err) {
-				is_irq_on_big_core = TRUE;
-				is_plat_pcie_resume = FALSE;
-				last_affinity_update_time_ns = curr_time_ns;
-				DHD_INFO(("%s switches to big core successfully\n", __FUNCTION__));
-			} else {
-				DHD_ERROR(("%s switches to big core unsuccessfully!\n",
-					__FUNCTION__));
-			}
-		}
-#ifdef DHD_HOST_CPUFREQ_BOOST
-		if (dhd_cpufreq_boost) {
-			dhd_set_all_cpufreq();
-		}
-#endif /* DHD_HOST_CPUFREQ_BOOST */
-	}
-
-#if defined(DHD_HOST_CPUFREQ_BOOST)
-	if (is_mid_traffic()) {
-		if (!is_irq_on_big_core && !dhd_is_cpufreq_boosted()) {
-			if (dhd_cpufreq_boost) {
-#ifdef DHD_CPUFREQ_MID2
-				dhd_set_cpufreq(MID2);
-#else
-				dhd_set_cpufreq(MID);
-#endif
-			}
-		} else if (is_irq_on_big_core && !has_less_recent_affinity_update) {
-			err = set_affinity(pdev->irq, cpumask_of(IRQ_AFFINITY_SMALL_CORE));
-			if (!err) {
-				is_irq_on_big_core = FALSE;
-				is_plat_pcie_resume = FALSE;
-				last_affinity_update_time_ns = curr_time_ns;
-				if (dhd_is_cpufreq_boosted()) {
-					dhd_restore_cpufreq();
-				}
-				if (dhd_cpufreq_boost) {
-#ifdef DHD_CPUFREQ_MID2
-					dhd_set_cpufreq(MID2);
-#else
-					dhd_set_cpufreq(MID);
-#endif
-				}
-			}
-		}
-	}
-#endif /* DHD_HOST_CPUFREQ_BOOST */
-
-	if (is_plat_pcie_resume ||
-		(is_low_traffic() &&
-#ifdef DHD_HOST_CPUFREQ_BOOST
-		dhd_is_cpufreq_boosted() &&
-#endif /* DHD_HOST_CPUFREQ_BOOST */
-		!has_less_recent_affinity_update)) {
-		err = 0;
-		if (is_plat_pcie_resume || is_irq_on_big_core) {
-			err = set_affinity(pdev->irq, cpumask_of(IRQ_AFFINITY_SMALL_CORE));
-		}
-		if (!err) {
-			is_irq_on_big_core = FALSE;
-			is_plat_pcie_resume = FALSE;
-			last_affinity_update_time_ns = curr_time_ns;
-#ifdef DHD_HOST_CPUFREQ_BOOST
-			if (dhd_is_cpufreq_boosted()) {
-				dhd_restore_cpufreq();
-			}
-#endif /* DHD_HOST_CPUFREQ_BOOST */
-			DHD_INFO(("%s switches to all cores successfully\n", __FUNCTION__));
-		} else {
-			DHD_ERROR(("%s switches to all cores unsuccessfully\n", __FUNCTION__));
-		}
-	}
-}
-
 /*
  * DHD Core layer reports whether the bottom half is getting rescheduled or not
  * resched = 1, BH is getting rescheduled.
@@ -1400,22 +1530,10 @@ void dhd_plat_report_bh_sched(void *plat_info, int resched)
 	uint64 curr_time_ns;
 	uint64 time_delta_ns;
 
-#if !defined(DHD_CUSTOM_PKT_COUNT_ENABLE)
-	if (resched > 0) {
-		resched_streak++;
-		if (resched_streak <= RESCHED_STREAK_MAX_HIGH) {
-			return;
-		}
+	if (dhd_force_max_cpu_freq) {
+		dhd_force_affinity_cpufreq(p->pdev);
+		return;
 	}
-
-	if (resched_streak > resched_streak_max) {
-		resched_streak_max = resched_streak;
-	}
-	resched_streak = 0;
-
-	DHD_INFO(("%s resched_streak_max=%d\n",
-		__FUNCTION__, resched_streak_max));
-#endif /* DHD_CUSTOM_PKT_COUNT_ENABLE */
 
 	curr_time_ns = OSL_LOCALTIME_NS();
 	time_delta_ns = curr_time_ns - last_resched_cnt_check_time_ns;
@@ -1425,9 +1543,6 @@ void dhd_plat_report_bh_sched(void *plat_info, int resched)
 	last_resched_cnt_check_time_ns = curr_time_ns;
 
 	irq_affinity_hysteresis_control(p->pdev, curr_time_ns);
-#if !defined(DHD_CUSTOM_PKT_COUNT_ENABLE)
-	resched_streak_max = 0;
-#endif
 	return;
 }
 
@@ -1487,6 +1602,15 @@ dhd_wlan_init(void)
 
 	DHD_INFO(("%s: START.......\n", __FUNCTION__));
 
+	plat_suspended = true;
+
+	/*
+	 * Prepare PCI pwrctrl resources before we start to power anything on.
+	 */
+	ret = dhd_goog_pwrctrl_init();
+	if (ret)
+		goto err;
+
 #ifdef CONFIG_BROADCOM_WIFI_RESERVED_MEM
 	ret = dhd_init_wlan_mem();
 	if (ret < 0) {
@@ -1515,6 +1639,28 @@ dhd_wlan_init(void)
 	dhd_wlan_init_hardware_info();
 #endif /* SUPPORT_MULTIPLE_NVRAM || SUPPORT_MULTIPLE_CLMBLOB */
 
+	affinity_big_core = IRQ_AFFINITY_BIG_CORE;
+	if (affinity_big_core < 0 || (affinity_big_core > (num_possible_cpus() - 1))) {
+		affinity_big_core = num_possible_cpus() - 1;
+		DHD_ERROR(("%s: IRQ_AFFINITY_BIG_CORE=%u, num_cpus=%u, so set "
+			"affinity_big_core=%u\n", __FUNCTION__, IRQ_AFFINITY_BIG_CORE,
+			num_possible_cpus(), affinity_big_core));
+	}
+
+	affinity_small_core = IRQ_AFFINITY_SMALL_CORE;
+	if (affinity_small_core < 0 || affinity_small_core >= affinity_big_core) {
+		if (affinity_big_core > 0) {
+			affinity_small_core = affinity_big_core - 1;
+		} else {
+			affinity_small_core = affinity_big_core;
+		}
+		DHD_ERROR(("%s: IRQ_AFFINITY_SMALL_CORE=%u, affinity_big_core=%u, so set "
+			"affinity_small_core=%u\n", __FUNCTION__, IRQ_AFFINITY_SMALL_CORE,
+			affinity_big_core, affinity_small_core));
+	}
+	DHD_INFO(("%s: affinity_big_core=%u affinity_small_core=%u\n", __FUNCTION__,
+		affinity_big_core, affinity_small_core));
+
 #if !IS_ENABLED(CONFIG_PCI_EXYNOS_GS)
 #ifdef DHD_SUPPORT_L1SS
 	support_l1ss = TRUE;
@@ -1524,9 +1670,17 @@ dhd_wlan_init(void)
 #endif /* !IS_ENABLED(CONFIG_PCI_EXYNOS_GS) */
 
 fail:
+	if (ret)
+		dhd_goog_pwrctrl_uninit();
+err:
 	DHD_PRINT(("%s: FINISH.......\n", __FUNCTION__));
 	return ret;
 }
+
+uint16 ep_device_id;
+#ifndef PCI_CFG_DID
+#define PCI_CFG_DID             2u
+#endif
 
 int
 dhd_wlan_deinit(void)
@@ -1534,10 +1688,25 @@ dhd_wlan_deinit(void)
 	if (gpio_is_valid(wlan_host_wake_up)) {
 		gpio_free(wlan_host_wake_up);
 	}
-
+	/* drive wl_reg_on low before freeing gpio only if the ep_device_id
+	 * read from config space matches with the BCMPCI_DEV_ID(the device id
+	 * for which the dhd is built for).
+	 * When WL_REG_ON is pulled down enumaration space is lost.
+	 * Later when the right dhd is loaded i.e ep_device_id and BCMPCI_DEV_ID matches,
+	 * RC doesnot re-enumarate the EP. So skip WL_REG_ON pull down if ep_device_id and
+	 * BCMPCI_DEV_ID doesnot match.
+	 */
+	if (ep_device_id == BCMPCI_DEV_ID) {
+		dhd_wlan_power(0);
+	} else {
+		DHD_PRINT(("%s skip WL_REG_ON pull down, devid mismatch(0x%x:0x%x)\n",
+			__FUNCTION__, ep_device_id, BCMPCI_DEV_ID));
+	}
 	if (gpio_is_valid(wlan_reg_on)) {
 		gpio_free(wlan_reg_on);
 	}
+
+	dhd_goog_pwrctrl_uninit();
 
 	return 0;
 }
@@ -1568,6 +1737,9 @@ void dhd_plat_l1_exit(void)
 int dhd_plat_pcie_suspend(void *plat_info)
 {
 	_pcie_pm_suspend(pcie_ch_num);
+#if IS_ENABLED(CONFIG_GOOGLE_CRASH_DEBUG_DUMP)
+	update_google_cdd_wifi_stat(CDD_WIFI_STAT_PCIE_LINK_UP, false);
+#endif
 	return 0;
 }
 
@@ -1576,9 +1748,9 @@ int dhd_plat_pcie_resume(void *plat_info)
 	int ret = 0;
 	ret = _pcie_pm_resume(pcie_ch_num);
 	is_plat_pcie_resume = TRUE;
-#if defined(DHD_HOST_CPUFREQ_BOOST)
+#ifdef DHD_HOST_CPUFREQ_BOOST
 	dhd_plat_reset_trx_pktcount();
-#endif /* DHD_HOST_CPUFREQ_BOOST */
+#endif	/* DHD_HOST_CPUFREQ_BOOST */
 	return ret;
 }
 
@@ -1614,10 +1786,17 @@ int dhd_plat_check_pcie_state(void)
 	int ret = 0;
 
 	DHD_PRINT(("%s: Function In\n", __FUNCTION__));
+
 	ret = google_pcie_link_status(pcie_ch_num);
+#if IS_ENABLED(CONFIG_GOOGLE_CRASH_DEBUG_DUMP)
+	if (ret)
+		update_google_cdd_wifi_stat(CDD_WIFI_STAT_PCIE_LINK_UP, true);
+	else
+		update_google_cdd_wifi_stat(CDD_WIFI_STAT_PCIE_LINK_UP, false);
+#endif
 	DHD_PRINT(("%s: Function Out, ret = %d\n", __FUNCTION__, ret));
 	return ret;
-#endif
+#endif /* CONFIG_GOOGLE_CRASH_DEBUG_DUMP */
 }
 
 void dhd_plat_check_msi(void)
@@ -1625,6 +1804,11 @@ void dhd_plat_check_msi(void)
 #if IS_ENABLED(CONFIG_SOC_LGA)
 	u32 __iomem  *reg_ptr;
 	u32 val;
+
+	if (in_interrupt()) {
+		DHD_ERROR(("don't iomap in interrupt context"));
+		return;
+	}
 
 	reg_ptr = ioremap(MSI_MASK_REG, SZ_4);
 	if (!reg_ptr) {
@@ -1653,7 +1837,7 @@ void dhd_plat_check_msi(void)
 	DHD_PRINT(("ICD Status=%#08x\n", val));
 	iounmap(reg_ptr);
 
-#endif
+#endif /* CONFIG_SOC_LGA */
 }
 
 #define RXBUF_ALLOC_PAGE_SIZE
@@ -1677,10 +1861,10 @@ uint16 dhd_plat_align_rxbuf_size(uint16 rxbufpost_sz)
 
 void dhd_plat_pcie_skip_config_set(bool val)
 {
-#if defined(DHD_TREAT_D3ACKTO_AS_LINKDWN) || defined(DHD_TREAT_D2H_CTO_AS_LINKDOWN)
+#ifdef DHD_TREAT_D3ACKTO_AS_LINKDWN
 	DHD_PRINT(("%s: set skip config\n", __FUNCTION__));
 	_pcie_set_skip_config(pcie_ch_num, val);
-#endif
+#endif /* DHD_TREAT_D3ACKTO_AS_LINKDWN */
 }
 
 bool dhd_plat_pcie_enable_big_core(void)
@@ -1701,6 +1885,13 @@ dhd_plat_unregister_coredump(void)
 	platform_device_unregister(&sscd_dev);
 }
 #endif /* DHD_COREDUMP */
+
+int
+dhd_plat_get_wlan_reg_on_gpio(void)
+{
+	return gpio_is_valid(wlan_reg_on) ?
+		gpio_get_value(wlan_reg_on) : -1;
+}
 
 void dhd_plat_pcie_dump_debug(void)
 {
@@ -1736,6 +1927,48 @@ dhd_get_pcidev(int ch_num)
 	return pci_dev;
 }
 
+#ifdef GOOG_USE_PWRCTRL
+/*
+ * Returns NULL if the device is not found. Callers must release a returned
+ * device with pci_dev_put().
+ */
+static struct pci_dev *
+dhd_wait_pcidev(int ch_num)
+{
+	const int poll_timeout_ms = GOOG_WAIT_FOR_PCI_DEV_MS;
+	const int interval_ms = 100;
+
+	for (int i = 0; i < poll_timeout_ms; i += interval_ms) {
+		struct pci_bus *pci_bus;
+		struct pci_dev *pci_dev;
+
+		pci_bus = pci_find_bus(ch_num, 1);
+		if (pci_bus) {
+			pci_dev = pci_get_slot(pci_bus, PCI_DEVFN(0, 0));
+			if (pci_dev) {
+				/*
+				 * pci_get_slot() may find a PCI device before
+				 * it's actually ready to attach to a driver.
+				 * Our callers intend to immediately attach to
+				 * it. Wait until it's fully ready, as noted by
+				 * the PCI-specific PCI_DEV_ADDED flag.
+				 */
+				if (pci_dev_is_added(pci_dev))
+					return pci_dev;
+
+				dev_dbg(&pci_dev->dev, "found, but not yet added\n");
+				pci_dev_put(pci_dev);
+			}
+		}
+
+		msleep(interval_ms);
+	}
+
+	pr_err("Endpoint device for channel %d not found\n", ch_num);
+	return NULL;
+}
+#endif /* GOOG_USE_PWRCTRL */
+
 static int
 dhd_pcie_l1ss_ctrl(int enable, int ch_num)
 {
@@ -1748,6 +1981,7 @@ dhd_pcie_l1ss_ctrl(int enable, int ch_num)
 		return -ENODEV;
 	}
 
+	/* TODO: enable PCIE_LINK_STATE_CLKPM */
 	if (support_l1ss & enable) {
 		aspm_state = PCIE_LINK_STATE_L1 | PCIE_LINK_STATE_CLKPM |
 				PCIE_LINK_STATE_L1_1 | PCIE_LINK_STATE_L1_2;
@@ -1769,29 +2003,66 @@ dhd_pcie_poweron(int ch_num)
 	u16 ltr = 0x1003;	/* 3145728 ns */
 	u32 ltr_reg;
 	int pos;
+
 	/*
 	 * First poweron will happen at the controller's max-link-speed as
 	 * configured in device tree.  Once link is up, EP will be queried
 	 * for max link speed which is used for subsequent poweron events
 	 */
 	if (!speed) {
+		/*
+		 * Note: some RC drivers implement L2 PM in
+		 * google_pcie_rc_poweron/poweroff(). Others implement it in
+		 * pm_runtime_*().
+		 */
 		ret = google_pcie_rc_poweron(ch_num);
-		if (ret)
+		if (ret) {
+			DHD_ERROR(("%s rc poweron failed: %d\n", __FUNCTION__, ret));
 			return ret;
+		}
 
+#ifdef GOOG_USE_PWRCTRL
+		/*
+		 * pwrctrl might enumerate devices asynchronously. Poll for a
+		 * bit the first time around.
+		 */
+		pci_dev = dhd_wait_pcidev(ch_num);
+#else
 		pci_dev = dhd_get_pcidev(ch_num);
-		if (pci_dev == NULL)
+#endif
+		if (pci_dev == NULL) {
+			DHD_ERROR(("%s failed to get pci_dev\n", __FUNCTION__));
 			return 0;
+		}
 
-		if (pcie_capability_read_word(pci_dev, PCI_EXP_LNKCAP2, &val) != 0)
+		if (!plat_suspended) {
+			DHD_INFO(("%s: platform already resumed\n", __func__));
 			return 0;
+		} else {
+			ret = pm_runtime_resume_and_get(&pci_dev->dev);
+			if (ret) {
+				DHD_ERROR(("%s: failed to resume device: %d\n",
+					   __func__, ret));
+				return ret;
+			}
 
+			plat_suspended = false;
+		}
+
+		if (pcie_capability_read_word(pci_dev, PCI_EXP_LNKCAP2, &val) != 0) {
+			DHD_ERROR(("%s failed to read PCI_EXP_LNKCAP2\n", __FUNCTION__));
+			return 0;
+		}
 		val &= PCI_EXP_LINKCAP2_SPEED_MASK;
 		if (fls(val) >= 2) {
 			speed = fls(val) - 1;
 			DHD_INFO(("%s: Using GEN%d link speed\n", __FUNCTION__, speed));
 		}
 
+		if (pci_read_config_word(pci_dev, PCI_CFG_DID, &ep_device_id) != 0) {
+			DHD_ERROR(("%s failed to read PCI_CFG_DID\n", __FUNCTION__));
+			return 0;
+		}
 		pos = pci_find_ext_capability(pci_dev, PCI_EXT_CAP_ID_LTR);
 		if (!pos)
 			return 0;
@@ -1805,7 +2076,55 @@ dhd_pcie_poweron(int ch_num)
 		return 0;
 	}
 
-	return google_pcie_poweron_withspeed(ch_num, speed);
+#if IS_ENABLED(CONFIG_GOOGLE_CRASH_DEBUG_DUMP)
+	update_google_cdd_wifi_stat(CDD_WIFI_STAT_PCIE_LINK_UP, true);
+#endif
+
+	ret = google_pcie_poweron_withspeed(ch_num, speed);
+	if (ret < 0)
+		return ret;
+
+	pci_dev = dhd_get_pcidev(ch_num);
+	if (pci_dev == NULL) {
+		DHD_ERROR(("%s failed to get pci_dev\n", __FUNCTION__));
+		return 0;
+	}
+
+	if (!plat_suspended) {
+		DHD_INFO(("%s: platform already resumed\n", __func__));
+		return 0;
+	}
+	ret = pm_runtime_resume_and_get(&pci_dev->dev);
+	if (ret) {
+		DHD_ERROR(("%s: failed to resume device: %d\n", __func__, ret));
+		return ret;
+	}
+
+	plat_suspended = false;
+	return 0;
+}
+
+static int
+dhd_pcie_poweroff(int ch_num)
+{
+	struct pci_dev *pci_dev __free(pci_dev_put) = dhd_get_pcidev(ch_num);
+	int ret = 0;
+
+	if (pci_dev == NULL) {
+		DHD_ERROR(("%s failed to get pci_dev\n", __func__));
+		return -ENODEV;
+	}
+
+	if (plat_suspended) {
+		DHD_INFO(("%s: platform already suspended\n", __func__));
+	} else {
+		plat_suspended = true;
+		ret = pm_runtime_put_sync_suspend(&pci_dev->dev);
+	}
+
+	google_pcie_rc_poweroff(ch_num);
+
+	return ret;
 }
 
 static int

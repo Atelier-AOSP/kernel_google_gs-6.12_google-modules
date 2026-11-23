@@ -36,6 +36,7 @@
 #include <bcmutils.h>
 #include <bcmwifi_channels.h>
 #include <bcmendian.h>
+#include <bcmstdlib_s.h>
 #include <ethernet.h>
 #include <802.11.h>
 #include <linux/if_arp.h>

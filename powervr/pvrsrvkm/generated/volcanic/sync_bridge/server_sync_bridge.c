@@ -580,8 +580,9 @@ PVRSRVBridgeSyncAllocEvent(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psSyncAllocEventIN->ui32ClassNameSize * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiClassNameInt, (const void __user *)psSyncAllocEventIN->puiClassName,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiClassNameInt,
+		     (const void __user *)psSyncAllocEventIN->puiClassName,
 		     psSyncAllocEventIN->ui32ClassNameSize * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psSyncAllocEventOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;

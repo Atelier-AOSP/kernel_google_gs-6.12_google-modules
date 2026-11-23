@@ -11,7 +11,8 @@
 #include <linux/compiler.h>
 #include <linux/console.h>
 #include <linux/interrupt.h>
-#include <linux/circ_buf.h>
+#include <linux/lockdep.h>
+#include <linux/printk.h>
 #include <linux/spinlock.h>
 #include <linux/sched.h>
 #include <linux/tty.h>
@@ -373,36 +374,36 @@ struct gpio_desc;
  *	This call must not sleep
  */
 struct uart_ops {
-	unsigned int	(*tx_empty)(struct uart_port *);
-	void		(*set_mctrl)(struct uart_port *, unsigned int mctrl);
-	unsigned int	(*get_mctrl)(struct uart_port *);
-	void		(*stop_tx)(struct uart_port *);
-	void		(*start_tx)(struct uart_port *);
-	void		(*throttle)(struct uart_port *);
-	void		(*unthrottle)(struct uart_port *);
-	void		(*send_xchar)(struct uart_port *, char ch);
-	void		(*stop_rx)(struct uart_port *);
-	void		(*start_rx)(struct uart_port *);
-	void		(*enable_ms)(struct uart_port *);
-	void		(*break_ctl)(struct uart_port *, int ctl);
-	int		(*startup)(struct uart_port *);
-	void		(*shutdown)(struct uart_port *);
-	void		(*flush_buffer)(struct uart_port *);
-	void		(*set_termios)(struct uart_port *, struct ktermios *new,
+	unsigned int	(*tx_empty)(struct uart_port *port);
+	void		(*set_mctrl)(struct uart_port *port, unsigned int mctrl);
+	unsigned int	(*get_mctrl)(struct uart_port *port);
+	void		(*stop_tx)(struct uart_port *port);
+	void		(*start_tx)(struct uart_port *port);
+	void		(*throttle)(struct uart_port *port);
+	void		(*unthrottle)(struct uart_port *port);
+	void		(*send_xchar)(struct uart_port *port, char ch);
+	void		(*stop_rx)(struct uart_port *port);
+	void		(*start_rx)(struct uart_port *port);
+	void		(*enable_ms)(struct uart_port *port);
+	void		(*break_ctl)(struct uart_port *port, int ctl);
+	int		(*startup)(struct uart_port *port);
+	void		(*shutdown)(struct uart_port *port);
+	void		(*flush_buffer)(struct uart_port *port);
+	void		(*set_termios)(struct uart_port *port, struct ktermios *new,
 				       const struct ktermios *old);
-	void		(*set_ldisc)(struct uart_port *, struct ktermios *);
-	void		(*pm)(struct uart_port *, unsigned int state,
+	void		(*set_ldisc)(struct uart_port *port, struct ktermios *termios);
+	void		(*pm)(struct uart_port *port, unsigned int state,
 			      unsigned int oldstate);
-	const char	*(*type)(struct uart_port *);
-	void		(*release_port)(struct uart_port *);
-	int		(*request_port)(struct uart_port *);
-	void		(*config_port)(struct uart_port *, int);
-	int		(*verify_port)(struct uart_port *, struct serial_struct *);
-	int		(*ioctl)(struct uart_port *, unsigned int, unsigned long);
+	const char	*(*type)(struct uart_port *port);
+	void		(*release_port)(struct uart_port *port);
+	int		(*request_port)(struct uart_port *port);
+	void		(*config_port)(struct uart_port *port, int type);
+	int		(*verify_port)(struct uart_port *port, struct serial_struct *serinfo);
+	int		(*ioctl)(struct uart_port *port, unsigned int cmd, unsigned long arg);
 #ifdef CONFIG_CONSOLE_POLL
-	int		(*poll_init)(struct uart_port *);
-	void		(*poll_put_char)(struct uart_port *, unsigned char);
-	int		(*poll_get_char)(struct uart_port *);
+	int		(*poll_init)(struct uart_port *port);
+	void		(*poll_put_char)(struct uart_port *port, unsigned char ch);
+	int		(*poll_get_char)(struct uart_port *port);
 #endif
 
 	ANDROID_KABI_RESERVE(1);
@@ -434,19 +435,18 @@ struct uart_port {
 	spinlock_t		lock;			/* port lock */
 	unsigned long		iobase;			/* in/out[bwl] */
 	unsigned char __iomem	*membase;		/* read/write[bwl] */
-	unsigned int		(*serial_in)(struct uart_port *, int);
-	void			(*serial_out)(struct uart_port *, int, int);
-	void			(*set_termios)(struct uart_port *,
-				               struct ktermios *new,
-				               const struct ktermios *old);
-	void			(*set_ldisc)(struct uart_port *,
-					     struct ktermios *);
-	unsigned int		(*get_mctrl)(struct uart_port *);
-	void			(*set_mctrl)(struct uart_port *, unsigned int);
-	unsigned int		(*get_divisor)(struct uart_port *,
+	unsigned int		(*serial_in)(struct uart_port *port, int offset);
+	void			(*serial_out)(struct uart_port *port, int offset, int value);
+	void			(*set_termios)(struct uart_port *port,
+						struct ktermios *new, const struct ktermios *old);
+	void			(*set_ldisc)(struct uart_port *port,
+					     struct ktermios *termios);
+	unsigned int		(*get_mctrl)(struct uart_port *port);
+	void			(*set_mctrl)(struct uart_port *port, unsigned int mctrl);
+	unsigned int		(*get_divisor)(struct uart_port *port,
 					       unsigned int baud,
 					       unsigned int *frac);
-	void			(*set_divisor)(struct uart_port *,
+	void			(*set_divisor)(struct uart_port *port,
 					       unsigned int baud,
 					       unsigned int quot,
 					       unsigned int quot_frac);
@@ -454,14 +454,14 @@ struct uart_port {
 	void			(*shutdown)(struct uart_port *port);
 	void			(*throttle)(struct uart_port *port);
 	void			(*unthrottle)(struct uart_port *port);
-	int			(*handle_irq)(struct uart_port *);
-	void			(*pm)(struct uart_port *, unsigned int state,
+	int			(*handle_irq)(struct uart_port *port);
+	void			(*pm)(struct uart_port *port, unsigned int state,
 				      unsigned int old);
-	void			(*handle_break)(struct uart_port *);
-	int			(*rs485_config)(struct uart_port *,
+	void			(*handle_break)(struct uart_port *port);
+	int			(*rs485_config)(struct uart_port *port,
 						struct ktermios *termios,
 						struct serial_rs485 *rs485);
-	int			(*iso7816_config)(struct uart_port *,
+	int			(*iso7816_config)(struct uart_port *port,
 						  struct serial_iso7816 *iso7816);
 	unsigned int		ctrl_id;		/* optional serial core controller id */
 	unsigned int		port_id;		/* optional serial core port id */
@@ -471,8 +471,8 @@ struct uart_port {
 	unsigned int		fifosize;		/* tx fifo size */
 	unsigned char		x_char;			/* xon/xoff char */
 	unsigned char		regshift;		/* reg offset shift */
+
 	unsigned char		iotype;			/* io access style */
-	unsigned char		quirks;			/* internal quirks */
 
 #define UPIO_UNKNOWN		((unsigned char)~0U)	/* UCHAR_MAX */
 #define UPIO_PORT		(SERIAL_IO_PORT)	/* 8b I/O port access */
@@ -484,7 +484,9 @@ struct uart_port {
 #define UPIO_MEM32BE		(SERIAL_IO_MEM32BE)	/* 32b big endian */
 #define UPIO_MEM16		(SERIAL_IO_MEM16)	/* 16b little endian */
 
-	/* quirks must be updated while holding port mutex */
+	unsigned char		quirks;			/* internal quirks */
+
+	/* internal quirks must be updated while holding port mutex */
 #define UPQ_NO_TXEN_TEST	BIT(0)
 
 	unsigned int		read_status_mask;	/* driver specific */
@@ -506,20 +508,20 @@ struct uart_port {
 	 * The remaining bits are serial-core specific and not modifiable by
 	 * userspace.
 	 */
-#define UPF_FOURPORT		((__force upf_t) ASYNC_FOURPORT       /* 1  */ )
-#define UPF_SAK			((__force upf_t) ASYNC_SAK            /* 2  */ )
-#define UPF_SPD_HI		((__force upf_t) ASYNC_SPD_HI         /* 4  */ )
-#define UPF_SPD_VHI		((__force upf_t) ASYNC_SPD_VHI        /* 5  */ )
-#define UPF_SPD_CUST		((__force upf_t) ASYNC_SPD_CUST   /* 0x0030 */ )
-#define UPF_SPD_WARP		((__force upf_t) ASYNC_SPD_WARP   /* 0x1010 */ )
-#define UPF_SPD_MASK		((__force upf_t) ASYNC_SPD_MASK   /* 0x1030 */ )
-#define UPF_SKIP_TEST		((__force upf_t) ASYNC_SKIP_TEST      /* 6  */ )
-#define UPF_AUTO_IRQ		((__force upf_t) ASYNC_AUTO_IRQ       /* 7  */ )
-#define UPF_HARDPPS_CD		((__force upf_t) ASYNC_HARDPPS_CD     /* 11 */ )
-#define UPF_SPD_SHI		((__force upf_t) ASYNC_SPD_SHI        /* 12 */ )
-#define UPF_LOW_LATENCY		((__force upf_t) ASYNC_LOW_LATENCY    /* 13 */ )
-#define UPF_BUGGY_UART		((__force upf_t) ASYNC_BUGGY_UART     /* 14 */ )
-#define UPF_MAGIC_MULTIPLIER	((__force upf_t) ASYNC_MAGIC_MULTIPLIER /* 16 */ )
+#define UPF_FOURPORT		((__force upf_t) ASYNC_FOURPORT       /* 1  */)
+#define UPF_SAK			((__force upf_t) ASYNC_SAK            /* 2  */)
+#define UPF_SPD_HI		((__force upf_t) ASYNC_SPD_HI         /* 4  */)
+#define UPF_SPD_VHI		((__force upf_t) ASYNC_SPD_VHI        /* 5  */)
+#define UPF_SPD_CUST		((__force upf_t) ASYNC_SPD_CUST   /* 0x0030 */)
+#define UPF_SPD_WARP		((__force upf_t) ASYNC_SPD_WARP   /* 0x1010 */)
+#define UPF_SPD_MASK		((__force upf_t) ASYNC_SPD_MASK   /* 0x1030 */)
+#define UPF_SKIP_TEST		((__force upf_t) ASYNC_SKIP_TEST      /* 6  */)
+#define UPF_AUTO_IRQ		((__force upf_t) ASYNC_AUTO_IRQ       /* 7  */)
+#define UPF_HARDPPS_CD		((__force upf_t) ASYNC_HARDPPS_CD     /* 11 */)
+#define UPF_SPD_SHI		((__force upf_t) ASYNC_SPD_SHI        /* 12 */)
+#define UPF_LOW_LATENCY		((__force upf_t) ASYNC_LOW_LATENCY    /* 13 */)
+#define UPF_BUGGY_UART		((__force upf_t) ASYNC_BUGGY_UART     /* 14 */)
+#define UPF_MAGIC_MULTIPLIER	((__force upf_t) ASYNC_MAGIC_MULTIPLIER /* 16 */)
 
 #define UPF_NO_THRE_TEST	((__force upf_t) BIT_ULL(19))
 /* Port has hardware-assisted h/w flow control */
@@ -531,7 +533,7 @@ struct uart_port {
 #define UPF_CONS_FLOW		((__force upf_t) BIT_ULL(23))
 #define UPF_SHARE_IRQ		((__force upf_t) BIT_ULL(24))
 #define UPF_EXAR_EFR		((__force upf_t) BIT_ULL(25))
-#define UPF_BUG_THRE		((__force upf_t) BIT_ULL(26))
+#define UPF_ERR_THRE		((__force upf_t) BIT_ULL(26))
 /* The exact UART type is known and should not be probed.  */
 #define UPF_FIXED_TYPE		((__force upf_t) BIT_ULL(27))
 #define UPF_BOOT_AUTOCONF	((__force upf_t) BIT_ULL(28))
@@ -588,13 +590,102 @@ struct uart_port {
 	struct serial_rs485     rs485;
 	struct serial_rs485	rs485_supported;	/* Supported mask for serial_rs485 */
 	struct gpio_desc	*rs485_term_gpio;	/* enable RS485 bus termination */
-	struct gpio_desc	*rs485_rx_during_tx_gpio; /* Output GPIO that sets the state of RS485 RX during TX */
+	struct gpio_desc	*rs485_rx_during_tx_gpio; /* set the state of RS485 RX during TX */
 	struct serial_iso7816   iso7816;
-	void			*private_data;		/* generic platform data pointer */
+	void	*private_data;	/* generic platform data pointer */
 
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);
 };
+
+/*
+ * Only for console->device_lock()/_unlock() callbacks and internal
+ * port lock wrapper synchronization.
+ */
+static inline void __uart_port_lock_irqsave(struct uart_port *up, unsigned long *flags)
+{
+	spin_lock_irqsave(&up->lock, *flags);
+}
+
+/*
+ * Only for console->device_lock()/_unlock() callbacks and internal
+ * port lock wrapper synchronization.
+ */
+static inline void __uart_port_unlock_irqrestore(struct uart_port *up, unsigned long flags)
+{
+	spin_unlock_irqrestore(&up->lock, flags);
+}
+
+/**
+ * uart_port_set_cons - Safely set the @cons field for a uart
+ * @up:		The uart port to set
+ * @con:	The new console to set to
+ *
+ * This function must be used to set @up->cons. It uses the port lock to
+ * synchronize with the port lock wrappers in order to ensure that the console
+ * cannot change or disappear while another context is holding the port lock.
+ */
+static inline void uart_port_set_cons(struct uart_port *up, struct console *con)
+{
+	unsigned long flags;
+
+	__uart_port_lock_irqsave(up, &flags);
+	up->cons = con;
+	__uart_port_unlock_irqrestore(up, flags);
+}
+
+/* Only for internal port lock wrapper usage. */
+static inline bool __uart_port_using_nbcon(struct uart_port *up)
+{
+	lockdep_assert_held_once(&up->lock);
+
+	if (likely(!uart_console(up)))
+		return false;
+
+	/*
+	 * @up->cons is only modified under the port lock. Therefore it is
+	 * certain that it cannot disappear here.
+	 *
+	 * @up->cons->node is added/removed from the console list under the
+	 * port lock. Therefore it is certain that the registration status
+	 * cannot change here, thus @up->cons->flags can be read directly.
+	 */
+	if (hlist_unhashed_lockless(&up->cons->node) ||
+	    !(up->cons->flags & CON_NBCON) ||
+	    !up->cons->write_atomic) {
+		return false;
+	}
+
+	return true;
+}
+
+/* Only for internal port lock wrapper usage. */
+static inline bool __uart_port_nbcon_try_acquire(struct uart_port *up)
+{
+	if (!__uart_port_using_nbcon(up))
+		return true;
+
+	return nbcon_device_try_acquire(up->cons);
+}
+
+/* Only for internal port lock wrapper usage. */
+static inline void __uart_port_nbcon_acquire(struct uart_port *up)
+{
+	if (!__uart_port_using_nbcon(up))
+		return;
+
+	while (!nbcon_device_try_acquire(up->cons))
+		cpu_relax();
+}
+
+/* Only for internal port lock wrapper usage. */
+static inline void __uart_port_nbcon_release(struct uart_port *up)
+{
+	if (!__uart_port_using_nbcon(up))
+		return;
+
+	nbcon_device_release(up->cons);
+}
 
 /**
  * uart_port_lock - Lock the UART port
@@ -603,6 +694,7 @@ struct uart_port {
 static inline void uart_port_lock(struct uart_port *up)
 {
 	spin_lock(&up->lock);
+	__uart_port_nbcon_acquire(up);
 }
 
 /**
@@ -612,6 +704,7 @@ static inline void uart_port_lock(struct uart_port *up)
 static inline void uart_port_lock_irq(struct uart_port *up)
 {
 	spin_lock_irq(&up->lock);
+	__uart_port_nbcon_acquire(up);
 }
 
 /**
@@ -622,6 +715,7 @@ static inline void uart_port_lock_irq(struct uart_port *up)
 static inline void uart_port_lock_irqsave(struct uart_port *up, unsigned long *flags)
 {
 	spin_lock_irqsave(&up->lock, *flags);
+	__uart_port_nbcon_acquire(up);
 }
 
 /**
@@ -632,7 +726,15 @@ static inline void uart_port_lock_irqsave(struct uart_port *up, unsigned long *f
  */
 static inline bool uart_port_trylock(struct uart_port *up)
 {
-	return spin_trylock(&up->lock);
+	if (!spin_trylock(&up->lock))
+		return false;
+
+	if (!__uart_port_nbcon_try_acquire(up)) {
+		spin_unlock(&up->lock);
+		return false;
+	}
+
+	return true;
 }
 
 /**
@@ -644,7 +746,15 @@ static inline bool uart_port_trylock(struct uart_port *up)
  */
 static inline bool uart_port_trylock_irqsave(struct uart_port *up, unsigned long *flags)
 {
-	return spin_trylock_irqsave(&up->lock, *flags);
+	if (!spin_trylock_irqsave(&up->lock, *flags))
+		return false;
+
+	if (!__uart_port_nbcon_try_acquire(up)) {
+		spin_unlock_irqrestore(&up->lock, *flags);
+		return false;
+	}
+
+	return true;
 }
 
 /**
@@ -653,6 +763,7 @@ static inline bool uart_port_trylock_irqsave(struct uart_port *up, unsigned long
  */
 static inline void uart_port_unlock(struct uart_port *up)
 {
+	__uart_port_nbcon_release(up);
 	spin_unlock(&up->lock);
 }
 
@@ -662,6 +773,7 @@ static inline void uart_port_unlock(struct uart_port *up)
  */
 static inline void uart_port_unlock_irq(struct uart_port *up)
 {
+	__uart_port_nbcon_release(up);
 	spin_unlock_irq(&up->lock);
 }
 
@@ -672,6 +784,7 @@ static inline void uart_port_unlock_irq(struct uart_port *up)
  */
 static inline void uart_port_unlock_irqrestore(struct uart_port *up, unsigned long flags)
 {
+	__uart_port_nbcon_release(up);
 	spin_unlock_irqrestore(&up->lock, flags);
 }
 
@@ -704,7 +817,6 @@ struct uart_state {
 	struct tty_port		port;
 
 	enum uart_pm_state	pm_state;
-	struct circ_buf		xmit;
 
 	atomic_t		refcount;
 	wait_queue_head_t	remove_wait;
@@ -728,10 +840,33 @@ struct uart_state {
  */
 static inline void uart_xmit_advance(struct uart_port *up, unsigned int chars)
 {
-	struct circ_buf *xmit = &up->state->xmit;
+	struct tty_port *tport = &up->state->port;
 
-	xmit->tail = (xmit->tail + chars) & (UART_XMIT_SIZE - 1);
+	kfifo_skip_count(&tport->xmit_fifo, chars);
 	up->icount.tx += chars;
+}
+
+static inline unsigned int uart_fifo_out(struct uart_port *up,
+		unsigned char *buf, unsigned int chars)
+{
+	struct tty_port *tport = &up->state->port;
+
+	chars = kfifo_out(&tport->xmit_fifo, buf, chars);
+	up->icount.tx += chars;
+
+	return chars;
+}
+
+static inline unsigned int uart_fifo_get(struct uart_port *up,
+		unsigned char *ch)
+{
+	struct tty_port *tport = &up->state->port;
+	unsigned int chars;
+
+	chars = kfifo_get(&tport->xmit_fifo, ch);
+	up->icount.tx += chars;
+
+	return chars;
 }
 
 struct module;
@@ -771,7 +906,7 @@ enum UART_TX_FLAGS {
 		       for_test, for_post)				      \
 ({									      \
 	struct uart_port *__port = (uport);				      \
-	struct circ_buf *xmit = &__port->state->xmit;			      \
+	struct tty_port *__tport = &__port->state->port;		      \
 	unsigned int pending;						      \
 									      \
 	for (; (for_test) && (tx_ready); (for_post), __port->icount.tx++) {   \
@@ -782,17 +917,18 @@ enum UART_TX_FLAGS {
 			continue;					      \
 		}							      \
 									      \
-		if (uart_circ_empty(xmit) || uart_tx_stopped(__port))	      \
+		if (uart_tx_stopped(__port))				      \
 			break;						      \
 									      \
-		(ch) = xmit->buf[xmit->tail];				      \
+		if (!kfifo_get(&__tport->xmit_fifo, &(ch)))		      \
+			break;						      \
+									      \
 		(put_char);						      \
-		xmit->tail = (xmit->tail + 1) % UART_XMIT_SIZE;		      \
 	}								      \
 									      \
 	(tx_done);							      \
 									      \
-	pending = uart_circ_chars_pending(xmit);			      \
+	pending = kfifo_len(&__tport->xmit_fifo);			      \
 	if (pending < WAKEUP_CHARS) {					      \
 		uart_write_wakeup(__port);				      \
 									      \
@@ -902,9 +1038,9 @@ static inline unsigned long uart_fifo_timeout(struct uart_port *port)
 }
 
 /* Base timer interval for polling */
-static inline int uart_poll_timeout(struct uart_port *port)
+static inline unsigned long uart_poll_timeout(struct uart_port *port)
 {
-	int timeout = uart_fifo_timeout(port);
+	unsigned long timeout = uart_fifo_timeout(port);
 
 	return timeout > 6 ? (timeout / 2 - 2) : 1;
 }
@@ -923,7 +1059,7 @@ struct earlycon_id {
 	char	name[15];
 	char	name_term;	/* In case compiler didn't '\0' term name */
 	char	compatible[128];
-	int	(*setup)(struct earlycon_device *, const char *options);
+	int	(*setup)(struct earlycon_device *dev, const char *options);
 };
 
 extern const struct earlycon_id __earlycon_table[];
@@ -998,18 +1134,10 @@ bool uart_match_port(const struct uart_port *port1,
 int uart_suspend_port(struct uart_driver *reg, struct uart_port *port);
 int uart_resume_port(struct uart_driver *reg, struct uart_port *port);
 
-#define uart_circ_empty(circ)		((circ)->head == (circ)->tail)
-#define uart_circ_clear(circ)		((circ)->head = (circ)->tail = 0)
-
-#define uart_circ_chars_pending(circ)	\
-	(CIRC_CNT((circ)->head, (circ)->tail, UART_XMIT_SIZE))
-
-#define uart_circ_chars_free(circ)	\
-	(CIRC_SPACE((circ)->head, (circ)->tail, UART_XMIT_SIZE))
-
 static inline int uart_tx_stopped(struct uart_port *port)
 {
 	struct tty_struct *tty = port->state->port.tty;
+
 	if ((tty && tty->flow.stopped) || port->hw_stopped)
 		return 1;
 	return 0;
@@ -1087,14 +1215,14 @@ static inline void uart_unlock_and_check_sysrq(struct uart_port *port)
 	u8 sysrq_ch;
 
 	if (!port->has_sysrq) {
-		spin_unlock(&port->lock);
+		uart_port_unlock(port);
 		return;
 	}
 
 	sysrq_ch = port->sysrq_ch;
 	port->sysrq_ch = 0;
 
-	spin_unlock(&port->lock);
+	uart_port_unlock(port);
 
 	if (sysrq_ch)
 		handle_sysrq(sysrq_ch);
@@ -1106,14 +1234,14 @@ static inline void uart_unlock_and_check_sysrq_irqrestore(struct uart_port *port
 	u8 sysrq_ch;
 
 	if (!port->has_sysrq) {
-		spin_unlock_irqrestore(&port->lock, flags);
+		uart_port_unlock_irqrestore(port, flags);
 		return;
 	}
 
 	sysrq_ch = port->sysrq_ch;
 	port->sysrq_ch = 0;
 
-	spin_unlock_irqrestore(&port->lock, flags);
+	uart_port_unlock_irqrestore(port, flags);
 
 	if (sysrq_ch)
 		handle_sysrq(sysrq_ch);
@@ -1129,12 +1257,12 @@ static inline int uart_prepare_sysrq_char(struct uart_port *port, u8 ch)
 }
 static inline void uart_unlock_and_check_sysrq(struct uart_port *port)
 {
-	spin_unlock(&port->lock);
+	uart_port_unlock(port);
 }
 static inline void uart_unlock_and_check_sysrq_irqrestore(struct uart_port *port,
 		unsigned long flags)
 {
-	spin_unlock_irqrestore(&port->lock, flags);
+	uart_port_unlock_irqrestore(port, flags);
 }
 #endif	/* CONFIG_MAGIC_SYSRQ_SERIAL */
 
@@ -1165,7 +1293,7 @@ static inline int uart_handle_break(struct uart_port *port)
 /*
  *	UART_ENABLE_MS - determine if port should enable modem status irqs
  */
-#define UART_ENABLE_MS(port,cflag)	((port)->flags & UPF_HARDPPS_CD || \
+#define UART_ENABLE_MS(port, cflag)	((port)->flags & UPF_HARDPPS_CD || \
 					 (cflag) & CRTSCTS || \
 					 !((cflag) & CLOCAL))
 

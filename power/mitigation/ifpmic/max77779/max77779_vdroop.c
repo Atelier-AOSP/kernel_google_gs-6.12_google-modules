@@ -4,26 +4,41 @@
  *
  */
 
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
-#include <linux/of_gpio.h>
 #include "ifpmic_defs.h"
 #include "max77779_irq.h"
 #include <max77779.h>
 #include <max77779_vimon.h>
 #include <max777x9_bcl.h>
+#include <gbms_storage.h>
 
 #define MAX77779_VIMON_BCL_CLIENT 0
 #define MAX77779_VIMON_BCL_SAMPLE_COUNT 16
 #define MAX77779_VIMON_CLIENT_TRIG_FOREVER -1
+#define MAX77779_SP_CLR 0x5a
+#define MAX77779_SP_SET 0xa5
+#define MAX77779_SP_CLR_BYTES 1
+#define DEFAULT_VIMON_TRIG VIMON_BATOILO1_TRIGGER
+
+#define BCL_FACTORY_OILO_LIM 4800
+#define BCL_FACTORY_OILO_DEB 0
 
 struct max77779_sample_data {
 	uint16_t v_val;
 	int16_t i_val;
 } __packed;
 
+/**
+ * evt_cnt_rd_and_clr() - Read and clear event counters
+ * @bcl_dev: BCL device
+ * @idx: event counter index
+ * @update_evt_cnt: update event counter
+ *
+ * Return: 0 on success, else error
+ */
 int evt_cnt_rd_and_clr(struct bcl_device *bcl_dev, int idx, bool update_evt_cnt)
 {
 	int ret;
@@ -76,10 +91,20 @@ int evt_cnt_rd_and_clr(struct bcl_device *bcl_dev, int idx, bool update_evt_cnt)
 	return 0;
 }
 
+/**
+ * max77779_register_irq() - Register IRQ for VDROOP
+ * @bcl_dev: BCL device
+ * @irq_name: IRQ name
+ * @idx: IRQ index
+ * @link: IRQ link
+ *
+ * Return: 0 on success, else error
+ */
 static int max77779_register_irq(struct bcl_device *bcl_dev, const char *irq_name, int idx,
 				 u32 link)
 {
-	int irq, pin, ret, irq_config;
+	int irq, ret, irq_config;
+	struct gpio_desc *pin;
 	u32 flag;
 
 	switch (link) {
@@ -95,22 +120,23 @@ static int max77779_register_irq(struct bcl_device *bcl_dev, const char *irq_nam
 		break;
 	case IF_INTB:
 		irq = bcl_dev->pmic_irq;
-		pin = NOT_USED;
+		pin = NULL;
 		irq_config = IRQ_EXIST;
 		break;
 	case IF_SHARED:
 		irq = 0;
+		pin = NULL;
 		irq_config = IRQ_NOT_EXIST;
-		pin = NOT_USED;
 		break;
 	default:
 		return 0;
 	};
 
 	if (IS_ENABLED(CONFIG_GOOGLE_MFD_DA9188))
-		flag = IRQF_ONESHOT | IRQF_NO_AUTOEN | IRQF_TRIGGER_RISING;
+		flag = IRQF_ONESHOT | IRQF_TRIGGER_RISING | IRQF_SHARED;
 	else
-		flag = IRQF_ONESHOT | IRQF_NO_AUTOEN | IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING;
+		flag = IRQF_ONESHOT | IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING |
+		       IRQF_SHARED;
 	ret = google_bcl_register_zone(bcl_dev, idx, irq_name, pin, irq,
 				       IF_PMIC, irq_config, POLARITY_HIGH, flag);
 	if (ret < 0) {
@@ -120,23 +146,56 @@ static int max77779_register_irq(struct bcl_device *bcl_dev, const char *irq_nam
 	return 0;
 }
 
+/**
+ * max77779_bcl_on_sample_ready() - Callback for VIMON sample ready
+ * @device: BCL device
+ * @reason: VIMON trigger reason
+ * @buf: VIMON sample buffer
+ * @buf_size: VIMON sample buffer size
+ */
 static void max77779_bcl_on_sample_ready(void *device, const enum vimon_trigger_source reason,
 					 const u16 *buf, const size_t buf_size)
 {
 	struct bcl_device *bcl_dev = device;
 	int i_max = 0;
+	int min_v_cnt = 0;
 	const int count = buf_size / sizeof(struct max77779_sample_data);
 	const struct max77779_sample_data *sample = (const struct max77779_sample_data *)buf;
-	int i, i_rdback;
+	int i, rdback, ret;
+	u16 set_val;
 
 	if (reason == VIMON_CLIENT_REQUEST)
 		goto max77779_bcl_trigger_mitigation;
 
 	for (i = 0; i < count; i++) {
-		i_rdback = ((int64_t)sample->i_val * MAX77779_VIMON_NA_PER_LSB) /
+		rdback = ((int64_t)sample->i_val * MAX77779_VIMON_NA_PER_LSB) /
 			   MILLI_UNITS_TO_NANO_UNITS;
 
-		i_max = max(i_max, i_rdback);
+		if (rdback < bcl_dev->min_i_clr_thrs && bcl_dev->min_v_shdn_en) {
+			min_v_cnt = 0;
+			set_val = MAX77779_SP_CLR;
+			ret = gbms_storage_write(GBMS_TAG_BCLS, &set_val,
+						 MAX77779_SP_CLR_BYTES);
+			if (ret < 0)
+				dev_err(bcl_dev->device, "Write to set BCLS failed: %d\n", ret);
+		}
+
+		i_max = max(i_max, rdback);
+		rdback = ((int64_t)sample->v_val * MAX77779_VIMON_NV_PER_LSB) /
+			   MILLI_UNITS_TO_NANO_UNITS;
+		if (rdback < bcl_dev->min_v_thrs && bcl_dev->min_v_shdn_en)
+			min_v_cnt++;
+		else
+			min_v_cnt = 0;
+
+		if (min_v_cnt == bcl_dev->min_v_thrs_cnt_max) {
+			set_val = MAX77779_SP_SET;
+			ret = gbms_storage_write(GBMS_TAG_BCLS, &set_val,
+						 MAX77779_SP_CLR_BYTES);
+			if (ret < 0)
+				dev_err(bcl_dev->device, "Write to set BCLS failed: %d\n", ret);
+		}
+
 		sample++;
 	}
 
@@ -147,10 +206,22 @@ max77779_bcl_trigger_mitigation:
 	google_pwr_loop_trigger_mitigation(bcl_dev);
 }
 
+/**
+ * max77779_bcl_on_sample_removed() - Callback for VIMON sample removed
+ * @device: BCL device
+ */
 static void max77779_bcl_on_sample_removed(void *device)
 {
 }
 
+/**
+ * max77779_bcl_extra_trigger() - Callback for VIMON extra trigger
+ * @device: BCL device
+ * @buf: VIMON sample buffer
+ * @buf_size: VIMON sample buffer size
+ *
+ * Return: true if extra trigger is needed, else false
+ */
 static bool max77779_bcl_extra_trigger(void *device, const uint16_t *buf, const size_t buf_size)
 {
 	struct bcl_device *bcl_dev = device;
@@ -180,12 +251,19 @@ static struct vimon_client_callbacks max77779_vimon_bcl_client = {
 	.extra_trigger = max77779_bcl_extra_trigger,
 };
 
-static int google_bcl_update_last_curr(struct bcl_device *bcl_dev)
+/**
+ * google_bcl_update_rd_fg() - Update fuel gauge reading
+ * @bcl_dev: BCL device
+ *
+ * Return: 0 on success, else error
+ */
+static int google_bcl_update_rd_fg(struct bcl_device *bcl_dev)
 {
 	int ret = 0;
 	u16 readout;
+	u16 clr_val = MAX77779_SP_CLR;
 
-	bcl_dev->last_curr_rd_retry_cnt--;
+	bcl_dev->fg_rd_retry_cnt--;
 	ret = max77779_external_fg_reg_read(bcl_dev->fg_pmic_dev,
 					    MAX77779_FG_MaxMinCurr,
 					    &readout);
@@ -202,34 +280,39 @@ static int google_bcl_update_last_curr(struct bcl_device *bcl_dev)
 	bcl_dev->last_current = readout;
 	dev_dbg(bcl_dev->device, "LAST CURRENT: %#x\n", bcl_dev->last_current);
 
+	ret = gbms_storage_write(GBMS_TAG_BCLS, &clr_val, MAX77779_SP_CLR_BYTES);
+	if (ret < 0)
+		dev_err(bcl_dev->device, "Write to clear BCLS failed: %d\n", ret);
+
 	return ret;
 }
 
-static void google_bcl_rd_last_curr(struct work_struct *work)
+/**
+ * google_bcl_rd_fg() - Read fuel gauge
+ * @work: work struct
+ */
+static void google_bcl_rd_fg(struct work_struct *work)
 {
 	struct bcl_device *bcl_dev = container_of(work, struct bcl_device,
-						  rd_last_curr_work.work);
+						  rd_fg_work.work);
 
-	if (google_bcl_update_last_curr(bcl_dev) == -EAGAIN && bcl_dev->last_curr_rd_retry_cnt > 0)
-		schedule_delayed_work(&bcl_dev->rd_last_curr_work,
-				      msecs_to_jiffies(TIMEOUT_5S));
+	if (google_bcl_update_rd_fg(bcl_dev) == -EAGAIN && bcl_dev->fg_rd_retry_cnt > 0)
+		schedule_delayed_work(&bcl_dev->rd_fg_work, msecs_to_jiffies(TIMEOUT_5S));
 }
 
+/**
+ * max77779_intf_pmic_init() - Initialize interface PMIC
+ * @bcl_dev: BCL device
+ *
+ * Return: 0 on success, else error
+ */
 static int max77779_intf_pmic_init(struct bcl_device *bcl_dev)
 {
 	int ret;
 	u8 val, retval;
-	unsigned int uvlo1_lvl, uvlo2_lvl, batoilo_lvl, batoilo2_lvl, lvl;
 	struct device_node *np = bcl_dev->device->of_node;
-	struct device_node *p_np;
+	struct device_node *p_np __free(device_node) = NULL;
 	u32 uvlo1_link, uvlo2_link, oilo1_link, oilo2_link, link;
-
-	batoilo_reg_read(bcl_dev->intf_pmic_dev, bcl_dev->ifpmic, BATOILO2, &lvl);
-	batoilo2_lvl = BO_STEP * lvl + bcl_dev->batt_irq_conf1.batoilo_lower_limit;
-	batoilo_reg_read(bcl_dev->intf_pmic_dev, bcl_dev->ifpmic, BATOILO1, &lvl);
-	batoilo_lvl = BO_STEP * lvl + bcl_dev->batt_irq_conf1.batoilo_lower_limit;
-	uvlo_reg_read(bcl_dev->intf_pmic_dev, bcl_dev->ifpmic, UVLO1, &uvlo1_lvl);
-	uvlo_reg_read(bcl_dev->intf_pmic_dev, bcl_dev->ifpmic, UVLO2, &uvlo2_lvl);
 
 	p_np = of_get_child_by_name(np, "ifpmic_irq_mapping");
 	if (!p_np)
@@ -366,18 +449,14 @@ static int max77779_intf_pmic_init(struct bcl_device *bcl_dev)
 	max77779_external_pmic_reg_write(bcl_dev->irq_pmic_dev,
 					 MAX77779_PMIC_EVENT_CNT_CFG, retval);
 
-	max77779_clr_irq(bcl_dev, UVLO1);
-	max77779_clr_irq(bcl_dev, UVLO2);
-	max77779_clr_irq(bcl_dev, BATOILO1);
-	max77779_clr_irq(bcl_dev, BATOILO2);
-
-	if (!IS_ENABLED(CONFIG_REGULATOR_S2MPG14) && !IS_ENABLED(CONFIG_SOC_LGA))
+	if (!IS_ENABLED(CONFIG_REGULATOR_S2MPG14) &&
+		!IS_ENABLED(CONFIG_SOC_LGA) && !IS_ENABLED(CONFIG_SOC_MBU))
 		return 0;
 
 	if (!bcl_dev->vimon_pwr_loop_en)
 		return 0;
 
-	ret = vimon_register_callback(bcl_dev->vimon_dev, VIMON_BATOILO1_TRIGGER,
+	ret = vimon_register_callback(bcl_dev->vimon_dev, bcl_dev->vimon_trigger,
 				      MAX77779_VIMON_CLIENT_TRIG_FOREVER, bcl_dev,
 				      &max77779_vimon_bcl_client);
 	if (ret)
@@ -386,6 +465,11 @@ static int max77779_intf_pmic_init(struct bcl_device *bcl_dev)
 	return ret;
 }
 
+/**
+ * max77779_ifpmic_parse_dt() - Parse device tree for interface PMIC
+ * @bcl_dev: BCL device
+ * @pdev: platform device
+ */
 static void max77779_ifpmic_parse_dt(struct bcl_device *bcl_dev, struct platform_device *pdev)
 {
 	struct device_node *np = bcl_dev->device->of_node;
@@ -394,19 +478,7 @@ static void max77779_ifpmic_parse_dt(struct bcl_device *bcl_dev, struct platform
 
 	if (!np)
 		return;
-	if (IS_ENABLED(CONFIG_GOOGLE_MFD_DA9188)) {
-		bcl_dev->vdroop1_irq = platform_get_irq_byname(pdev, "vd1");
-		bcl_dev->vdroop2_irq = platform_get_irq_byname(pdev, "vd2");
-		bcl_dev->pmic_irq = platform_get_irq_byname(pdev, "intb");
-		bcl_dev->vdroop1_pin = of_get_named_gpio(np, "gpio,vd1", 0);
-		bcl_dev->vdroop2_pin = of_get_named_gpio(np, "gpio,vd2", 0);
-	} else {
-		bcl_dev->pmic_irq = platform_get_irq(pdev, 0);
-		bcl_dev->vdroop1_pin = of_get_named_gpio(np, "gpios", 0);
-		bcl_dev->vdroop2_pin = of_get_named_gpio(np, "gpios", 1);
-		bcl_dev->vdroop1_irq = gpio_to_irq(bcl_dev->vdroop1_pin);
-		bcl_dev->vdroop2_irq = gpio_to_irq(bcl_dev->vdroop2_pin);
-	}
+
 	ret = of_property_read_u32(np, "batoilo_lower", &retval);
 	bcl_dev->batt_irq_conf1.batoilo_lower_limit = ret ? BO_LOWER_LIMIT : retval;
 	ret = of_property_read_u32(np, "batoilo_upper", &retval);
@@ -415,6 +487,14 @@ static void max77779_ifpmic_parse_dt(struct bcl_device *bcl_dev, struct platform
 	bcl_dev->batt_irq_conf2.batoilo_lower_limit = ret ? BO_LOWER_LIMIT : retval;
 	ret = of_property_read_u32(np, "batoilo2_upper", &retval);
 	bcl_dev->batt_irq_conf2.batoilo_upper_limit = ret ? BO_UPPER_LIMIT : retval;
+#ifdef BCL_FACTORY_BUILD
+	bcl_dev->batt_irq_conf1.batoilo_trig_lvl =
+			(BCL_FACTORY_OILO_LIM -
+			 bcl_dev->batt_irq_conf1.batoilo_lower_limit) / BO_STEP;
+	bcl_dev->batt_irq_conf2.batoilo_trig_lvl =
+			(BCL_FACTORY_OILO_LIM -
+			 bcl_dev->batt_irq_conf2.batoilo_lower_limit) / BO_STEP;
+#else
 	ret = of_property_read_u32(np, "batoilo_trig_lvl", &retval);
 	retval = ret ? BO_LIMIT : retval;
 	bcl_dev->batt_irq_conf1.batoilo_trig_lvl =
@@ -423,6 +503,7 @@ static void max77779_ifpmic_parse_dt(struct bcl_device *bcl_dev, struct platform
 	retval = ret ? BO_LIMIT : retval;
 	bcl_dev->batt_irq_conf2.batoilo_trig_lvl =
 			(retval - bcl_dev->batt_irq_conf2.batoilo_lower_limit) / BO_STEP;
+#endif
 	ret = of_property_read_u32(np, "batoilo_usb_trig_lvl", &retval);
 	bcl_dev->batt_irq_conf1.batoilo_usb_trig_lvl = ret ?
 			bcl_dev->batt_irq_conf1.batoilo_trig_lvl :
@@ -431,6 +512,16 @@ static void max77779_ifpmic_parse_dt(struct bcl_device *bcl_dev, struct platform
 	bcl_dev->batt_irq_conf2.batoilo_usb_trig_lvl = ret ?
 			bcl_dev->batt_irq_conf2.batoilo_trig_lvl :
 			(retval - bcl_dev->batt_irq_conf2.batoilo_lower_limit) / BO_STEP;
+	ret = of_property_read_u32(np, "batoilo_otg_trig_lvl", &retval);
+	bcl_dev->batt_irq_conf1.batoilo_otg_trig_lvl =
+		ret ? bcl_dev->batt_irq_conf1.batoilo_trig_lvl :
+		      (retval - bcl_dev->batt_irq_conf1.batoilo_lower_limit) /
+				BO_STEP;
+	ret = of_property_read_u32(np, "batoilo2_otg_trig_lvl", &retval);
+	bcl_dev->batt_irq_conf2.batoilo_otg_trig_lvl =
+		ret ? bcl_dev->batt_irq_conf2.batoilo_trig_lvl :
+		      (retval - bcl_dev->batt_irq_conf2.batoilo_lower_limit) /
+				BO_STEP;
 	ret = of_property_read_u32(np, "batoilo_wlc_trig_lvl", &retval);
 	bcl_dev->batt_irq_conf1.batoilo_wlc_trig_lvl = ret ?
 			bcl_dev->batt_irq_conf1.batoilo_trig_lvl :
@@ -451,10 +542,15 @@ static void max77779_ifpmic_parse_dt(struct bcl_device *bcl_dev, struct platform
 	bcl_dev->batt_irq_conf1.batoilo_int_rel = ret ? BO_INT_REL_DEFAULT : retval;
 	ret = of_property_read_u32(np, "batoilo2_int_rel", &retval);
 	bcl_dev->batt_irq_conf2.batoilo_int_rel = ret ? BO_INT_REL_DEFAULT : retval;
+#ifdef BCL_FACTORY_BUILD
+	bcl_dev->batt_irq_conf1.batoilo_det = BCL_FACTORY_OILO_DEB;
+	bcl_dev->batt_irq_conf2.batoilo_det = BCL_FACTORY_OILO_DEB;
+#else
 	ret = of_property_read_u32(np, "batoilo_det", &retval);
 	bcl_dev->batt_irq_conf1.batoilo_det = ret ? BO_INT_DET_DEFAULT : retval;
 	ret = of_property_read_u32(np, "batoilo2_det", &retval);
 	bcl_dev->batt_irq_conf2.batoilo_det = ret ? BO_INT_DET_DEFAULT : retval;
+#endif
 	ret = of_property_read_u32(np, "batoilo_int_det", &retval);
 	bcl_dev->batt_irq_conf1.batoilo_int_det = ret ? BO_INT_DET_DEFAULT : retval;
 	ret = of_property_read_u32(np, "batoilo2_int_det", &retval);
@@ -492,8 +588,25 @@ static void max77779_ifpmic_parse_dt(struct bcl_device *bcl_dev, struct platform
 	bcl_dev->vimon_pwr_loop_cnt = ret ? DEFAULT_VIMON_PWR_LOOP_CNT : retval;
 	ret = of_property_read_u32(np, "vimon_pwr_loop_thresh", &retval);
 	bcl_dev->vimon_pwr_loop_thresh = ret ? DEFAULT_VIMON_PWR_LOOP_THRESH : retval;
+	ret = of_property_read_u32(np, "min_v_thrs", &retval);
+	bcl_dev->min_v_thrs = ret ? DEFAULT_MIN_V_THRS : retval;
+	ret = of_property_read_u32(np, "min_v_thrs_cnt_max", &retval);
+	bcl_dev->min_v_thrs_cnt_max = ret ? DEFAULT_MIN_V_CNT_MAX : retval;
+	ret = of_property_read_u32(np, "min_v_shdn_en", &retval);
+	bcl_dev->min_v_shdn_en = ret ? DEFAULT_MIN_V_SHDN_EN : retval;
+	ret = of_property_read_s32(np, "min_i_clr_thrs", &retval);
+	bcl_dev->min_i_clr_thrs = ret ? DEFAULT_MIN_I_CLR_THRS : retval;
+	ret = of_property_read_s32(np, "vimon_trig", &retval);
+	bcl_dev->vimon_trigger = ret ? DEFAULT_VIMON_TRIG : retval;
 }
 
+/**
+ * max77779_ifpmic_setup() - Setup interface PMIC
+ * @bcl_dev: BCL device
+ * @pdev: platform device
+ *
+ * Return: 0 on success, else error
+ */
 int max77779_ifpmic_setup(struct bcl_device *bcl_dev, struct platform_device *pdev)
 {
 	int ret = 0;
@@ -518,11 +631,10 @@ int max77779_ifpmic_setup(struct bcl_device *bcl_dev, struct platform_device *pd
 	}
 
 	/* Readout last current */
-	INIT_DELAYED_WORK(&bcl_dev->rd_last_curr_work, google_bcl_rd_last_curr);
-	bcl_dev->last_curr_rd_retry_cnt = LAST_CURR_RD_CNT_MAX;
-	if (google_bcl_update_last_curr(bcl_dev) == -EAGAIN)
-		schedule_delayed_work(&bcl_dev->rd_last_curr_work,
-				      msecs_to_jiffies(TIMEOUT_1000MS));
+	INIT_DELAYED_WORK(&bcl_dev->rd_fg_work, google_bcl_rd_fg);
+	bcl_dev->fg_rd_retry_cnt = LAST_CURR_RD_CNT_MAX;
+	if (google_bcl_update_rd_fg(bcl_dev) == -EAGAIN)
+		schedule_delayed_work(&bcl_dev->rd_fg_work, msecs_to_jiffies(TIMEOUT_1000MS));
 
 	bcl_dev->vimon_dev = max77779_get_dev(bcl_dev->device, "google,vimon");
 	if (!bcl_dev->vimon_dev)
@@ -537,6 +649,16 @@ int max77779_ifpmic_setup(struct bcl_device *bcl_dev, struct platform_device *pd
 	return 0;
 }
 
+/* TODO: b/438485655 use newer apis */
+/**
+ * max77779_adjust_batoilo_lvl() - Adjust BATOILO level
+ * @bcl_dev: BCL device
+ * @lower_enable: enable lower BATOILO level
+ * @set_batoilo1_lvl: BATOILO1 level
+ * @set_batoilo2_lvl: BATOILO2 level
+ *
+ * Return: 0 on success, else error
+ */
 int max77779_adjust_batoilo_lvl(struct bcl_device *bcl_dev, u8 lower_enable, u8 set_batoilo1_lvl,
 				u8 set_batoilo2_lvl)
 {
@@ -566,85 +688,6 @@ int max77779_adjust_batoilo_lvl(struct bcl_device *bcl_dev, u8 lower_enable, u8 
 	val = _max77779_bat_oilo2_cnfg_0_bat_oilo2_set(val, batoilo2_lvl);
 	ret = max77779_external_chg_reg_write(bcl_dev->intf_pmic_dev, MAX77779_BAT_OILO2_CNFG_0,
 					      val);
-
-	return ret;
-}
-
-int max77779_get_irq(struct bcl_device *bcl_dev, u8 *irq_val)
-{
-	u8 vdroop_int;
-	u8 ret;
-	u8 clr_bcl_irq_mask;
-
-	clr_bcl_irq_mask = (MAX77779_PMIC_VDROOP_INT_BAT_OILO2_INT_MASK |
-			    MAX77779_PMIC_VDROOP_INT_BAT_OILO1_INT_MASK |
-			    MAX77779_PMIC_VDROOP_INT_SYS_UVLO1_INT_MASK |
-			    MAX77779_PMIC_VDROOP_INT_SYS_UVLO2_INT_MASK);
-	ret = max77779_external_pmic_reg_read(bcl_dev->irq_pmic_dev,
-					      MAX77779_PMIC_VDROOP_INT, &vdroop_int);
-	if (ret < 0)
-		return IRQ_NONE;
-	if ((vdroop_int & clr_bcl_irq_mask) == 0)
-		return IRQ_NONE;
-
-	/* UVLO2 has the highest priority and then BATOILO, then UVLO1 */
-	if (vdroop_int & MAX77779_PMIC_VDROOP_INT_SYS_UVLO2_INT_MASK)
-		*irq_val = UVLO2;
-	else if (vdroop_int & MAX77779_PMIC_VDROOP_INT_BAT_OILO2_INT_MASK)
-		*irq_val = BATOILO2;
-	else if (vdroop_int & MAX77779_PMIC_VDROOP_INT_BAT_OILO1_INT_MASK)
-		*irq_val = BATOILO1;
-	else if (vdroop_int & MAX77779_PMIC_VDROOP_INT_SYS_UVLO1_INT_MASK)
-		*irq_val = UVLO1;
-
-	return ret;
-}
-
-int max77779_clr_irq(struct bcl_device *bcl_dev, int idx)
-{
-	u8 irq_val = 0;
-	u8 chg_int = 0;
-	int ret;
-
-	if (idx != NOT_USED) {
-		irq_val = idx;
-	} else {
-		if (max77779_get_irq(bcl_dev, &irq_val) != 0)
-			return IRQ_NONE;
-	}
-	if (irq_val == UVLO2)
-		chg_int = MAX77779_PMIC_VDROOP_INT_SYS_UVLO2_INT_MASK |
-				MAX77779_PMIC_VDROOP_INT_BAT_OILO1_INT_MASK |
-				MAX77779_PMIC_VDROOP_INT_BAT_OILO2_INT_MASK;
-	else if (irq_val == UVLO1)
-		chg_int = MAX77779_PMIC_VDROOP_INT_SYS_UVLO1_INT_MASK;
-	else if (irq_val == BATOILO1)
-		chg_int = MAX77779_PMIC_VDROOP_INT_SYS_UVLO2_INT_MASK |
-				MAX77779_PMIC_VDROOP_INT_BAT_OILO1_INT_MASK |
-				MAX77779_PMIC_VDROOP_INT_BAT_OILO2_INT_MASK;
-	else if (irq_val == BATOILO2)
-		chg_int = MAX77779_PMIC_VDROOP_INT_SYS_UVLO2_INT_MASK |
-				MAX77779_PMIC_VDROOP_INT_BAT_OILO1_INT_MASK |
-				MAX77779_PMIC_VDROOP_INT_BAT_OILO2_INT_MASK;
-
-	ret = max77779_external_pmic_reg_write(bcl_dev->irq_pmic_dev,
-					       MAX77779_PMIC_VDROOP_INT, chg_int);
-	if (ret < 0)
-		return IRQ_NONE;
-	return ret;
-}
-
-int max77779_vimon_read(struct bcl_device *bcl_dev)
-{
-	int ret = 0;
-
-	if (!IS_ENABLED(CONFIG_REGULATOR_S2MPG14) && !IS_ENABLED(CONFIG_SOC_LGA))
-		return ret;
-
-	ret = max77779_external_vimon_read_buffer(bcl_dev->vimon_dev, bcl_dev->vimon_intf.data,
-						  &bcl_dev->vimon_intf.count, VIMON_BUF_SIZE);
-	if (ret == 0)
-		return bcl_dev->vimon_intf.count;
 
 	return ret;
 }

@@ -4,118 +4,93 @@
  */
 
 #include <linux/dma-buf.h>
+#include <linux/dma-mapping.h>
+#include <linux/vmalloc.h>
 
 #include <asm/set_memory.h>
 
+#include <drm/drm_drv.h>
 #include "drm/vs_drm.h"
 #include "vs_drv.h"
 #include "vs_gem.h"
 
 static const struct drm_gem_object_funcs vs_gem_default_funcs;
 
-static void nonseq_free(struct page **pages, unsigned int nr_page)
-{
-	u32 i;
-
-	if (!pages)
-		return;
-
-	for (i = 0; i < nr_page; i++)
-		__free_page(pages[i]);
-}
-
-static void put_pages(unsigned int nr_page, struct vs_gem_object *vs_obj)
-{
-	u32 i;
-
-	for (i = 0; i < nr_page; i++)
-		ClearPageReserved(vs_obj->pages[i]);
-
-	nonseq_free(vs_obj->pages, nr_page);
-}
-
 static int vs_gem_alloc_buf(struct vs_gem_object *vs_obj)
 {
 	struct drm_device *dev = vs_obj->base.dev;
-	unsigned int nr_pages;
-	struct sg_table sgt;
-	int ret = -ENOMEM;
+	struct device *dma_dev = to_dma_dev(dev);
+	int ret;
 
-	if (vs_obj->dma_addr) {
+	if (vs_obj->sgt || vs_obj->cookie) {
 		DRM_DEV_DEBUG(dev->dev, "already allocated.\n");
 		return 0;
 	}
 
-	vs_obj->dma_attrs = DMA_ATTR_WRITE_COMBINE | DMA_ATTR_NO_KERNEL_MAPPING;
-
+	/* Non-IOMMU case: must be contiguous.
+	 * Use dma_alloc_attrs with FORCE_CONTIGUOUS.
+	 * We skip NO_KERNEL_MAPPING here to ensure we can get an sgt reliably
+	 * via dma_get_sgtable, as some implementations require a vaddr.
+	 */
+	vs_obj->dma_attrs = DMA_ATTR_WRITE_COMBINE;
 	if (!is_iommu_enabled(dev))
 		vs_obj->dma_attrs |= DMA_ATTR_FORCE_CONTIGUOUS;
 
-	nr_pages = vs_obj->size >> PAGE_SHIFT;
-
-	vs_obj->pages = kvmalloc_array(nr_pages, sizeof(struct page *), GFP_KERNEL | __GFP_ZERO);
-	if (!vs_obj->pages) {
-		DRM_DEV_ERROR(dev->dev, "failed to allocate pages.\n");
+	vs_obj->cookie = dma_alloc_attrs(dma_dev, vs_obj->size, &vs_obj->dma_addr, GFP_KERNEL,
+					 vs_obj->dma_attrs);
+	if (!vs_obj->cookie) {
+		DRM_DEV_ERROR(dev->dev, "failed to allocate buffer.\n");
 		return -ENOMEM;
 	}
 
-	vs_obj->cookie = dma_alloc_attrs(to_dma_dev(dev), vs_obj->size, &vs_obj->dma_addr,
-					 GFP_KERNEL, vs_obj->dma_attrs);
-	if (!vs_obj->cookie) {
-		DRM_DEV_ERROR(dev->dev, "failed to allocate buffer.\n");
-		goto err_free;
+	vs_obj->sgt = kzalloc(sizeof(*vs_obj->sgt), GFP_KERNEL);
+	if (!vs_obj->sgt) {
+		ret = -ENOMEM;
+		goto err_free_attrs;
+	}
+
+	ret = dma_get_sgtable(dma_dev, vs_obj->sgt, vs_obj->cookie, vs_obj->dma_addr, vs_obj->size);
+	if (ret) {
+		DRM_DEV_ERROR(dev->dev, "failed to get sgtable for buffer.\n");
+		goto err_free_sgt;
 	}
 
 	vs_obj->iova = (u64)vs_obj->dma_addr;
 
-	if (!vs_obj->get_pages) {
-		ret = dma_get_sgtable_attrs(to_dma_dev(dev), &sgt, vs_obj->cookie, vs_obj->dma_addr,
-					    vs_obj->size, vs_obj->dma_attrs);
-		if (ret < 0) {
-			DRM_DEV_ERROR(dev->dev, "failed to get sgtable.\n");
-			goto err_mem_free;
-		}
-
-		if (drm_prime_sg_to_page_array(&sgt, vs_obj->pages, nr_pages)) {
-			DRM_DEV_ERROR(dev->dev, "invalid sgtable.\n");
-			ret = -EINVAL;
-			goto err_sgt_free;
-		}
-		sg_free_table(&sgt);
-	}
-
 	return 0;
 
-err_sgt_free:
-	sg_free_table(&sgt);
-err_mem_free:
-	if (!vs_obj->get_pages)
-		dma_free_attrs(to_dma_dev(dev), vs_obj->size, vs_obj->cookie, vs_obj->dma_addr,
-			       vs_obj->dma_attrs);
-	else
-		put_pages(nr_pages, vs_obj);
-err_free:
-	kvfree(vs_obj->pages);
-	vs_obj->pages = NULL;
-
+err_free_sgt:
+	kfree(vs_obj->sgt);
+	vs_obj->sgt = NULL;
+err_free_attrs:
+	dma_free_attrs(dma_dev, vs_obj->size, vs_obj->cookie,
+		       vs_obj->dma_addr, vs_obj->dma_attrs);
+	vs_obj->cookie = NULL;
 	return ret;
 }
 
 static void vs_gem_free_buf(struct vs_gem_object *vs_obj)
 {
 	struct drm_device *dev = vs_obj->base.dev;
+	struct device *dma_dev = to_dma_dev(dev);
 
-	if ((!vs_obj->get_pages) && (!vs_obj->dma_addr)) {
-		DRM_DEV_DEBUG(dev->dev, "dma_addr is invalid.\n");
+	if (!vs_obj->sgt && !vs_obj->cookie) {
+		DRM_DEV_DEBUG(dev->dev, "buffer is not allocated.\n");
 		return;
 	}
 
-	if (!vs_obj->get_pages) {
-		dma_free_attrs(to_dma_dev(dev), vs_obj->size, vs_obj->cookie,
-			       (dma_addr_t)vs_obj->dma_addr, vs_obj->dma_attrs);
-	} else {
-		put_pages(vs_obj->size >> PAGE_SHIFT, vs_obj);
+	if (vs_obj->sgt) {
+		sg_free_table(vs_obj->sgt);
+		kfree(vs_obj->sgt);
+		vs_obj->sgt = NULL;
 	}
+	if (vs_obj->cookie) {
+		dma_free_attrs(dma_dev, vs_obj->size, vs_obj->cookie,
+			       vs_obj->dma_addr, vs_obj->dma_attrs);
+		vs_obj->cookie = NULL;
+	}
+
+	vs_obj->dma_addr = 0;
 }
 
 void vs_gem_free_object(struct drm_gem_object *obj)
@@ -128,9 +103,6 @@ void vs_gem_free_object(struct drm_gem_object *obj)
 		vs_gem_free_buf(vs_obj);
 
 	drm_gem_object_release(obj);
-
-	if (vs_obj->pages)
-		kvfree(vs_obj->pages);
 
 	kfree(vs_obj);
 }
@@ -147,12 +119,11 @@ static struct vs_gem_object *vs_gem_alloc_object(struct drm_device *dev, size_t 
 
 	vs_obj->size = size;
 	obj = &vs_obj->base;
+	vs_obj->base.funcs = &vs_gem_default_funcs;
 
 	ret = drm_gem_object_init(dev, obj, size);
 	if (ret)
 		goto err_free;
-
-	vs_obj->base.funcs = &vs_gem_default_funcs;
 
 	ret = drm_gem_create_mmap_offset(obj);
 	if (ret) {
@@ -217,7 +188,6 @@ static int vs_gem_mmap_obj(struct drm_gem_object *obj, struct vm_area_struct *vm
 	struct vs_gem_object *vs_obj = to_vs_gem_object(obj);
 	struct drm_device *drm_dev = vs_obj->base.dev;
 	unsigned long vm_size;
-	int ret = 0;
 
 	vm_size = vma->vm_end - vma->vm_start;
 	if (vm_size > vs_obj->size)
@@ -225,63 +195,70 @@ static int vs_gem_mmap_obj(struct drm_gem_object *obj, struct vm_area_struct *vm
 
 	vma->vm_pgoff = 0;
 
-	if (!vs_obj->get_pages) {
-		vm_flags_clear(vma, VM_PFNMAP);
-		ret = dma_mmap_attrs(to_dma_dev(drm_dev), vma, vs_obj->cookie, vs_obj->dma_addr,
-				     vs_obj->size, vs_obj->dma_attrs);
-	} else {
-		u32 i, nr_pages, pfn = 0U;
-		unsigned long start;
+	vm_flags_clear(vma, VM_PFNMAP);
 
-		vma->vm_page_prot = pgprot_writecombine(vma->vm_page_prot);
-		vm_flags_set(vma, VM_IO | VM_DONTCOPY | VM_DONTEXPAND | VM_DONTDUMP);
-		start = vma->vm_start;
-		vm_size = PAGE_ALIGN(vm_size);
-		nr_pages = vm_size >> PAGE_SHIFT;
-
-		for (i = 0; i < nr_pages; i++) {
-			pfn = page_to_pfn(vs_obj->pages[i]);
-
-			ret = remap_pfn_range(vma, start, pfn, PAGE_SIZE, vma->vm_page_prot);
-			if (ret < 0)
-				break;
-
-			start += PAGE_SIZE;
-		}
-	}
-
-	if (ret)
-		drm_gem_vm_close(vma);
-
-	return ret;
-}
-
-struct sg_table *vs_gem_prime_get_sg_table(struct drm_gem_object *obj)
-{
-	struct vs_gem_object *vs_obj = to_vs_gem_object(obj);
-
-	return drm_prime_pages_to_sg(obj->dev, vs_obj->pages, vs_obj->size >> PAGE_SHIFT);
+	return dma_mmap_attrs(to_dma_dev(drm_dev), vma, vs_obj->cookie, vs_obj->dma_addr,
+			      vs_obj->size, vs_obj->dma_attrs);
 }
 
 static int vs_gem_prime_vmap(struct drm_gem_object *obj, struct iosys_map *map)
 {
 	struct vs_gem_object *vs_obj = to_vs_gem_object(obj);
-	void *vaddr = NULL;
-	unsigned int npages = 0;
 
-	if (vs_obj->pages) {
-		npages = vs_obj->size >> PAGE_SHIFT;
-		vaddr = vmap(vs_obj->pages, npages, VM_MAP, pgprot_writecombine(PAGE_KERNEL));
-		if (!vaddr)
-			return -ENOMEM;
-		iosys_map_set_vaddr(map, vaddr);
-	}
+	if (obj->import_attach)
+		return dma_buf_vmap(obj->dma_buf, map);
+
+	if (!vs_obj->cookie)
+		return -ENOMEM;
+
+	iosys_map_set_vaddr(map, vs_obj->cookie);
+
 	return 0;
 }
 
 static void vs_gem_prime_vunmap(struct drm_gem_object *obj, struct iosys_map *map)
 {
-	vunmap(map->vaddr);
+	if (obj->import_attach)
+		dma_buf_vunmap(obj->dma_buf, map);
+}
+
+static int vs_gem_dmabuf_vmap(struct dma_buf *dma_buf, struct iosys_map *map)
+{
+	struct drm_gem_object *obj = dma_buf->priv;
+
+	return vs_gem_prime_vmap(obj, map);
+}
+
+static void vs_gem_dmabuf_vunmap(struct dma_buf *dma_buf, struct iosys_map *map)
+{
+	struct drm_gem_object *obj = dma_buf->priv;
+
+	vs_gem_prime_vunmap(obj, map);
+}
+
+static const struct dma_buf_ops vs_dmabuf_ops = {
+	.map_dma_buf = drm_gem_map_dma_buf,
+	.unmap_dma_buf = drm_gem_unmap_dma_buf,
+	.vmap = vs_gem_dmabuf_vmap,
+	.vunmap = vs_gem_dmabuf_vunmap,
+	.mmap = drm_gem_dmabuf_mmap,
+	.release = drm_gem_dmabuf_release,
+};
+
+struct dma_buf *vs_gem_prime_export(struct drm_gem_object *obj, int flags)
+{
+	struct drm_device *dev = obj->dev;
+	struct dma_buf_export_info exp_info = {
+		.exp_name = KBUILD_MODNAME,
+		.owner = dev->driver->fops->owner,
+		.ops = &vs_dmabuf_ops,
+		.size = obj->size,
+		.flags = flags,
+		.priv = obj,
+		.resv = obj->resv,
+	};
+
+	return drm_gem_dmabuf_export(dev, &exp_info);
 }
 
 static const struct vm_operations_struct vs_vm_ops = {
@@ -291,7 +268,7 @@ static const struct vm_operations_struct vs_vm_ops = {
 
 static const struct drm_gem_object_funcs vs_gem_default_funcs = {
 	.free = vs_gem_free_object,
-	.get_sg_table = vs_gem_prime_get_sg_table,
+	.export = vs_gem_prime_export,
 	.vmap = vs_gem_prime_vmap,
 	.vunmap = vs_gem_prime_vunmap,
 	.vm_ops = &vs_vm_ops,
@@ -307,11 +284,13 @@ int vs_gem_dumb_create(struct drm_file *file, struct drm_device *dev,
 	if (args->bpp % 10)
 		args->pitch = ALIGN(pitch, priv->pitch_alignment);
 	else
-		/* for costum 10bit format with no bit gaps */
+		/* for custom 10bit format with no bit gaps */
 		args->pitch = pitch;
+
 	args->size = PAGE_ALIGN(args->pitch * args->height);
 
 	vs_obj = vs_gem_create_with_handle(dev, file, args->size, &args->handle);
+
 	return PTR_ERR_OR_ZERO(vs_obj);
 }
 
@@ -325,7 +304,6 @@ struct drm_gem_object *vs_gem_prime_import_sg_table(struct drm_device *dev,
 						    struct sg_table *sgt)
 {
 	struct vs_gem_object *vs_obj;
-	int npages;
 	int ret;
 	struct scatterlist *s;
 	u32 i;
@@ -359,25 +337,10 @@ struct drm_gem_object *vs_gem_prime_import_sg_table(struct drm_device *dev,
 
 	vs_obj->dma_addr = sg_dma_address(sgt->sgl);
 
-	npages = vs_obj->size >> PAGE_SHIFT;
-	vs_obj->pages = kvmalloc_array(npages, sizeof(struct page *), GFP_KERNEL);
-	if (!vs_obj->pages) {
-		ret = -ENOMEM;
-		goto err;
-	}
-
-	ret = drm_prime_sg_to_page_array(sgt, vs_obj->pages, npages);
-
-	if (ret)
-		goto err_free_page;
-
 	vs_obj->sgt = sgt;
 
 	return &vs_obj->base;
 
-err_free_page:
-	kvfree(vs_obj->pages);
-	vs_obj->pages = NULL;
 err:
 	vs_gem_free_object(&vs_obj->base);
 
@@ -394,6 +357,8 @@ int vs_gem_mmap(struct file *filp, struct vm_area_struct *vma)
 		return ret;
 
 	obj = vma->vm_private_data;
+	if (!obj)
+		return -EINVAL;
 
 	if (obj->import_attach)
 		return dma_buf_mmap(obj->dma_buf, vma, 0);
@@ -412,6 +377,7 @@ static int query_handle(struct drm_device *dev, struct drm_vs_gem_query_info *in
 		dev_err(dev->dev, "Failed to GEM object with handle %#x.\n", info->handle);
 		return -ENXIO;
 	}
+
 	vs_obj = to_vs_gem_object(obj);
 	info->data = vs_obj->iova;
 	drm_gem_object_put(obj);
@@ -430,5 +396,6 @@ int vs_gem_query_ioctl(struct drm_device *dev, void *data, struct drm_file *file
 		dev_err(dev->dev, "Unknown type %#x.\n", info->type);
 		break;
 	}
+
 	return -EINVAL;
 }

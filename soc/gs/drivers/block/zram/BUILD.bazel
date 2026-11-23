@@ -1,9 +1,15 @@
 # SPDX-License-Identifier: MIT
 load(
     "@kleaf//build/kernel/kleaf:kernel.bzl",
+    "ddk_config",
     "ddk_headers",
     "ddk_module",
 )
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 ddk_headers(
     name = "zram_headers",
@@ -30,6 +36,27 @@ ddk_headers(
     ],
 )
 
+ddk_config(
+    name = "common_config",
+    defconfig = "defconfig",
+    kconfigs = ["Kconfig"],
+    kernel_build = "//private/devices/google/common:kernel",
+    deps = [
+        "//private/google-modules/soc/gs/drivers/soc/google/pixel_stat/mm:pixel_stat_mm",
+    ],
+)
+
+ddk_config(
+    name = "eh_config",
+    defconfig = "defconfig",
+    kconfigs = ["Kconfig"],
+    kernel_build = "//private/devices/google/common:kernel",
+    deps = [
+        "//private/google-modules/soc/gs/drivers/soc/google/eh",
+        "//private/google-modules/soc/gs/drivers/soc/google/pixel_stat/mm:pixel_stat_mm",
+    ],
+)
+
 ddk_module(
     name = "zram_gs",
     srcs = [
@@ -49,16 +76,14 @@ ddk_module(
             ],
         },
     },
-    defconfig = "defconfig",
+    config = ":common_config",
     includes = ["include"],
-    kconfig = "Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         ":zram_headers",
         "//common:all_headers_aarch64",
-        "//private/google-modules/soc/gs:gs_soc_module",
         "//private/google-modules/soc/gs:headers",
+        "//private/google-modules/soc/gs/drivers/soc/google/pixel_stat/mm:pixel_stat_mm",
     ],
 )
 
@@ -101,10 +126,8 @@ ddk_module(
             ],
         },
     },
-    defconfig = "defconfig",
-    kconfig = "Kconfig",
+    config = ":common_config",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         ":zcomp_cpu_headers",
         ":zram_gs",
@@ -119,10 +142,8 @@ ddk_module(
         "zcomp_eh.c",
     ],
     out = "zcomp_gs_eh.ko",
-    defconfig = "defconfig",
-    kconfig = "Kconfig",
+    config = ":eh_config",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         ":zram_gs",
         ":zram_headers",

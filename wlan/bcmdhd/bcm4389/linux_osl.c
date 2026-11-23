@@ -23,10 +23,6 @@
 
 #define LINUX_PORT
 
-#ifdef BCMDONGLEHOST
-#include <linux/sched/clock.h>
-#endif
-
 #include <typedefs.h>
 #include <bcmendian.h>
 #include <linuxver.h>
@@ -188,7 +184,7 @@ typedef struct dhd_map_item {
 typedef struct dhd_map_record {
 	uint32 items;		/* number of total items */
 	uint32 idx;		/* current index of metadata */
-	dhd_map_item_t map[];	/* metadata storage */
+	dhd_map_item_t map[0];	/* metadata storage */
 } dhd_map_log_t;
 
 void

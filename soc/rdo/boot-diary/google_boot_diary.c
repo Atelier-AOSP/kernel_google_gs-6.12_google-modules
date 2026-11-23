@@ -57,14 +57,12 @@ static int google_boot_diary_platform_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int google_boot_diary_platform_remove(struct platform_device *pdev)
+static void google_boot_diary_platform_remove(struct platform_device *pdev)
 {
 	struct google_boot_diary *google_boot_diary = (struct google_boot_diary *)
 						       platform_get_drvdata(pdev);
 
 	debugfs_remove_recursive(google_boot_diary->debugfs_root);
-
-	return 0;
 }
 
 static const struct of_device_id google_boot_diary_of_match_table[] = {

@@ -16,6 +16,7 @@
 #include <linux/pm_wakeirq.h>
 
 #include <soc/google/goog-mba-gdmc-iface.h>
+#include <aoss-ssr-notifier/aoss_ssr_notifier.h>
 
 #define SSWRP_AOC_POWER_OFF_TIMEOUT 5000
 #define AOC_CORE_POWER_OFF_TIMEOUT 1000
@@ -28,6 +29,11 @@
 #define AP_UNLOCK_MSG_ID_TOT 25
 
 DEFINE_MUTEX(aoc_core_pd_cnt_lock);
+
+const char * const control_channels[] = {
+	"control",
+};
+const int control_channels_size = ARRAY_SIZE(control_channels);
 
 /* Copied from GDMC FW */
 struct gdmc_mba_aarch32_register_dump {
@@ -353,6 +359,8 @@ int aoc_watchdog_restart(struct aoc_prvdata *prvdata,
 
 	dev_dbg(dev, "restarting sswrp_aoc...\n");
 	notify_aoc_ssr(true);
+	aoss_ssr_notify(AOSS_SSR_AMBSS_DOWN);
+	aoss_ssr_notify(AOSS_SSR_PG_DOWN);
 	ret = sswrp_aoc_pd_power_off();
 	if (ret) {
 		notify_aoc_ssr(false);
@@ -368,6 +376,8 @@ int aoc_watchdog_restart(struct aoc_prvdata *prvdata,
 	}
 
 	notify_aoc_ssr(false);
+	aoss_ssr_notify(AOSS_SSR_PG_UP);
+	aoss_ssr_notify(AOSS_SSR_AMBSS_UP);
 
 	/* Set device to RPM active */
 	pm_runtime_get(dev);
@@ -410,60 +420,13 @@ void configure_crash_interrupts(struct aoc_prvdata *prvdata, bool enable)
 {
 }
 
-static int aoc_read_soc_compatible(u32 *product_id, u32 *major, u32 *minor)
-{
-	int ret = -EINVAL;
-	struct device *dev = lga_prvdata->aoc_dev;
-	struct device_node *aoc_node = dev->of_node;
-	struct device_node *soc_compatible = NULL;
-	struct device_node *soc_compatible_child = NULL;
-
-	soc_compatible = of_find_node_by_name(aoc_node, "soc_compatible");
-	if (!soc_compatible) {
-		dev_err(dev, "AOC DT soc_compatible node not found");
-		goto exit;
-	}
-
-	soc_compatible_child = of_get_next_child(soc_compatible, NULL);
-	if (!soc_compatible_child) {
-		dev_err(dev, "AOC DT soc_compatible child node not found");
-		goto exit;
-	}
-
-	if (of_property_read_u32(soc_compatible_child, "product_id", product_id)) {
-		dev_err(dev, "AOC DT missing property product_id");
-		goto exit;
-	}
-
-	if (of_property_read_u32(soc_compatible_child, "major", major)) {
-		dev_err(dev, "AOC DT missing property major");
-		goto exit;
-	}
-
-	if (of_property_read_u32(soc_compatible_child, "minor", minor)) {
-		dev_err(dev, "AOC DT missing property minor");
-		goto exit;
-	}
-
-	ret = 0;
-
-exit:
-	if (soc_compatible_child)
-		of_node_put(soc_compatible_child);
-
-	if (soc_compatible)
-		of_node_put(soc_compatible);
-
-	return ret;
-}
-
 u32 aoc_chip_get_revision(void)
 {
 	u32 product_id;
 	u32 major;
 	u32 minor;
 
-	if (aoc_read_soc_compatible(&product_id, &major, &minor))
+	if (aoc_read_soc_compatible(lga_prvdata->aoc_dev, &product_id, &major, &minor))
 		return 0;
 
 	return ((major & 0xF) << 4) | (minor & 0xF);
@@ -474,13 +437,19 @@ u32 aoc_chip_get_type(void)
 	return 0;
 }
 
+size_t platform_specific_get_dvfs_freq(char *buff)
+{
+	return -ENODATA;
+}
+EXPORT_SYMBOL_GPL(platform_specific_get_dvfs_freq);
+
 u32 aoc_chip_get_product_id(void)
 {
 	u32 product_id;
 	u32 major;
 	u32 minor;
 
-	if (aoc_read_soc_compatible(&product_id, &major, &minor))
+	if (aoc_read_soc_compatible(lga_prvdata->aoc_dev, &product_id, &major, &minor))
 		return 0;
 
 	return product_id;
@@ -563,6 +532,8 @@ int platform_specific_aoc_online(void)
 
 	device_init_wakeup(lga_prvdata->aoc_dev, true);
 
+	aoss_ssr_notify(AOSS_SSR_ONLINE);
+
 	return 0;
 }
 EXPORT_SYMBOL_GPL(platform_specific_aoc_online);
@@ -608,3 +579,16 @@ void platform_specific_aoc_core_resume(void)
 	}
 }
 EXPORT_SYMBOL_GPL(platform_specific_aoc_core_resume);
+
+u64 aoc_get_timer_ticks(void)
+{
+	return arch_timer_read_counter();
+}
+
+void aoc_print_core_boot_breadcrumbs(struct aoc_prvdata *prvdata)
+{
+}
+
+void aoc_init_core_boot_breadcrumbs(struct aoc_prvdata *prvdata)
+{
+}

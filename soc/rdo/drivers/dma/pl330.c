@@ -38,6 +38,14 @@
 #define PL330_QUIRK_BROKEN_NO_FLUSHP	BIT(0)
 #define PL330_QUIRK_PERIPH_BURST	BIT(1)
 
+#if IS_ENABLED(CONFIG_DMADEVICES_DEBUG)
+#define DEBUG
+#endif
+
+#if IS_ENABLED(CONFIG_DMADEVICES_VDEBUG)
+#define VERBOSE_DEBUG
+#endif
+
 enum pl330_cachectrl {
 	CCTRL0,		/* Noncacheable and nonbufferable */
 	CCTRL1,		/* Bufferable only */
@@ -1649,6 +1657,29 @@ static void dma_pl330_rqcb(struct dma_pl330_desc *desc, enum pl330_op_err err)
 	desc->err = err;
 	desc->status = DONE;
 
+	if (err == PL330_ERR_NONE) {
+		struct dmaengine_desc_callback cb;
+
+		if (pch->cyclic) {
+			desc->status = PREP;
+			list_move_tail(&desc->node, &pch->work_list);
+		} else {
+			dma_cookie_complete(&desc->txd);
+
+			desc->status = FREE;
+			list_move_tail(&desc->node, &pch->dmac->desc_pool);
+		}
+
+		dmaengine_desc_get_callback(&desc->txd, &cb);
+		dma_descriptor_unmap(&desc->txd);
+
+		if (dmaengine_desc_callback_valid(&cb)) {
+			spin_unlock_irqrestore(&pch->lock, flags);
+			dmaengine_desc_callback_invoke(&cb, NULL);
+			spin_lock_irqsave(&pch->lock, flags);
+		}
+	}
+
 	spin_unlock_irqrestore(&pch->lock, flags);
 
 	tasklet_hi_schedule(&pch->task);
@@ -2567,7 +2598,7 @@ static void pl330_issue_pending(struct dma_chan *chan)
 	 */
 	mutex_lock(&pch->pm_lock);
 	spin_lock_irqsave(&pch->lock, flags);
-	if (list_empty(&pch->work_list)) {
+	if (!pch->active) {
 		/*
 		 * Warn on nothing pending. Empty submitted_list may
 		 * break our pm_runtime usage counter as it is
@@ -3175,6 +3206,8 @@ static int pl330_pm_runtime_suspend(struct device *dev)
 			"Couldn't set google_update_ip_idle_status, ret %d\n",
 			ret);
 
+	pm_relax(dev);
+
 	return 0;
 }
 
@@ -3182,6 +3215,8 @@ static int pl330_pm_runtime_resume(struct device *dev)
 {
 	struct pl330_dmac *pl330 = dev_get_drvdata(dev);
 	int ret;
+
+	pm_stay_awake(dev);
 
 	ret = google_update_ip_idle_status(pl330->ip_idle_index, STATE_BUSY);
 	if (ret)
@@ -3223,6 +3258,8 @@ pl330_probe(struct amba_device *adev, const struct amba_id *id)
 
 	pd = &pl330->ddma;
 	pd->dev = &adev->dev;
+
+	device_init_wakeup(&adev->dev, true);
 
 	pl330->mcbufsz = 0;
 
@@ -3367,10 +3404,7 @@ pl330_probe(struct amba_device *adev, const struct amba_id *id)
 	 * This is the limit for transfers with a buswidth of 1, larger
 	 * buswidths will have larger limits.
 	 */
-	ret = dma_set_max_seg_size(&adev->dev, 1900800);
-	if (ret)
-		dev_err(&adev->dev, "unable to set the seg size\n");
-
+	dma_set_max_seg_size(&adev->dev, 1900800);
 
 	init_pl330_debugfs(pl330);
 	dev_info(&adev->dev,

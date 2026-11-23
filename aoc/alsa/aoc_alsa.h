@@ -37,6 +37,7 @@
 #include "audiometrics.h"
 #include "xhci.h"
 
+
 #define AOC_SND_CARD "aoc-snd-card"
 #define ALSA_AOC_CMD "alsa-aoc"
 #define CMD_INPUT_CHANNEL "audio_input_control"
@@ -66,8 +67,10 @@ enum uc_device_id {
 
 #define AOC_CMD_DEBUG_ENABLE
 #define MAX_AOC_WAITING_TIME_IN_MSECS 5000
-#define DEFAULT_AOC_WAITING_TIME_IN_MSECS 500
+// TODO b/441494471: Revert back to 500ms
+#define DEFAULT_AOC_WAITING_TIME_IN_MSECS 1000
 #define DSP_MOD_WAITING_TIME_MS 700
+#define COMMAND_TIME_GAP_US 200000
 
 #define PCM_TIMER_INTERVAL_NANOSECS 10e6
 #define COMPR_OFFLOAD_TIMER_INTERVAL_NANOSECS 5000e6
@@ -103,6 +106,8 @@ enum uc_device_id {
 #define N_MIC_IN_SPATIAL_MODULE 3
 
 #define MAX_DP_START_THRESHOLD 19200 // 2ch * 16bit * 48000 * 100ms
+
+#define IAMF_CHANNEL_NUM 3
 
 /* TODO: the exact number has to be determined based on hardware platform*/
 #define MAX_NUM_OF_SUBSTREAMS 64
@@ -147,7 +152,7 @@ enum uc_device_id {
 
 #define NULL_PATH -1
 
-#define CODEC_RESERVED_SIZE 3
+#define CODEC_RESERVED_SIZE 2
 
 #define AOC_CODEC_TAG 0xA0CC
 
@@ -236,7 +241,7 @@ enum aoc_playback_entry_point {
 	IMMERSIVE = 15,
 };
 
-enum { NORMAL = 0, MMAPED, RAW, INCALL, HIFI, ANDROID_AEC, COMPRESS, CAP_INJ, HOTWORD_TAP };
+enum { NORMAL = 0, MMAPED, RAW, INCALL, HIFI, ANDROID_AEC, COMPRESS, CAP_INJ, HOTWORD_TAP, IAMF };
 
 enum { BUILTIN_MIC0 = 0, BUILTIN_MIC1, BUILTIN_MIC2, BUILTIN_MIC3 };
 enum { MIC_LOW_POWER_GAIN = 0, MIC_HIGH_POWER_GAIN, MIC_CURRENT_GAIN };
@@ -249,7 +254,7 @@ enum aec_ref_source {
 	NUM_AEC_REF_SOURCE
 };
 enum { INCALL_CAPTURE_OFF = 0, INCALL_CAPTURE_UL, INCALL_CAPTURE_DL, INCALL_CAPTURE_UL_DL,
-	INCALL_CAPTURE_3MIC };
+	INCALL_CAPTURE_3MIC, INCALL_CAPTURE_2MIC};
 enum { NONBLOCKING = 0, BLOCKING = 1 };
 enum { STOP = 0, START };
 enum { PLAYBACK_MODE, VOICE_TX_MODE, VOICE_RX_MODE, HAPTICS_MODE, OFFLOAD_MODE };
@@ -257,8 +262,14 @@ enum { PLAYBACK_MODE, VOICE_TX_MODE, VOICE_RX_MODE, HAPTICS_MODE, OFFLOAD_MODE }
 enum { TIMER = 0, INTR };
 #if IS_ENABLED(CONFIG_SOC_GS201) || IS_ENABLED(CONFIG_SOC_ZUMA)
 enum { INCALL_CHANNEL = 5, PCM_CHANNEL = 20, HIFI_CHANNEL, VOIP_CHANNEL};
-#else
+#elif IS_ENABLED(CONFIG_SOC_LGA)
 enum { INCALL_CHANNEL = 5, PCM_CHANNEL = 4, HIFI_CHANNEL, VOIP_CHANNEL};
+#else
+/* They need to be in sync with aoc-regions.json in AoSS firmware */
+#define PCM_CHANNEL     64
+#define INCALL_CHANNEL  65
+#define HIFI_CHANNEL    65  /* Explicitly same as INCALL */
+#define VOIP_CHANNEL    66
 #endif
 enum { CHRE_GAIN_PATH_PDM = 0, CHRE_GAIN_PATH_AEC, CHRE_GAIN_PATH_TOT };
 
@@ -365,6 +376,7 @@ struct aoc_chip {
 	int usb_device;
 	int usb_direction;
 	uint8_t offload_state;
+	bool usb_skip_event_ring;
 #if !IS_ENABLED(CONFIG_SOC_GS101) && !IS_ENABLED(CONFIG_SOC_GS201)
 	int mel_enable;
 #endif
@@ -385,6 +397,8 @@ struct aoc_chip {
 #if !(IS_ENABLED(CONFIG_SOC_GS101) || IS_ENABLED(CONFIG_SOC_GS201))
 	struct CMD_AUDIO_OUTPUT_DECODER_CFG_SPEED decoder_cfg_speed;
 #endif
+
+	struct notifier_block radio_bridge_nb;
 };
 
 struct aoc_alsa_stream {
@@ -426,8 +440,8 @@ struct aoc_alsa_stream {
 	unsigned int prev_pos;
 	unsigned int pos_delta;
 	unsigned long prev_buffer_cnt;
-	unsigned long hw_ptr_base; /* read/write pointers in ring buffer */
-	unsigned long prev_consumed;
+	unsigned long hw_ptr_base; /* base r/w counter in ring buffer. Note: only 32 bit used */
+	unsigned long prev_consumed; /* previous number of consumed bytes. Note: only 32 bit used */
 	int n_overflow;
 	int open;
 	int running;
@@ -572,7 +586,8 @@ int aoc_set_usb_feedback_endpoint(struct aoc_chip *chip, struct usb_device *udev
 int aoc_set_usb_offload_state(struct aoc_chip *chip, uint8_t offload_state);
 
 int usb_get_endpoint_dir(int aoc_dir);
-int aoc_setup_event_ring(int card_num, int intr_num, bool enable);
+int aoc_setup_event_ring(struct aoc_chip *achip, struct usb_device *udev,
+			 int intr_num, bool enable);
 int aoc_setup_transfer_ring(struct aoc_chip *achip, int card_num, int aoc_dir,
 			    struct usb_host_endpoint *ep);
 
@@ -618,6 +633,7 @@ int aoc_audio_set_hdmic_gain(struct aoc_chip *chip, int gain);
 
 int prepare_phonecall(struct aoc_alsa_stream *alsa_stream);
 int teardown_phonecall(struct aoc_alsa_stream *alsa_stream);
+int audio_pcie_control(struct aoc_chip *chip, bool enable);
 
 int prepare_voipcall(struct aoc_alsa_stream *alsa_stream);
 int teardown_voipcall(struct aoc_alsa_stream *alsa_stream);

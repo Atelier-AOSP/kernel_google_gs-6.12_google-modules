@@ -1,7 +1,7 @@
 /*
  * DHD debugability header file
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -83,10 +83,10 @@ enum {
 #define ECNTRS_RING_SIZE		(1 * 1024 * 1024)
 
 #define DEBUG_DUMP_RING1_NAME		"debug_dump1_"
-#define DEBUG_DUMP_RING1_SIZE		(2 * 1024 * 1024)
+#define DEBUG_DUMP_RING1_SIZE		(3 * 1024 * 1024)
 
 #define DEBUG_DUMP_RING2_NAME		"debug_dump2_"
-#define DEBUG_DUMP_RING2_SIZE		(2 * 1024 * 1024)
+#define DEBUG_DUMP_RING2_SIZE		(3 * 1024 * 1024)
 
 #define MEM_DUMP_RING_NAME		"mem_dump"
 #define MEM_DUMP_RING_SIZE		(3 * 1024 * 1024)
@@ -630,7 +630,6 @@ typedef struct compat_wifi_rx_report {
 /*
  * Packet logging - internal data
  */
-
 typedef enum dhd_dbg_pkt_mon_state {
 	PKT_MON_INVALID = 0,
 	PKT_MON_ATTACHED,
@@ -638,8 +637,8 @@ typedef enum dhd_dbg_pkt_mon_state {
 	PKT_MON_STARTED,
 	PKT_MON_STOPPING,
 	PKT_MON_STOPPED,
-	PKT_MON_DETACHED,
-	} dhd_dbg_pkt_mon_state_t;
+	PKT_MON_DETACHED
+} dhd_dbg_pkt_mon_state_t;
 
 typedef struct dhd_dbg_pkt_info {
 	frame_type payload_type;
@@ -659,20 +658,17 @@ typedef struct compat_dhd_dbg_pkt_info {
 	void *pkt;
 } compat_dhd_dbg_pkt_info_t;
 
-typedef struct dhd_dbg_tx_info
-{
+typedef struct dhd_dbg_tx_info {
 	wifi_tx_packet_fate fate;
 	dhd_dbg_pkt_info_t info;
 } dhd_dbg_tx_info_t;
 
-typedef struct dhd_dbg_rx_info
-{
+typedef struct dhd_dbg_rx_info {
 	wifi_rx_packet_fate fate;
 	dhd_dbg_pkt_info_t info;
 } dhd_dbg_rx_info_t;
 
-typedef struct dhd_dbg_tx_report
-{
+typedef struct dhd_dbg_tx_report {
 	dhd_dbg_tx_info_t *tx_pkts;
 	/* Indicates how many packets queued to send over the air */
 	uint16 pkt_pos;
@@ -680,8 +676,7 @@ typedef struct dhd_dbg_tx_report
 	uint16 status_pos;
 } dhd_dbg_tx_report_t;
 
-typedef struct dhd_dbg_rx_report
-{
+typedef struct dhd_dbg_rx_report {
 	dhd_dbg_rx_info_t *rx_pkts;
 	/* Indicates how many packets sent over the air and received txstatus */
 	uint16 pkt_pos;
@@ -701,8 +696,7 @@ typedef int (*dbg_mon_rx_pkts_t) (dhd_pub_t *dhdp, int ifidx, void *pkt, frame_t
 #define PKT_MON_IF_MAX 1u
 #endif /* DHD_PKT_MON_DUAL_STA */
 
-typedef struct dhd_dbg_pkt_mon
-{
+typedef struct dhd_dbg_pkt_mon {
 	dhd_dbg_tx_report_t *tx_report[PKT_MON_IF_MAX];
 	dhd_dbg_rx_report_t *rx_report[PKT_MON_IF_MAX];
 	dhd_dbg_pkt_mon_state_t tx_pkt_state[PKT_MON_IF_MAX];
@@ -731,6 +725,7 @@ typedef struct dhd_dbg {
 	dbg_pullreq_t pullreq;
 	dbg_urgent_noti_t urgent_notifier;
 	dhd_dbg_buf_t wrapper_buf;
+	dhd_dbg_buf_t logbuf;
 	uint32 wrapper_regdump_size;
 	/* event log timestamp version being supported */
 	uint32 event_log_ts_ver;
@@ -905,7 +900,7 @@ extern int dhd_dbg_send_urgent_evt(dhd_pub_t *dhdp, const void *data, const uint
 extern void dhd_dbg_verboselog_printf(dhd_pub_t *dhdp, prcd_event_log_hdr_t *plog_hdr,
 	void *raw_event_ptr, uint32 *log_ptr, uint32 logset, uint16 block, bool coex_log);
 int dhd_dbg_pull_from_ring(dhd_pub_t *dhdp, int ring_id, void *data, uint32 buf_len,
-	int *num_entries);
+	int *num_entries, bool strip_hdr);
 int dhd_dbg_pull_single_from_ring(dhd_pub_t *dhdp, int ring_id, void *data, uint32 buf_len,
 	bool strip_header);
 #ifdef DHD_PKT_LOGGING_DBGRING
@@ -913,9 +908,9 @@ int dhd_dbg_update_to_ring(dhd_pub_t *dhdp, void *ring, uint32 w_len);
 int dhd_dbg_pull_from_pktlog(dhd_pub_t *dhdp, int ring_id, void *data, uint32 buf_len);
 void dhd_os_dbg_urgent_pullreq(void *os_priv, int ring_id);
 #endif /* DHD_PKT_LOGGING_DBGRING */
-#ifdef DHD_DEBUGABILITY_DEBUG_DUMP
+#ifdef DHD_DMPD
 int dhd_debug_dump_ring_push(dhd_pub_t *dhdp, int ring_id, uint32 len, void *data);
-#endif /* DHD_DEBUGABILITY_DEBUG_DUMP */
+#endif /* DHD_DMPD */
 int dhd_dbg_push_to_ring(dhd_pub_t *dhdp, int ring_id, dhd_dbg_ring_entry_t *hdr,
 		void *data);
 int __dhd_dbg_get_ring_status(dhd_dbg_ring_t *ring, dhd_dbg_ring_status_t *ring_status);
@@ -945,7 +940,7 @@ extern int dhd_dbg_monitor_get_rx_pkts(dhd_pub_t *dhdp, int ifidx, void __user *
 extern int dhd_dbg_detach_pkt_monitor(dhd_pub_t *dhdp, int ifidx);
 extern void dhd_dbg_monitor_mgmt_str(uint8 subtype, char *buf, uint32 buflen);
 extern void dhd_dbg_monitor_eapol_str(msg_eapol_t type, char *buf, uint32 buflen);
-extern void dhd_dbg_monitor_pkt(dhd_pub_t *dhdp, host_rxbuf_cmpl_t* msg, void *pkt, int ifidx);
+extern void dhd_dbg_monitor_pkt(dhd_pub_t *dhdp, host_rxbuf_cmpl_t *msg, void *pkt, int ifidx);
 #endif /* DBG_PKT_MON */
 
 extern bool dhd_dbg_process_tx_status(dhd_pub_t *dhdp, int ifidx, void *pkt,
@@ -963,6 +958,9 @@ extern int dhd_os_dbg_register_urgent_notifier(dhd_pub_t *dhdp,
 extern int dhd_os_start_logging(dhd_pub_t *dhdp, char *ring_name, int log_level,
 		int flags, int time_intval, int threshold);
 extern int dhd_os_reset_logging(dhd_pub_t *dhdp);
+#ifdef DHD_DMPD
+extern int dhd_os_stop_logging(dhd_pub_t *dhdp, int ring_id);
+#endif /* DHD_DMPD */
 extern int dhd_os_suppress_logging(dhd_pub_t *dhdp, bool suppress);
 
 extern int dhd_os_get_ring_status(dhd_pub_t *dhdp, int ring_id,

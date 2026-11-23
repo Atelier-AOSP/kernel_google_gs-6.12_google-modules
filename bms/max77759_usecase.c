@@ -11,8 +11,10 @@
 #include <linux/slab.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
+#include "google_bms.h"
 #include "max77759.h"
 #include "max77759_charger.h"
+#include <misc/gvotable.h>
 
 /* ----------------------------------------------------------------------- */
 
@@ -266,14 +268,19 @@ static int gs101_ext_mode(struct max77759_usecase_data *uc_data, int mode)
 	return 0;
 }
 
-int gs101_wlc_en(struct max77759_usecase_data *uc_data, enum wlc_state_t state)
+int gs101_wlc_en_with_defender_reason(struct max77759_usecase_data *uc_data,
+	enum wlc_state_t state, bool defender_enabled)
 {
+	int ret = 0;
 	int wlc_on = 0;
+	struct gvotable_election *wlc_defender_enabled_votable = NULL;
+	const bool defender_enabled_vote = (state == WLC_DISABLED) && defender_enabled;
 
 	if (state == WLC_ENABLED)
 		wlc_on = 1;
 
-	pr_debug("%s: cpout_en=%d wlc_en=%d wlc_vbus_en=%d wlc_on=%d wlc_state=%d\n", __func__,
+	pr_debug("%s: cpout_en=%d wlc_en=%d wlc_vbus_en=%d wlc_on=%d wlc_state=%d def_en %d\n",
+		 __func__,
 		 (IS_ERR_OR_NULL(uc_data->cpout_en)
 		  ? (int)PTR_ERR(uc_data->cpout_en)
 		  : desc_to_gpio(uc_data->cpout_en)),
@@ -282,11 +289,18 @@ int gs101_wlc_en(struct max77759_usecase_data *uc_data, enum wlc_state_t state)
 		  : desc_to_gpio(uc_data->wlc_en)),
 		 (IS_ERR_OR_NULL(uc_data->wlc_vbus_en)
 		  ? (int)PTR_ERR(uc_data->wlc_vbus_en)
-		  : desc_to_gpio(uc_data->wlc_vbus_en)), wlc_on, state);
+		  : desc_to_gpio(uc_data->wlc_vbus_en)), wlc_on, state, defender_enabled);
 
 	if (!IS_ERR(uc_data->cpout_en)) {
 		if (state == WLC_SPOOFED && !IS_ERR_OR_NULL(uc_data->wlc_spoof_gpio))
 			gpiod_set_value_cansleep(uc_data->wlc_spoof_gpio, 1);
+		wlc_defender_enabled_votable = gvotable_election_get_handle(WLC_DEFENDER_VOTABLE);
+		if (wlc_defender_enabled_votable) {
+			ret = gvotable_cast_bool_vote(wlc_defender_enabled_votable,
+					DEFENDER_ENABLED_VOTER, defender_enabled_vote);
+			pr_debug("%s: casted %s defender_enabled_vote %d ret %d\n",
+				__func__, DEFENDER_ENABLED_VOTER, defender_enabled_vote, ret);
+		}
 		gpiod_set_value_cansleep(uc_data->cpout_en, wlc_on);
 	} else if (!wlc_on) {
 		/*
@@ -304,7 +318,13 @@ int gs101_wlc_en(struct max77759_usecase_data *uc_data, enum wlc_state_t state)
 	if (!IS_ERR(uc_data->wlc_vbus_en))
 		gpiod_set_value_cansleep(uc_data->wlc_vbus_en, wlc_on);
 
-	return 0;
+	return ret;
+}
+EXPORT_SYMBOL_GPL(gs101_wlc_en_with_defender_reason);
+
+int gs101_wlc_en(struct max77759_usecase_data *uc_data, enum wlc_state_t state)
+{
+	return gs101_wlc_en_with_defender_reason(uc_data, state, false);
 }
 EXPORT_SYMBOL_GPL(gs101_wlc_en);
 
@@ -1411,7 +1431,8 @@ bool gs101_setup_usecases(struct max77759_usecase_data *uc_data,
 
 	/* control external boost if present */
 	if (PTR_ERR(uc_data->bst_on) == -EPROBE_DEFER)
-		uc_data->bst_on = devm_gpiod_get(dev, "max77759,bst-on", GPIOD_ASIS);
+		uc_data->bst_on = devm_gpiod_get(dev, "max77759,bst-on", GPIOD_ASIS |
+						 GPIOD_FLAGS_BIT_NONEXCLUSIVE);
 	if (PTR_ERR(uc_data->bst_sel) == -EPROBE_DEFER)
 		uc_data->bst_sel = devm_gpiod_get(dev, "max77759,bst-sel", GPIOD_ASIS);
 	if (PTR_ERR(uc_data->ext_bst_ctl) == -EPROBE_DEFER)
@@ -1420,7 +1441,8 @@ bool gs101_setup_usecases(struct max77759_usecase_data *uc_data,
 	/* for enabling charging over pogo */
 	if (PTR_ERR(uc_data->pogo_ovp_en) == -EPROBE_DEFER)
 		uc_data->pogo_ovp_en = devm_gpiod_get_optional(dev, "max77759,pogo-ovp-en",
-							       GPIOD_ASIS);
+							       GPIOD_ASIS |
+							       GPIOD_FLAGS_BIT_NONEXCLUSIVE);
 	if (PTR_ERR(uc_data->pogo_vout_en) == -EPROBE_DEFER) {
 		uc_data->pogo_vout_en = devm_gpiod_get_optional(dev, "max77759,pogo-vout-sw-en",
 								GPIOD_ASIS);
@@ -1468,7 +1490,8 @@ bool gs101_setup_usecases(struct max77759_usecase_data *uc_data,
 	if (PTR_ERR(uc_data->ls1_en) == -EPROBE_DEFER)
 		uc_data->ls1_en = devm_gpiod_get_optional(dev, "max77759,ls1-en", GPIOD_ASIS);
 	if (PTR_ERR(uc_data->ls2_en) == -EPROBE_DEFER)
-		uc_data->ls2_en = devm_gpiod_get_optional(dev, "max77759,ls2-en", GPIOD_ASIS);
+		uc_data->ls2_en = devm_gpiod_get_optional(dev, "max77759,ls2-en", GPIOD_ASIS |
+							  GPIOD_FLAGS_BIT_NONEXCLUSIVE);
 	/* OTG+RTXL: IN-OUT switch of AO37 (forced always) */
 	if (PTR_ERR(uc_data->sw_en) == -EPROBE_DEFER)
 		uc_data->sw_en = devm_gpiod_get_optional(dev, "max77759,sw-en",

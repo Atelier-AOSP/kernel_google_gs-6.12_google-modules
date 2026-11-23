@@ -798,10 +798,15 @@ BCMATTACHFN(si_buscore_init)(si_info_t *sii, uint devid, osl_t *osh, volatile vo
 	/* check to see if we are a si core mimic'ing a pci core */
 	if ((bustype == PCI_BUS) &&
 	    (OSL_PCI_READ_CONFIG(sii->osh, PCI_SPROM_CONTROL, sizeof(uint32)) == 0xffffffff)) {
-		SI_ERROR(("si_doattach: incoming bus is PCI but it's a lie, switching to SI "
+#if defined(BCMDONGLEHOST)
+		SI_ERROR(("si_buscore_init: PCI_SPROM_CONTROL cfg read is 0xffffffff. Abort\n"));
+		goto exit;
+#else
+		SI_ERROR(("si_buscore_init: incoming bus is PCI but it's a lie, switching to SI "
 			"devid:0x%x\n", devid));
 		cc = (chipcregs_t *)REG_MAP(SI_ENUM_BASE(sih), SI_CORE_SIZE);
 		bustype = SI_BUS;
+#endif /* BCMDONGLEHOST */
 	} else if (bustype == PCI_BUS) {
 		/* find Chipcommon address */
 		savewin = OSL_PCI_READ_CONFIG(sii->osh, PCI_BAR0_WIN, sizeof(uint32));
@@ -1304,7 +1309,7 @@ BCMPOSTTRAPFN(si_saqm_present)(const si_t *sih)
 	return FALSE;
 }
 
-bool
+static bool
 BCMPOSTTRAPFN(si_saqm_power_domain_present)(const si_t *sih)
 {
 	/* 4384 chip is AI first chip with SAQM. It doesn't have SAQM power domain */

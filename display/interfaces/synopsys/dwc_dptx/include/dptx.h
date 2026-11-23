@@ -7,7 +7,7 @@
 
 #ifndef __DPTX_DRIVER_H__
 #define __DPTX_DRIVER_H__
-
+#include <linux/notifier.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/completion.h>
@@ -63,6 +63,8 @@ enum {
 	DPU_PIX0,
 	HSION_PIX1,
 	DPU_PIX1,
+	HSION_AUD0,
+	HSION_AUD1,
 	DPTX_NUM_PIXEL_CLKS
 };
 
@@ -444,6 +446,12 @@ struct dptx {
 	/* DP struct for managing the maximum res */
 	struct dptx_max_res dptx_max_res_store;
 
+	/* AOSS SSR Notifier */
+	struct notifier_block aoss_ssr_nb;
+	bool ssr_in_progress;
+	bool deferred_plug;
+	bool deferred_irq;
+	enum hotplug_state ssr_saved_hpd;
 };
 
 /*

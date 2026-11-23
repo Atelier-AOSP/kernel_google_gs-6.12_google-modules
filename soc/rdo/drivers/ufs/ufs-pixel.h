@@ -10,10 +10,9 @@
 #ifndef _UFS_PIXEL_H_
 #define _UFS_PIXEL_H_
 
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
 #include <linux/gsa/gsa_kdn.h>
 #include <ufs/ufshcd.h>
-#include <scsi/scsi_cmnd.h>
 
 /* 1% lifetime C */
 #define HEALTH_DESC_DEFAULT_PE_CYCLE		3000
@@ -46,6 +45,8 @@ enum {
 };
 
 extern void pixel_init_manual_gc(struct ufs_hba *hba);
+
+extern void pixel_init_uic_err_dbg(struct ufs_hba *hba);
 
 /* defined request category on statistics */
 enum req_type_stats {
@@ -232,6 +233,10 @@ struct pixel_ops {
 	char *(*get_phy_version)(struct ufs_hba *hba);
 	/* String containing PHY release date. Caller responsible to free */
 	char *(*get_phy_release_date)(struct ufs_hba *hba);
+#if IS_ENABLED(CONFIG_UFS_PIXEL_READ_BOOST)
+	bool (*get_read_boost)(struct ufs_hba *hba);
+	int (*set_read_boost)(struct ufs_hba *hba, bool enabled);
+#endif
 };
 
 int pixel_init(struct ufs_hba *hba, struct device *pdev,
@@ -343,6 +348,9 @@ struct pixel_ufs {
 
 	/* manual_gc */
 	struct ufs_manual_gc manual_gc;
+
+	/* UIC error debug */
+	bool enable_uic_err_dbg;
 
 	/* pixel ufs request statistics */
 	struct pixel_req_stats req_stats[REQ_TYPE_MAX];

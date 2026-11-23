@@ -798,7 +798,7 @@ void dqe_reg_set_histogram(u32 dqe_id, enum exynos_histogram_id hist_id, enum hi
 }
 
 void dqe_reg_get_histogram_bins(struct device *dev, u32 dqe_id, enum exynos_histogram_id hist_id,
-				struct histogram_bins *bins)
+				struct histogram_bins *aligned_bins)
 {
 	int regs_cnt = DIV_ROUND_UP(HISTOGRAM_BIN_COUNT, 2);
 	int i;
@@ -810,14 +810,15 @@ void dqe_reg_get_histogram_bins(struct device *dev, u32 dqe_id, enum exynos_hist
 	if (hist_id >= HISTOGRAM_MAX)
 		return;
 
-	/*
-	 * note: we rely on bins being backed by physical memory allocation
-	 */
-	pa = virt_to_phys(bins);
-	dma_addr = dma_map_single(dev, bins, sizeof(*bins), DMA_FROM_DEVICE);
+	if (WARN_ON(!aligned_bins || !IS_ALIGNED((unsigned long)aligned_bins, PAGE_SIZE)))
+		goto fallback;
+
+	pa = virt_to_phys(aligned_bins);
+	dma_addr = dma_map_single(dev, aligned_bins, sizeof(*aligned_bins), DMA_FROM_DEVICE);
 	if (!dma_mapping_error(dev, dma_addr)) {
-		i = (int)exynos_smc(SMC_DRM_HISTOGRAM_BINS_SEC, dqe_channel, pa, sizeof(*bins));
-		dma_unmap_single(dev, dma_addr, sizeof(*bins), DMA_FROM_DEVICE);
+		i = (int)exynos_smc(SMC_DRM_HISTOGRAM_BINS_SEC, dqe_channel, pa,
+			sizeof(*aligned_bins));
+		dma_unmap_single(dev, dma_addr, sizeof(*aligned_bins), DMA_FROM_DEVICE);
 		rmb();
 		if (!i)
 			return;
@@ -825,11 +826,12 @@ void dqe_reg_get_histogram_bins(struct device *dev, u32 dqe_id, enum exynos_hist
 		printk_ratelimited(KERN_ERR "dqe(%d): dma_map_single failed\n", dqe_id);
 	}
 
+fallback:
 	/* fallback into per-register queries */
 	for (i = 0; i < regs_cnt; ++i) {
 		val = hist_read(dqe_id, DQE_HIST_BIN(hist_id, i));
-		bins->data[i * 2] = HIST_BIN_L_GET(val);
-		bins->data[i * 2 + 1] = HIST_BIN_H_GET(val);
+		aligned_bins->data[i * 2] = HIST_BIN_L_GET(val);
+		aligned_bins->data[i * 2 + 1] = HIST_BIN_H_GET(val);
 	}
 	rmb();
 }

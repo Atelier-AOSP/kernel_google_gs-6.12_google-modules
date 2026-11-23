@@ -28,8 +28,35 @@ enum pgsize_idx {
 	IDX_MAX,
 };
 
+enum ptw_status {
+	PTW_COMPLETE,
+	PTW_INCOMPLETE,
+	PTW_RETRY,
+	PTW_ERROR_NODEV,
+	PTW_ERROR_INVAL,
+};
+
+enum ptw_hvc_res_idx {
+	PTW_RET_STATUS_HVC,
+	PTW_RET_IOVA_NEXT,
+	PTW_RET_STATUS_WALK,
+};
+
+#define PTW_VERSION_INPROGRESS_BIT BIT(63)
+#define PTW_VERSION_MASK           GENMASK_ULL(62, 0)
+
+enum ptw_hvc_arg_idx {
+	PTW_ARG_HVC_NUM,
+	PTW_ARG_DOMAIN_ID,
+	PTW_ARG_IOVA_START,
+};
+
 struct map_counters_by_page_size {
 	u32 counters[IDX_MAX];
+	/* Tracks page table version to detect concurrent modifications during walks */
+	u64 pgt_version;
+	u32 pgtables_used;
+	u32 empty_pgtables;
 };
 
 /**
@@ -51,6 +78,8 @@ struct hyp_atomic_pages_telemetry {
  */
 struct hyp_stage2_telemetry {
 	u64 num_s2_tlb_invalidates;
+	u64 prot_mem_usage;
+	u64 max_prot_mem_usage;
 	struct map_counters_by_page_size s2_map_counters;
 	struct hyp_atomic_pages_telemetry s2_atomic_pages;
 };
@@ -64,14 +93,12 @@ struct hyp_arm_smmu_domain_telemetry {
 
 /**
  * struct hyp_cmdq_telemetry - Holds data for cmdq telemetry
- * @cmdq_full_cnt: Number of times queue exhausted and next cmd was waiting
  * @sync_cmd_max_timer_tick: Single max cmd sync time, in timer counts (needs to be converted to
  *                           realtime)
  * @sync_cmd_total_timer_tick: Total cmd sync time for all cmd sync, in timer counts
  * @sync_cmd_cnt: Total number of cmd sync count issued
  */
 struct hyp_cmdq_telemetry {
-	u64 cmdq_full_cnt;
 	u64 sync_cmd_max_timer_tick;
 	u64 sync_cmd_total_timer_tick;
 	u64 sync_cmd_cnt;

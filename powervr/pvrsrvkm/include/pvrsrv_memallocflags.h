@@ -90,7 +90,8 @@ typedef IMG_UINT64 PVRSRV_MEMALLOCFLAGS_T;
  * --- OS SPECIFIC FLAGS ---
  * | 36             | 37            | 38              | 39                  |
  * | Linux Pref CMA | Linux Movable | Linux Deny Move | Android FBC Surface |
- *
+ * |                |               |                 |         or          |
+ * |                |               |                 | NTO scrmem object   |
  * --- IPA Policy ---
  * | 53-55      |
  * | IPA Policy |
@@ -798,8 +799,17 @@ typedef IMG_UINT64 PVRSRV_MEMALLOCFLAGS_T;
 #define PVRSRV_MEMALLOCFLAG_OS_LINUX_DENY_MOVE         (IMG_UINT64_C(1)<<38)
 #define PVRSRV_CHECK_OS_LINUX_DENY_MOVE(uiFlags)       (((uiFlags) & PVRSRV_MEMALLOCFLAG_OS_LINUX_DENY_MOVE) != 0U)
 
+#if defined(__QNXNTO__)
+/*!
+ * Used to indicate it is a scrmem object for looking up physical addresses.
+ */
+#define PVRSRV_MEMALLOCFLAG_OS_NTO_MEM_OSHANDLE        (IMG_UINT64_C(1)<<39)
+#define PVRSRV_CHECK_OS_NTO_MEM_OSHANDLE(uiFlags)      (((uiFlags) & PVRSRV_MEMALLOCFLAG_OS_NTO_MEM_OSHANDLE) != 0)
+#else
 #define PVRSRV_MEMALLOCFLAG_OS_ANDROID_FBC_SURFACE_ALLOC     (IMG_UINT64_C(1)<<39)
 #define PVRSRV_CHECK_OS_ANDROID_FBC_SURFACE_ALLOC(uiFlags)   (((uiFlags) & PVRSRV_MEMALLOCFLAG_OS_ANDROID_FBC_SURFACE_ALLOC) != 0U)
+#endif
+
 /*
  *
  *  **********************************************************

@@ -248,29 +248,19 @@ devlink_err:
 	return ret;
 }
 
-static int iommu_fault_handler(struct iommu_fault *fault, void *param)
+static int iommu_fault_handler(struct iommu_domain *domain,
+			       struct device *dev, unsigned long iova,
+			       int flags, void *token)
 {
-	struct lwis_device *lwis_dev = (struct lwis_device *)param;
+	struct lwis_device *lwis_dev = token;
 	struct lwis_mem_page_fault_event_payload event_payload;
 
 	pr_err("############ LWIS IOMMU PAGE FAULT ############\n");
 	pr_err("\n");
-	if (fault->type == IOMMU_FAULT_PAGE_REQ) {
-		dev_warn(lwis_dev->dev, "IOMMU page request fault!\n");
-		dev_warn(lwis_dev->dev, "flags = 0x%08X\n", fault->prm.flags);
-		dev_warn(lwis_dev->dev, "pasid = 0x%08X\n", fault->prm.pasid);
-		dev_warn(lwis_dev->dev, "grpid = 0x%08X\n", fault->prm.grpid);
-		dev_warn(lwis_dev->dev, "perms = 0x%08X\n", fault->prm.perm);
-		dev_warn(lwis_dev->dev, "addr = 0x%llX\n", fault->prm.addr);
-	} else if (fault->type == IOMMU_FAULT_DMA_UNRECOV) {
-		dev_warn(lwis_dev->dev, "Unrecoverable IOMMU fault!\n");
-		dev_warn(lwis_dev->dev, "Reason = 0x%08X\n", fault->event.reason);
-		dev_warn(lwis_dev->dev, "flags = 0x%08X\n", fault->event.flags);
-		dev_warn(lwis_dev->dev, "pasid = 0x%08X\n", fault->event.pasid);
-		dev_warn(lwis_dev->dev, "perms = 0x%08X\n", fault->event.perm);
-		dev_warn(lwis_dev->dev, "addr = 0x%llX\n", fault->event.addr);
-		dev_warn(lwis_dev->dev, "fetch_addr = 0x%llX\n", fault->event.fetch_addr);
-	}
+
+	dev_warn(lwis_dev->dev, "flags = 0x%08X\n", flags);
+	dev_warn(lwis_dev->dev, "addr = 0x%lX\n", iova);
+
 	pr_err("\n");
 	lwis_debug_print_transaction_info(lwis_dev);
 	pr_err("\n");
@@ -282,8 +272,8 @@ static int iommu_fault_handler(struct iommu_fault *fault, void *param)
 	pr_err("\n");
 	pr_err("###############################################\n");
 
-	event_payload.fault_address = fault->event.addr;
-	event_payload.fault_flags = fault->event.flags;
+	event_payload.fault_address = iova;
+	event_payload.fault_flags = flags;
 	lwis_device_error_event_emit(lwis_dev, LWIS_ERROR_EVENT_ID_MEMORY_PAGE_FAULT,
 				     &event_payload, sizeof(event_payload));
 
@@ -661,6 +651,7 @@ int lwis_platform_device_enable(struct lwis_device *lwis_dev)
 {
 	int ret;
 	int iommus_len = 0;
+	struct iommu_domain *domain;
 
 	if (!lwis_dev)
 		return -ENODEV;
@@ -680,13 +671,12 @@ int lwis_platform_device_enable(struct lwis_device *lwis_dev)
 
 	if (of_find_property(lwis_dev->k_dev->of_node, "iommus", &iommus_len) && iommus_len) {
 		/* Activate IOMMU for the platform device */
-		ret = iommu_register_device_fault_handler(lwis_dev->k_dev, iommu_fault_handler,
-							  lwis_dev);
-		if (ret < 0) {
-			dev_err(lwis_dev->dev,
-				"Failed to register fault handler for the device: %d\n", ret);
-			return ret;
-		}
+		domain = iommu_get_domain_for_dev(lwis_dev->k_dev);
+		if (domain)
+			/* Used just for logging. */
+			iommu_set_fault_handler(domain,
+						iommu_fault_handler,
+						lwis_dev);
 	}
 
 	/* TODO(b/380000691): The following functionality will be ready while the
@@ -737,7 +727,6 @@ void lwis_platform_set_device_state(struct lwis_device *lwis_dev, bool camera_up
 int lwis_platform_device_disable(struct lwis_device *lwis_dev)
 {
 	int ret = 0;
-	int iommus_len = 0;
 
 	if (!lwis_dev)
 		return -ENODEV;
@@ -753,11 +742,6 @@ int lwis_platform_device_disable(struct lwis_device *lwis_dev)
 	 */
 
 	lwis_platform_remove_qos(lwis_dev);
-
-	if (of_find_property(lwis_dev->k_dev->of_node, "iommus", &iommus_len) && iommus_len) {
-		/* Deactivate IOMMU */
-		iommu_unregister_device_fault_handler(lwis_dev->k_dev);
-	}
 
 	ret = pm_runtime_put_sync(lwis_dev->k_dev);
 	if (ret < 0) {
@@ -1277,21 +1261,21 @@ static int platform_irm_register_verify(struct lwis_device *lwis_dev,
 		rd_bw_avg_val = irm_register_read(dev, client_idx, DVFS_REQ_RD_BW_AVG_GMC);
 		rd_bw_peak_val = irm_register_read(dev, client_idx, DVFS_REQ_RD_BW_PEAK_GMC);
 		rd_latency_val = irm_register_read(dev, client_idx, DVFS_REQ_LATENCY_GMC);
-		rd_bw_rt_val = irm_register_read(dev, client_idx, DVFS_REQ_RD_BW_VCDIST_GMC);
+		rd_bw_rt_val = irm_register_read(dev, client_idx, DVFS_REQ_RD_BW_RT_GMC);
 		/* Verify google_icc_set_write_bw */
 		wr_bw_avg_val = irm_register_read(dev, client_idx, DVFS_REQ_WR_BW_AVG_GMC);
 		wr_bw_peak_val = irm_register_read(dev, client_idx, DVFS_REQ_WR_BW_PEAK_GMC);
-		wr_bw_rt_val = irm_register_read(dev, client_idx, DVFS_REQ_WR_BW_VCDIST_GMC);
+		wr_bw_rt_val = irm_register_read(dev, client_idx, DVFS_REQ_WR_BW_RT_GMC);
 	} else {
 		/* Verify google_icc_set_read_bw & google_icc_set_read_latency */
 		rd_bw_avg_val = irm_register_read(dev, client_idx, DVFS_REQ_RD_BW_AVG_GSLC);
 		rd_bw_peak_val = irm_register_read(dev, client_idx, DVFS_REQ_RD_BW_PEAK_GSLC);
 		rd_latency_val = irm_register_read(dev, client_idx, DVFS_REQ_LATENCY_GSLC);
-		rd_bw_rt_val = irm_register_read(dev, client_idx, DVFS_REQ_RD_BW_VCDIST_GSLC);
+		rd_bw_rt_val = irm_register_read(dev, client_idx, DVFS_REQ_RD_BW_RT_GSLC);
 		/* Verify google_icc_set_write_bw */
 		wr_bw_avg_val = irm_register_read(dev, client_idx, DVFS_REQ_WR_BW_AVG_GSLC);
 		wr_bw_peak_val = irm_register_read(dev, client_idx, DVFS_REQ_WR_BW_PEAK_GSLC);
-		wr_bw_rt_val = irm_register_read(dev, client_idx, DVFS_REQ_WR_BW_VCDIST_GSLC);
+		wr_bw_rt_val = irm_register_read(dev, client_idx, DVFS_REQ_WR_BW_RT_GSLC);
 	}
 
 	if (IRM_REG_VAL_CMP(expected_constrainted_qos_settings[LWIS_STORE_IRM_REG_RD_BW_AVG],
@@ -1879,8 +1863,26 @@ int lwis_platform_get_default_pt_id(void)
 	return PT_PTID_INVALID;
 }
 
+uint32_t lwis_platform_dpm_read_clock(struct lwis_device *lwis_dev)
+{
+	uint32_t clock = 0;
+
+	if (!lwis_dev->clocks) {
+		dev_err(lwis_dev->dev, "%s clock not defined", lwis_dev->name);
+		return 0;
+	}
+	clock = clk_get_rate(lwis_dev->clocks->clk[0].clk);
+
+	return clock;
+}
+
 bool lwis_platform_is_batch_register_io_supported(void)
 {
 	/* Support for this feature begins with this platform device. */
 	return true;
+}
+
+int lwis_platform_dpm_op_level_get(struct lwis_device *lwis_dev, struct lwis_dpm_op_level *op_level)
+{
+	return 0;
 }

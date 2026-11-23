@@ -342,7 +342,7 @@ Description:
 
 What: /sys/class/drm/card0/device/primary-panel/gram_collision_count
 Date: January 2026
-KernelVersion: 6.6
+KernelVersion: 6.12
 Contact: "Chris Lu" <luchris@google.com>
 Description:
   Userspace client uses this to read the frame count of GRAM collision detected by the DDIC.

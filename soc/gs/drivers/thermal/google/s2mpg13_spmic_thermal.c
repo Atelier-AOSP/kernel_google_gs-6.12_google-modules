@@ -351,26 +351,19 @@ s2mpg13_spmic_thermal_set_hot_trip(struct s2mpg13_spmic_thermal_sensor *s, int t
  * programmed as shutdown threshold.
  */
 static int s2mpg13_spmic_thermal_set_trip_temp(struct thermal_zone_device *tz,
-					       int trip_id, int temp)
+					       const struct thermal_trip *trip,
+					       int temp)
 {
 	struct s2mpg13_spmic_thermal_sensor *s = thermal_zone_device_priv(tz);
-	struct thermal_trip trip;
-	int ret = 0;
 
 	if (!s->chip->sensors_ready)
 		return -EAGAIN;
 
-	ret = __thermal_zone_get_trip(s->tzd, trip_id, &trip);
-	if (ret)
-		return -EINVAL;
-
-	if (trip.type != THERMAL_TRIP_HOT)
+	if (trip->type != THERMAL_TRIP_HOT)
 		return 0;
 
 	/* Use THERMAL_TRIP_HOT for HW thermal shutdown */
-	ret = s2mpg13_spmic_thermal_set_hot_trip(s, temp);
-
-	return ret;
+	return s2mpg13_spmic_thermal_set_hot_trip(s, temp);
 }
 
 /*
@@ -439,23 +432,25 @@ tz_temp_show(struct device *dev, struct device_attribute *attr, char *buf)
 
 static DEVICE_ATTR_RO(tz_temp);
 
+static int s2mpg13_spmic_thermal_get_hot_temp_walk_cb(struct thermal_trip *trip, void *data)
+{
+	const struct thermal_trip **found_trip = data;
+
+	if (trip->type != THERMAL_TRIP_HOT)
+		return 0;
+
+	*found_trip = trip;
+	/* return nonzero to terminate the search */
+	return 1;
+}
+
 static int s2mpg13_spmic_thermal_get_hot_temp(struct thermal_zone_device *tzd)
 {
-	int ntrips;
-	struct thermal_trip trip;
-	int i;
+	const struct thermal_trip *found_trip = NULL;
 
-	ntrips = thermal_zone_get_num_trips(tzd);
-	if (ntrips <= 0)
-		return THERMAL_TEMP_INVALID;
+	thermal_zone_for_each_trip(tzd, s2mpg13_spmic_thermal_get_hot_temp_walk_cb, &found_trip);
 
-	for (i = 0; i < ntrips; i++) {
-		if (!thermal_zone_get_trip(tzd, i, &trip)
-		    && trip.type == THERMAL_TRIP_HOT)
-			return trip.temperature;
-	}
-
-	return THERMAL_TEMP_INVALID;
+	return found_trip ? found_trip->temperature : THERMAL_TEMP_INVALID;
 }
 
 /*
@@ -835,7 +830,7 @@ fail:
 	return ret;
 }
 
-static int s2mpg13_spmic_thermal_remove(struct platform_device *pdev)
+static void s2mpg13_spmic_thermal_remove(struct platform_device *pdev)
 {
 	int i;
 	struct s2mpg13_spmic_thermal_chip *chip = platform_get_drvdata(pdev);
@@ -858,8 +853,6 @@ static int s2mpg13_spmic_thermal_remove(struct platform_device *pdev)
 #endif
 	}
 	s2mpg13_spmic_thermal_unregister_tzd(chip);
-
-	return 0;
 }
 
 static struct platform_driver s2mpg13_spmic_thermal_driver = {

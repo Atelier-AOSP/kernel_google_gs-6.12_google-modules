@@ -50,8 +50,9 @@ Contact:	"George Lee" <geolee@google.com>
 Description:
 		SUBSYSTEM can be selected from smpl_lvl, ocp_cpu1_lvl, ocp_cpu2_lvl, ocp_tpu_lvl,
 		soft_ocp_cpu1_lvl, soft_ocp_cpu2_lvl, soft_ocp_tpu_lvl, ocp_gpu_lvl,
-		soft_ocp_gpu_lvl, batoilo_lvl, batoilo_usb_lvl, batoilo_wlc_lvl,
-		batoilo2_lvl, batoilo2_usb_lvl, batoilo2_wlc_lvl, uvlo1_lvl, uvlo2_lvl.
+		soft_ocp_gpu_lvl, batoilo1_lvl, batoilo1_usb_lvl, batoilo1_wlc_lvl,
+		batoilo2_lvl, batoilo2_usb_lvl, batoilo2_wlc_lvl, uvlo1_lvl, uvlo2_lvl,
+		batoilo1_otg_lvl, batoilo2_otg_lvl.
 		The reported value is the readback of the corresponding threshold.
 
 What:		/sys/devices/virtual/pmic/mitigation/clock_div/<SUBSYSTEM>
@@ -561,6 +562,28 @@ Contact:	"Allen Jiang" <alljiang@google.com>
 Description:
 		The reported value indicates if the VDROOP2 OCP batfet timer is enabled.
 		1 means enabled; 0 means disabled.
+
+What:		/sys/devices/virtual/pmic/mitigation/dyn_clk_div_en/<CPUCL>_dyn_clk_div_en
+Date:		Jun, 2025
+Contact:	"Maggie Cheng" <maggiecheng@google.com>
+Description:
+		CPUCL can be selected from CPU1A, CPU1B, CPU2
+		The reported value indicates if the dynamic clock division is enabled.
+		1 means enabled; 0 means disabled.
+
+What:		/sys/devices/virtual/pmic/mitigation/dyn_clk_div_ratio/<CPUCL>_dyn_clk_div_ratio
+Date:		Jun, 2025
+Contact:	"Maggie Cheng" <maggiecheng@google.com>
+Description:
+		CPUCL can be selected from CPU1A, CPU1B, CPU2
+		The reported value is the readback of the clock division ratio for each oplv gap.
+
+What:		/sys/devices/virtual/pmic/mitigation/dyn_clk_div_thresh/<CPUCL>_dyn_clk_div_thresh
+Date:		Jun, 2025
+Contact:	"Maggie Cheng" <maggiecheng@google.com>
+Description:
+		CPUCL can be selected from CPU1A, CPU1B, CPU2
+		The reported value is the readback of the oplv threshold for each loading gap.
 
 What:		/sys/devices/virtual/pmic/mitigation/debounce_time/<IRQ>_DET
 Date:		Jul, 2025

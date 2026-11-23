@@ -66,7 +66,7 @@ static struct voltage_map_desc *reg_voltage_map[] = {
 	[MAX77826_BUCK2] = &buck_boost_voltage_map_desc,
 };
 
-int max77826_read_reg(struct i2c_client *i2c, u8 reg, u8 *dest)
+static int max77826_read_reg(struct i2c_client *i2c, u8 reg, u8 *dest)
 {
 	struct max77826_dev *max77826 = i2c_get_clientdata(i2c);
 	int ret, retry = 0;
@@ -93,7 +93,7 @@ int max77826_read_reg(struct i2c_client *i2c, u8 reg, u8 *dest)
 	return 0;
 }
 
-int max77826_write_reg(struct i2c_client *i2c, u8 reg, u8 value)
+static int max77826_write_reg(struct i2c_client *i2c, u8 reg, u8 value)
 {
 	struct max77826_dev *max77826 = i2c_get_clientdata(i2c);
 	int ret, retry = 0;
@@ -114,7 +114,7 @@ int max77826_write_reg(struct i2c_client *i2c, u8 reg, u8 value)
 	return ret;
 }
 
-int max77826_update_reg(struct i2c_client *i2c, u8 reg, u8 val, u8 mask)
+static int max77826_update_reg(struct i2c_client *i2c, u8 reg, u8 val, u8 mask)
 {
 	struct max77826_dev *max77826 = i2c_get_clientdata(i2c);
 	int ret, retry = 0;

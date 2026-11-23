@@ -13,7 +13,7 @@
 #ifndef __MFC_DATA_STRUCT_H
 #define __MFC_DATA_STRUCT_H __FILE__
 
-#if IS_ENABLED(CONFIG_EXYNOS_PM_QOS) || IS_ENABLED(CONFIG_EXYNOS_PM_QOS_MODULE)
+#if IS_ENABLED(CONFIG_EXYNOS_PM_QOS)
 #define CONFIG_MFC_USE_BUS_DEVFREQ
 #endif
 
@@ -2058,6 +2058,7 @@ struct dpb_table {
 
 struct disp_drc_info {
 	int disp_res_change;
+	int disp_crop_change;
 	int push_idx;
 	int pop_idx;
 	int width[MFC_MAX_DRC_FRAME];

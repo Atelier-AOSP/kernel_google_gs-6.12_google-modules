@@ -11,6 +11,7 @@
 
 #define pr_fmt(fmt)	KBUILD_MODNAME ": " fmt
 
+#include <linux/cleanup.h>
 #include <linux/init.h>
 #include <linux/of.h>
 #include <linux/slab.h>
@@ -206,7 +207,7 @@ static void apply_thermal_pressure(struct exynos_cpufreq_domain *domain,
 	spin_lock(&domain->thermal_update_lock);
 	domain->capped_freq[thermal_actor] = capped_freq;
 	arch_capped_freq = min(domain->capped_freq[TJ], domain->capped_freq[TSKIN]);
-	arch_update_thermal_pressure(maskp, arch_capped_freq);
+	arch_update_hw_pressure(maskp, arch_capped_freq);
 	spin_unlock(&domain->thermal_update_lock);
 
 	if (unlikely(trace_clock_set_rate_enabled()))
@@ -935,7 +936,7 @@ static int init_dm(struct exynos_cpufreq_domain *domain,
 		   struct device_node *dn)
 {
 	struct exynos_cpufreq_dm *dm;
-	struct device_node *root;
+	struct device_node *root __free(device_node) = NULL;
 	struct of_phandle_iterator iter;
 	int ret, err;
 
@@ -964,8 +965,10 @@ static int init_dm(struct exynos_cpufreq_domain *domain,
 
 		/* allocate DM constraint */
 		dm = kzalloc(sizeof(*dm), GFP_KERNEL);
-		if (!dm)
+		if (!dm) {
+			of_node_put(iter.node);
 			goto init_fail;
+		}
 
 		list_add_tail(&dm->list, &domain->dm_list);
 
@@ -978,8 +981,10 @@ static int init_dm(struct exynos_cpufreq_domain *domain,
 		dm->c.freq_table = kcalloc(domain->table_size,
 					   sizeof(*dm->c.freq_table),
 					   GFP_KERNEL);
-		if (!dm->c.freq_table)
+		if (!dm->c.freq_table) {
+			of_node_put(iter.node);
 			goto init_fail;
+		}
 
 		dm->c.table_length = domain->table_size;
 
@@ -1003,8 +1008,10 @@ static int init_dm(struct exynos_cpufreq_domain *domain,
 
 		/* register DM constraint */
 		ret = register_exynos_dm_constraint_table(domain->dm_type, &dm->c);
-		if (ret)
+		if (ret) {
+			of_node_put(iter.node);
 			goto init_fail;
+		}
 	}
 
 	return register_exynos_dm_freq_scaler(domain->dm_type, dm_scaler);
@@ -1394,9 +1401,13 @@ static int init_domain(struct exynos_cpufreq_domain *domain,
 	return 0;
 }
 
+static void exynos_acme_of_node_put(void *node)
+{
+	of_node_put(node);
+}
+
 static int exynos_cpufreq_probe(struct platform_device *pdev)
 {
-	struct device_node *dn;
 	struct exynos_cpufreq_domain *domain;
 	unsigned int domain_id = 0;
 	int ret = 0;
@@ -1406,7 +1417,7 @@ static int exynos_cpufreq_probe(struct platform_device *pdev)
 	 *
 	 * allocate and initialize cpufreq domain
 	 */
-	for_each_child_of_node(pdev->dev.of_node, dn) {
+	for_each_child_of_node_scoped(pdev->dev.of_node, dn) {
 		domain = kzalloc(sizeof(*domain), GFP_KERNEL);
 		if (!domain)
 			return -ENOMEM;
@@ -1419,7 +1430,15 @@ static int exynos_cpufreq_probe(struct platform_device *pdev)
 			continue;
 		}
 
-		domain->dn = dn;
+		domain->dn = of_node_get(dn);
+		ret = devm_add_action_or_reset(&pdev->dev,
+					       exynos_acme_of_node_put,
+					       domain->dn);
+		if (ret) {
+			kfree(domain->freq_table);
+			kfree(domain);
+			continue;
+		}
 		list_add_tail(&domain->list, &domains);
 
 		print_domain_info(domain);

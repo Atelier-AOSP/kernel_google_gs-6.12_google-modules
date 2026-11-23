@@ -138,6 +138,22 @@ void gs_panel_node_attach(struct gs_drm_connector *gs_connector)
 		dev_dbg(ctx->dev, "succeed to link %s sysfs\n", sysfs_name);
 }
 
+void gs_panel_node_detach(struct gs_drm_connector *gs_connector)
+{
+	struct gs_panel *ctx = gs_connector_to_panel(gs_connector);
+	struct drm_connector *connector = &gs_connector->base;
+	const char *sysfs_name;
+
+	if (WARN(!ctx, "%s: failed to get gs_panel\n", __func__))
+		return;
+
+	sysfs_name = gs_panel_get_sysfs_name(ctx);
+
+	sysfs_remove_link(&ctx->bridge.dev->dev->kobj, sysfs_name);
+	sysfs_remove_link(&connector->kdev->kobj, "panel");
+	sysfs_remove_link(&gs_connector->kdev->kobj, "panel");
+}
+
 static int gs_panel_bridge_attach(struct drm_bridge *bridge, enum drm_bridge_attach_flags flags)
 {
 	struct gs_panel *ctx = bridge_to_gs_panel(bridge);
@@ -161,28 +177,13 @@ static int gs_panel_bridge_attach(struct drm_bridge *bridge, enum drm_bridge_att
 		ctx->gs_connector->needs_commit = true;
 
 	if (connector->dev->mode_config.poll_enabled)
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0)
 		drm_kms_helper_connector_hotplug_event(connector);
-#else
-		drm_kms_helper_hotplug_event(connector->dev);
-#endif
 
 	return 0;
 }
 
 static void gs_panel_bridge_detach(struct drm_bridge *bridge)
 {
-	struct gs_panel *ctx = bridge_to_gs_panel(bridge);
-	struct drm_connector *connector = &ctx->gs_connector->base;
-	const char *sysfs_name = gs_panel_get_sysfs_name(ctx);
-
-	sysfs_remove_link(&bridge->dev->dev->kobj, sysfs_name);
-
-	/* TODO(tknelms): debugfs removal */
-	sysfs_remove_link(&connector->kdev->kobj, "panel");
-	/* TODO(tknelms): evaluate what needs to be done to clean up connector */
-	drm_connector_unregister(connector);
-	drm_connector_cleanup(&ctx->gs_connector->base);
 }
 
 static void gs_panel_bridge_enable_internal(struct gs_panel *ctx)
@@ -217,7 +218,7 @@ static void gs_panel_bridge_enable_internal(struct gs_panel *ctx)
 	}
 	gs_panel_set_panel_state(ctx, is_lp_mode ? GPANEL_STATE_LP : GPANEL_STATE_NORMAL);
 
-	if (gs_panel_has_func(ctx, update_ffc) &&
+	if (gs_panel_has_func(ctx, update_ffc) && !ctx->force_ffc_off &&
 	    (!ctx->idle_data.self_refresh_active || gs_conn_state->dsi_hs_clk_changed) &&
 	    gs_conn_state->dsi_hs_clk_mbps) {
 		dev_dbg(ctx->dev, "update ffc for hs_clk %u\n", gs_conn_state->dsi_hs_clk_mbps);
@@ -832,7 +833,7 @@ static void gs_panel_bridge_disable(struct drm_bridge *bridge,
 			ctx->regulator.need_post_vddd_lp = false;
 		}
 
-		if (gs_panel_has_func(ctx, pre_update_ffc) &&
+		if (gs_panel_has_func(ctx, pre_update_ffc) && !ctx->force_ffc_off &&
 		    (gs_conn_state->dsi_hs_clk_changed || gs_conn_state->pending_dsi_hs_clk_mbps)) {
 			dev_dbg(dev, "pre update ffc\n");
 			ctx->desc->gs_panel_func->pre_update_ffc(ctx);
@@ -846,7 +847,7 @@ static void gs_panel_bridge_disable(struct drm_bridge *bridge,
 			/* if it's seamless mode switch skip disable and treat as interactive */
 			if (!gs_conn_state->seamless_possible)
 				gs_panel_set_panel_state(ctx, GPANEL_STATE_MODESET);
-		} else if (ctx->force_power_on) {
+		} else if (ctx->force_power_on && !gs_conn_state->skip_force_power_on) {
 			/* force blank state instead of power off */
 			gs_panel_set_panel_state(ctx, GPANEL_STATE_BLANK);
 		} else {

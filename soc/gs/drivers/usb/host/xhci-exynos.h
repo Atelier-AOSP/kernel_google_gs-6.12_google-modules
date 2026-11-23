@@ -40,6 +40,11 @@ struct xhci_hcd_exynos {
 	u32 			portsc_control_priority;
 	enum usb_port_state	port_state;
 	bool			port_ctrl_allowed;
+	unsigned		sideband_at_suspend:1;
+	bool			usb3_phy_control;
+
+	/* remote wakeup */
+	bool			rewa_supported;
 };
 
 struct xhci_exynos_priv {
@@ -62,14 +67,11 @@ struct xhci_exynos_udev_ids {
 	__le16 product;
 };
 
-extern void __iomem *phycon_base_addr;
-extern int exynos_usbdrd_phy_vendor_set(struct phy *phy, int is_enable,
-					int is_cancel);
-extern int dwc3_otg_get_idle_ip_index(void);
 void xhci_exynos_register_notify(void);
 void xhci_exynos_unregister_notify(void);
 void register_bus_suspend_callback(void (*callback)(void *bus_suspend_payload, bool main_hcd,
 						    bool suspend),
 				   void *data);
 
+int usb_power_notify_control(int on);
 #endif	/* _XHCI_EXYNOS_H */

@@ -172,7 +172,7 @@ PVRSRV_ERROR RGXInitDeviceInfo(PVRSRV_DEVICE_NODE *psDeviceNode)
 		/* Ensure the HOST_SECURITY reg bank definitions are correct */
 		if ((ui32Offset + RGX_HOST_SECURE_REGBANK_SIZE) != ui32MulticoreRegBankOffset)
 		{
-			PVR_LOG_GOTO_WITH_ERROR("Register bank definitions for HOST_SECURITY don't match core's configuration.", eError, PVRSRV_ERROR_OUT_OF_MEMORY, Exit);
+			PVR_LOG_GOTO_WITH_ERROR("Core's configuration match with register bank definitions for HOST_SECURITY", eError, PVRSRV_ERROR_OUT_OF_MEMORY, Exit);
 		}
 #endif
 
@@ -196,7 +196,7 @@ PVRSRV_ERROR RGXInitDeviceInfo(PVRSRV_DEVICE_NODE *psDeviceNode)
 
 			if (*((volatile IMG_UINT16*)&psDevInfo->psRGXFWIfOsInit->sRGXMulticoreInfo.ui16NumCores) == 0)
 			{
-				PVR_LOG_GOTO_WITH_ERROR("Multicore info not available for guest", eError, PVRSRV_ERROR_DEVICE_REGISTER_FAILED, Exit);
+				PVR_LOG_GOTO_WITH_ERROR("Get multicore info from guest", eError, PVRSRV_ERROR_DEVICE_REGISTER_FAILED, Exit);
 			}
 
 			psRGXMulticoreInfo = &psDevInfo->psRGXFWIfOsInit->sRGXMulticoreInfo;
@@ -217,12 +217,7 @@ PVRSRV_ERROR RGXInitDeviceInfo(PVRSRV_DEVICE_NODE *psDeviceNode)
 #if defined(NO_HARDWARE)
 		/* override to defaults if no hardware */
 		{
-			void* pvAppHintState = NULL;
-			IMG_UINT32 ui32AppHintDefault = RGX_MULTICORE_MAX_NOHW_CORES;
-			OSCreateAppHintState(&pvAppHintState);
-			OSGetAppHintUINT32(APPHINT_NO_DEVICE, pvAppHintState, MCNumCores, &ui32AppHintDefault, &ui32NumCores);
-			OSFreeAppHintState(pvAppHintState);
-			pvAppHintState = NULL;
+			ui32NumCores = RGX_MULTICORE_MAX_NOHW_CORES;
 		}
 		ui32MulticoreInfo = 0; /* Primary core ID 0 with N secondaries. */
 		#if !defined(RGX_FEATURE_ERYX_TOP_INFRASTRUCTURE)
@@ -248,7 +243,7 @@ PVRSRV_ERROR RGXInitDeviceInfo(PVRSRV_DEVICE_NODE *psDeviceNode)
 		psDevInfo->pui64MultiCoreCapabilities = OSAllocMem(ui32NumCores * sizeof(psDevInfo->pui64MultiCoreCapabilities[0]));
 		if (psDevInfo->pui64MultiCoreCapabilities == NULL)
 		{
-			PVR_LOG_GOTO_WITH_ERROR("Failed to alloc memory for Multicore info", eError, PVRSRV_ERROR_OUT_OF_MEMORY, Exit);
+			PVR_LOG_GOTO_WITH_ERROR("Allocating memory for multicore info", eError, PVRSRV_ERROR_OUT_OF_MEMORY, Exit);
 		}
 
 #if !defined(RGX_FEATURE_ERYX_TOP_INFRASTRUCTURE)
@@ -318,7 +313,7 @@ PVRSRV_ERROR RGXInitDeviceInfo(PVRSRV_DEVICE_NODE *psDeviceNode)
 
 			if (*((volatile IMG_UINT16*)&psDevInfo->psRGXFWIfOsInit->sRGXMulticoreInfo.ui16SLCSizeInKB) == 0)
 			{
-				PVR_LOG_GOTO_WITH_ERROR("SLC size is not available for guest", eError, PVRSRV_ERROR_DEVICE_REGISTER_FAILED, Exit);
+				PVR_LOG_GOTO_WITH_ERROR("Get SLC size from guest", eError, PVRSRV_ERROR_DEVICE_REGISTER_FAILED, Exit);
 			}
 
 			ui32SLCSize = psDevInfo->psRGXFWIfOsInit->sRGXMulticoreInfo.ui16SLCSizeInKB << 10;

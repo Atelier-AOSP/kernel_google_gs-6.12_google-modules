@@ -23,7 +23,9 @@
 #include <linux/i2c.h>
 #include <linux/regmap.h>
 #include <linux/rtc.h>
+
 #include <misc/gvotable.h>
+#include <misc/logbuffer.h>
 
 #include "pca9468_regs.h"
 #include "pca9468_charger.h"
@@ -1502,6 +1504,11 @@ static int pca9468_set_ta_current_comp2(struct pca9468_charger *pca9468)
 				iin_apdo = iin_apdo * PD_MSG_TA_CUR_STEP;
 				/* in mV */
 				val = pca9468->ta_max_pwr / (iin_apdo / pca9468->chg_mode / 1000);
+				if (iin_apdo == 0) {
+					dev_warn(pca9468->dev, "Comp.: iin_apdo too low (0), stop comp\n");
+					return -EINVAL;
+				}
+				val = (pca9468->ta_max_pwr * 1000) / iin_apdo;
 				/* Adjust values with APDO resolution(20mV) */
 				val = val * 1000 / PD_MSG_TA_VOL_STEP;
 				val = val * PD_MSG_TA_VOL_STEP; /* uV */
@@ -1804,7 +1811,11 @@ static int pca9468_set_wired_dc(struct pca9468_charger *pca9468, int vbat)
 	val = pca9468->iin_cc / PD_MSG_TA_CUR_STEP;
 	iin_cc = val * PD_MSG_TA_CUR_STEP;
 
-	val = pca9468->ta_max_pwr / (iin_cc / pca9468->chg_mode  / 1000); /* mV */
+	if (iin_cc == 0) {
+		dev_warn(pca9468->dev, "%s: iin_cc is 0, cannot calc ta_max_pwr\n", __func__);
+		return -EINVAL;
+	}
+	val = (pca9468->ta_max_pwr * 1000) / iin_cc; /* mV */
 
 	/* Adjust values with APDO resolution(20mV) */
 	val = val * 1000 / PD_MSG_TA_VOL_STEP;
@@ -2310,6 +2321,8 @@ static int pca9468_set_new_cc_max(struct pca9468_charger *pca9468, int cc_max)
 	const int prev_cc_max = pca9468->cc_max;
 	int iin_max, ret = 0;
 
+	cc_max = (cc_max == GBMS_MSC_FCC_CHARGE_OFF) ? 0 : cc_max;
+
 	if (cc_max < 0) {
 		pr_debug("%s: ignore negative cc_max=%d\n", __func__, cc_max);
 		return 0;
@@ -2608,7 +2621,7 @@ static void pca9468_adjust_ccmode_wired(struct pca9468_charger *pca9468, int iin
 	}
 }
 
-static int pca9468_vote_dc_avail(struct pca9468_charger *pca9468, int vote, int enable)
+static int pca9468_vote_dc_avail(struct pca9468_charger *pca9468, int vote)
 {
 	int ret = 0;
 
@@ -2616,7 +2629,8 @@ static int pca9468_vote_dc_avail(struct pca9468_charger *pca9468, int vote, int 
 		pca9468->dc_avail = gvotable_election_get_handle(VOTABLE_DC_CHG_AVAIL);
 
 	if (pca9468->dc_avail) {
-		ret = gvotable_cast_int_vote(pca9468->dc_avail, REASON_DC_DRV, vote, enable);
+		ret = gvotable_cast_int_vote(pca9468->dc_avail, REASON_DC_DRV,
+					     GBMS_ALL_SEC_CHG_DISABLED, !vote);
 		if (ret < 0)
 			dev_err(pca9468->dev, "Unable to cast vote for DC Chg avail (%d)\n", ret);
 	}
@@ -3341,8 +3355,8 @@ static int pca9468_preset_dcmode(struct pca9468_charger *pca9468)
 
 		if (ret < 0) {
 			pr_err("%s: No APDO to support 2:1\n", __func__);
+			pca9468_vote_dc_avail(pca9468, 0);
 			pca9468->charging_state = DC_STATE_ERROR;
-			pca9468_vote_dc_avail(pca9468, 0, 1);
 			goto error;
 		}
 
@@ -3447,8 +3461,8 @@ static int pca9468_check_active_state(struct pca9468_charger *pca9468)
 		/* try restarting only */
 		if (pca9468->retry_cnt >= PCA9468_MAX_RETRY_CNT) {
 			pr_err("%s: retry failed\n", __func__);
+			pca9468_vote_dc_avail(pca9468, 0);
 			pca9468->charging_state = DC_STATE_ERROR;
-			pca9468_vote_dc_avail(pca9468, 0, 1);
 			ret = -EINVAL;
 			goto exit_done;
 		}
@@ -3468,8 +3482,8 @@ static int pca9468_check_active_state(struct pca9468_charger *pca9468)
 		}
 	} else {
 		pr_err("%s: Error! disabling pca9468: ret(%d)\n", __func__, ret);
+		pca9468_vote_dc_avail(pca9468, 0);
 		pca9468->charging_state = DC_STATE_ERROR;
-		pca9468_vote_dc_avail(pca9468, 0, 1);
 	}
 
 exit_done:
@@ -4493,7 +4507,7 @@ static int pca9468_mains_get_property(struct power_supply *psy,
 
 	case POWER_SUPPLY_PROP_CURRENT_NOW:
 		/* return the output current - uA unit */
-		rc = pca9468_get_iin(pca9468, &val->intval);
+		rc = pca9468_get_iin_original(pca9468, &val->intval);
 		if (rc < 0)
 			dev_err(pca9468->dev, "Invalid IIN ADC (%d)\n", rc);
 		break;
@@ -4602,7 +4616,7 @@ static int pca9468_gbms_mains_set_property(struct power_supply *psy,
 		if (val->prop.intval) {
 			if (pca9468->charging_state == DC_STATE_ERROR)
 				pca9468->charging_state = DC_STATE_NO_CHARGING;
-			pca9468_vote_dc_avail(pca9468, 1, 1);
+			pca9468_vote_dc_avail(pca9468, 1);
 		}
 		break;
 
@@ -4650,7 +4664,7 @@ static int pca9468_gbms_mains_get_property(struct power_supply *psy,
 
 	case GBMS_PROP_CURRENT_NOW:
 		/* return the input current - uA unit */
-		ret = pca9468_get_iin_original(pca9468, &val->prop.intval);
+		ret = pca9468_get_iin(pca9468, &val->prop.intval);
 		if (ret < 0)
 			dev_err(pca9468->dev, "Invalid IIN ADC (%d)\n", ret);
 		break;
@@ -4861,9 +4875,9 @@ static int of_pca9468_dt(struct device *dev,
 #endif /* CONFIG_OF */
 
 #if IS_ENABLED(CONFIG_THERMAL)
-static int pca9468_usb_tz_read_temp(struct thermal_zone_device *tzd, int *temp)
+static int pca9468_usb_tz_read_temp(struct thermal_zone_device *tz, int *temp)
 {
-	struct pca9468_charger *pca9468 = tzd->devdata;
+	struct pca9468_charger *pca9468 = thermal_zone_device_priv(tz);
 
 	if (!pca9468)
 		return -ENODEV;
@@ -5302,6 +5316,9 @@ static int pca9468_probe(struct i2c_client *client)
 			ret = PTR_ERR(pca9468_chg->usb_tzd);
 			dev_err(dev, "Couldn't register usb connector thermal zone ret=%d\n",
 				ret);
+		} else {
+			thermal_zone_device_update(pca9468_chg->usb_tzd, THERMAL_DEVICE_UP);
+			thermal_zone_device_enable(pca9468_chg->usb_tzd);
 		}
 	}
 #endif

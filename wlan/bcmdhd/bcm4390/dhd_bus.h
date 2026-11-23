@@ -91,6 +91,7 @@ extern void dhd_bus_oob_intr_unregister(dhd_pub_t *dhdp);
 extern void dhd_bus_oob_intr_set(dhd_pub_t *dhdp, bool enable);
 extern int dhd_bus_get_oob_irq_num(dhd_pub_t *dhdp);
 extern struct device *dhd_bus_to_dev(struct dhd_bus *bus);
+extern void *dhd_bus_to_pdev(struct dhd_bus *bus);
 extern void dhd_bus_dev_pm_stay_awake(dhd_pub_t *dhdpub);
 extern void dhd_bus_dev_pm_relax(dhd_pub_t *dhdpub);
 extern bool dhd_bus_dev_pm_enabled(dhd_pub_t *dhdpub);
@@ -476,7 +477,6 @@ extern void dhd_coredump_add_status(char *buf, char *err_tag, uint32 status);
 
 void dhd_bus_update_flow_watermark_stats(struct dhd_bus *bus, uint16 flowid, uint16 rd,
 	uint16 wr, uint16 ringsz, bool upd_watermark);
-void dhd_initilize_idsup(uint16 chipid);
 #ifdef DHD_SDTC_ETB_DUMP
 int dhd_bus_get_etb_dump(struct dhd_bus *bus, uint8 *buf, uint bufsize);
 #endif /* DHD_SDTC_ETB_DUMP */

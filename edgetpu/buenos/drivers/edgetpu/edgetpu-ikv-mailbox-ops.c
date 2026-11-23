@@ -15,6 +15,7 @@
 #include <iif/iif-shared.h>
 
 #include "edgetpu-firmware.h"
+#include "edgetpu-iif.h"
 #include "edgetpu-ikv-mailbox-ops.h"
 #include "edgetpu-ikv.h"
 #include "edgetpu-iremap-pool.h"
@@ -164,8 +165,8 @@ static int edgetpu_ikv_wait_for_cmd_queue_not_full(struct gcip_mailbox *mailbox)
 static int edgetpu_ikv_before_enqueue_wait_list(struct gcip_mailbox *mailbox, void *resp,
 						struct gcip_mailbox_awaiter *gcip_awaiter)
 {
+	struct edgetpu_iif *etiif;
 	struct edgetpu_ikv_response *ikv_resp;
-	unsigned long flags;
 	int ret;
 
 	/*
@@ -173,6 +174,7 @@ static int edgetpu_ikv_before_enqueue_wait_list(struct gcip_mailbox *mailbox, vo
 	 * support), there's no need to check it.
 	 */
 	ikv_resp = container_of(gcip_awaiter, struct edgetpu_ikv_response, gcip_awaiter);
+	etiif = ikv_resp->etikv->etdev->etiif;
 
 	/*
 	 * This function call is meaningful only for IIFs in the arrays.
@@ -209,16 +211,13 @@ static int edgetpu_ikv_before_enqueue_wait_list(struct gcip_mailbox *mailbox, vo
 	 * submitted to the firmware and the kernel driver doesn't need to care signaling out-fences
 	 * with an error caused in the driver side.
 	 */
-	ret = gcip_fence_array_submit_waiter_and_signaler(
-		ikv_resp->in_fence_array, ikv_resp->out_fence_array, NULL, NULL, IIF_IP_TPU);
+	ret = edgetpu_iif_submit_waiter_and_signaler(etiif, ikv_resp->in_fence_array,
+						     ikv_resp->out_fence_array,
+						     ikv_resp->poll_cb_array);
 	if (ret) {
 		dev_err(mailbox->dev, "Failed to submit waiter or signaler to fences, ret=%d", ret);
 		return ret;
 	}
-
-	spin_lock_irqsave(ikv_resp->queue_lock, flags);
-	list_add_tail(&ikv_resp->list_entry, ikv_resp->pending_queue);
-	spin_unlock_irqrestore(ikv_resp->queue_lock, flags);
 
 	return 0;
 }

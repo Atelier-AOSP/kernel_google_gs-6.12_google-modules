@@ -76,7 +76,7 @@ uint32_t playback_addr;
 uint8_t  playback_enabled;
 uint8_t  grip_level;
 
-ssize_t nvt_check_api_cmd_result(uint16_t cmd_test_bit, uint16_t pattern)
+static ssize_t nvt_check_api_cmd_result(uint16_t cmd_test_bit, uint16_t pattern)
 {
 	uint8_t spi_buf[3] = {0}, shift = 0;
 	uint16_t result;
@@ -94,7 +94,7 @@ ssize_t nvt_check_api_cmd_result(uint16_t cmd_test_bit, uint16_t pattern)
 	return 0;
 }
 
-ssize_t nvt_get_api_status(uint16_t cmd_get_bit)
+static ssize_t nvt_get_api_status(uint16_t cmd_get_bit)
 {
 	uint8_t spi_buf[3] = {0}, shift = 0;
 	uint16_t status;
@@ -997,7 +997,7 @@ static ssize_t nvt_sync_freq_show(struct device *dev,
 	return ret;
 }
 
-void cal_uniformity(uint8_t *arr, uint32_t size)
+static void cal_uniformity(uint8_t *arr, uint32_t size)
 {
 	uint8_t is_right_most, is_bottom;
 	uint16_t res, i;

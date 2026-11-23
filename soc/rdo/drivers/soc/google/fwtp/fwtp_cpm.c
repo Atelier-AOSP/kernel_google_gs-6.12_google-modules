@@ -32,6 +32,7 @@
 enum fwtp_cpm_dev_id_t {
 	FWTP_CPM_DEV_ID_CPM = 0,
 	FWTP_CPM_DEV_ID_CAP,
+	FWTP_CPM_DEV_ID_VFA,
 	FWTP_CPM_DEV_NUM
 };
 
@@ -93,13 +94,15 @@ enum tracepoint_request_t {
 	TRACEPOINT_REQUEST_ERROR,
 	TRACEPOINT_REQUEST_DRAM,
 	TRACEPOINT_REQUEST_CAP_DRAM,
+	TRACEPOINT_REQUEST_VFA_DRAM,
 	NUM_TRACEPOINT_REQUESTS
 };
 
 /* Set of CPM string tables. */
 enum cpm_string_table_num_t {
 	CPM_STRING_TABLE_CPM = 0,
-	CPM_STRING_TABLE_CAP = 1
+	CPM_STRING_TABLE_CAP,
+	CPM_STRING_TABLE_VFA
 };
 
 /*******************************************************************************
@@ -113,7 +116,7 @@ struct fwtp_cpm_dev *ftrace_fwtp_cpm_dev;
  * Internal prototypes.
  ******************************************************************************/
 
-static int fwtp_cpm_remove(struct platform_device *pdev);
+static void fwtp_cpm_remove(struct platform_device *pdev);
 
 /*******************************************************************************
  * Internal functions.
@@ -131,7 +134,7 @@ static int fwtp_cpm_subscribe(struct fwtp_dev *fwtp_dev, bool subscribe)
 
 	/* Subscribe or unsubscribe to the tracepoint rings. */
 	err = fwtp_ipc_client_subscribe(&(fwtp_dev->fwtp_ipc_client), subscribe,
-					FWTP_CPM_NOTIFY_BYTE_COUNT);
+					fwtp_dev->notify_byte_count);
 	if (err != kFwtpOk)
 		return -EIO;
 
@@ -564,6 +567,7 @@ static int fwtp_cpm_init_dev(struct fwtp_cpm_dev *fwtp_cpm_dev,
 	fwtp_dev->fwtp_ipc_client.string_table_num = string_table_num;
 	fwtp_dev->printer_ctx.name = tracepoint_name;
 	fwtp_dev->ftrace_enabled = true;
+	fwtp_dev->notify_byte_count = FWTP_CPM_NOTIFY_BYTE_COUNT;
 	ret = fwtp_dev_init(fwtp_dev);
 	if (ret) {
 		dev_err(fwtp_dev->dev,
@@ -665,8 +669,13 @@ static int fwtp_cpm_init_dev_list(struct fwtp_cpm_dev *fwtp_cpm_dev)
 						FWTP_CPM_DEV_ID_CAP,
 						TRACEPOINT_REQUEST_CAP_DRAM,
 						CPM_STRING_TABLE_CAP);
+		} else if (strcmp(sub_dev_name, "vfa") == 0) {
+			ret = fwtp_cpm_init_dev(fwtp_cpm_dev, "vfa",
+						FWTP_CPM_DEV_ID_VFA,
+						TRACEPOINT_REQUEST_VFA_DRAM,
+						CPM_STRING_TABLE_VFA);
 		} else {
-			dev_warn(dev, "Sub-device name %s unregognized.\n",
+			dev_warn(dev, "Sub-device name %s unrecognized.\n",
 				 sub_dev_name);
 			ret = 0;
 		}
@@ -736,10 +745,10 @@ static int fwtp_cpm_probe(struct platform_device *pdev)
 	}
 
 	/* Get DMA memory. */
-	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(36));
 	if (ret) {
 		dev_err(dev,
-			"Failed to set DMA mask to 32 bits with error %d.\n",
+			"Failed to set DMA mask to 36 bits with error %d.\n",
 			ret);
 		goto out;
 	}
@@ -821,7 +830,7 @@ out:
  *
  * @pdev: The platform device to remove.
  */
-static int fwtp_cpm_remove(struct platform_device *pdev)
+static void fwtp_cpm_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct fwtp_cpm_dev *fwtp_cpm_dev;
@@ -833,7 +842,7 @@ static int fwtp_cpm_remove(struct platform_device *pdev)
 	 */
 	fwtp_cpm_dev = platform_get_drvdata(pdev);
 	if (!fwtp_cpm_dev)
-		return 0;
+		return;
 	platform_set_drvdata(pdev, NULL);
 	ftrace_fwtp_cpm_dev = NULL;
 
@@ -867,8 +876,6 @@ static int fwtp_cpm_remove(struct platform_device *pdev)
 
 	/* Log removal. */
 	dev_dbg(dev, "Removed CPM FWTP device.\n");
-
-	return 0;
 }
 
 /*******************************************************************************

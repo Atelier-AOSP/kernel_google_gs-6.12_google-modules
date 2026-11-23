@@ -14,6 +14,7 @@
 #include <linux/kthread.h>
 
 #include <soc/google/goog_mba_cpm_iface.h>
+#include <soc/google/google_gtc.h>
 
 #define CPM_IFACE_TEST_CLIENT_SRC_ID	0xAB
 #define CPM_COMMON_PING_SERVICE		0
@@ -28,7 +29,6 @@ struct cpm_iface_test_client {
 	struct device *dev;
 	struct cpm_iface_client *cpm_client;
 	struct dentry *debugfs_root;
-	struct dentry *ping_test_dir;
 };
 
 struct cpm_iface_test_client *client_data;
@@ -46,6 +46,12 @@ static struct cpm_iface_test_ping_config ping_test_config = {
 	.nr_iters = 100,
 	.tout_ms = NO_TIMEOUT,
 };
+
+struct cpm_iface_test_timestamp_config {
+	bool is_oneway_msg;
+	u32 nr_iters;
+	u32 tout_ms;
+} timestamp_test_config = {false, 1, NO_TIMEOUT};
 
 struct cpm_iface_test_thread_data {
 	int thread_id;
@@ -76,7 +82,7 @@ cpm_iface_test_init_thread_data(struct cpm_iface_test_thread_data *thread_data,
 }
 
 static int cpm_iface_test_ping(u32 ping_value, enum cpm_iface_msg_type msg_type,
-			       unsigned long tout_ms)
+			       unsigned long tout_ms, struct cpm_iface_event_timestamps *timestamps)
 {
 	struct device *dev = client_data->dev;
 	int ret;
@@ -88,6 +94,7 @@ static int cpm_iface_test_ping(u32 ping_value, enum cpm_iface_msg_type msg_type,
 		.resp_msg = &resp_msg,
 		.tout_ms = tout_ms,
 		.dst_id = CPM_COMMON_PING_SERVICE,
+		.timestamps = timestamps,
 	};
 
 	req_msg.payload[0] = ping_value;
@@ -134,7 +141,7 @@ static int cpm_iface_test_ping_thread(void *data)
 		dev_dbg(dev, "[t%d]: send ping start (iter:%d, val:[%#x] [%#x] [%#x])", thread_id,
 			 iter, ping_val.value, ping_val.value, ping_val.value);
 
-		ret = cpm_iface_test_ping(ping_val.value, config->msg_type, config->tout_ms);
+		ret = cpm_iface_test_ping(ping_val.value, config->msg_type, config->tout_ms, NULL);
 		if (ret == -ETIME) {
 			dev_warn(dev, "[t%d]: send ping -ETIME (iter:%d, tout_ms=%u)",
 				 thread_id, iter, config->tout_ms);
@@ -211,22 +218,6 @@ cpm_iface_test_invoke_ping(struct cpm_iface_test_ping_config *config)
 	return (nr_pass == config->nr_threads);
 }
 
-static ssize_t cpm_iface_test_debugfs_read_usage(struct file *file,
-						 char __user *user_buf,
-						 size_t count, loff_t *ppos)
-{
-	static const char *usage =
-		"Usage:\necho <msg_type> > <test_path>/msg_type (0 (ONEWAY), 1 REQUEST))\n"
-		"echo <nr_threads> > <test_path>/nr_threads (Range: 1 to 100)\n"
-		"echo <nr_iterations> > <test_path>/nr_iterations (Range: 1 to 1000)\n"
-		"echo <tout_ms> > <test_path>/tout_ms (Range: 1 to 100)\n"
-		"cat <test_path>/trigger_test\n";
-
-	int len = strnlen(usage, PING_TEST_USAGE_STRING_MAX_LEN);
-
-	return simple_read_from_buffer(user_buf, count, ppos, usage, len);
-}
-
 static void cpm_iface_test_client_callback(u32 context, void *msg, void *priv_data)
 {
 	struct cpm_iface_test_client *client_data;
@@ -243,10 +234,19 @@ static void cpm_iface_test_client_callback(u32 context, void *msg, void *priv_da
 	dev_info(dev, "CPM-initiated transaction triggered. (context: %#34x)\n", context);
 }
 
-static const struct file_operations cpm_iface_test_usage_fops = {
-	.open = simple_open,
-	.read = cpm_iface_test_debugfs_read_usage,
-};
+static int cpm_iface_test_usage(struct seq_file *s, void *data)
+{
+	static const char *usage =
+		"Usage:\necho <msg_type> > <test_path>/msg_type (0 (ONEWAY), 1 REQUEST))\n"
+		"echo <nr_threads> > <test_path>/nr_threads (Range: 1 to 100)\n"
+		"echo <nr_iterations> > <test_path>/nr_iterations (Range: 1 to 1000)\n"
+		"echo <tout_ms> > <test_path>/tout_ms (Range: 1 to 100)\n"
+		"cat <test_path>/trigger_test";
+
+	seq_printf(s, "%s\n", usage);
+
+	return 0;
+}
 
 static int cpm_iface_test_ping_test(struct seq_file *s, void *data)
 {
@@ -271,10 +271,110 @@ static int cpm_iface_test_ping_test(struct seq_file *s, void *data)
 	return 0;
 }
 
+static int cpm_iface_test_create_ping_test(struct device *dev, struct dentry *debugfs_root)
+{
+	struct dentry *ping_test_dir;
+
+	ping_test_dir = debugfs_create_dir("ping_test", debugfs_root);
+	if (IS_ERR(ping_test_dir)) {
+		dev_err(dev, "Failed to create ping_test sub dir\n");
+		return PTR_ERR(ping_test_dir);
+	}
+
+	debugfs_create_devm_seqfile(dev, "test_usage", ping_test_dir, cpm_iface_test_usage);
+	debugfs_create_devm_seqfile(dev, "trigger_test", ping_test_dir, cpm_iface_test_ping_test);
+
+	debugfs_create_bool("msg_type", 0660, ping_test_dir, &ping_test_config.msg_type);
+	debugfs_create_u32("nr_threads", 0660, ping_test_dir, &ping_test_config.nr_threads);
+	debugfs_create_u32("nr_iterations", 0660, ping_test_dir, &ping_test_config.nr_iters);
+	debugfs_create_u32("tout_ms", 0660, ping_test_dir, &ping_test_config.tout_ms);
+
+	return 0;
+}
+
+static int cpm_iface_timestamp_test_usage(struct seq_file *s, void *data)
+{
+	static const char *usage =
+		"Usage:\n"
+		"  echo <val> > is_oneway_msg  # 1=ONEWAY, 0=REQUEST\n"
+		"  echo <val> > nr_iterations  # Range: 1 to 1000\n"
+		"  echo <val> > tout_ms        # Timeout in ms\n"
+		"  cat trigger_test            # Run the test";
+
+	seq_printf(s, "%s\n", usage);
+
+	return 0;
+}
+
+static int cpm_iface_test_timestamp(struct seq_file *s, void *data)
+{
+	struct device *dev = client_data->dev;
+	struct cpm_iface_event_timestamps timestamps;
+	ktime_t start_time, end_time, event_time, prev_event_time;
+	int ret, idx, iter;
+	enum cpm_iface_msg_type msg_type = REQUEST_MSG;
+
+	if (timestamp_test_config.is_oneway_msg)
+		msg_type = ONEWAY_MSG;
+
+	for (iter = 0; iter < timestamp_test_config.nr_iters; iter++) {
+		prev_event_time = 0;
+
+		start_time = goog_gtc_get_time_ns();
+		ret = cpm_iface_test_ping(iter, msg_type, timestamp_test_config.tout_ms,
+					  &timestamps);
+		if (ret != 0) {
+			seq_printf(s, "[Fail]: ping test fail to complete (ret: %d)\n", ret);
+			return 0;
+		}
+		end_time = goog_gtc_get_time_ns();
+
+		for (idx = 0; idx < MAX_CPM_IFACE_EVENTS; idx++) {
+			event_time = timestamps.events[idx];
+			dev_dbg(dev, "[%d] %llu\n", idx, event_time);
+
+			if (event_time < start_time || event_time > end_time) {
+				seq_puts(s, "[Fail]: out of range timestamp\n");
+				return 0;
+			}
+			if (prev_event_time && prev_event_time > event_time) {
+				seq_puts(s, "[Fail]: timestamps aren't monotonic\n");
+				return 0;
+			}
+			prev_event_time = event_time;
+		}
+	}
+	seq_puts(s, "[Pass]\n");
+
+	return 0;
+}
+
+static int cpm_iface_test_create_timestamp_test(struct device *dev, struct dentry *debugfs_root)
+{
+	struct dentry *testcase_dir;
+	const char *testcase_name = "timestamp_test";
+
+	testcase_dir = debugfs_create_dir(testcase_name, debugfs_root);
+	if (IS_ERR(testcase_dir)) {
+		dev_err(dev, "Failed to create testcase dir of %s\n", testcase_name);
+		return PTR_ERR(testcase_dir);
+	}
+
+	debugfs_create_devm_seqfile(dev, "test_usage", testcase_dir,
+				    cpm_iface_timestamp_test_usage);
+	debugfs_create_devm_seqfile(dev, "trigger_test", testcase_dir, cpm_iface_test_timestamp);
+
+	debugfs_create_bool("is_oneway_msg", 0660, testcase_dir,
+			    &timestamp_test_config.is_oneway_msg);
+	debugfs_create_u32("nr_iterations", 0660, testcase_dir, &timestamp_test_config.nr_iters);
+	debugfs_create_u32("tout_ms", 0660, testcase_dir, &timestamp_test_config.tout_ms);
+
+	return 0;
+}
+
 static int cpm_iface_test_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct dentry *cpm_iface_test_dentry;
 	int ret = 0;
 
 	client_data = devm_kzalloc(dev, sizeof(*client_data), GFP_KERNEL);
@@ -303,37 +403,13 @@ static int cpm_iface_test_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	client_data->ping_test_dir = debugfs_create_dir("ping_test", client_data->debugfs_root);
-
-	if (IS_ERR(client_data->debugfs_root)) {
-		ret = PTR_ERR(client_data->ping_test_dir);
-		dev_err(dev, "Failed to create ping_test sub dir\n");
+	ret = cpm_iface_test_create_ping_test(dev, client_data->debugfs_root);
+	if (ret < 0)
 		goto err;
-	}
 
-	cpm_iface_test_dentry = debugfs_create_file("test_usage", 0660, client_data->ping_test_dir,
-						    client_data, &cpm_iface_test_usage_fops);
-	if (IS_ERR(cpm_iface_test_dentry)) {
-		ret = PTR_ERR(cpm_iface_test_dentry);
-		dev_err(dev, "Failed to create test_usage file. Error: %d\n",
-			ret);
+	ret = cpm_iface_test_create_timestamp_test(dev, client_data->debugfs_root);
+	if (ret < 0)
 		goto err;
-	}
-
-	debugfs_create_bool("msg_type", 0660, client_data->ping_test_dir,
-			    &ping_test_config.msg_type);
-
-	debugfs_create_u32("nr_threads", 0660, client_data->ping_test_dir,
-			   &ping_test_config.nr_threads);
-
-	debugfs_create_u32("nr_iterations", 0660, client_data->ping_test_dir,
-			   &ping_test_config.nr_iters);
-
-	debugfs_create_u32("tout_ms", 0660, client_data->ping_test_dir,
-			   &ping_test_config.tout_ms);
-
-	debugfs_create_devm_seqfile(dev, "trigger_test", client_data->ping_test_dir,
-				    cpm_iface_test_ping_test);
 
 	platform_set_drvdata(pdev, client_data);
 

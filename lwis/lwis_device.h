@@ -14,9 +14,11 @@
 #include <linux/hashtable.h>
 #include <linux/idr.h>
 #include <linux/kernel.h>
+#include <linux/kref.h>
 #include <linux/kthread.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
+#include <linux/rcupdate.h>
 #include <linux/platform_device.h>
 #include <linux/poll.h>
 #include <linux/workqueue.h>
@@ -39,6 +41,7 @@
 #define LWIS_TEST_DEVICE_COMPAT "google,lwis-test-device"
 #define LWIS_SPI_DEVICE_COMPAT "google,lwis-spi-device"
 #define LWIS_I3C_PROXY_DEVICE_COMPAT "google,lwis-i3c-proxy-device"
+#define LWIS_PWRSEQ_DEVICE_COMPAT "google,lwis-pwrseq-device"
 
 #define EVENT_HASH_BITS 8
 #define BUFFER_HASH_BITS 8
@@ -63,8 +66,7 @@ struct lwis_device;
 /* Platform specific struct used by platform funcs. */
 struct lwis_platform;
 struct lwis_allocator_block_mgr;
-int lwis_allocator_init(struct lwis_device *lwis_dev);
-void lwis_allocator_release(struct lwis_device *lwis_dev);
+struct lwis_client;
 struct lwis_bus_manager;
 
 /*
@@ -101,14 +103,17 @@ struct lwis_core {
  */
 struct lwis_device_subclass_operations {
 	/* Called by lwis_device when device register needs to be read/written */
-	int (*register_io)(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
-			   int access_size);
+	int (*register_io)(struct lwis_device *lwis_dev, struct lwis_io_entry *entry);
 	/* Called by lwis_device when device register needs to be read/written without lock */
-	int (*register_io_locked)(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
-				  int access_size);
+	int (*register_io_locked)(struct lwis_device *lwis_dev, struct lwis_io_entry *entry);
+	/* Called by lwis_device when device register needs to be read/written
+	 * with specific size without lock
+	 */
+	int (*register_io_with_size_locked)(struct lwis_device *lwis_dev,
+					    struct lwis_io_entry *entry, int access_size);
 	/* Grouped transfer that process batch_size of lwis_io_entries */
 	int (*batch_register_io)(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
-				 int access_size, int batch_size);
+				 int batch_size);
 	/* Called by lwis_device when a read/write memory barrier needs to be inserted */
 	int (*register_io_barrier)(struct lwis_device *lwis_dev, bool use_read_barrier,
 				   bool use_write_barrier);
@@ -210,8 +215,8 @@ struct lwis_device {
 
 	/* Enabled state of the device */
 	int enabled;
-	/* Mark if the client called device suspend */
-	bool is_suspended;
+	/* Reference count for suspended state */
+	int suspend_count;
 	/* Mutex used to synchronize access between clients */
 	struct mutex client_lock;
 	/* Spinlock used to synchronize access to the device struct */
@@ -226,7 +231,8 @@ struct lwis_device {
 	struct timer_list heartbeat_timer;
 	/* Register-related properties */
 	unsigned int native_addr_bitwidth;
-	unsigned int native_value_bitwidth;
+	unsigned int native_read_value_bitwidth;
+	unsigned int native_write_value_bitwidth;
 	/* Point to lwis_top_dev */
 	struct lwis_device *top_dev;
 #ifdef CONFIG_DEBUG_FS
@@ -276,6 +282,8 @@ struct lwis_device {
 	bool power_up_to_suspend;
 	/* regulators list */
 	struct list_head regulator_list;
+	/* pwrseq list */
+	struct list_head pwrseq_list;
 
 	/* Is device read only */
 	bool is_read_only;
@@ -302,6 +310,8 @@ struct lwis_device {
  *  application that calls open() on a /dev/lwis* device.
  */
 struct lwis_client {
+	struct rcu_head rcu;
+	struct kref kref;
 	struct mutex lock;
 	struct lwis_device *lwis_dev;
 	/* Hash table of events controlled by userspace in this client */
@@ -343,14 +353,36 @@ struct lwis_client {
 	struct lwis_client_debug_info debug_info;
 	/* Each device has a linked list of clients */
 	struct list_head node;
-	/* Mark if the client called device enable */
+
+	/**
+	 * Enabled: Device is powered ON.
+	 * Suspended: Device is ON but in a low-power, inactive state.
+	 * A device must be enabled to be suspended.
+	 * A device cannot be suspended if it's not enabled (it's just OFF).
+
+	 * @is_enabled: Boolean flag indicating whether this client has successfully
+	 * enabled the LWIS device (via LWIS_CMD_ID_DEVICE_ENABLE IOCTL).
+	 * This affects power management and resource allocation for the device.
+
+	 * @is_suspended: Boolean flag indicating whether this specific client has
+	 * requested the device to be suspended (via LWIS_CMD_ID_DEVICE_SUSPEND
+	 * IOCTL). The device itself might remain active if other clients
+	 * haven't suspended it.
+	 */
 	bool is_enabled;
+	bool is_suspended;
+
 	/* Work item to schedule managed LWIS Bus transfers */
 	struct kthread_work io_bus_work;
 	/* Indicates if the client has been issued a flush worker call */
 	enum lwis_client_flush_state flush_state;
 	/* Lock to guard client's flush state changes */
 	spinlock_t flush_lock;
+	atomic_t running_tx_count;
+	wait_queue_head_t running_tx_wq;
+
+	/* List of release fences */
+	struct list_head release_fences;
 };
 
 /*
@@ -424,8 +456,9 @@ void lwis_device_info_dump(const char *name, void (*func)(struct lwis_device *))
  * lwis_save_register_io_info: Saves the register io info in a history buffer
  * for better debugability.
  */
-void lwis_save_register_io_info(struct lwis_device *lwis_dev, struct lwis_io_entry *io_entry,
-				size_t access_size);
+void lwis_save_register_io_info(struct lwis_device *lwis_dev, struct lwis_io_entry *io_entry);
+void lwis_save_register_io_info_with_size(struct lwis_device *lwis_dev,
+					  struct lwis_io_entry *io_entry, int access_size);
 
 /*
  * lwis_process_worker_queue:
@@ -447,5 +480,13 @@ void lwis_queue_device_worker(struct lwis_client *client);
  * worker.
  */
 void lwis_flush_device_worker(struct lwis_client *client);
+
+/* lwis_open_lwis_client_from_fd:
+ * Opens a reference to the lwis_client file* from a file descriptor.
+ */
+struct file *lwis_open_lwis_client_from_fd(struct lwis_device *lwis_dev, int fd);
+
+struct lwis_client *lwis_client_get(struct lwis_client *client);
+void lwis_client_put(struct lwis_client *client);
 
 #endif /* LWIS_DEVICE_H_ */

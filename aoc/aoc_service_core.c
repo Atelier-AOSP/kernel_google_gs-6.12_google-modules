@@ -108,7 +108,7 @@ ssize_t aoc_service_write(struct aoc_service_dev *dev, const uint8_t *buffer,
 
 	aoc_service *service;
 	int service_number;
-	int interrupt = dev->mbox_index;
+	int interrupt = dev->phys_index;
 	int ret = 0;
 
 	if (!dev || !buffer || !count)
@@ -208,7 +208,7 @@ ssize_t aoc_service_write_timeout(struct aoc_service_dev *dev, const uint8_t *bu
 
 	aoc_service *service;
 	int service_number;
-	int interrupt = dev->mbox_index;
+	int interrupt = dev->phys_index;
 	long ret = 1;
 
 	if (!dev || !buffer || !count)
@@ -339,7 +339,7 @@ EXPORT_SYMBOL_GPL(aoc_num_services);
 aoc_service *service_at_index(struct aoc_prvdata *prvdata,
 					    unsigned int index)
 {
-	if (!aoc_fw_ready() || index > aoc_num_services())
+	if (index >= aoc_num_services())
 		return NULL;
 
 	return (((uint8_t *)prvdata->ipc_base) + aoc_control->services_offset +
@@ -350,7 +350,7 @@ EXPORT_SYMBOL_GPL(service_at_index);
 struct aoc_service_dev *service_dev_at_index(struct aoc_prvdata *prvdata,
 							unsigned int index)
 {
-	if (!aoc_fw_ready() || index > aoc_num_services() || aoc_state != AOC_STATE_ONLINE)
+	if (index >= aoc_num_services() || aoc_state != AOC_STATE_ONLINE)
 		return NULL;
 
 	return prvdata->services[index];
@@ -420,7 +420,7 @@ ssize_t aoc_service_read(struct aoc_service_dev *dev, uint8_t *buffer,
 	int service_number;
 	int ret = 0;
 	bool was_full;
-	int interrupt = dev->mbox_index;
+	int interrupt = dev->phys_index;
 
 	if (!dev || !buffer || !count)
 		return -EINVAL;

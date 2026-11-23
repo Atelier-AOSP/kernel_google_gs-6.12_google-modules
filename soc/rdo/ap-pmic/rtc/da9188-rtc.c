@@ -14,6 +14,7 @@
 
 #include <ap-pmic/da9188.h>
 #include <mailbox/protocols/mba/cpm/common/pmic/pmic_service.h>
+#include <soc/google/goog_cpm_service_ids.h>
 
 #define MB_RTC_ID_NOT_ALARM (0)
 
@@ -220,13 +221,7 @@ static int da9188_rtc_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, priv);
 
 	priv->dev = dev;
-
-	ret = of_property_read_u32(dev->of_node, "mba-dest-channel",
-				   &priv->mb_dest_channel);
-	if (ret < 0) {
-		dev_err(dev, "Failed to read mba-dest-channel.\n");
-		return ret;
-	}
+	priv->mb_dest_channel = CPM_COMMON_PMIC_SERVICE;
 
 	dev_info(dev, "Init mailbox client\n");
 	ret = da9188_mfd_mbox_request(dev, &priv->mbox);
@@ -315,18 +310,16 @@ free_mbox:
 	return ret;
 }
 
-static int da9188_rtc_remove(struct platform_device *pdev)
+static void da9188_rtc_remove(struct platform_device *pdev)
 {
 	struct da9188_rtc *priv = platform_get_drvdata(pdev);
 
 	if (IS_ERR_OR_NULL(priv))
-		return 0;
+		return;
 
 	dev_pm_clear_wake_irq(&pdev->dev);
 	device_init_wakeup(&pdev->dev, false);
 	da9188_mfd_mbox_release(&priv->mbox);
-
-	return 0;
 }
 
 static const struct platform_device_id da9188_rtc_id[] = {

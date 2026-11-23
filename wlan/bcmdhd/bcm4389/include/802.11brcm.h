@@ -305,7 +305,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_ftm_vs_ie {
 	uint8 oui[3];		/* BRCM_PROP_OUI (or Customer) */
 	uint8 sub_type;		/* BRCM_FTM_IE_TYPE (or Customer) */
 	uint8 version;
-	BCM_DECLARE_FLEX_ARRAY(ftm_vs_tlv_t, tlvs);
+	ftm_vs_tlv_t tlvs[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_ftm_vs_ie dot11_ftm_vs_ie_t;
 
@@ -316,7 +316,7 @@ typedef struct dot11_ftm_vs_ie dot11_ftm_vs_ie_t;
 BWL_PRE_PACKED_STRUCT struct dot11_ftm_vs_ie_pyld {
 	uint8 sub_type;		/* BRCM_FTM_IE_TYPE (or Customer) */
 	uint8 version;
-	BCM_DECLARE_FLEX_ARRAY(ftm_vs_tlv_t, tlvs);
+	ftm_vs_tlv_t tlvs[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_ftm_vs_ie_pyld dot11_ftm_vs_ie_pyld_t;
 

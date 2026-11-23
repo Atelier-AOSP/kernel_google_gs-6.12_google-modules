@@ -20,10 +20,18 @@
 #define DMA_REQ_MUX_CHANNEL_OFFSET	0x4
 #define DMA_AXUSER_VC_VAL(vc)		(((vc) & 0x7) << 12)
 #define DMA_AXUSER_REG_OFFSET		0x8
-#define DMA_REQ_MUX_INPUT_MAX		32
+#define DMA_REQ_MUX_INPUT_MAX		49
 
 /* TX and RX channel */
 #define MAX_CHANNEL_TYPES 2
+
+#if IS_ENABLED(CONFIG_DMADEVICES_DEBUG)
+#define DEBUG
+#endif
+
+#if IS_ENABLED(CONFIG_DMADEVICES_VDEBUG)
+#define VERBOSE_DEBUG
+#endif
 
 /**
  * @enum: google_gpdma_route_state - SW state of DMA route.

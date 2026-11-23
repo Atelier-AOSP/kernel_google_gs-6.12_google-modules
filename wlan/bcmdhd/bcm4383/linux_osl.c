@@ -2329,19 +2329,6 @@ kernel_read_compat(struct file *file, loff_t offset, char *addr, unsigned long c
 }
 #endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 14, 0)) */
 
-/* Linux specific multipurpose spinlock API */
-void *
-osl_spin_lock_init(osl_t *osh)
-{
-	/* Adding 4 bytes since the sizeof(spinlock_t) could be 0 */
-	/* if CONFIG_SMP and CONFIG_DEBUG_SPINLOCK are not defined */
-	/* and this results in kernel asserts in internal builds */
-	spinlock_t * lock = MALLOC(osh, sizeof(spinlock_t) + 4);
-	if (lock)
-		spin_lock_init(lock);
-	return ((void *)lock);
-}
-
 void
 osl_spin_lock_deinit(osl_t *osh, void *lock)
 {

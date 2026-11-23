@@ -3346,7 +3346,7 @@ void hdd_send_rps_ind(struct hdd_adapter *adapter)
 			  i, rps_data.cpu_map_list[i]);
 	}
 
-	strlcpy(rps_data.ifname, adapter->dev->name,
+	strscpy(rps_data.ifname, adapter->dev->name,
 			sizeof(rps_data.ifname));
 	wlan_hdd_send_svc_nlink_msg(hdd_ctxt->radio_index,
 				WLAN_SVC_RPS_ENABLE_IND,
@@ -3392,7 +3392,7 @@ void hdd_send_rps_disable_ind(struct hdd_adapter *adapter)
 
 	qdf_mem_zero(&rps_data.cpu_map_list, sizeof(rps_data.cpu_map_list));
 
-	strlcpy(rps_data.ifname, adapter->dev->name, sizeof(rps_data.ifname));
+	strscpy(rps_data.ifname, adapter->dev->name, sizeof(rps_data.ifname));
 	wlan_hdd_send_svc_nlink_msg(hdd_ctxt->radio_index,
 				    WLAN_SVC_RPS_ENABLE_IND,
 				    &rps_data, sizeof(rps_data));
@@ -3795,14 +3795,14 @@ void hdd_dp_cfg_update(struct wlan_objmgr_psoc *psoc,
 		cfg_get(psoc, CFG_DP_RX_THREAD_CPU_MASK);
 	config->fisa_enable = cfg_get(psoc, CFG_DP_RX_FISA_ENABLE);
 	if (cfg_len < CFG_DP_RPS_RX_QUEUE_CPU_MAP_LIST_LEN) {
-		qdf_str_lcopy(config->cpu_map_list,
+		qdf_str_scopy(config->cpu_map_list,
 			      cfg_get(psoc, CFG_DP_RPS_RX_QUEUE_CPU_MAP_LIST),
 			      cfg_len);
 	} else {
 		hdd_err("ini string length greater than max size %d",
 			CFG_DP_RPS_RX_QUEUE_CPU_MAP_LIST_LEN);
 		cfg_len = qdf_str_len(cfg_default(CFG_DP_RPS_RX_QUEUE_CPU_MAP_LIST));
-		qdf_str_lcopy(config->cpu_map_list,
+		qdf_str_scopy(config->cpu_map_list,
 			      cfg_default(CFG_DP_RPS_RX_QUEUE_CPU_MAP_LIST),
 			      cfg_len);
 	}

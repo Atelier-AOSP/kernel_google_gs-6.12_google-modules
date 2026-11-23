@@ -1,7 +1,7 @@
 /*
  * Header for Linux cfg80211 scan
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -111,7 +111,6 @@ extern s32 wl_cfgscan_pfn_handler(struct bcm_cfg80211 *cfg,
 extern s32 wl_cfgscan_notify_pfn_complete(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
 	const wl_event_msg_t *e, void *data);
 #endif /* GSCAN_SUPPORT || WL_SCHED_SCAN */
-#ifdef WES_SUPPORT
 #ifdef CUSTOMER_SCAN_TIMEOUT_SETTING
 #define CUSTOMER_WL_SCAN_TIMER_INTERVAL_MS	25000 /* Scan timeout */
 enum wl_custom_scan_time_type {
@@ -124,7 +123,6 @@ enum wl_custom_scan_time_type {
 extern s32 wl_cfg80211_custom_scan_time(struct net_device *dev,
 		enum wl_custom_scan_time_type type, int time);
 #endif /* CUSTOMER_SCAN_TIMEOUT_SETTING */
-#endif /* WES_SUPPORT */
 
 #if defined(SUPPORT_RANDOM_MAC_SCAN)
 int wl_cfg80211_set_random_mac(struct net_device *dev, bool enable);
@@ -215,7 +213,7 @@ typedef struct ap_oper_data {
 
 extern bool wl_cfgscan_check_dynamic_restrictions(struct bcm_cfg80211 *cfg,
 		chanspec_t chspec, u8 *indoor_restrict);
-extern void wl_get_ap_chanspecs(struct bcm_cfg80211 *cfg, wl_ap_oper_data_t *ap_data);
+extern int wl_get_ap_chanspecs(struct bcm_cfg80211 *cfg, wl_ap_oper_data_t *ap_data);
 
 extern int wl_android_get_sta_channel(struct bcm_cfg80211 *cfg);
 extern int wl_handle_acs_concurrency_cases(struct bcm_cfg80211 *cfg,
@@ -247,9 +245,10 @@ extern s32
 wl_cfgscan_get_bw_chspec(chanspec_t *chspec, u32 bw);
 extern s32 wl_cfgscan_get_chan_info(struct bcm_cfg80211 *cfg,
 		u32 *chan_info, chanspec_t in_chspec);
+extern u8 wl_cfgscan_get_max_num_chans_per_bw(chanspec_t chspec);
 extern s32 wl_cfgscan_get_dynamic_chan_info(struct bcm_cfg80211 *cfg,
 		u32 *chan_info, chanspec_t in_chspec, u32 chan_info_flags);
-extern void wl_connected_channel_debuggability(struct bcm_cfg80211 * cfg,
-		struct net_device * ndev);
+extern void wl_connected_channel_debuggability(struct bcm_cfg80211 *cfg,
+		struct net_device *ndev);
 extern void wl_cfgscan_scan_abort(struct bcm_cfg80211 *cfg);
 #endif /* _wl_cfgscan_h_ */

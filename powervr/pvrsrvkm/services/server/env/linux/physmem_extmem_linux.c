@@ -135,19 +135,6 @@ eReturn:
 	return eError;
 }
 
-#if defined(SUPPORT_LINUX_WRAP_EXTMEM_PAGE_TABLE_WALK)
-/* Free the pages we got via _TryFindVMA() */
-static void _FreeFindVMAPages(PMR_WRAP_DATA *psPrivData)
-{
-	IMG_UINT32 i;
-
-	for (i = 0; i < psPrivData->uiTotalNumPages; i++)
-	{
-		put_page(psPrivData->ppsPageArray[i]);
-	}
-}
-#endif
-
 #ifndef PVR_FOLL_LONGTERM
 #ifdef FOLL_LONGTERM
 #define PVR_FOLL_LONGTERM FOLL_LONGTERM
@@ -300,14 +287,24 @@ ErrUnpinPages:
 /* Release all the pages we got via _TryGetUserPages or _TryFindVMA */
 static PVRSRV_ERROR _WrapExtMemReleasePages(PMR_WRAP_DATA *psPrivData)
 {
+	PVRSRV_ERROR eError = PVRSRV_OK;
+
 	switch (psPrivData->eWrapType)
 	{
 		case WRAP_TYPE_GET_USER_PAGES:
 			_FreeGetUserPages(psPrivData);
 			break;
 #if defined(SUPPORT_LINUX_WRAP_EXTMEM_PAGE_TABLE_WALK)
-		case WRAP_TYPE_FIND_VMA:
-			_FreeFindVMAPages(psPrivData);
+		case WRAP_TYPE_FIND_PHYS_FROM_VIRT:
+			if (psPrivData->psDevNode->psDevConfig->pfnReleaseWrapMemPhysPagesFromVirt)
+			{
+				psPrivData->psDevNode->psDevConfig->pfnReleaseWrapMemPhysPagesFromVirt(psPrivData);
+			}
+			else
+			{
+				eError = PVRSRV_ERROR_NOT_IMPLEMENTED;
+				goto FreeWrapDataReturn;
+			}
 			break;
 #endif
 		case WRAP_TYPE_NULL:
@@ -319,9 +316,12 @@ static PVRSRV_ERROR _WrapExtMemReleasePages(PMR_WRAP_DATA *psPrivData)
 			return PVRSRV_ERROR_INVALID_WRAP_TYPE;
 	}
 
+#if defined(SUPPORT_LINUX_WRAP_EXTMEM_PAGE_TABLE_WALK)
+FreeWrapDataReturn:
+#endif
 	_FreeWrapData(psPrivData);
 
-	return PVRSRV_OK;
+	return eError;
 }
 
 /* Try to get pages and physical addresses for a CPU virtual address.
@@ -335,9 +335,9 @@ static PVRSRV_ERROR _WrapExtMemAcquirePages(PVRSRV_DEVICE_NODE *psDevNode,
 	PVRSRV_ERROR eError;
 
 	eError = _TryGetUserPages(psDevNode,
-	                            uiSize,
-	                            pvCpuVAddr,
-	                            psPrivData);
+	                          uiSize,
+	                          pvCpuVAddr,
+	                          psPrivData);
 	if (eError == PVRSRV_OK)
 	{
 		psPrivData->eWrapType = WRAP_TYPE_GET_USER_PAGES;
@@ -351,20 +351,29 @@ static PVRSRV_ERROR _WrapExtMemAcquirePages(PVRSRV_DEVICE_NODE *psDevNode,
 	if (PVRSRV_ERROR_INVALID_PHYS_ADDR != eError)
 	{
 		PVRSRV_ERROR eError2;
-		eError2 = _TryFindVMA(uiSize,
-		                      (uintptr_t) pvCpuVAddr,
-		                      psPrivData);
+		PFN_SYS_ACQUIRE_PHYS_PAGES_FROM_VIRT psPfnAcquire =
+		    psDevNode->psDevConfig->pfnAcquireWrapMemPhysPagesFromVirt;
+
+		if (psPfnAcquire)
+		{
+			eError2 = (*psPfnAcquire)(uiSize, (uintptr_t) pvCpuVAddr,
+			                          (void *)psPrivData);
+		}
+		else
+		{
+			eError2 = PVRSRV_ERROR_NOT_IMPLEMENTED;
+		}
 		if (eError2 == PVRSRV_OK)
 		{
-			psPrivData->eWrapType = WRAP_TYPE_FIND_VMA;
+			psPrivData->eWrapType = WRAP_TYPE_FIND_PHYS_FROM_VIRT;
 			PVR_DPF((PVR_DBG_MESSAGE,
-					"%s: Used FindVMA",
+					"%s: Used WrapTypeFindPhysFromVirt",
 					__func__));
 			return PVRSRV_OK;
 		}
 
 		PVR_WARN_IF_ERROR(eError, "_TryGetUserPages");
-		PVR_LOG_ERROR(eError2, "_TryFindVMA");
+		PVR_LOG_ERROR(eError2, "FindVMA");
 	}
 	else
 	{

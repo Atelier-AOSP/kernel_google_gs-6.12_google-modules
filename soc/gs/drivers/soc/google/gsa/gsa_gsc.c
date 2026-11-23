@@ -290,7 +290,6 @@ static const struct file_operations gsc_fops = {
 	.poll		= gsc_poll,
 	.release	= gsc_release,
 	.unlocked_ioctl	= gsc_ioctl,
-	.llseek		= no_llseek,
 	.owner		= THIS_MODULE,
 };
 
@@ -406,14 +405,12 @@ static int gsa_gsc_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int gsa_gsc_remove(struct platform_device *pdev)
+static void gsa_gsc_remove(struct platform_device *pdev)
 {
 	struct gsc_state *s = platform_get_drvdata(pdev);
 
 	cdev_del(&s->cdn.cdev);
 	device_destroy(gsc_class, s->cdn.devt);
-
-	return 0;
 }
 
 static const struct of_device_id gsa_gsc_of_match[] = {

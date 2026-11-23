@@ -53,6 +53,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pdump_km.h"
 #include "ra.h"
 #include "allocmem.h"
+#include "ospvr_gputrace.h"
 #include "pvrsrv.h"
 #include "srvcore.h"
 #include "services_km.h"
@@ -76,7 +77,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "di_impl_brg.h"
 #include "htb_debug.h"
 #include "dma_km.h"
-#include "pmr.h"
 #include "vz_vmm_pvz.h"
 #include "log2.h"
 
@@ -2877,6 +2877,7 @@ Exit:
 		                                  RGXQueryPdumpPanicDisable, RGXSetPdumpPanicDisable,
 		                                  psDeviceNode,
 		                                  NULL);
+		PVRGpuTraceInitIfEnabled(psDeviceNode);
 	}
 #endif
 

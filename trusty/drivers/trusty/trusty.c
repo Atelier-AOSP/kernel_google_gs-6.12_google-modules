@@ -67,6 +67,7 @@ struct trusty_state {
 	void *ffa_rx;
 	u16 ffa_local_id;
 	u16 ffa_remote_id;
+	u32 ffa_version;
 	struct mutex share_memory_msg_lock; /* protects share_memory_msg */
 };
 
@@ -369,15 +370,15 @@ int trusty_transfer_memory(struct device *dev, u64 *id,
 	size_t len = 0;
 	u64 ffa_handle = 0;
 	size_t total_len;
-	size_t endpoint_count = 1;
-	struct ffa_mtd *mtd = s->ffa_tx;
-	size_t comp_mrd_offset = offsetof(struct ffa_mtd, emad[endpoint_count]);
-	struct ffa_comp_mrd *comp_mrd = s->ffa_tx + comp_mrd_offset;
-	struct ffa_cons_mrd *cons_mrd = comp_mrd->address_range_array;
-	size_t cons_mrd_offset = (void *)cons_mrd - s->ffa_tx;
 	struct smc_ret8 smc_ret;
 	u32 cookie_low;
 	u32 cookie_high;
+	size_t endpoint_count = 1;
+	void *mtd_buf = s->ffa_tx;
+	size_t comp_mrd_offset;
+	size_t mtd_size;
+	struct ffa_cons_mrd *cons_mrd;
+	size_t cons_mrd_offset;
 
 	if (WARN_ON(dev->driver != &trusty_driver.driver))
 		return -EINVAL;
@@ -419,23 +420,63 @@ int trusty_transfer_memory(struct device *dev, u64 *id,
 
 	mutex_lock(&s->share_memory_msg_lock);
 
-	mtd->sender_id = s->ffa_local_id;
-	mtd->memory_region_attributes = pg_inf.ffa_mem_attr;
-	mtd->reserved_3 = 0;
-	mtd->flags = 0;
-	mtd->handle = 0;
-	mtd->tag = tag;
-	mtd->reserved_24_27 = 0;
-	mtd->emad_count = endpoint_count;
-	for (i = 0; i < endpoint_count; i++) {
-		struct ffa_emad *emad = &mtd->emad[i];
-		/* TODO: support stream ids */
-		emad->mapd.endpoint_id = s->ffa_remote_id;
-		emad->mapd.memory_access_permissions = pg_inf.ffa_mem_perm;
-		emad->mapd.flags = 0;
-		emad->comp_mrd_offset = comp_mrd_offset;
-		emad->reserved_8_15 = 0;
+	if (s->ffa_version < FFA_VERSION(1, 1)) {
+		struct ffa_mtd_v1_0 *mtd = mtd_buf;
+
+		mtd_size = sizeof(*mtd);
+		comp_mrd_offset = offsetof(struct ffa_mtd_v1_0, emad[endpoint_count]);
+
+		mtd->sender_id = s->ffa_local_id;
+		mtd->memory_region_attributes = pg_inf.ffa_mem_attr;
+		mtd->reserved_3 = 0;
+		mtd->flags = 0;
+		mtd->handle = 0;
+		mtd->tag = tag;
+		mtd->reserved_24_27 = 0;
+		mtd->emad_count = endpoint_count;
+		for (i = 0; i < endpoint_count; i++) {
+			struct ffa_emad *emad = &mtd->emad[i];
+			/* TODO: support stream ids */
+			emad->mapd.endpoint_id = s->ffa_remote_id;
+			emad->mapd.memory_access_permissions = pg_inf.ffa_mem_perm;
+			emad->mapd.flags = 0;
+			emad->comp_mrd_offset = comp_mrd_offset;
+			emad->reserved_8_15 = 0;
+		}
+	} else {
+		struct ffa_mtd_v1_1 *mtd = mtd_buf;
+
+		mtd_size = sizeof(*mtd);
+
+		mtd->sender_id = s->ffa_local_id;
+		mtd->memory_region_attributes = pg_inf.ffa_mem_attr;
+		mtd->flags = 0;
+		mtd->handle = 0;
+		mtd->tag = tag;
+		mtd->emad_count = endpoint_count;
+		mtd->emad_size = sizeof(struct ffa_emad);
+		mtd->emad_offset = mtd_size;
+		mtd->reserved_36_39 = 0;
+		mtd->reserved_40_47 = 0;
+
+		comp_mrd_offset = mtd->emad_offset + mtd->emad_size * mtd->emad_count;
+
+		for (i = 0; i < endpoint_count; i++) {
+			struct ffa_emad *emad = mtd_buf + mtd->emad_offset + i * mtd->emad_size;
+			/* TODO: support stream ids */
+			emad->mapd.endpoint_id = s->ffa_remote_id;
+			emad->mapd.memory_access_permissions = pg_inf.ffa_mem_perm;
+			emad->mapd.flags = 0;
+			emad->comp_mrd_offset = comp_mrd_offset;
+			emad->reserved_8_15 = 0;
+		}
 	}
+
+	struct ffa_comp_mrd *comp_mrd = s->ffa_tx + comp_mrd_offset;
+
+	cons_mrd = comp_mrd->address_range_array;
+	cons_mrd_offset = (void *)cons_mrd - s->ffa_tx;
+
 	comp_mrd->total_page_count = len / FFA_PAGE_SIZE;
 	comp_mrd->address_range_count = nents;
 	comp_mrd->reserved_8_15 = 0;
@@ -688,6 +729,7 @@ static int trusty_init_msg_buf(struct trusty_state *s, struct device *dev)
 		ret = -EIO;
 		goto err_version;
 	}
+	s->ffa_version = min(FFA_CURRENT_VERSION, (u32)smc_ret.r0);
 
 	/* Check that SMC_FC_FFA_MEM_SHARE is implemented */
 	smc_ret = trusty_smc8(SMC_FC_FFA_FEATURES, SMC_FC_FFA_MEM_SHARE, 0, 0,
@@ -1249,14 +1291,14 @@ err_allocate_state:
 	return ret;
 }
 
-static int trusty_remove(struct platform_device *pdev)
+static void trusty_remove(struct platform_device *pdev)
 {
 	unsigned int cpu;
 	struct trusty_state *s = platform_get_drvdata(pdev);
 
 	trusty_unregister_sched_share(s->trusty_sched_share_state);
 
-	device_for_each_child(&pdev->dev, NULL, trusty_remove_child);
+	of_platform_depopulate(&pdev->dev);
 
 	cpuhp_state_remove_instance(trusty_cpuhp_slot, &s->cpuhp_node);
 
@@ -1275,7 +1317,6 @@ static int trusty_remove(struct platform_device *pdev)
 	s->dev->dma_parms = NULL;
 	kfree(s->version_str);
 	kfree(s);
-	return 0;
 }
 
 static const struct of_device_id trusty_of_match[] = {

@@ -28,8 +28,6 @@ struct dwc3_otg {
 	struct dwc3_exynos      *exynos;
 	struct wakeup_source	*wakelock;
 
-	bool			host_on;
-	bool			device_on;
 	enum usb_role		current_role;
 	/* New data role that is updated before the data role change is executed */
 	enum usb_role		desired_role;
@@ -60,11 +58,9 @@ void dwc3_exynos_otg_exit(struct dwc3 *dwc, struct dwc3_exynos *exynos);
 bool dwc3_otg_check_usb_suspend(struct dwc3_exynos *exynos);
 int dwc3_otg_start_host(struct dwc3_otg *dotg, int on);
 int dwc3_otg_start_gadget(struct dwc3_otg *dotg, int on);
+void dwc3_otg_gadget_handler(struct usb_gadget *gadget, bool status);
 enum usb_role dwc3_exynos_wait_role(struct dwc3_otg *dotg);
-void dwc3_exynos_set_role(struct dwc3_otg *dotg);
-
-extern void __iomem *phycon_base_addr;
-extern int exynos_usbdrd_pipe3_enable(struct phy *phy);
-extern int exynos_usbdrd_pipe3_disable(struct phy *phy);
+int dwc3_exynos_role_switch_set(struct usb_role_switch *sw, enum usb_role role);
+int usb_power_notify_control(int on);
 
 #endif /* __LINUX_USB_DWC3_OTG_H */

@@ -229,13 +229,11 @@ qdf_sysctl_decl(ath_sysctl_pktlog_enable, ctl, write, filp, buffer, lenp, ppos)
 		return -ENODEV;
 	}
 
-	ctl->data = &enable;
-	ctl->maxlen = sizeof(enable);
-
 	if (write) {
 		ret = QDF_SYSCTL_PROC_DOINTVEC(ctl, write, filp, buffer,
 					       lenp, ppos);
 		if (ret == 0) {
+			enable = *((int *)ctl->data);
 			ret = pl_dev->pl_funcs->pktlog_enable(
 					(struct hif_opaque_softc *)scn, enable,
 					cds_is_packet_log_enabled(), 0, 1);
@@ -253,8 +251,6 @@ qdf_sysctl_decl(ath_sysctl_pktlog_enable, ctl, write, filp, buffer, lenp, ppos)
 				   __LINE__, __func__, ret);
 	}
 
-	ctl->data = NULL;
-	ctl->maxlen = 0;
 	mutex_unlock(&proc_mutex);
 
 	return ret;
@@ -292,23 +288,20 @@ qdf_sysctl_decl(ath_sysctl_pktlog_size, ctl, write, filp, buffer, lenp, ppos)
 		return -ENODEV;
 	}
 
-	ctl->data = &size;
-	ctl->maxlen = sizeof(size);
-
 	if (write) {
 		ret = QDF_SYSCTL_PROC_DOINTVEC(ctl, write, filp, buffer,
 					       lenp, ppos);
-		if (ret == 0)
+		if (ret == 0) {
+			size = *((int *)ctl->data);
 			ret = pl_dev->pl_funcs->pktlog_setsize(
 					(struct hif_opaque_softc *)scn, size);
+		}
 	} else {
 		size = get_pktlog_bufsize(pl_dev);
 		ret = QDF_SYSCTL_PROC_DOINTVEC(ctl, write, filp, buffer,
 					       lenp, ppos);
 	}
 
-	ctl->data = NULL;
-	ctl->maxlen = 0;
 	mutex_unlock(&proc_mutex);
 
 	return ret;
@@ -341,11 +334,15 @@ static int pktlog_sysctl_register(struct hif_opaque_softc *scn)
 	pl_info_lnx->sysctls[0].mode = PKTLOG_PROCSYS_PERM;
 	pl_info_lnx->sysctls[0].proc_handler = ath_sysctl_pktlog_enable;
 	pl_info_lnx->sysctls[0].extra1 = scn;
+	pl_info_lnx->sysctls[1].data = &pl_info_lnx->enable;
+	pl_info_lnx->sysctls[1].maxlen = sizeof(pl_info_lnx->enable);
 
 	pl_info_lnx->sysctls[1].procname = "size";
 	pl_info_lnx->sysctls[1].mode = PKTLOG_PROCSYS_PERM;
 	pl_info_lnx->sysctls[1].proc_handler = ath_sysctl_pktlog_size;
 	pl_info_lnx->sysctls[1].extra1 = scn;
+	pl_info_lnx->sysctls[1].data = &pl_info_lnx->size;
+	pl_info_lnx->sysctls[1].maxlen = sizeof(pl_info_lnx->size);
 
 	pl_info_lnx->sysctls[2].procname = "options";
 	pl_info_lnx->sysctls[2].mode = PKTLOG_PROCSYS_PERM;

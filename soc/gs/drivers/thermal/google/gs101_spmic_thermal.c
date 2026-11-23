@@ -266,26 +266,19 @@ static int gs101_spmic_thermal_set_hot_trip(struct gs101_spmic_thermal_sensor *s
  * programmed as shutdown threshold.
  */
 static int gs101_spmic_thermal_set_trip_temp(struct thermal_zone_device *tz,
-					     int trip_id, int temp)
+					     const struct thermal_trip *trip,
+					     int temp)
 {
 	struct gs101_spmic_thermal_sensor *s = thermal_zone_device_priv(tz);
-	struct thermal_trip trip;
-	int ret = 0;
 
 	if (!s->chip->sensors_ready)
 		return -EAGAIN;
 
-	ret = __thermal_zone_get_trip(s->tzd, trip_id, &trip);
-	if (ret)
-		return -EINVAL;
-
-	if (trip.type != THERMAL_TRIP_HOT)
+	if (trip->type != THERMAL_TRIP_HOT)
 		return 0;
 
 	/* Use THERMAL_TRIP_HOT for HW thermal shutdown */
-	ret = gs101_spmic_thermal_set_hot_trip(s, temp);
-
-	return ret;
+	return gs101_spmic_thermal_set_hot_trip(s, temp);
 }
 
 /*
@@ -350,23 +343,28 @@ static ssize_t channel_temp_show(struct kobject *kobj,
 
 static struct kobj_attribute channel_temp_attr = __ATTR_RO(channel_temp);
 
+static int gs101_spmic_thermal_get_hot_temp_walk_cb(struct thermal_trip *trip,
+						    void *data)
+{
+	const struct thermal_trip **found_trip = data;
+
+	if (trip->type != THERMAL_TRIP_HOT)
+		return 0;
+
+	*found_trip = trip;
+	/* return nonzero to terminate the search */
+	return 1;
+}
+
 static int gs101_spmic_thermal_get_hot_temp(struct thermal_zone_device *tzd)
 {
-	int ntrips;
-	struct thermal_trip trip;
-	int i;
+	const struct thermal_trip *found_trip = NULL;
 
-	ntrips = thermal_zone_get_num_trips(tzd);
-	if (ntrips <= 0)
-		return THERMAL_TEMP_INVALID;
+	thermal_zone_for_each_trip(tzd,
+				   gs101_spmic_thermal_get_hot_temp_walk_cb,
+				   &found_trip);
 
-	for (i = 0; i < ntrips; i++) {
-		if (!thermal_zone_get_trip(tzd, i, &trip)
-		    && trip.type == THERMAL_TRIP_HOT)
-			return trip.temperature;
-	}
-
-	return THERMAL_TEMP_INVALID;
+	return found_trip ? found_trip->temperature : THERMAL_TEMP_INVALID;
 }
 
 /*
@@ -773,7 +771,7 @@ fail:
 	return ret;
 }
 
-static int gs101_spmic_thermal_remove(struct platform_device *pdev)
+static void gs101_spmic_thermal_remove(struct platform_device *pdev)
 {
 	int i;
 	u8 __maybe_unused mask = 0x01;
@@ -791,8 +789,6 @@ static int gs101_spmic_thermal_remove(struct platform_device *pdev)
 	}
 	gs101_spmic_thermal_unregister_tzd(chip);
 	gs101_spmic_set_enable(chip, false);
-
-	return 0;
 }
 
 static const struct platform_device_id gs101_spmic_thermal_id_table[] = {

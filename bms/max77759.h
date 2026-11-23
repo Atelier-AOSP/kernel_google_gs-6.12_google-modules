@@ -102,6 +102,7 @@ struct max77759_foreach_cb_data {
 	int chgr_on;	/* CC_MAX != 0 */
 	bool stby_on;	/* on disconnect, mode=0 */
 	bool charge_done;
+	bool charge_off;
 
 	int chgin_off;	/* input_suspend, mode=0 */
 	int wlcin_off;	/* input_suspend, mode=0 */
@@ -115,6 +116,8 @@ struct max77759_foreach_cb_data {
 
 	bool wlc_rx;	/* charging wireless */
 	bool wlc_tx;	/* battery share */
+
+	bool defender_enabled;
 
 	bool dc_on;	/* DC requested - wired or wireless */
 
@@ -131,23 +134,5 @@ struct max77759_foreach_cb_data {
 
 	struct gvotable_election *dc_avail_votable;	/* DC_AVAIL */
 };
-
-/* internal system values */
-enum {
-	/* Charging disabled (go to mode 0) */
-	GBMS_CHGR_MODE_STBY_ON		= 0x10 + MAX77759_CHGR_MODE_ALL_OFF,
-	/* USB inflow off */
-	GBMS_CHGR_MODE_CHGIN_OFF	= 0x11 + MAX77759_CHGR_MODE_ALL_OFF,
-	/* WCIN inflow off */
-	GBMS_CHGR_MODE_WLCIN_OFF	= 0x12 + MAX77759_CHGR_MODE_ALL_OFF,
-	/* USB + WLC_RX mode */
-	GBMS_CHGR_MODE_USB_WLC_RX	= 0x13 + MAX77759_CHGR_MODE_ALL_OFF,
-
-	/* charging enabled (charging current != 0) */
-	GBMS_CHGR_MODE_CHGR_BUCK_ON	= 0x10 + MAX77759_CHGR_MODE_CHGR_BUCK_ON,
-	/* Compat: old for programmging */
-	GBMS_CHGR_MODE_BOOST_UNO_ON	= 0x10 + MAX77759_CHGR_MODE_BOOST_UNO_ON,
-};
-
 
 #endif

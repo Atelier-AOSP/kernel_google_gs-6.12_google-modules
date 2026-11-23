@@ -93,12 +93,12 @@ int open_channel(void *clt)
 {
 	client = clt;
 #ifndef I2C_INTERFACE
-	pr_info("%s: spi_master: flags = %04X !\n", __func__,
-		 ((struct spi_device *)client)->master->flags);
+	pr_info("%s: spi_controller: flags = %04X !\n", __func__,
+		 ((struct spi_device *)client)->controller->flags);
 	pr_info("%s: spi_device: max_speed = %d chip select = %02X bits_per_words = %d mode = %04X!\n",
 		__func__,
 		 ((struct spi_device *)client)->max_speed_hz,
-		 ((struct spi_device *)client)->chip_select,
+		 spi_get_chipselect(((struct spi_device *)client), 0),
 		 ((struct spi_device *)client)->bits_per_word,
 		 ((struct spi_device *)client)->mode);
 	pr_info("%s: openChannel: completed!\n", __func__);
@@ -596,8 +596,9 @@ int poll_for_event(int *event_to_search, int event_bytes, u8 *read_data,
 		/* Log of errors */
 		if (read_data[0] == EVT_ID_ERROR) {
 			pr_info("%s: %s", __func__,
-			print_hex("ERROR EVENT = ", read_data,
-				read_length, temp));
+				print_hex("ERROR EVENT = ",
+					  read_data, read_length,
+					  temp, sizeof(temp)));
 			switch (read_data[1]) {
 			case EVT_TYPE_ERROR_ITO_FORCETOGND:
 				printk("{ITO:Force Short to GND Error}\n");
@@ -641,9 +642,10 @@ int poll_for_event(int *event_to_search, int event_bytes, u8 *read_data,
 			count_err++;
 		} else {
 			if (read_data[0] != EVT_ID_NOEVENT) {
-				pr_info("%s: %s\n",
-				__func__, print_hex("READ EVENT = ",
-				read_data, read_length, temp));
+				pr_info("%s: %s\n", __func__,
+					print_hex("READ EVENT = ",
+						  read_data, read_length,
+						  temp, sizeof(temp)));
 				memset(temp, 0, 128);
 			}
 			if (read_data[0] == EVT_ID_CONTROLLER_READY &&
@@ -671,7 +673,8 @@ int poll_for_event(int *event_to_search, int event_bytes, u8 *read_data,
 	} else if (find == 1) {
 		pr_info("%s: %s\n", __func__,
 			print_hex("FOUND EVENT = ",
-			read_data, read_length, temp));
+				  read_data, read_length,
+				  temp, sizeof(temp)));
 		memset(temp, 0, 128);
 		/* kfree(temp); */
 		pr_debug("%s: Event found in (%d iterations)! Number of errors found = %d\n",
@@ -690,19 +693,29 @@ int poll_for_event(int *event_to_search, int event_bytes, u8 *read_data,
   * @param  buff data pointer of bytes to print in hex format
   * @param count variable for data size
   * @param result data pointer to print the combined message
+  * @param result_sz size of the combined message buffer result
   */
 
-char *print_hex(char *label, u8 *buff, int count, u8 *result)
+char *print_hex(const char *label, const u8 *buff, int count, u8 *result,
+		size_t result_sz)
 {
-	int i, offset;
+	int i;
+	ssize_t offset;
 
-	offset = strlen(label);
-	strlcpy(result, label, offset + 1); /* +1 for terminator char */
+	offset = strscpy(result, label, result_sz);
+	if (offset == -E2BIG)
+		return result;
 
+	result_sz -= (size_t) offset;
 	for (i = 0; i < count; i++) {
-		snprintf(&result[offset], 4, "%02X ", buff[i]);
 		/* this append automatically a null terminator char */
-		offset += 3;
+		int n = snprintf(&result[offset], result_sz,
+				 "%02X ", buff[i]);
+		if (n < 0 || n >= result_sz)
+			/* error or truncated */
+			return result;
+		offset += n;
+		result_sz -= (unsigned int) n;
 	}
 	return result;
 }
@@ -2248,7 +2261,7 @@ goto_end:
 
 }
 
-int fts_validate_hdm_frame_data(struct frame_data *frame_data)
+static int fts_validate_hdm_frame_data(struct frame_data *frame_data)
 {
 	u8 *data = NULL;
 	u8 sum = 0;

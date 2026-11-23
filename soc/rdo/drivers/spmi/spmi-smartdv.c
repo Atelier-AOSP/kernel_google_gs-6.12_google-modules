@@ -696,7 +696,6 @@ static int smartdv_spmi_cmd(struct spmi_controller *ctrl, u8 opcode, u8 sid)
 #define SPMI_DEBUG_ATTRIBUTE(name, fn_read, fn_write) \
 static const struct file_operations name = {    \
 	.open   = simple_open,                  \
-	.llseek = no_llseek,                    \
 	.read   = fn_read,                      \
 	.write  = fn_write,                     \
 }
@@ -1081,7 +1080,7 @@ out:
 	return ret;
 }
 
-static int smartdv_spmi_remove(struct platform_device *pdev)
+static void smartdv_spmi_remove(struct platform_device *pdev)
 {
 	struct smartdv_spmi *sdrv = platform_get_drvdata(pdev);
 	struct spmi_controller *ctrl = sdrv->ctrl;
@@ -1091,13 +1090,11 @@ static int smartdv_spmi_remove(struct platform_device *pdev)
 	spmi_controller_remove(ctrl);
 
 	spmi_controller_put(ctrl);
-
-	return 0;
 }
 
 
 static const struct smartdv_spmi_pdata google_smartdv_spmi_pdata = {
-	.flags = (FLAG_HW_ARBITRATION | FLAG_DEVICE_GOOGLE)
+	.flags = (FLAG_DEVICE_GOOGLE)
 };
 
 static const struct of_device_id smartdv_spmi_of_match[] = {

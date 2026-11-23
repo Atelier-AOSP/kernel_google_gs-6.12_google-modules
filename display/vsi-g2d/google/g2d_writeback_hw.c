@@ -4,7 +4,7 @@
  */
 #include <linux/types.h>
 
-#include "vs_g2d_reg_sc.h"
+#include "g2d_registers.h"
 #include "g2d_sc_hw.h"
 #include "g2d_writeback_hw.h"
 #include "g2d_pvric_hw.h"

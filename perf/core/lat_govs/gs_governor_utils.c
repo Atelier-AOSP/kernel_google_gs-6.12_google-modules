@@ -12,7 +12,6 @@
 #include <linux/errno.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <perf/core/gs_perf_mon.h>
 
 #include "gs_governor_utils.h"
 
@@ -147,6 +146,18 @@ int populate_cluster_config(struct device *dev, struct device_node *cluster_node
 	if (ret) {
 		dev_err(dev, "stall_floor unspecified.\n");
 		return -EINVAL;
+	}
+
+	/*
+	 * While 16ms is appropriate for HZ=250 (providing a 2x buffer for the 8ms
+	 * update interval), we read this value from the Device Tree here using
+	 * of_property_read_u32 to allow per-platform tuning. This makes the
+	 * governor more resilient to changes in kernel HZ or performance
+	 * monitor configuration.
+	 */
+	if (of_property_read_u32(cluster_node, "stale_threshold_ms", &cluster->stale_threshold_ms)) {
+		dev_dbg(dev, "stale_threshold_ms unspecified. Defaulting to 16ms.\n");
+		cluster->stale_threshold_ms = 16;
 	}
 
 	/*

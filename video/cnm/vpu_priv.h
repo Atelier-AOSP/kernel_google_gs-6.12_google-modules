@@ -16,9 +16,15 @@
 #include <linux/kfifo.h>
 #include <linux/platform_device.h>
 #include <linux/platform_data/sscoredump.h>
+#include <linux/reset.h>
+
+#if IS_ENABLED(CONFIG_VPU_ICC)
 #include <interconnect/google_icc_helper.h>
+#endif
+
 #include "uapi/linux/vpu.h"
 
+#include "wave6_regdefine.h"
 #include "vpu_debugfs.h"
 #include "vpu_secure.h"
 
@@ -38,8 +44,8 @@ struct vpu_slc_manager {
 };
 
 struct vpu_icc_path {
-	struct google_icc_path *path_gmc;
-	struct google_icc_path *path_gslc;
+	struct google_icc_path *path_vpu;
+	struct google_icc_path *path_c3p;
 };
 
 struct vpu_dmabuf_info {
@@ -79,10 +85,8 @@ enum vpu_power_status {
 };
 
 struct vpu_restore_regs {
-	u32 debug_option;
-	u32 debug_wr_ptr;
-	u32 debug_base;
-	u32 debug_size;
+	u32 cmd_regs[W6_CMD_REG_COUNT];
+	u32 vint_enable;
 };
 
 struct vpu_core {
@@ -92,6 +96,7 @@ struct vpu_core {
 	struct device *dev;
 	struct device *pd_dev;
 	dev_t devno;
+	const char *fw_name;
 	int irq;
 	struct vpu_devfreq dev_freq;
 	struct vpu_icc_path icc_path;
@@ -99,7 +104,8 @@ struct vpu_core {
 	phys_addr_t paddr;
 	void __iomem *base;
 	void __iomem *qch_base;
-	struct wakeup_source *wakelock;
+	unsigned int qchctl_active_mask_0_offset;
+	void __iomem *lpcm_base;
 	struct wakeup_source *init_wakelock;
 	struct mutex lock;
 	int inst_count;
@@ -121,6 +127,7 @@ struct vpu_core {
 	struct platform_device sscd_pdev;
 	struct sscd_platform_data vpu_core_sscd_platdata;
 	struct vpu_restore_regs restore_regs;
+	struct reset_control *vpu_reset;
 };
 
 struct vpu_inst {

@@ -73,7 +73,7 @@ static void _DumpDebugDataWrapper(void *pvPriv, const IMG_CHAR *pFmt, ...)
 	va_end(vaArgs);
 }
 
-void get_debug_data(struct pixel_gpu_device *pixel_dev, struct sscd_segment *seg)
+static void get_debug_data(struct pixel_gpu_device *pixel_dev, struct sscd_segment *seg)
 {
 	PVRSRV_DEVICE_NODE *psDeviceNode = pixel_dev->dev_config->psDevNode;
 

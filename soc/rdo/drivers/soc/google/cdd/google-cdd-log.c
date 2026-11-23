@@ -40,28 +40,35 @@ static char cdd_freq_name[CDD_DOMAIN_NUM][CDD_FREQ_MAX_NAME_SIZE];
 static unsigned int cdd_freq_size;
 
 #define cdd_get_log(item)						\
+static __maybe_unused							\
 long cdd_get_len_##item##_log(void) {					\
 	return ARRAY_SIZE(cdd_log->item);				\
 }									\
+static __maybe_unused							\
 long cdd_get_last_##item##_log_idx(void) {				\
 	return (atomic_read(&cdd_log_misc.item##_log_idx) - 1) &	\
 			(cdd_get_len_##item##_log() - 1);		\
 }									\
+static __maybe_unused							\
 long cdd_get_first_##item##_log_idx(void) {				\
 	return atomic_read(&cdd_log_misc.item##_log_idx) &		\
 			(cdd_get_len_##item##_log() - 1);		\
 }									\
+static __maybe_unused							\
 struct item##_log *cdd_get_last_##item##_log(void) {			\
 	return &cdd_log->item[cdd_get_last_##item##_log_idx()];		\
 }									\
+static __maybe_unused							\
 struct item##_log *cdd_get_first_##item##_log(void) {			\
 	return &cdd_log->item[cdd_get_first_##item##_log_idx()];	\
 }									\
+static __maybe_unused							\
 struct item##_log *cdd_get_##item##_log_by_idx(int idx) {		\
 	if (idx < 0 || idx >= cdd_get_len_##item##_log())		\
 		return NULL;						\
 	return &cdd_log->item[idx];					\
 }									\
+static __maybe_unused							\
 struct item##_log *cdd_get_##item##_log_iter(int idx) {			\
 	if (idx < 0)							\
 		idx = cdd_get_len_##item##_log() - abs(idx);		\
@@ -69,41 +76,49 @@ struct item##_log *cdd_get_##item##_log_iter(int idx) {			\
 		idx -= cdd_get_len_##item##_log();			\
 	return &cdd_log->item[idx];					\
 }									\
+static __maybe_unused							\
 unsigned long cdd_get_vaddr_##item##_log(void) {			\
 	return (unsigned long)cdd_log->item;				\
 }									\
 
 #define cdd_get_log_by_cpu(item)					\
+static __maybe_unused							\
 long cdd_get_len_##item##_log(void) {					\
 	return ARRAY_SIZE(cdd_log->item);				\
 }									\
+static __maybe_unused							\
 long cdd_get_len_##item##_log_by_cpu(int cpu) {				\
 	if (cpu < 0 || cpu >= cdd_get_len_##item##_log())		\
 		return -EINVAL;						\
 	return ARRAY_SIZE(cdd_log->item[cpu]);				\
 }									\
+static __maybe_unused							\
 long cdd_get_last_##item##_log_idx(int cpu) {				\
 	if (cpu < 0 || cpu >= cdd_get_len_##item##_log())		\
 		return -EINVAL;						\
 	return (atomic_read(&cdd_log_misc.item##_log_idx[cpu]) - 1) &	\
 			(cdd_get_len_##item##_log_by_cpu(cpu) - 1);	\
 }									\
+static __maybe_unused							\
 long cdd_get_first_##item##_log_idx(int cpu) {				\
 	if (cpu < 0 || cpu >= cdd_get_len_##item##_log())		\
 		return -EINVAL;						\
 	return atomic_read(&cdd_log_misc.item##_log_idx[cpu]) &		\
 			(cdd_get_len_##item##_log_by_cpu(cpu) - 1);	\
 }									\
+static __maybe_unused							\
 struct item##_log *cdd_get_last_##item##_log(int cpu) {			\
 	if (cpu < 0 || cpu >= cdd_get_len_##item##_log())		\
 		return NULL;						\
 	return &cdd_log->item[cpu][cdd_get_last_##item##_log_idx(cpu)];	\
 }									\
+static __maybe_unused							\
 struct item##_log *cdd_get_first_##item##_log(int cpu) {		\
 	if (cpu < 0 || cpu >= cdd_get_len_##item##_log())		\
 		return NULL;						\
 	return &cdd_log->item[cpu][cdd_get_first_##item##_log_idx(cpu)];\
 }									\
+static __maybe_unused							\
 struct item##_log *cdd_get_##item##_log_by_idx(int cpu, int idx) {	\
 	if (cpu < 0 || cpu >= cdd_get_len_##item##_log())		\
 		return NULL;						\
@@ -111,6 +126,7 @@ struct item##_log *cdd_get_##item##_log_by_idx(int cpu, int idx) {	\
 		return NULL;						\
 	return &cdd_log->item[cpu][idx];				\
 }									\
+static __maybe_unused							\
 struct item##_log *cdd_get_##item##_log_by_cpu_iter(int cpu, int idx) {	\
 	if (cpu < 0 || cpu >= cdd_get_len_##item##_log())		\
 		return NULL;						\
@@ -120,6 +136,7 @@ struct item##_log *cdd_get_##item##_log_by_cpu_iter(int cpu, int idx) {	\
 		idx -= cdd_get_len_##item##_log_by_cpu(cpu);		\
 	return &cdd_log->item[cpu][idx];				\
 }									\
+static __maybe_unused							\
 unsigned long cdd_get_vaddr_##item##_log_by_cpu(int cpu) {		\
 	if (cpu < 0 || cpu >= cdd_get_len_##item##_log())		\
 		return 0;						\
@@ -168,24 +185,6 @@ void google_cdd_log_output(void)
 	}
 }
 
-void google_cdd_set_enable_log_item(const char *name, int en)
-{
-	struct google_cdd_log_item *log_item;
-	int i;
-
-	if (!name)
-		return;
-
-	for (i = 0; i < ARRAY_SIZE(cdd_log_items); i++) {
-		log_item = &cdd_log_items[i];
-		if (log_item->name && !strcmp(name, log_item->name)) {
-			log_item->entry.enabled = en;
-			pr_info("log item - %s is %sabled\n", name, en ? "en" : "dis");
-			break;
-		}
-	}
-}
-
 static void google_cdd_task(int cpu, struct task_struct *v_task)
 {
 	unsigned long i;
@@ -207,7 +206,7 @@ static void google_cdd_sched_switch(void *ignore, bool preempt, struct task_stru
 	google_cdd_task(raw_smp_processor_id(), next);
 }
 
-void google_cdd_work(work_func_t fn, int en)
+static void google_cdd_work(work_func_t fn, int en)
 {
 	int cpu = raw_smp_processor_id();
 	unsigned long i;
@@ -231,9 +230,9 @@ static void google_cdd_wq_end(void *ignore, struct work_struct *work, work_func_
 	google_cdd_work(func, CDD_FLAG_OUT);
 }
 
-void google_cdd_cpuidle_mod(char *modes, unsigned int state, s64 diff, int en)
+void google_cdd_cpuidle_mod_by_id(int cpu, char *modes, unsigned int state, s64
+				  diff, int en)
 {
-	int cpu = raw_smp_processor_id();
 	unsigned int i;
 
 	if (!cdd_log)
@@ -251,9 +250,9 @@ void google_cdd_cpuidle_mod(char *modes, unsigned int state, s64 diff, int en)
 	cdd_log->cpuidle[cpu][i].delta = (int)diff;
 	cdd_log->cpuidle[cpu][i].en = en;
 }
-EXPORT_SYMBOL_GPL(google_cdd_cpuidle_mod);
+EXPORT_SYMBOL_GPL(google_cdd_cpuidle_mod_by_id);
 
-void google_cdd_irq(int irq, void *fn, int en)
+static void google_cdd_irq(int irq, void *fn, int en)
 {
 	unsigned long flags, i;
 	int cpu = raw_smp_processor_id();
@@ -284,7 +283,22 @@ static void google_cdd_irq_exit(void *ignore, int irq, struct irqaction *action,
 void google_cdd_freq(enum cdd_log_freq_domain domain, unsigned int *old_freq,
 		     unsigned int *target_freq)
 {
+	if (domain >= CDD_DOMAIN_NUM) {
+		pr_err("Invalid cdd log freq domain(%u)\n", domain);
+		return;
+	}
+
+	google_cdd_freq_by_name(cdd_freq_name[domain], old_freq, target_freq);
+}
+EXPORT_SYMBOL_GPL(google_cdd_freq);
+
+void google_cdd_freq_by_name(const char *name, unsigned int *old_freq,
+		     unsigned int *target_freq)
+{
 	unsigned long i;
+
+	if (!name)
+		return;
 
 	if (!cdd_log)
 		return;
@@ -293,18 +307,17 @@ void google_cdd_freq(enum cdd_log_freq_domain domain, unsigned int *old_freq,
 		return;
 
 	i = atomic_read(&cdd_log_misc.freq_log_idx);
-	if (domain >= CDD_DOMAIN_NUM || i >= CDD_DOMAIN_NUM) {
-		pr_err("Invalid cdd log freq domain(%u) or index(%lu)\n", domain, i);
+	if (i >= CDD_DOMAIN_NUM) {
+		pr_err("Invalid cdd log index(%lu)\n", i);
 		return;
 	}
-
 	i = atomic_fetch_inc(&cdd_log_misc.freq_log_idx);
 
-	cdd_log->freq[i].freq_name = cdd_freq_name[domain];
+	cdd_log->freq[i].freq_name = name;
 	cdd_log->freq[i].old_freq = old_freq;
 	cdd_log->freq[i].target_freq = target_freq;
 }
-EXPORT_SYMBOL_GPL(google_cdd_freq);
+EXPORT_SYMBOL_GPL(google_cdd_freq_by_name);
 
 static inline void google_cdd_get_sec(unsigned long long ts, unsigned long *sec,
 				      unsigned long *msec)
@@ -495,7 +508,7 @@ static void google_cdd_print_irq(void)
 		desc = irq_data_to_desc(data);
 
 		for_each_possible_cpu(cpu)
-			irq_stat += *per_cpu_ptr(desc->kstat_irqs, cpu);
+			irq_stat += per_cpu(desc->kstat_irqs->cnt, cpu);
 
 		if (!irq_stat || irq_stat < irq_filter)
 			continue;
@@ -506,6 +519,41 @@ static void google_cdd_print_irq(void)
 			name = "???";
 		pr_info("irq-%-4d(hwirq-%-3d) : %8u %s\n",
 			i, (int)desc->irq_data.hwirq, irq_stat, name);
+	}
+}
+
+static void google_cdd_print_wdt_pet_time(void)
+{
+	void __iomem *header;
+	int i, src_idx;
+
+	header = google_cdd_get_header_vaddr();
+	if (!header)
+		return;
+
+	pr_info("\n<last wdt pet time>\n");
+	src_idx = __raw_readl(header + CDD_OFFSET_WDT_PET_TIME_IDX);
+	if (src_idx >= CDD_WDT_PET_TIME_STAT_NUM) {
+		pr_err("wdt pet time carveout is invalid\n");
+		return;
+	}
+
+	for (i = 0; i < CDD_WDT_PET_TIME_STAT_NUM; ++i) {
+		u64 mono_raw_ns, mono_raw_sec, gtc_ns, gtc_sec;
+
+		src_idx = (src_idx == CDD_WDT_PET_TIME_STAT_NUM - 1) ? 0 : src_idx + 1;
+		mono_raw_ns = __raw_readq(header + CDD_OFFSET_WDT_PET_TIME_STAT(src_idx));
+		gtc_ns = __raw_readq(header + CDD_OFFSET_WDT_PET_TIME_STAT(src_idx) +
+				     sizeof(mono_raw_ns));
+
+		mono_raw_sec = mono_raw_ns;
+		mono_raw_ns = do_div(mono_raw_sec, NSEC_PER_SEC);
+
+		gtc_sec = gtc_ns;
+		gtc_ns = do_div(gtc_sec, NSEC_PER_SEC);
+
+		pr_info("kernel: %llu.%09llu s, GTC: %llu.%09llu s\n",
+			mono_raw_sec, mono_raw_ns, gtc_sec, gtc_ns);
 	}
 }
 
@@ -521,6 +569,7 @@ void google_cdd_print_log_report(void)
 	google_cdd_print_lastinfo();
 	google_cdd_print_freqinfo();
 	google_cdd_print_irq();
+	google_cdd_print_wdt_pet_time();
 	pr_info("==========================================================\n");
 }
 
@@ -589,7 +638,7 @@ void google_cdd_start_log(struct device *dev)
 				 cdd_freq_size, ARRAY_SIZE(cdd_freq_name));
 			break;
 		}
-		strlcpy(cdd_freq_name[i], str, sizeof(cdd_freq_name[i]));
+		strscpy(cdd_freq_name[i], str, sizeof(cdd_freq_name[i]));
 		++i;
 	}
 

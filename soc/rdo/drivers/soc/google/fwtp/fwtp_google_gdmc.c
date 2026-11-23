@@ -17,6 +17,7 @@
 #include <soc/google/goog_mba_nq_xport.h>
 
 #include "fwtp.h"
+#include "fwtp_decode.h"
 #include "fwtp_protocol.h"
 
 /*******************************************************************************
@@ -38,6 +39,7 @@
  * @dma_base: Base address of DMA memory.
  * @dma_base_phys: Physical base address of DMA memory.
  * @debugfs_root: Root debugfs directory of device.
+ * @decoder: Tracepoint decoder instance for this device.
  */
 struct fwtp_google_gdmc_dev {
 	struct fwtp_dev base;
@@ -49,6 +51,7 @@ struct fwtp_google_gdmc_dev {
 	void *dma_base;
 	dma_addr_t dma_base_phys;
 	struct dentry *debugfs_root;
+	struct fwtp_decoder decoder;
 };
 
 /**
@@ -85,7 +88,29 @@ static fwtp_error_code_t fwtp_google_gdmc_send_message(struct fwtp_if *fwtp_if,
 						       u16 tx_msg_data_size,
 						       u16 *rx_msg_data_size);
 static int fwtp_google_gdmc_probe(struct platform_device *pdev);
-static int fwtp_google_gdmc_remove(struct platform_device *pdev);
+static void fwtp_google_gdmc_remove(struct platform_device *pdev);
+
+/*******************************************************************************
+ * GDMC tracepoint post-processing.
+ ******************************************************************************/
+
+static enum tracepoint_handle test_string_handler(const char *tp_string,
+						  u32 payload, u64 timestamp)
+{
+	pr_info("%s received: Timestamp: %llu, Payload: %u\n", tp_string,
+		timestamp, payload);
+	return CLIENT_TP_HANDLING_COMPLETE;
+}
+
+static struct client_tracepoint test_string_tp = {
+	.enabled = true,
+	.tp_string = "Test string",
+	.handler = test_string_handler,
+};
+
+static struct client_tracepoint *gdmc_tracepoints[] = {
+	&test_string_tp,
+};
 
 /*******************************************************************************
  * Firmware tracepoint interface functions.
@@ -264,11 +289,15 @@ static int google_gdmc_tracepoint_debugfs_write_tracepoint_subscribe(void *data,
 {
 	struct fwtp_google_gdmc_dev *fwtp_google_gdmc_dev = data;
 	struct fwtp_dev *fwtp_dev = &(fwtp_google_gdmc_dev->base);
+	bool enable = (val != 0);
 	fwtp_error_code_t err;
 
+	/* Enable or disable tracepoint decoding. */
+	fwtp_decoder_enable(&(fwtp_google_gdmc_dev->decoder), fwtp_dev, enable);
+
 	/* Subscribe or unsubscribe to GDMC tracepoints. */
-	err = fwtp_ipc_client_subscribe(&(fwtp_dev->fwtp_ipc_client), val != 0,
-					FWTP_GOOGLE_GDMC_NOTIFY_BYTE_COUNT);
+	err = fwtp_ipc_client_subscribe(&(fwtp_dev->fwtp_ipc_client), enable,
+					fwtp_dev->notify_byte_count);
 	if (err != kFwtpOk)
 		return -EIO;
 
@@ -347,10 +376,10 @@ static int fwtp_google_gdmc_probe(struct platform_device *pdev)
 	fwtp_google_gdmc_dev->registered_gdmc_host_cb = true;
 
 	/* Get DMA memory. */
-	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(36));
 	if (ret) {
 		dev_err(dev,
-			"Failed to set DMA mask to 32 bits with error %d.\n",
+			"Failed to set DMA mask to 36 bits with error %d.\n",
 			ret);
 		goto out;
 	}
@@ -405,6 +434,7 @@ static int fwtp_google_gdmc_probe(struct platform_device *pdev)
 	fwtp_dev->log_enabled = true;
 	fwtp_dev->ftrace_enabled = true;
 	fwtp_dev->root_debugfs = fwtp_google_gdmc_dev->debugfs_root;
+	fwtp_dev->notify_byte_count = FWTP_GOOGLE_GDMC_NOTIFY_BYTE_COUNT;
 	ret = fwtp_dev_init(fwtp_dev);
 	if (ret) {
 		dev_err(dev,
@@ -433,6 +463,17 @@ static int fwtp_google_gdmc_probe(struct platform_device *pdev)
 		goto out;
 	}
 
+	/* Initialize tracepoint decoder. */
+	ret = fwtp_decoder_init(&(fwtp_google_gdmc_dev->decoder),
+				gdmc_tracepoints, ARRAY_SIZE(gdmc_tracepoints));
+	if (ret) {
+		dev_err(dev,
+			"Failed to initialize tracepoint decoder with error %d.\n",
+			ret);
+		goto out;
+	}
+	fwtp_dev->decoder = &(fwtp_google_gdmc_dev->decoder);
+
 out:
 	/* Clean up. */
 	if (dma_reserved_mem_node)
@@ -450,7 +491,7 @@ out:
  *
  * @pdev: The platform device to remove.
  */
-static int fwtp_google_gdmc_remove(struct platform_device *pdev)
+static void fwtp_google_gdmc_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct fwtp_google_gdmc_dev *fwtp_google_gdmc_dev;
@@ -461,8 +502,13 @@ static int fwtp_google_gdmc_remove(struct platform_device *pdev)
 	 */
 	fwtp_google_gdmc_dev = platform_get_drvdata(pdev);
 	if (!fwtp_google_gdmc_dev)
-		return 0;
+		return;
 	platform_set_drvdata(pdev, NULL);
+
+	/* Disable the decoder. */
+	if (fwtp_google_gdmc_dev->base.decoder)
+		fwtp_decoder_enable(fwtp_google_gdmc_dev->base.decoder,
+				    &(fwtp_google_gdmc_dev->base), false);
 
 	debugfs_remove_recursive(fwtp_google_gdmc_dev->debugfs_root);
 
@@ -491,8 +537,6 @@ static int fwtp_google_gdmc_remove(struct platform_device *pdev)
 
 	/* Log removal. */
 	dev_dbg(dev, "Removed Google GDMC firmware tracepoint device.\n");
-
-	return 0;
 }
 
 /*******************************************************************************

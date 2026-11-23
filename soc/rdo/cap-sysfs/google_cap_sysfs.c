@@ -103,8 +103,8 @@ static ssize_t power_state_stats_show(struct device *dev, struct device_attribut
 			/* Add elapsed time for current power state. */
 			if (curr_time > 0) {
 				if (last_exit_end_ts < last_entry_end_ts &&
-						last_entry_end_ts < curr_time)
-					total_ticks += (curr_time - last_entry_end_ts);
+					last_entry_end_ts < curr_time)
+					total_ticks += curr_time - last_entry_end_ts;
 			}
 
 			count += sysfs_emit_at(buf, count,
@@ -452,7 +452,7 @@ aging_clc_sysfs_create_error:
 	return err;
 }
 
-static int google_cap_sysfs_remove(struct platform_device *pdev)
+static void google_cap_sysfs_remove(struct platform_device *pdev)
 {
 	struct dvfs_attribute *dvfs_attr_list_elem, *tmp;
 	struct aging_clc_attribute *aging_clc_attr_list_elem, *tmp3;
@@ -474,10 +474,7 @@ static int google_cap_sysfs_remove(struct platform_device *pdev)
 		devm_kfree(&pdev->dev, dvfs_attr_list_elem);
 	}
 
-	list_for_each_entry_safe(aging_clc_attr_list_elem, tmp3, &aging_clc_attr_list, list) {
-		list_del(&aging_clc_attr_list_elem->list);
-		devm_kfree(&pdev->dev, aging_clc_attr_list_elem);
-	}
+	device_remove_file(&pdev->dev, &dev_attr_power_state_stats);
 
 	list_for_each_entry_safe(aging_clc_attr_list_elem, tmp3, &aging_clc_attr_list, list) {
 		list_del(&aging_clc_attr_list_elem->list);
@@ -498,8 +495,6 @@ static int google_cap_sysfs_remove(struct platform_device *pdev)
 		list_del(&region->list);
 		devm_kfree(&pdev->dev, region);
 	}
-
-	return 0;
 }
 
 static int alloc_stats_buffers(struct device *dev, void **buf1, void **buf2,
@@ -607,14 +602,14 @@ static int parse_cap_statsbuf_metadata(struct device *dev, struct cap_statsbuf_m
 	struct stats_region *region;
 	int ret;
 
+	if (md->count == 0)
+		return 0;
+
 	if (md->stats_size != expected_size) {
 		dev_err(dev, "size mismatch detected. kernel struct size %lu, cap struct size %u\n",
 			expected_size, md->stats_size);
 		return -EINVAL;
 	}
-
-	if (md->count == 0)
-		return 0;
 
 	region = devm_kzalloc(dev, sizeof(struct stats_region), GFP_KERNEL);
 	if (!region)
@@ -746,6 +741,9 @@ static int google_cap_sysfs_probe(struct platform_device *pdev)
 	struct device_node *cap_statsbuf_node;
 	struct device_node *tfa_node;
 	int ret;
+
+	if (!dvfs_helper_ready())
+		return dev_err_probe(dev, -EPROBE_DEFER, "dvfs_helper not ready yet\n");
 
 	cap_sysfs = devm_kzalloc(dev, sizeof(*cap_sysfs), GFP_KERNEL);
 	if (!cap_sysfs)

@@ -186,6 +186,14 @@ static ssize_t memory_exception_show(struct device *dev,
 
 static DEVICE_ATTR_RO(memory_exception);
 
+static ssize_t dvfs_frequencies_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	return platform_specific_get_dvfs_freq(buf);
+}
+
+static DEVICE_ATTR_RO(dvfs_frequencies);
+
 static ssize_t memory_votes_stats(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
@@ -533,6 +541,19 @@ DECLARE_STAT("V_PF4", voltage_pf4);
 DECLARE_STAT("V_PF5", voltage_pf5);
 DECLARE_STAT("V_PF6", voltage_pf6);
 DECLARE_STAT("V_PF7", voltage_pf7);
+DECLARE_STAT("E4", e4);
+DECLARE_STAT("E3_E2", e3_or_e2);
+DECLARE_STAT("E1_1", e1p1);
+DECLARE_STAT("E1_0", e1p0_or_e0);
+DECLARE_STAT("SC-WFI", sc_wfi);
+DECLARE_STAT("SC-RET", sc_retention);
+DECLARE_STAT("SC-DWN", sc_down);
+DECLARE_STAT("DM-WFI", dm_wfi);
+DECLARE_STAT("DM-RET", dm_retention);
+DECLARE_STAT("DM-DWN", dm_down);
+DECLARE_STAT("NT-WFI", nt_wfi);
+DECLARE_STAT("NT-RET", nt_retention);
+DECLARE_STAT("NT-DWN", nt_down);
 
 static struct attribute *aoc_stats_attrs[] = {
 	&dev_attr_a32_build_info.attr,
@@ -589,6 +610,20 @@ static struct attribute *aoc_stats_attrs[] = {
 	&dev_attr_voltage_pf5.attr,
 	&dev_attr_voltage_pf6.attr,
 	&dev_attr_voltage_pf7.attr,
+	&dev_attr_e4.attr,
+	&dev_attr_e3_or_e2.attr,
+	&dev_attr_e1p1.attr,
+	&dev_attr_e1p0_or_e0.attr,
+	&dev_attr_sc_wfi.attr,
+	&dev_attr_sc_retention.attr,
+	&dev_attr_sc_down.attr,
+	&dev_attr_dm_wfi.attr,
+	&dev_attr_dm_retention.attr,
+	&dev_attr_dm_down.attr,
+	&dev_attr_nt_wfi.attr,
+	&dev_attr_nt_retention.attr,
+	&dev_attr_nt_down.attr,
+	&dev_attr_dvfs_frequencies.attr,
 	NULL
 };
 

@@ -164,7 +164,7 @@ typedef struct sSirKeyMaterial {
 	/* data that follows */
 	tAniEdType edType;      /* Encryption/Decryption type */
 	uint8_t numKeys;
-	tSirKeys key[1];
+	QDF_FLEX_ARRAY(tSirKeys, key);
 } tSirKeyMaterial, *tpSirKeyMaterial;
 
 #define SIR_CIPHER_SEQ_CTR_SIZE 6

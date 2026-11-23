@@ -76,10 +76,12 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #if defined(SUPPORT_PDVFS)
 #include "pvr_dvfs_proactive.h"
 #endif
+
 #if defined(PVRSRV_ANDROID_TRACE_GPU_FREQ)
 #include "power_trace_events.h"
 #endif
-#if defined(SUPPORT_PDVFS)
+
+#if defined(SUPPORT_PDVFS) && (PDVFS_COM == PDVFS_COM_HOST)
 #include "rgxpdvfs.h"
 #endif
 
@@ -113,12 +115,14 @@ void RGXInitGpuUtilStats(PVRSRV_DEVICE_NODE *psDeviceNode,
 	PVRSRV_ERROR eError;
 	OS_SPINLOCK_FLAGS uiFlags = 0;
 	IMG_UINT64 ui64DeviceTimestampTicks = 0;
-	IMG_UINT64 ui64OsTimestampNS = OSClockns64();
+	IMG_UINT64 ui64OsTimestampNS;
 
 #if defined(SUPPORT_SOC_TIMER)
 	eError = PVRSRVRGXCurrentTime(NULL, psDeviceNode, RGX_QUERY_SOC_TIMER, &ui64DeviceTimestampTicks);
+	ui64OsTimestampNS = RGXTimeGetSOCTimerValueNS(psDeviceNode);
 #else
 	eError = PVRSRVRGXCurrentTime(NULL, psDeviceNode, RGX_QUERY_DEVICE_TIMESTAMP, &ui64DeviceTimestampTicks);
+	ui64OsTimestampNS = OSClockns64();
 #endif
 	PVR_ASSERT(eError == PVRSRV_OK);
 
@@ -168,14 +172,44 @@ static void _RGXProcessBasicUtilStats(RGX_GPU_UTIL_STATS *psReturnStats,
 	bFwOverestimate = (ui64OsTimeNS - ui64FwStatsTimestampNS) > (ui64FwStatsTimestampNS - ui64OsTimeNS);
 #if defined(SUPPORT_LINUX_DVFS)
 	IMG_DVFS_DEVICE *psDVFSDevice = &psDeviceNode->psDevConfig->sDVFS.sDVFSDevice;
+	IMG_BOOL bSuspended = psDVFSDevice->suspend_duration >
+						  (psDVFSDevice->off_period_ms * 1000000);
 #endif
 
 	/* account for the Firmware's activity since the last utilisation check */
-	ui64GpuActiveTimeNS += ((bGpuActive) && (!bFwOverestimate)) ?
-							(ui64OsTimeNS - ui64FwStatsTimestampNS) : (0);
+	if (bGpuActive && !bFwOverestimate)
+	{
+		/*
+		 * Estimated GPU active time since the last firmware stats update,
+		 * allowing adjustments before updating the cumulative active time.
+		 */
+		IMG_UINT64 ui64EstActivePeriodNS = ui64OsTimeNS - ui64FwStatsTimestampNS;
+#if defined(SUPPORT_LINUX_DVFS)
+		if (bSuspended)
+		{
+			ui64EstActivePeriodNS -= MIN(ui64EstActivePeriodNS, psDVFSDevice->suspend_duration);
+		}
+#endif
+		ui64GpuActiveTimeNS += ui64EstActivePeriodNS;
+	}
 
 	ui64MeasurementPeriodNS = ui64OsTimeNS - psReturnStats->ui64LastCheckTimestampNS;
-	ui64GpuActivePeriodNS = (ui64GpuActiveTimeNS - psReturnStats->ui64LastGpuActiveTimeNS);
+
+#if defined(SUPPORT_LINUX_DVFS)
+	if (bSuspended)
+	{
+		ui64MeasurementPeriodNS -= MIN(ui64MeasurementPeriodNS, psDVFSDevice->suspend_duration);
+		psDVFSDevice->suspend_duration = 0;
+	}
+#endif
+
+	/*
+	 * Clamp the active time to be at least the previous baseline to prevent underflow.
+	 * If an underflow is avoided, we calculate the active duration normally;
+	 * otherwise, we set the active period to 0.
+	 */
+	ui64GpuActivePeriodNS = MAX(ui64GpuActiveTimeNS, psReturnStats->ui64LastGpuActiveTimeNS) -
+							psReturnStats->ui64LastGpuActiveTimeNS;
 
 	/*
 	 * usage = active period / measurement period:
@@ -202,13 +236,6 @@ static void _RGXProcessBasicUtilStats(RGX_GPU_UTIL_STATS *psReturnStats,
 		ui64GpuActivePeriodNS = ui64MeasurementPeriodNS;
 	}
 
-#if defined(SUPPORT_LINUX_DVFS)
-	if (psDVFSDevice->suspend_duration > psDVFSDevice->off_period_ms * 1000000)
-	{
-		ui64MeasurementPeriodNS -= psDVFSDevice->suspend_duration;
-		psDVFSDevice->suspend_duration = 0;
-	}
-#endif
 	psReturnStats->ui64LastCheckTimestampNS = ui64OsTimeNS;
 	psReturnStats->ui64LastGpuActiveTimeNS = ui64GpuActiveTimeNS;
 	psReturnStats->ui64GpuActivePeriodNS = ui64GpuActivePeriodNS;
@@ -376,6 +403,7 @@ PVRSRV_ERROR RGXGetGpuDetailedUtilStats(PVRSRV_DEVICE_NODE *psDeviceNode,
 			return eError;
 		}
 	}
+
 #if defined (SUPPORT_SOC_TIMER)
 	eError = PVRSRVRGXCurrentTime(NULL, psDeviceNode, RGX_QUERY_SOC_TIMER, &ui64GpuTimeTicks);
 #else
@@ -540,7 +568,7 @@ static PVRSRV_ERROR _RGXFinalisePowerOff(PVRSRV_DEVICE_NODE *psDeviceNode)
 	/* Update GPU frequency and timer correlation related data */
 	RGXTimeCorrEnd(psDeviceNode, RGXTIMECORR_EVENT_POWER);
 
-#if defined(SUPPORT_LINUX_DVFS) && !defined(NO_HARDWARE)
+#if defined(SUPPORT_LINUX_DVFS)
 	eError = SuspendDVFS(psDeviceNode);
 	if (eError != PVRSRV_OK)
 	{
@@ -548,7 +576,6 @@ static PVRSRV_ERROR _RGXFinalisePowerOff(PVRSRV_DEVICE_NODE *psDeviceNode)
 		return eError;
 	}
 #endif
-
 
 #if defined(PVRSRV_ANDROID_TRACE_GPU_FREQ)
 	/* On frequency traces, 0 means "core logic is off" */
@@ -658,6 +685,25 @@ PVRSRV_ERROR RGXPrePowerState(PVRSRV_DEVICE_NODE *psDeviceNode,
 
 	return _RGXFinalisePowerOff(psDeviceNode);
 }
+
+#if defined(RGX_SUPPORT_DUAL_MEMCTX) && !defined(PDUMP)
+static void _RGXSetOsDataDualCtxFlag(PVRSRV_RGXDEV_INFO *psDevInfo)
+{
+	if (RGX_IS_FEATURE_SUPPORTED(psDevInfo, ALBIORIX_TOP_INFRASTRUCTURE))
+	{
+		RGXFwSharedMemCacheOpValue(psDevInfo->psRGXFWIfFwOsData->ui32FwOsDataFlags, INVALIDATE);
+		if (BITMASK_HAS(psDevInfo->psRGXFWIfFwOsData->ui32FwOsDataFlags,
+		                RGXFWIF_OSDATA_FLAG_FW_SUPPORTS_DUALCTX))
+		{
+			RGXFwSharedMemCacheOpValue(psDevInfo->psRGXFWIfFwOsData->ui32FwOsConfigFlags, INVALIDATE);
+			/* Set the flag to let FW know that KM configured the dual-ctx PC address */
+			BITMASK_SET(psDevInfo->psRGXFWIfFwOsData->ui32FwOsConfigFlags,
+			            RGXFWIF_INICFG_OS_KM_SUPPORTS_DUALCTX);
+			RGXFwSharedMemCacheOpValue(psDevInfo->psRGXFWIfFwOsData->ui32FwOsConfigFlags, FLUSH);
+		}
+	}
+}
+#endif
 
 #if defined(SUPPORT_AUTOVZ)
 static PVRSRV_ERROR _RGXWaitForGuestsToDisconnect(PVRSRV_DEVICE_NODE *psDeviceNode)
@@ -1033,6 +1079,10 @@ PVRSRV_ERROR RGXVzPostPowerState(PVRSRV_DEVICE_NODE		*psDeviceNode,
 			} END_LOOP_UNTIL_TIMEOUT_US();
 
 			PVR_LOG_RETURN_IF_FALSE(*pbUpdatedFlag, "Firmware does not respond with compatibility data.", PVRSRV_ERROR_TIMEOUT);
+
+#if defined(RGX_SUPPORT_DUAL_MEMCTX) && !defined(PDUMP)
+			_RGXSetOsDataDualCtxFlag(psDevInfo);
+#endif
 		}
 
 		KM_SET_OS_CONNECTION(ACTIVE, psDevInfo);
@@ -1340,19 +1390,7 @@ PVRSRV_ERROR RGXPostPowerState(PVRSRV_DEVICE_NODE		*psDeviceNode,
 #endif /* defined(PDUMP) */
 
 #if defined(RGX_SUPPORT_DUAL_MEMCTX) && !defined(PDUMP)
-	if (RGX_IS_FEATURE_SUPPORTED(psDevInfo, ALBIORIX_TOP_INFRASTRUCTURE))
-	{
-		RGXFwSharedMemCacheOpValue(psDevInfo->psRGXFWIfFwOsData->ui32FwOsDataFlags, INVALIDATE);
-		if (BITMASK_HAS(psDevInfo->psRGXFWIfFwOsData->ui32FwOsDataFlags,
-		                RGXFWIF_OSDATA_FLAG_FW_SUPPORTS_DUALCTX))
-		{
-			RGXFwSharedMemCacheOpValue(psDevInfo->psRGXFWIfFwOsData->ui32FwOsConfigFlags, INVALIDATE);
-			/* Set the flag to let FW know that KM configured the dual-ctx PC address */
-			BITMASK_SET(psDevInfo->psRGXFWIfFwOsData->ui32FwOsConfigFlags,
-			            RGXFWIF_INICFG_OS_KM_SUPPORTS_DUALCTX);
-			RGXFwSharedMemCacheOpValue(psDevInfo->psRGXFWIfFwOsData->ui32FwOsConfigFlags, FLUSH);
-		}
-	}
+	_RGXSetOsDataDualCtxFlag(psDevInfo);
 #endif
 
 #if defined(SUPPORT_GPUVIRT_VALIDATION_MTS)
@@ -1374,10 +1412,10 @@ PVRSRV_ERROR RGXPostPowerState(PVRSRV_DEVICE_NODE		*psDeviceNode,
 	                           INVALIDATE);
 	HTBSyncPartitionMarker(psDevInfo->psRGXFWIfSysInit->ui32MarkerVal);
 
-#if defined(SUPPORT_LINUX_DVFS) && !defined(NO_HARDWARE)
+#if defined(SUPPORT_LINUX_DVFS)
 	eError = ResumeDVFS(psDeviceNode);
 	PVR_LOG_GOTO_IF_ERROR(eError, "ResumeDVFS", fail);
-#elif defined(SUPPORT_PDVFS) && !defined(NO_HARDWARE)
+#elif defined(SUPPORT_PDVFS)
 	eError = ResumePDVFS(psDeviceNode);
 	PVR_LOG_GOTO_IF_ERROR(eError, "ResumePDVFS", fail);
 #endif
@@ -1888,8 +1926,7 @@ PVRSRV_ERROR RGXCancelForcedIdleRequestAsync(PVRSRV_DEVICE_NODE *psDeviceNode)
 }
 
 #if defined(SUPPORT_FW_CORE_CLK_RATE_CHANGE_NOTIFY)
-
-#if defined(SUPPORT_PDVFS)
+#if defined(SUPPORT_PDVFS) && (PDVFS_COM == PDVFS_COM_HOST)
 /*************************************************************************/ /*!
 @Function       PDVFSProcessCoreClkChangeRequest
 @Description    Processes a core clock rate change request.
@@ -1979,7 +2016,10 @@ PVRSRV_ERROR RGXProcessCoreClkChangeRequest(PVRSRV_RGXDEV_INFO *psDevInfo, IMG_U
 	/* Increasing frequency, change voltage first */
 	if (ui32CoreClockRate > ui32CoreClockRateCurrent)
 	{
-		psDVFSDeviceCfg->pfnSetVoltage(psDevConfig->hSysData, psOpp->ui32Volt);
+		if (psOpp != NULL)
+		{
+			psDVFSDeviceCfg->pfnSetVoltage(psDevConfig->hSysData, psOpp->ui32Volt);
+		}
 	}
 
 	psDVFSDeviceCfg->pfnSetFrequency(psDevConfig->hSysData, ui32CoreClockRate);
@@ -1987,7 +2027,10 @@ PVRSRV_ERROR RGXProcessCoreClkChangeRequest(PVRSRV_RGXDEV_INFO *psDevInfo, IMG_U
 	/* Decreasing frequency, change frequency first */
 	if (ui32CoreClockRate < ui32CoreClockRateCurrent)
 	{
-		psDVFSDeviceCfg->pfnSetVoltage(psDevConfig->hSysData, psOpp->ui32Volt);
+		if (psOpp != NULL)
+		{
+			psDVFSDeviceCfg->pfnSetVoltage(psDevConfig->hSysData, psOpp->ui32Volt);
+		}
 	}
 
 _PostClockSpeedChange:
@@ -1997,8 +2040,7 @@ _PostClockSpeedChange:
 
 	return PVRSRV_OK;
 }
-#endif /* SUPPORT_PDVFS */
-
+#else
 /*************************************************************************/ /*!
 @Function       PDVFSProcessCoreClkChangeNotification
 @Description    Processes a core clock rate change notification.
@@ -2012,13 +2054,6 @@ PVRSRV_ERROR RGXProcessCoreClkChangeNotification(PVRSRV_RGXDEV_INFO *psDevInfo, 
 	RGX_TIMING_INFORMATION *psRGXTimingInfo = ((RGX_DATA*)(psDevConfig->hDevData))->psRGXTimingInfo;
 	PVRSRV_DEV_POWER_STATE ePowerState;
 	PVRSRV_ERROR eError;
-
-#if defined(SUPPORT_PDVFS)
-	if (psDevConfig->bPDVFSComHost)
-	{
-		return RGXProcessCoreClkChangeRequest(psDevInfo, ui32CoreClockRate);
-	}
-#endif
 
 	PVRSRVPowerLockWrite(psDevInfo->psDeviceNode);
 
@@ -2076,6 +2111,7 @@ PVRSRV_ERROR RGXProcessCoreClkChangeNotification(PVRSRV_RGXDEV_INFO *psDevInfo, 
 
 	return PVRSRV_OK;
 }
+#endif
 
 /*************************************************************************/ /*!
 @Function       PDVFSProcessUtilisationChange
@@ -2091,6 +2127,7 @@ void RGXProcessUtilisationChange(PVRSRV_RGXDEV_INFO *psDevInfo, IMG_UINT32 ui32U
 #endif /* defined(PVRSRV_ANDROID_TRACE_GPU_FREQ) */
 }
 #endif /* SUPPORT_FW_CORE_CLK_RATE_CHANGE_NOTIFY */
+
 
 
 

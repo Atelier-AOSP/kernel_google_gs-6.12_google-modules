@@ -86,7 +86,7 @@
 #define WL_NAN_REKEY WL_NAN_CMD_CFG_REKEY
 typedef struct {
 	uint32 num;
-	BCM_DECLARE_FLEX_ARRAY(chanspec_t, list);
+	chanspec_t list[BCM_FLEX_ARRAY];
 } chanspec_list_t;
 
 #define RSN_KCK_LENGTH	16
@@ -747,7 +747,7 @@ struct wl_dload_data {
 	uint16 dload_type;
 	uint32 len;
 	uint32 crc;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8  data[BCM_FLEX_ARRAY];
 };
 typedef struct wl_dload_data wl_dload_data_t;
 
@@ -756,7 +756,7 @@ struct wl_ucode_info {
 	uint32 num_chunks;
 	uint32 chunk_len;
 	uint32 chunk_num;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data_chunk);
+	uint8  data_chunk[BCM_FLEX_ARRAY];
 };
 typedef struct wl_ucode_info wl_ucode_info_t;
 
@@ -766,7 +766,7 @@ struct wl_clm_dload_info {
 	uint32 num_chunks;
 	uint32 chunk_len;
 	uint32 chunk_offset;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data_chunk);
+	uint8  data_chunk[BCM_FLEX_ARRAY];
 };
 typedef struct wl_clm_dload_info wl_clm_dload_info_t;
 
@@ -836,7 +836,7 @@ typedef struct wlc_fastssidinfo {
 
 typedef struct wnm_url {
 	uint8   len;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8   data[BCM_FLEX_ARRAY];
 } wnm_url_t;
 
 typedef struct chan_scandata {
@@ -864,7 +864,7 @@ typedef struct wl_extdscan_params {
 	uint32		tx_rate;			/**< in 500ksec units */
 	wl_scan_type_t	scan_type;			/**< enum */
 	int32		channel_num;
-	BCM_DECLARE_FLEX_ARRAY(chan_scandata_t, channel_list);	/**< list of chandata structs */
+	chan_scandata_t channel_list[BCM_FLEX_ARRAY];	/**< list of chandata structs */
 } wl_extdscan_params_t;
 
 #define WL_EXTDSCAN_PARAMS_FIXED_SIZE	(OFFSETOF(wl_extdscan_params_t, channel_list))
@@ -901,7 +901,7 @@ typedef struct wl_scan_params_v1 {
 					 * parameter portion is assumed, otherwise ssid in
 					 * the fixed portion is ignored
 					 */
-	BCM_DECLARE_FLEX_ARRAY(uint16, channel_list);
+	uint16 channel_list[BCM_FLEX_ARRAY];
 } wl_scan_params_v1_t;
 
 /** size of wl_scan_params_v1 not including variable length array */
@@ -952,7 +952,7 @@ typedef struct wl_scan_params_v2 {
 					 * parameter portion is assumed, otherwise ssid in
 					 * the fixed portion is ignored
 					 */
-	BCM_DECLARE_FLEX_ARRAY(uint16, channel_list);
+	uint16 channel_list[BCM_FLEX_ARRAY];
 } wl_scan_params_v2_t;
 
 #define WL_SCAN_PARAMS_VERSION_V2		2
@@ -1055,7 +1055,7 @@ typedef struct wl_scan_results_v109 {
 	uint32 buflen;
 	uint32 version;
 	uint32 count;
-	BCM_DECLARE_FLEX_ARRAY(wl_bss_info_v109_t, bss_info);
+	wl_bss_info_v109_t bss_info[BCM_FLEX_ARRAY];
 } wl_scan_results_v109_t;
 #define WL_SCAN_RESULTS_V109_FIXED_SIZE (OFFSETOF(wl_scan_results_v109_t, bss_info))
 
@@ -1110,7 +1110,7 @@ typedef struct wl_escan_result_v109 {
 	uint32 version;
 	uint16 sync_id;
 	uint16 bss_count;
-	BCM_DECLARE_FLEX_ARRAY(wl_bss_info_v109_t, bss_info);
+	wl_bss_info_v109_t bss_info[BCM_FLEX_ARRAY];
 } wl_escan_result_v109_t;
 #define WL_ESCAN_RESULTS_V109_FIXED_SIZE (OFFSETOF(wl_escan_result_v109_t, bss_info))
 
@@ -1128,7 +1128,7 @@ typedef struct wl_gscan_result_v2 {
 	uint32 buflen;
 	uint32 version;
 	uint32 scan_ch_bucket;
-	BCM_DECLARE_FLEX_ARRAY(wl_gscan_bss_info_v2_t, bss_info);
+	wl_gscan_bss_info_v2_t bss_info[BCM_FLEX_ARRAY];
 } wl_gscan_result_v2_t;
 
 typedef struct wl_gscan_result_v2_1 {
@@ -1288,7 +1288,7 @@ typedef struct wl_uint32_list {
 	/** in - # of elements, out - # of entries */
 	uint32 count;
 	/** variable length uint32 list */
-	BCM_DECLARE_FLEX_ARRAY(uint32, element);
+	uint32 element[BCM_FLEX_ARRAY];
 } wl_uint32_list_t;
 /* Size in bytes for wl_uint32_list_t with 'count' elements */
 #define WL_UINT32_LIST_SIZE(count) (((count) + 1) * sizeof(uint32))
@@ -1306,7 +1306,7 @@ typedef struct wl_chanspec_list_s_v1 {
 	/** in - # of chanspecs, out - # of entries */
 	uint16 count;
 	/** variable length chanspecs list */
-	BCM_DECLARE_FLEX_ARRAY(wl_chanspec_attr_v1_t, chspecs);
+	wl_chanspec_attr_v1_t chspecs[BCM_FLEX_ARRAY];
 } wl_chanspec_list_v1_t;
 
 /* WLC_SET_ALLOW_MODE values */
@@ -1326,7 +1326,7 @@ typedef struct wl_assoc_params {
 	int32 chanspec_num;             /**< 0: all available channels,
 					  * otherwise count of chanspecs in chanspec_list
 					  */
-	BCM_DECLARE_FLEX_ARRAY(chanspec_t, chanspec_list); /**< list of chanspecs */
+	chanspec_t chanspec_list[BCM_FLEX_ARRAY]; /**< list of chanspecs */
 
 } wl_assoc_params_t;
 
@@ -1343,7 +1343,7 @@ typedef struct wl_assoc_params_v1 {
 	int32 chanspec_num;		/**< 0: all available channels,
 					* otherwise count of chanspecs in chanspec_list
 					*/
-	BCM_DECLARE_FLEX_ARRAY(chanspec_t, chanspec_list);	/**< list of chanspecs */
+	chanspec_t chanspec_list[BCM_FLEX_ARRAY];	/**< list of chanspecs */
 } wl_assoc_params_v1_t;
 
 /** Assoc params flags */
@@ -1604,7 +1604,7 @@ typedef struct cca_congest {
 typedef struct cca_congest_channel_req {
 	chanspec_t chanspec;			/**< Which channel? */
 	uint16 num_secs;			/**< How many secs worth of data */
-	BCM_DECLARE_FLEX_ARRAY(cca_congest_t, secs);	/**< Data */
+	cca_congest_t	secs[BCM_FLEX_ARRAY];	/**< Data */
 } cca_congest_channel_req_t;
 
 typedef struct cca_congest_ext {
@@ -1674,7 +1674,7 @@ typedef struct cca_congest_ext_channel_req {
 	uint16 len;					/**< len of this structure */
 	chanspec_t chanspec;				/**< Which channel? */
 	uint16 num_secs;				/**< How many secs worth of data */
-	BCM_DECLARE_FLEX_ARRAY(struct cca_congest_ext, secs);	/**< Data - 3 sets for ALL - non-PM - PM */
+	struct cca_congest_ext secs[BCM_FLEX_ARRAY];	/**< Data - 3 sets for ALL - non-PM - PM */
 } cca_congest_ext_channel_req_t;
 
 typedef struct cca_congest_ext_channel_req_v2 {
@@ -1691,7 +1691,7 @@ typedef struct cca_congest_ext_channel_req_v3 {
 	uint16			len;
 	uint8			PAD[2];
 	uint16			num_of_entries;
-	BCM_DECLARE_FLEX_ARRAY(cca_congest_ext_channel_req_v2_t, per_chan_stats);
+	cca_congest_ext_channel_req_v2_t	per_chan_stats[BCM_FLEX_ARRAY];
 } cca_congest_ext_channel_req_v3_t;
 
 typedef struct {
@@ -1852,7 +1852,7 @@ typedef struct wl_ccode_entry {
 typedef struct wl_ccode_info {
 	uint16 version;
 	uint16 count;   /**< Number of ccodes entries in the set */
-	BCM_DECLARE_FLEX_ARRAY(wl_ccode_entry_t, ccodelist);
+	wl_ccode_entry_t ccodelist[BCM_FLEX_ARRAY];
 } wl_ccode_info_t;
 #define WL_CCODE_INFO_FIXED_LEN	OFFSETOF(wl_ccode_info_t, ccodelist)
 typedef struct wl_channels_in_country {
@@ -1860,7 +1860,7 @@ typedef struct wl_channels_in_country {
 	uint32 band;
 	char country_abbrev[WLC_CNTRY_BUF_SZ];
 	uint32 count;
-	BCM_DECLARE_FLEX_ARRAY(uint32, channel);
+	uint32 channel[BCM_FLEX_ARRAY];
 } wl_channels_in_country_t;
 
 typedef struct wl_country_list {
@@ -1868,7 +1868,7 @@ typedef struct wl_country_list {
 	uint32 band_set;
 	uint32 band;
 	uint32 count;
-	BCM_DECLARE_FLEX_ARRAY(char, country_abbrev);
+	char country_abbrev[BCM_FLEX_ARRAY];
 } wl_country_list_t;
 
 typedef struct wl_rm_req_elt {
@@ -1886,7 +1886,7 @@ typedef struct wl_rm_req {
 	uint32	count;				/**< number of measurement requests */
 	void	*cb;				/**< completion callback function: may be NULL */
 	void	*cb_arg;			/**< arg to completion callback function */
-	BCM_DECLARE_FLEX_ARRAY(wl_rm_req_elt_t, req);	/**< variable length block of requests */
+	wl_rm_req_elt_t	req[BCM_FLEX_ARRAY];	/**< variable length block of requests */
 } wl_rm_req_t;
 #define WL_RM_REQ_FIXED_LEN	OFFSETOF(wl_rm_req_t, req)
 
@@ -1912,7 +1912,7 @@ typedef struct wl_rm_rpi_rep {
 typedef struct wl_rm_rep {
 	uint32	token;		/**< overall measurement set token */
 	uint32	len;		/**< length of measurement report block */
-	BCM_DECLARE_FLEX_ARRAY(wl_rm_rep_elt_t, rep);
+	wl_rm_rep_elt_t rep[BCM_FLEX_ARRAY];
 } wl_rm_rep_t;
 #define WL_RM_REP_FIXED_LEN	8
 
@@ -1936,7 +1936,7 @@ typedef struct wl_leap_list {
 	uint32 buflen;
 	uint32 version;
 	uint32 count;
-	BCM_DECLARE_FLEX_ARRAY(wl_leap_info_t, leap_info);
+	wl_leap_info_t leap_info[BCM_FLEX_ARRAY];
 } wl_leap_list_t;
 #endif	/* BCMCCX */
 
@@ -2033,7 +2033,7 @@ typedef struct wsec_pmk {
 	uint16  flags;				/* key handling qualification */
 	uint8	key[WSEC_MAX_PASSPHRASE_LEN];	/* PMK material */
 	uint16	opt_len;			/* optional field length */
-	BCM_DECLARE_FLEX_ARRAY(uint8, opt_tlvs);	/* optional filed in bcm_xtlv_t format */
+	uint8	opt_tlvs[BCM_FLEX_ARRAY];	/* optional filed in bcm_xtlv_t format */
 } wsec_pmk_t;
 
 typedef enum {
@@ -2124,13 +2124,13 @@ typedef struct _pmkid_v3 {
 #define PMKID_LIST_VER_3	3
 typedef struct _pmkid_list_v1 {
 	uint32	npmkid;
-	BCM_DECLARE_FLEX_ARRAY(pmkid_v1_t, pmkid);
+	pmkid_v1_t	pmkid[BCM_FLEX_ARRAY];
 } pmkid_list_v1_t;
 
 typedef struct _pmkid_list_v2 {
 	uint16  version;
 	uint16	length;
-	BCM_DECLARE_FLEX_ARRAY(pmkid_v2_t, pmkid);
+	pmkid_v2_t	pmkid[BCM_FLEX_ARRAY];
 } pmkid_list_v2_t;
 
 #define PMKDB_SET_IOVAR		0x0001u
@@ -2153,7 +2153,7 @@ typedef struct _pmkid_cand {
 
 typedef struct _pmkid_cand_list {
 	uint32	npmkid_cand;
-	BCM_DECLARE_FLEX_ARRAY(pmkid_cand_t, pmkid_cand);
+	pmkid_cand_t	pmkid_cand[BCM_FLEX_ARRAY];
 } pmkid_cand_list_t;
 
 #define WL_STA_ANT_MAX		4	/**< max possible rx antennas */
@@ -2640,7 +2640,7 @@ typedef struct channel_info {
 /** For ioctls that take a list of MAC addresses */
 typedef struct maclist {
 	uint32 count;				/**< number of MAC addresses */
-	BCM_DECLARE_FLEX_ARRAY(struct ether_addr, ea);	/**< variable length array of MAC addresses */
+	struct ether_addr ea[BCM_FLEX_ARRAY];	/**< variable length array of MAC addresses */
 } maclist_t;
 
 typedef struct wds_client_info {
@@ -2656,7 +2656,7 @@ typedef struct wds_maclist {
 	uint32 count;						/* Number of WDS clients */
 	uint32 magic;						/* Magic number */
 	uint32 version;						/* Version number */
-	BCM_DECLARE_FLEX_ARRAY(struct wds_client_info, client_list);	/* Var len array of WDS clients */
+	struct wds_client_info client_list[BCM_FLEX_ARRAY];	/* Var len array of WDS clients */
 } wds_maclist_t;
 
 /**get pkt count struct passed through ioctl */
@@ -3128,7 +3128,7 @@ typedef struct stamon_data {
 typedef struct stamon_info {
 	int32 version;
 	uint32 count;
-	BCM_DECLARE_FLEX_ARRAY(stamon_data_t, sta_data);
+	stamon_data_t sta_data[BCM_FLEX_ARRAY];
 } stamon_info_t;
 
 typedef struct wl_ota_rx_rssi {
@@ -3143,7 +3143,7 @@ typedef struct wl_ota_rx_rssi {
 typedef struct wl_ota_test_rssi {
 	uint8	version;
 	uint8	testcnt;				/* total RSSI values, valid on o/p only */
-	BCM_DECLARE_FLEX_ARRAY(wl_ota_rx_rssi_t, rx_rssi);	/* Variable len array */
+	wl_ota_rx_rssi_t rx_rssi[BCM_FLEX_ARRAY];	/* Variable len array */
 } wl_ota_test_rssi_t;
 
 /* WL_OTA END */
@@ -3318,7 +3318,7 @@ typedef struct {
 typedef struct {
 	uint16 version;		/* version field; current max version 1 */
 	uint16 num_sub_status;
-	BCM_DECLARE_FLEX_ARRAY(wl_dfs_sub_status_t, dfs_sub_status); /* Array of len num_sub_status */
+	wl_dfs_sub_status_t  dfs_sub_status[BCM_FLEX_ARRAY]; /* Array of len num_sub_status */
 } wl_dfs_status_all_t;
 
 #define WL_DFS_AP_MOVE_VERSION	(1)
@@ -3413,7 +3413,7 @@ typedef struct {
 	chanspec_t chanspec;			/**< txpwr report for this channel */
 	chanspec_t local_chanspec;		/**< channel on which we are associated */
 	uint32     buflen;			/**< ppr buffer length */
-	BCM_DECLARE_FLEX_ARRAY(uint8, pprbuf);	/**< Latest target power buffer */
+	uint8      pprbuf[BCM_FLEX_ARRAY];	/**< Latest target power buffer */
 } wl_txppr_t;
 
 #define WL_TXPPR_VERSION	1
@@ -3453,7 +3453,7 @@ typedef struct  wl_chanspec_txpwr_max {
 	uint16 ver;					/**< version of this struct */
 	uint16 len;					/**< length in bytes of this structure */
 	uint32 count;					/**< number of (chanspec, txpwr_max) pair */
-	BCM_DECLARE_FLEX_ARRAY(chanspec_txpwr_max_t, txpwr);	/**< array of (chanspec, max_txpwr) pair */
+	chanspec_txpwr_max_t txpwr[BCM_FLEX_ARRAY];	/**< array of (chanspec, max_txpwr) pair */
 } wl_chanspec_txpwr_max_t;
 
 #define WL_CHANSPEC_TXPWR_MAX_VER	1
@@ -4861,7 +4861,7 @@ typedef struct {
 				   * set in this field.
 				   */
 	uint16	num_subcounters;  /* Number of counter offset passed by wl app to FW. */
-	BCM_DECLARE_FLEX_ARRAY(uint32, data);  /* variable length payload:
+	uint32	data[BCM_FLEX_ARRAY];  /* variable length payload:
 				   * Offsets to the counters will be passed to FW
 				   * throught this data field. FW will return the value of counters
 				   * at the offsets passed by wl app in this fiels itself.
@@ -7340,7 +7340,7 @@ typedef struct wl_mkeep_alive_pkt_v1 {
 	uint32	period_msec; /* high bit on means immediate send */
 	uint16	len_bytes;
 	uint8	keep_alive_id; /* 0 - 3 for N = 4 */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8	data[BCM_FLEX_ARRAY];
 } wl_mkeep_alive_pkt_v1_t;
 
 #define WL_MKEEP_ALIVE_VERSION_1	1u
@@ -7360,7 +7360,7 @@ typedef struct wl_mkeep_alive_pkt_v2 {
 	uint16	retry_cnt;	/* keep alive alive pkt retry count */
 	uint8	PAD[2];
 	uint8	keep_alive_id;	/* 0 - 3 for N = 4 */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8	data[BCM_FLEX_ARRAY];
 } wl_mkeep_alive_pkt_v2_t;
 
 typedef struct wl_mkeep_alive_hist_info_v1 {
@@ -7897,7 +7897,7 @@ typedef struct wl_pfn_lscanresults_v1 {
 	uint32 version;
 	uint32 status;
 	uint32 count;
-	BCM_DECLARE_FLEX_ARRAY(wl_pfn_lnet_info_v1_t, netinfo);
+	wl_pfn_lnet_info_v1_t netinfo[BCM_FLEX_ARRAY];
 } wl_pfn_lscanresults_v1_t;
 
 typedef struct wl_pfn_lscanresults_v2 {
@@ -7905,7 +7905,7 @@ typedef struct wl_pfn_lscanresults_v2 {
 	uint16 status;
 	uint16 count;
 	uint32 scan_ch_buckets[MAX_CHBKT_PER_RESULT];
-	BCM_DECLARE_FLEX_ARRAY(wl_pfn_lnet_info_v2_t, netinfo);
+	wl_pfn_lnet_info_v2_t netinfo[BCM_FLEX_ARRAY];
 } wl_pfn_lscanresults_v2_t;
 
 typedef struct wl_pfn_lscanresults_v3 {
@@ -7913,7 +7913,7 @@ typedef struct wl_pfn_lscanresults_v3 {
 	uint16 status;
 	uint16 count;
 	uint32 scan_ch_buckets[MAX_CHBKT_PER_RESULT];
-	BCM_DECLARE_FLEX_ARRAY(wl_pfn_lnet_info_v3_t, netinfo);
+	wl_pfn_lnet_info_v3_t netinfo[BCM_FLEX_ARRAY];
 } wl_pfn_lscanresults_v3_t;
 
 /**this is used to report on 1-* pfn scan results */
@@ -7921,7 +7921,7 @@ typedef struct wl_pfn_scanresults_v1 {
 	uint32 version;
 	uint32 status;
 	uint32 count;
-	BCM_DECLARE_FLEX_ARRAY(wl_pfn_net_info_v1_t, netinfo);
+	wl_pfn_net_info_v1_t netinfo[BCM_FLEX_ARRAY];
 } wl_pfn_scanresults_v1_t;
 
 typedef struct wl_pfn_scanresults_v2 {
@@ -7929,7 +7929,7 @@ typedef struct wl_pfn_scanresults_v2 {
 	uint32 status;
 	uint32 count;
 	uint32 scan_ch_bucket;
-	BCM_DECLARE_FLEX_ARRAY(wl_pfn_net_info_v2_t, netinfo);
+	wl_pfn_net_info_v2_t netinfo[BCM_FLEX_ARRAY];
 } wl_pfn_scanresults_v2_t;
 
 typedef struct wl_pfn_scanresults_v3 {
@@ -7937,7 +7937,7 @@ typedef struct wl_pfn_scanresults_v3 {
 	uint32 status;
 	uint32 count;
 	uint32 scan_ch_bucket;
-	BCM_DECLARE_FLEX_ARRAY(wl_pfn_net_info_v3_t, netinfo);
+	wl_pfn_net_info_v3_t netinfo[BCM_FLEX_ARRAY];
 } wl_pfn_scanresults_v3_t;
 
 #define WL_PFN_SCANRESULTS_SCAN_TYPE_HA		0u
@@ -7952,7 +7952,7 @@ typedef struct wl_pfn_scanresults_v4 {
 	uint16 flags;
 	uint32 count;
 	uint32 scan_ch_bucket;
-	BCM_DECLARE_FLEX_ARRAY(wl_pfn_net_info_v2_t, netinfo);
+	wl_pfn_net_info_v2_t netinfo[BCM_FLEX_ARRAY];
 } wl_pfn_scanresults_v4_t;
 
 typedef struct wl_pfn_scanresults_v5 {
@@ -7962,7 +7962,7 @@ typedef struct wl_pfn_scanresults_v5 {
 	uint16 flags;
 	uint32 count;
 	uint32 scan_ch_bucket;
-	BCM_DECLARE_FLEX_ARRAY(wl_pfn_net_info_v3_t, netinfo);
+	wl_pfn_net_info_v3_t netinfo[BCM_FLEX_ARRAY];
 } wl_pfn_scanresults_v5_t;
 
 typedef struct wl_pfn_significant_net {
@@ -7992,7 +7992,7 @@ typedef struct wl_pfn_scanhist_bssid_v1 {
 	uint32 version;
 	uint32 status;
 	uint32 count;
-	BCM_DECLARE_FLEX_ARRAY(wl_pfn_net_info_bssid_v1_t, netinfo);
+	wl_pfn_net_info_bssid_v1_t netinfo[BCM_FLEX_ARRAY];
 } wl_pfn_scanhist_bssid_v1_t;
 
 /* v2 for this struct is skiped to match with other struct v3 version */
@@ -8009,7 +8009,7 @@ typedef struct wl_pfn_scanhist_bssid_v3 {
 	uint32 version;
 	uint32 status;
 	uint32 count;
-	BCM_DECLARE_FLEX_ARRAY(wl_pfn_net_info_bssid_v3_t, netinfo);
+	wl_pfn_net_info_bssid_v3_t netinfo[BCM_FLEX_ARRAY];
 } wl_pfn_scanhist_bssid_v3_t;
 
 /* Version 1 and 2 for various single scan result */
@@ -8222,7 +8222,7 @@ typedef struct wl_pfn_gscan_cfg {
 	uint8  count_of_channel_buckets;
 	uint8  retry_threshold;
 	uint16  lost_ap_window;
-	BCM_DECLARE_FLEX_ARRAY(wl_pfn_gscan_ch_bucket_cfg_t, channel_bucket);
+	wl_pfn_gscan_ch_bucket_cfg_t channel_bucket[BCM_FLEX_ARRAY];
 } wl_pfn_gscan_cfg_t;
 
 #define WL_PFN_REPORT_ALLNET    0
@@ -8245,7 +8245,7 @@ typedef struct wl_pfn_list {
 	uint32		version;
 	uint32		enabled;
 	uint32		count;
-	BCM_DECLARE_FLEX_ARRAY(wl_pfn_t, pfn);
+	wl_pfn_t	pfn[BCM_FLEX_ARRAY];
 } wl_pfn_list_t;
 
 #define PFN_SSID_EXT_VERSION_1   1
@@ -8261,7 +8261,7 @@ typedef struct wl_pfn_ext {
 typedef struct wl_pfn_ext_list {
 	uint16 version;
 	uint16 count;
-	BCM_DECLARE_FLEX_ARRAY(wl_pfn_ext_t, pfn_ext);
+	wl_pfn_ext_t pfn_ext[BCM_FLEX_ARRAY];
 } wl_pfn_ext_list_t;
 
 #define WL_PFN_SSID_EXT_FOUND   0x1
@@ -8278,7 +8278,7 @@ typedef struct wl_pfn_result_ssid {
 typedef struct wl_pfn_ssid_ext_result {
 	uint16 version;
 	uint16 count;
-	BCM_DECLARE_FLEX_ARRAY(wl_pfn_result_ssid_crc32_t, net);
+	wl_pfn_result_ssid_crc32_t net[BCM_FLEX_ARRAY];
 } wl_pfn_ssid_ext_result_t;
 
 #define PFN_EXT_AUTH_CODE_OPEN   1 /* open */
@@ -8436,7 +8436,7 @@ typedef struct wl_p2po_find_config {
 			 * 0 means use default social channels.
 			 */
 	uint8 flags;
-	BCM_DECLARE_FLEX_ARRAY(uint16, social_channels);	/**< Variable length array of social channels */
+	uint16 social_channels[BCM_FLEX_ARRAY];	/**< Variable length array of social channels */
 } wl_p2po_find_config_t;
 
 #define WL_P2PO_FIND_CONFIG_VERSION_2	2u	/**< value for version field */
@@ -8459,7 +8459,7 @@ typedef struct {
 	uint8 service_name[MAX_WFDS_SEEK_SVC_NAME_LEN];
 					/**< Service name to seek, not null terminated */
 	uint8 service_info_req_len;
-	BCM_DECLARE_FLEX_ARRAY(uint8, service_info_req);
+	uint8 service_info_req[BCM_FLEX_ARRAY];
 					/**< Service info request, not null terminated.
 					 * Variable length specified by service_info_req_len.
 					 * Maximum length is MAX_WFDS_SEEK_SVC_INFO_LEN.
@@ -8483,7 +8483,7 @@ typedef BWL_PRE_PACKED_STRUCT struct {
 					/**< Service name , not null terminated */
 	uint8 service_status;
 	uint16 service_info_len;
-	BCM_DECLARE_FLEX_ARRAY(uint8, service_info);
+	uint8 service_info[BCM_FLEX_ARRAY];
 					/**< Service info, not null terminated.
 					 * Variable length specified by service_info_len.
 					 * Maximum length is MAX_WFDS_ADV_SVC_INFO_LEN.
@@ -8512,7 +8512,7 @@ typedef struct {
 	uint16 max_comeback_delay;	/**< ~0 use default, max comeback delay in resp else fail */
 	uint16 max_retries;		/**< ~0 use default, max retries on failure */
 	uint16 query_len;		/**< length of ANQP query */
-	BCM_DECLARE_FLEX_ARRAY(uint8, query_data);  /**< ANQP encoded query (max ANQPO_MAX_QUERY_SIZE) */
+	uint8 query_data[BCM_FLEX_ARRAY];  /**< ANQP encoded query (max ANQPO_MAX_QUERY_SIZE) */
 } wl_anqpo_set_t;
 
 #define WL_ANQPO_FLAGS_BSSID_WILDCARD		0x0001
@@ -8537,14 +8537,14 @@ typedef struct {
 #define ANQPO_MAX_PEER_LIST			64
 typedef struct {
 	uint16 count;					/**< number of peers in list */
-	BCM_DECLARE_FLEX_ARRAY(wl_anqpo_peer_v1_t, peer);	/**< max ANQPO_MAX_PEER_LIST */
+	wl_anqpo_peer_v1_t peer[BCM_FLEX_ARRAY];	/**< max ANQPO_MAX_PEER_LIST */
 } wl_anqpo_peer_list_v1_t;
 
 typedef struct {
 	uint16  version;				/**<VERSION */
 	uint16  length;					/**< length of entire structure */
 	uint16 count;					/**< number of peers in list */
-	BCM_DECLARE_FLEX_ARRAY(wl_anqpo_peer_v2_t, peer);	/**< max ANQPO_MAX_PEER_LIST */
+	wl_anqpo_peer_v2_t peer[BCM_FLEX_ARRAY];	/**< max ANQPO_MAX_PEER_LIST */
 } wl_anqpo_peer_list_v2_t;
 
 typedef struct {
@@ -8560,7 +8560,7 @@ typedef struct {
 	uint8 is_clear;				/**< set to clear list (not used on GET) */
 	uint8 PAD;
 	uint16 count;				/**< number of SSID in list */
-	BCM_DECLARE_FLEX_ARRAY(wlc_ssid_t, ssid);	/**< max ANQPO_MAX_IGNORE_SSID */
+	wlc_ssid_t ssid[BCM_FLEX_ARRAY];	/**< max ANQPO_MAX_IGNORE_SSID */
 } wl_anqpo_ignore_ssid_list_t;
 
 #define ANQPO_MAX_IGNORE_BSSID		64
@@ -8647,7 +8647,7 @@ typedef struct wl_nd_host_ip_addr {
 
 typedef struct wl_nd_host_ip_list {
 	uint32 count;
-	BCM_DECLARE_FLEX_ARRAY(wl_nd_host_ip_addr_t, host_ip);
+	wl_nd_host_ip_addr_t host_ip[BCM_FLEX_ARRAY];
 } wl_nd_host_ip_list_t;
 
 #define WL_ND_HOSTIP_IOV_VER    1
@@ -8687,7 +8687,7 @@ typedef struct wl_nd_hostip {
 typedef struct wl_keep_alive_pkt {
 	uint32	period_msec;	/** Retransmission period (0 to disable packet re-transmits) */
 	uint16	len_bytes;	/* Size of packet to transmit (0 to disable packet re-transmits) */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8	data[BCM_FLEX_ARRAY];
 				/** Variable len pkt to transmit.  Contents should include
 				 * entire ethernet packet (enet header, IP header, UDP header,
 				 * and UDP payload) in network byte order.
@@ -8750,7 +8750,7 @@ typedef struct wl_ptk_start_iov {
 	wl_ptk_start_role_t role;
 	struct ether_addr peer_addr;
 	uint16 PAD;				/* reserved/32 bit alignment */
-	BCM_DECLARE_FLEX_ARRAY(wl_ptk_start_tlv_t, tlvs);
+	wl_ptk_start_tlv_t tlvs[BCM_FLEX_ARRAY];
 } wl_ptk_start_iov_t;
 
 /*
@@ -8921,7 +8921,7 @@ typedef struct wl_pkt_filter_ports {
 	uint8 reserved;				/**< Be really proper */
 	uint16 count;				/**< Number of ports following */
 	/* End of fixed data */
-	BCM_DECLARE_FLEX_ARRAY(uint16, ports);	/**< Placeholder for ports[<count>] */
+	uint16 ports[BCM_FLEX_ARRAY];	/**< Placeholder for ports[<count>] */
 } wl_pkt_filter_ports_t;
 
 #define WL_PKT_FILTER_PORTS_FIXED_LEN	OFFSETOF(wl_pkt_filter_ports_t, ports)
@@ -9270,7 +9270,7 @@ typedef struct wl_wowl_pattern {
 
 typedef struct wl_wowl_pattern_list {
 	uint32			count;
-	BCM_DECLARE_FLEX_ARRAY(wl_wowl_pattern_t, pattern);
+	wl_wowl_pattern_t	pattern[BCM_FLEX_ARRAY];
 } wl_wowl_pattern_list_t;
 
 typedef struct wl_wowl_wakeind {
@@ -9365,7 +9365,7 @@ typedef struct wl_chan_qual_event {
 typedef struct wl_action_obss_coex_req {
 	uint8 info;
 	uint8 num;
-	BCM_DECLARE_FLEX_ARRAY(uint8, ch_list);
+	uint8 ch_list[BCM_FLEX_ARRAY];
 } wl_action_obss_coex_req_t;
 
 /** IOVar parameter block for small MAC address array with type indicator */
@@ -9533,7 +9533,7 @@ typedef BWL_PRE_PACKED_STRUCT struct {
 typedef BWL_PRE_PACKED_STRUCT struct {
 	uint16	structure_version;	/**< Structure version number (for wl/wlu matching) */
 	uint16	structure_count;	/**< Number of iov_bs_data_record_t records following */
-	BCM_DECLARE_FLEX_ARRAY(iov_bs_data_record_t, structure_record);	/**< 0 - structure_count records */
+	iov_bs_data_record_t structure_record[BCM_FLEX_ARRAY];	/**< 0 - structure_count records */
 } BWL_POST_PACKED_STRUCT iov_bs_data_struct_t;
 #include <packed_section_end.h>
 
@@ -9576,7 +9576,7 @@ typedef struct wlc_extlog_results {
 	uint16 version;
 	uint16 record_len;
 	uint32 num;
-	BCM_DECLARE_FLEX_ARRAY(log_record_t, logs);
+	log_record_t logs[BCM_FLEX_ARRAY];
 } wlc_extlog_results_t;
 
 typedef struct log_idstr {
@@ -9682,7 +9682,7 @@ typedef struct eventmsgs_ext
 	uint8	command;
 	uint8	len;
 	uint8	maxgetsize;
-	BCM_DECLARE_FLEX_ARRAY(uint8, mask);
+	uint8	mask[BCM_FLEX_ARRAY];
 } eventmsgs_ext_t;
 
 #include <packed_section_start.h>
@@ -9749,7 +9749,7 @@ BWL_PRE_PACKED_STRUCT struct bus_tput_stats_v1 {
 typedef BWL_PRE_PACKED_STRUCT struct wl_host_wakeup_data {
 	uint16 ver;
 	uint16 len;
-	BCM_DECLARE_FLEX_ARRAY(uchar, data);	/* wakeup data */
+	uchar data[BCM_FLEX_ARRAY];	/* wakeup data */
 } BWL_POST_PACKED_STRUCT wl_host_wakeup_data_t;
 #include <packed_section_end.h>
 
@@ -9760,7 +9760,7 @@ typedef BWL_PRE_PACKED_STRUCT struct wl_host_wakeup_data_v2 {
 	uint16 ver;
 	uint16 len;
 	uint32 gpio_toggle_time; /* gpio toggle time in ms */
-	BCM_DECLARE_FLEX_ARRAY(uchar, data);	/* wakeup data */
+	uchar data[BCM_FLEX_ARRAY];	/* wakeup data */
 } BWL_POST_PACKED_STRUCT wl_host_wakeup_data_v2_t;
 #include <packed_section_end.h>
 
@@ -9825,7 +9825,7 @@ typedef struct pcie_hmap {
 /** Input structure for pwrstats IOVAR */
 typedef struct wl_pwrstats_query {
 	uint16 length;			/**< Number of entries in type array. */
-	BCM_DECLARE_FLEX_ARRAY(uint16, type);	/**< Types (tags) to retrieve.
+	uint16 type[BCM_FLEX_ARRAY];	/**< Types (tags) to retrieve.
 					* Length 0 (no types) means get all.
 					*/
 } wl_pwrstats_query_t;
@@ -9835,7 +9835,7 @@ typedef struct wl_pwrstats_query {
 typedef BWL_PRE_PACKED_STRUCT struct wl_pwrstats {
 	uint16 version; 		/**< Version = 2 is TLV format */
 	uint16 length;			/**< Length of entire structure */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);	/**< TLV data, a series of structures,
+	uint8 data[BCM_FLEX_ARRAY];	/**< TLV data, a series of structures,
 				       * each starting with type and length.
 				       *
 				       * Padded as necessary so each section
@@ -10465,7 +10465,7 @@ typedef BWL_PRE_PACKED_STRUCT struct wl_pmalert {
 	uint16 version;		/**< Version = 3 is TLV format */
 	uint16 length;		/**< Length of entire structure */
 	uint32 reasons;		/**< reason(s) for pm_alert */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 				/**< TLV data, a series of structures,
 				 * each starting with type and length.
 				 *
@@ -10554,7 +10554,7 @@ typedef struct wl_pmalert_pmstate {
 	uint8 pmwake_idx;   /**< for stepping through pm_state */
 	uint8 PAD[3];
 	/* Array of pmstate; len of array is based on tlv len */
-	BCM_DECLARE_FLEX_ARRAY(wlc_pm_debug_t, pmstate);
+	wlc_pm_debug_t pmstate[BCM_FLEX_ARRAY];
 } wl_pmalert_pmstate_t;
 
 typedef struct wl_pmalert_event_dur {
@@ -10562,7 +10562,7 @@ typedef struct wl_pmalert_event_dur {
 	uint16 len;	     /**< Up to 4K-1, top 4 bits are reserved */
 
 	/* Array of event_dur, len of array is based on tlv len */
-	BCM_DECLARE_FLEX_ARRAY(uint32, event_dur);
+	uint32 event_dur[BCM_FLEX_ARRAY];
 } wl_pmalert_event_dur_t;
 
 #include <packed_section_start.h>
@@ -10641,7 +10641,7 @@ typedef struct wl_pmalert_ps_allowed_hist {
 	uint16 len;	     /**< Up to 4K-1, top 4 bits are reserved */
 	uint32 ps_allowed_start_idx;
 	/* Array of ps_debug, len of array is based on tlv len */
-	BCM_DECLARE_FLEX_ARRAY(wlc_ps_debug_t, ps_debug);
+	wlc_ps_debug_t ps_debug[BCM_FLEX_ARRAY];
 } wl_pmalert_ps_allowed_hist_t;
 
 /* Structures and constants used for "vndr_ie" IOVar interface */
@@ -10661,7 +10661,7 @@ typedef BWL_PRE_PACKED_STRUCT struct {
 #include <packed_section_start.h>
 typedef BWL_PRE_PACKED_STRUCT struct {
 	int32 iecount;					/**< entries in the vndr_ie_list[] */
-	BCM_DECLARE_FLEX_ARRAY(vndr_ie_info_t, vndr_ie_list);	/**< var len list of vndr_ie_info_t */
+	vndr_ie_info_t vndr_ie_list[BCM_FLEX_ARRAY];	/**< var len list of vndr_ie_info_t */
 } BWL_POST_PACKED_STRUCT vndr_ie_buf_t;
 #include <packed_section_end.h>
 
@@ -10691,7 +10691,7 @@ typedef BWL_PRE_PACKED_STRUCT struct {
 #include <packed_section_start.h>
 typedef BWL_PRE_PACKED_STRUCT struct {
 	int32 iecount;				/**< number of entries in the ie_list[] array */
-	BCM_DECLARE_FLEX_ARRAY(ie_info_t, ie_list);	/**< variable size list of ie_info_t structs */
+	ie_info_t ie_list[BCM_FLEX_ARRAY];	/**< variable size list of ie_info_t structs */
 } BWL_POST_PACKED_STRUCT ie_buf_t;
 #include <packed_section_end.h>
 
@@ -10719,14 +10719,14 @@ typedef struct sta_prbreq_wps_ie_hdr {
 #include <packed_section_start.h>
 typedef BWL_PRE_PACKED_STRUCT struct sta_prbreq_wps_ie_data {
 	sta_prbreq_wps_ie_hdr_t hdr;
-	BCM_DECLARE_FLEX_ARRAY(uint8, ieData);
+	uint8 ieData[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT sta_prbreq_wps_ie_data_t;
 #include <packed_section_end.h>
 
 #include <packed_section_start.h>
 typedef BWL_PRE_PACKED_STRUCT struct sta_prbreq_wps_ie_list {
 	uint32 totLen;
-	BCM_DECLARE_FLEX_ARRAY(uint8, ieDataList);
+	uint8 ieDataList[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT sta_prbreq_wps_ie_list_t;
 #include <packed_section_end.h>
 
@@ -10759,7 +10759,7 @@ typedef BWL_PRE_PACKED_STRUCT struct {
 	uint32 ppr_len;			/**< length of each ppr serialization buffer */
 	int8 SARLIMIT[MAX_STREAMS_SUPPORTED];
 	/* Please see the document before changing this structure */
-	BCM_DECLARE_FLEX_ARRAY(uint8, pprdata);	/**< TLV buffer for ppr and other data */
+	uint8  pprdata[BCM_FLEX_ARRAY];	/**< TLV buffer for ppr and other data */
 } BWL_POST_PACKED_STRUCT tx_pwr_rpt_t;
 
 typedef BWL_PRE_PACKED_STRUCT struct {
@@ -10786,7 +10786,7 @@ typedef BWL_PRE_PACKED_STRUCT struct {
 	int8 SARLIMIT[MAX_STREAMS_SUPPORTED];
 	int8  antgain[3];			/**< Ant gain for each band - from SROM */
 	/* Please see the document before changing this structure */
-	BCM_DECLARE_FLEX_ARRAY(uint8, pprdata);		/**< TLV buffer for ppr and other data */
+	uint8  pprdata[BCM_FLEX_ARRAY];		/**< TLV buffer for ppr and other data */
 } BWL_POST_PACKED_STRUCT tx_pwr_rpt_v2_t;
 
 #define WL_TPC_MAX_BW_TX_PWR_LEN  8u
@@ -10833,7 +10833,7 @@ typedef BWL_PRE_PACKED_STRUCT struct {
 	uint8 ru_txpwrs_len;       /**< No of TPE RU txpwrs present */
 	wl_tpc_ru_txpwr_t ru_txpwrs[WL_TPC_MAX_RU_TX_PWR_LEN];  /**< TPE RU max txpwrs */
 	/* Please see the document before changing this structure */
-	BCM_DECLARE_FLEX_ARRAY(uint8, pprdata);         /**< TLV buffer for ppr and other data */
+	uint8  pprdata[BCM_FLEX_ARRAY];         /**< TLV buffer for ppr and other data */
 } BWL_POST_PACKED_STRUCT tx_pwr_rpt_v3_t;
 #include <packed_section_end.h>
 
@@ -10869,7 +10869,7 @@ typedef BWL_PRE_PACKED_STRUCT struct {
 #include <packed_section_start.h>
 typedef BWL_PRE_PACKED_STRUCT struct {
 	uint32 num_entry;
-	BCM_DECLARE_FLEX_ARRAY(ibss_route_entry_t, route_entry);
+	ibss_route_entry_t route_entry[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT ibss_route_tbl_t;
 #include <packed_section_end.h>
 
@@ -10915,7 +10915,7 @@ typedef BWL_PRE_PACKED_STRUCT struct {
 	uint16			version;
 	uint16			bss_peer_info_len;	/**< length of bss_peer_info_t */
 	uint32			count;			/**< number of peer info */
-	BCM_DECLARE_FLEX_ARRAY(bss_peer_info_t, peer_info);		/**< peer info */
+	bss_peer_info_t		peer_info[BCM_FLEX_ARRAY];		/**< peer info */
 } BWL_POST_PACKED_STRUCT bss_peer_list_info_t;
 #include <packed_section_end.h>
 
@@ -10968,7 +10968,7 @@ typedef BWL_PRE_PACKED_STRUCT struct wlc_ipfo_route_entry {
 #include <packed_section_start.h>
 typedef BWL_PRE_PACKED_STRUCT struct wlc_ipfo_route_tbl {
 	uint32 num_entry;
-	BCM_DECLARE_FLEX_ARRAY(wlc_ipfo_route_entry_t, route_entry);
+	wlc_ipfo_route_entry_t route_entry[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT wlc_ipfo_route_tbl_t;
 #include <packed_section_end.h>
 
@@ -11855,7 +11855,7 @@ typedef struct assertlog_results {
 	uint16 version;
 	uint16 record_len;
 	uint32 num;
-	BCM_DECLARE_FLEX_ARRAY(assert_record_t, logs);
+	assert_record_t logs[BCM_FLEX_ARRAY];
 } assertlog_results_t;
 
 #define LOGRRC_FIX_LEN	8
@@ -11930,7 +11930,7 @@ typedef struct {
 	uint32 buflen;
 	uint32 version;
 	uint32 count;
-	BCM_DECLARE_FLEX_ARRAY(chanim_stats_t, stats);
+	chanim_stats_t stats[BCM_FLEX_ARRAY];
 } wl_chanim_stats_t;
 
 #define WL_SC_CHANIM_STATS_V1	 1u
@@ -11965,7 +11965,7 @@ typedef struct {
 			 * WL_CHANIM_COUNT_ONE
 			 */
 	uint8 PAD;
-	BCM_DECLARE_FLEX_ARRAY(sc_chanim_stats_v1_t, sc_stats);
+	sc_chanim_stats_v1_t sc_stats[BCM_FLEX_ARRAY];
 } wl_chanim_sc_stats_v1_t;
 
 /* WL_CHANIM_SC_STATS_FIXED_LEN: when we change size of any field above sc_stats, this macro
@@ -12009,7 +12009,7 @@ typedef struct {
 			 * WL_CHANIM_COUNT_ONE
 			 */
 	uint8 PAD;
-	BCM_DECLARE_FLEX_ARRAY(sc_chanim_stats_v2_t, sc_stats);
+	sc_chanim_stats_v2_t sc_stats[BCM_FLEX_ARRAY];
 } wl_chanim_sc_stats_v2_t;
 
 #define WL_SC_CHANIM_STATS_V3	 3u
@@ -12049,7 +12049,7 @@ typedef struct {
 			 * WL_CHANIM_COUNT_ONE
 			 */
 	uint8 PAD;
-	BCM_DECLARE_FLEX_ARRAY(sc_chanim_stats_v3_t, sc_stats);
+	sc_chanim_stats_v3_t sc_stats[BCM_FLEX_ARRAY];
 } wl_chanim_sc_stats_v3_t;
 
 #define WL_SC_CHANIM_STATS_V4	 4u
@@ -12090,7 +12090,7 @@ typedef struct {
 			 * WL_CHANIM_COUNT_ONE
 			 */
 	uint8 PAD;
-	BCM_DECLARE_FLEX_ARRAY(sc_chanim_stats_v4_t, sc_stats);
+	sc_chanim_stats_v4_t sc_stats[BCM_FLEX_ARRAY];
 } wl_chanim_sc_stats_v4_t;
 
 #define WL_SC_CHANIM_STATS_V5	 5u
@@ -12131,7 +12131,7 @@ typedef struct {
 			 * WL_CHANIM_COUNT_ONE
 			 */
 	uint8 PAD;
-	BCM_DECLARE_FLEX_ARRAY(sc_chanim_stats_v5_t, sc_stats);
+	sc_chanim_stats_v5_t sc_stats[BCM_FLEX_ARRAY];
 } wl_chanim_sc_stats_v5_t;
 
 #define WL_SC_CHANIM_STATS_V6	 6u
@@ -12265,7 +12265,7 @@ typedef struct wl_smf_stats {
 	uint32 ignored_cnt;
 	uint32 malformed_cnt;
 	uint32 count_total; /**< count included the interested group */
-	BCM_DECLARE_FLEX_ARRAY(wl_smfs_elem_t, elem);
+	wl_smfs_elem_t elem[BCM_FLEX_ARRAY];
 } wl_smf_stats_t;
 
 #define WL_SMFSTATS_FIXED_LEN OFFSETOF(wl_smf_stats_t, elem);
@@ -12331,7 +12331,7 @@ typedef struct wl_phycal_state {
 	uint16 crsminpower; /**< crsminpower required for ACI */
 	uint16 crsminpowerl; /**< crsminpowerl required for ACI */
 	uint16 crsminpoweru; /**< crsminpoweru required for ACI */
-	BCM_DECLARE_FLEX_ARRAY(wl_phycal_core_state_t, phycal_core);
+	wl_phycal_core_state_t phycal_core[BCM_FLEX_ARRAY];
 } wl_phycal_state_t;
 
 #define WL_PHYCAL_STAT_FIXED_LEN OFFSETOF(wl_phycal_state_t, phycal_core)
@@ -12385,7 +12385,7 @@ typedef struct wl_p2p_sched {
 	uint8 action;	/**< see schedule action */
 	uint8 option;	/**< see schedule option */
 	uint8 PAD;
-	BCM_DECLARE_FLEX_ARRAY(wl_p2p_sched_desc_t, desc);
+	wl_p2p_sched_desc_t desc[BCM_FLEX_ARRAY];
 } wl_p2p_sched_t;
 
 typedef struct wl_p2p_wfds_hash {
@@ -12415,7 +12415,7 @@ typedef struct wl_bcmdcs_data {
 typedef struct _IHV_NIC_SPECIFIC_EXTENSION {
 	uint8			oui[4];     /**< vendor specific OUI value */
 	uint32			event;      /**< event code */
-	BCM_DECLARE_FLEX_ARRAY(uint8, ihvData);    /**< ihv data */
+	uint8			ihvData[BCM_FLEX_ARRAY];    /**< ihv data */
 } IHV_NIC_SPECIFIC_EXTENSION, *PIHV_NIC_SPECIFIC_EXTENSION;
 #define IHV_NIC_SPECIFIC_EXTENTION_HEADER	OFFSETOF(IHV_NIC_SPECIFIC_EXTENSION, ihvData[0])
 /* EXT_STA */
@@ -12502,7 +12502,7 @@ typedef struct wl_txcal_meas_ncore {
 	uint16 version;
 	uint8 valid_cnt;
 	uint8 num_core;
-	BCM_DECLARE_FLEX_ARRAY(wl_txcal_meas_percore_t, txcal_percore);
+	wl_txcal_meas_percore_t txcal_percore[BCM_FLEX_ARRAY];
 } wl_txcal_meas_ncore_t;
 
 typedef struct wl_txcal_power_tssi_percore {
@@ -12650,7 +12650,7 @@ typedef struct wl_txcal_tempsense {
 /** IOVAR "mempool" parameter. Used to retrieve a list of memory pool statistics. */
 typedef struct wl_mempool_stats {
 	int32 num;		/**< Number of memory pools */
-	BCM_DECLARE_FLEX_ARRAY(bcm_mp_stats_t, s);	/**< Variable array of memory pool stats. */
+	bcm_mp_stats_t s[BCM_FLEX_ARRAY];	/**< Variable array of memory pool stats. */
 } wl_mempool_stats_t;
 
 typedef struct {
@@ -12740,7 +12740,7 @@ typedef struct txdelay_stats {
 	uint32  version;
 	uint32  full_result;    /* 0:Partial, 1:full */
 	uint32  scb_cnt;        /* in:requested, out:returned */
-	BCM_DECLARE_FLEX_ARRAY(scb_total_delay_stats_t, scb_delay_stats);
+	scb_total_delay_stats_t scb_delay_stats[BCM_FLEX_ARRAY];
 } txdelay_stats_t;
 
 #define WL_TXDELAY_STATS_FIXED_SIZE \
@@ -12777,7 +12777,7 @@ typedef struct wl_tfs_filter {
 	uint8 status;			/**< Status returned by the AP */
 	uint8 tclas_proc;		/**< TCLAS processing value (0:and, 1:or)  */
 	uint8 tclas_cnt;		/**< count of all wl_tclas_t in tclas array */
-	BCM_DECLARE_FLEX_ARRAY(uint8, tclas);			/**< VLA of wl_tclas_t */
+	uint8 tclas[BCM_FLEX_ARRAY];			/**< VLA of wl_tclas_t */
 } wl_tfs_filter_t;
 #define WL_TFS_FILTER_FIXED_SIZE	OFFSETOF(wl_tfs_filter_t, tclas)
 
@@ -12805,7 +12805,7 @@ enum {
 
 typedef struct wl_tfs_status {
 	uint8 fset_cnt;				/**< count of all wl_tfs_fset_t in fset array */
-	BCM_DECLARE_FLEX_ARRAY(wl_tfs_fset_t, fset);	/**< VLA of wl_tfs_fset_t */
+	wl_tfs_fset_t fset[BCM_FLEX_ARRAY];	/**< VLA of wl_tfs_fset_t */
 } wl_tfs_status_t;
 
 typedef struct wl_tfs_set {
@@ -12853,7 +12853,7 @@ typedef struct wl_dms_desc {
 
 typedef struct wl_dms_status {
 	uint32 cnt;
-	BCM_DECLARE_FLEX_ARRAY(wl_dms_desc_t, desc);
+	wl_dms_desc_t desc[BCM_FLEX_ARRAY];
 } wl_dms_status_t;
 
 typedef struct wl_dms_set {
@@ -13829,7 +13829,7 @@ typedef struct wl_nan_event_replied {
 	int8			sub_rssi; /* Subscriber RSSI */
 	uint8		attr_num;
 	uint16		attr_list_len;  /* sizeof attributes attached to payload */
-	uint8		attr_list[];	/* attributes payload */
+	uint8		attr_list[0];   /* attributes payload */
 } wl_nan_event_replied_t;
 
 /* NAN Tx status of transmitted frames */
@@ -13930,7 +13930,7 @@ typedef struct wl_nan_ev_receive {
 	int8	fup_rssi;
 	uint8	attr_num;
 	uint16	attr_list_len;  /* sizeof attributes attached to payload */
-	uint8	attr_list[];	/* attributes payload */
+	uint8	attr_list[0];   /* attributes payload */
 } wl_nan_ev_receive_t;
 
 /* WL_NAN_EVENT_DISC_CACHE_TIMEOUT */
@@ -15256,7 +15256,7 @@ typedef struct nan_adv_table {
 	uint8  num_adv;
 	uint8	adv_size;
 	uint8	PAD[2];
-	nan_adv_entry_t adv_nodes[];
+	nan_adv_entry_t adv_nodes[0];
 } nan_adv_table_t;
 
 typedef struct wl_nan_role_cfg {
@@ -15347,7 +15347,7 @@ typedef struct wl_nan_sd_params
 	int8	proximity_rssi; /* RSSI limit to Rx subscribe or pub SDF 0 no effect */
 	uint32	flags; /* bitmap representing aforesaid optional flags */
 	int32	ttl; /* TTL for this instance id, -1 will run till cancelled */
-	BCM_DECLARE_FLEX_ARRAY(tlv_t, optional); /* optional fields in the SDF  as appropriate */
+	tlv_t	optional[BCM_FLEX_ARRAY]; /* optional fields in the SDF  as appropriate */
 } wl_nan_sd_params_t;
 
 /*
@@ -15363,7 +15363,7 @@ typedef struct wl_nan_service_info
 typedef struct wl_nan_service_list
 {
 	uint16 id_count; /* Number of registered publish/subscribe services */
-	BCM_DECLARE_FLEX_ARRAY(wl_nan_service_info_t, list); /* service info defined by nan_service */
+	wl_nan_service_info_t list[BCM_FLEX_ARRAY]; /* service info defined by nan_service */
 } wl_nan_service_list_t;
 
 /*
@@ -15720,7 +15720,7 @@ typedef struct wl_nan_ev_disc_result {
 	wl_nan_instance_id_t pub_id;
 	wl_nan_instance_id_t sub_id;
 	struct ether_addr pub_mac;
-	uint8 opt_tlvs[];
+	uint8 opt_tlvs[0];
 } wl_nan_ev_disc_result_t;
 
 typedef struct wl_nan_event_disc_result {
@@ -15730,7 +15730,7 @@ typedef struct wl_nan_event_disc_result {
 	int8		publish_rssi;		/* publisher RSSI */
 	uint8		attr_num;
 	uint16		attr_list_len;	/* length of the all the attributes in the SDF */
-	uint8		attr_list[];	/* list of NAN attributes */
+	uint8		attr_list[0];	/* list of NAN attributes */
 } wl_nan_event_disc_result_t;
 
 typedef struct wl_nan_ev_p2p_avail {
@@ -15774,7 +15774,7 @@ typedef struct wl_nan_oob_af_params_s
 	uint16 flags;		/* wl_nan_oob_af_flags_t */
 	uint32 fsm_id;		/* unique fsm id */
 	uint16 payload_len;
-	BCM_DECLARE_FLEX_ARRAY(uint8, payload);
+	uint8 payload[BCM_FLEX_ARRAY];
 } wl_nan_oob_af_params_t;
 
 /* NAN Ranging */
@@ -15814,7 +15814,7 @@ typedef struct nan_ranging_list {
 					 */
 	uint8 num_dws;			/**< time period to do the ranging, specified in dws */
 	uint8 reserve;			/**< reserved field */
-	BCM_DECLARE_FLEX_ARRAY(wl_nan_ranging_peer_t, rp);	/**< variable length array of peers */
+	wl_nan_ranging_peer_t rp[BCM_FLEX_ARRAY];	/**< variable length array of peers */
 } wl_nan_ranging_list_t;
 
 /* ranging results, a list for self initiated ranging and one for peer initiated ranging */
@@ -15848,7 +15848,7 @@ typedef struct nan_ranging_event_data {
 	uint8 reserved;
 	uint8 success_count;		/**< number of peers completed successfully */
 	uint8 count;			/**< number of peers in the list */
-	BCM_DECLARE_FLEX_ARRAY(wl_nan_ranging_result_t, rr);	/**< variable array of ranging peers */
+	wl_nan_ranging_result_t rr[BCM_FLEX_ARRAY];	/**< variable array of ranging peers */
 } wl_nan_ranging_event_data_t;
 
 enum {
@@ -15937,7 +15937,7 @@ typedef struct wl_nan_nbr_rssi_data {
 	uint8 flags;   /* this is a list or single rssi data */
 	uint8 peer_cnt; /* number of peers */
 	uint16 PAD; /* padding */
-	BCM_DECLARE_FLEX_ARRAY(wl_nan_peer_rssi_entry_t, peers); /* peers data list */
+	wl_nan_peer_rssi_entry_t peers[BCM_FLEX_ARRAY]; /* peers data list */
 } wl_nan_peer_rssi_data_t;
 
 /* WL_NAN_CMD_DBG_DUMP, GET Resp */
@@ -15993,7 +15993,7 @@ typedef struct wl_nan_ndp_config
 	wl_nan_dp_qos_t qos;
 	uint16 avail_len;
 	uint8 PAD[3];
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } wl_nan_ndp_config_t;
 
 /* nan2 device capabilities */
@@ -16124,7 +16124,7 @@ typedef struct wl_nan_dp_opaque_info {
 	uint8 pub_id;     /* publish id where the opaque data is included. */
 	uint8 len;        /* len of opaque_info[]. */
 	uint8 PAD[3];
-	uint8 opaque_info[];
+	uint8 opaque_info[0];
 } wl_nan_dp_opaque_info_t;
 
 /* events */
@@ -16188,7 +16188,7 @@ typedef struct wl_nan_ev_rx_bcn {
 	wl_tsf_t tsf;
 	uint16   bcn_len;
 	uint8    PAD[2];
-	uint8    bcn[];
+	uint8    bcn[0];
 } wl_nan_ev_rx_bcn_t;
 
 /* reason of host assist request */
@@ -17093,7 +17093,7 @@ typedef struct wl_wsec_info {
 	uint8 version; /**< structure version */
 	uint8 PAD[2];
 	uint8 num_tlvs;
-	BCM_DECLARE_FLEX_ARRAY(wl_wsec_info_tlv_t, tlvs); /**< tlv data follows */
+	wl_wsec_info_tlv_t tlvs[BCM_FLEX_ARRAY]; /**< tlv data follows */
 } wl_wsec_info_t;
 
 #define AP_BLOCK_NONE		0x00000000u	/* No restriction (default) */
@@ -17166,7 +17166,7 @@ typedef struct wl_randmac {
 	uint16 version;
 	uint16 len;			/* total length */
 	wl_randmac_subcmd_t subcmd_id;	/* subcommand id */
-	uint8 data[];			/* subcommand data */
+	uint8 data[0];			/* subcommand data */
 } wl_randmac_t;
 
 #define WL_RANDMAC_IOV_HDR_SIZE OFFSETOF(wl_randmac_t, data)
@@ -17259,7 +17259,7 @@ typedef struct wl_randmac_event {
 	wl_randmac_event_type_t	type;
 	wl_randmac_method_t	method;
 	uint8			PAD[2];
-	BCM_DECLARE_FLEX_ARRAY(wl_randmac_tlv_t, tlvs);	/**< variable */
+	wl_randmac_tlv_t	tlvs[BCM_FLEX_ARRAY];	/**< variable */
 } wl_randmac_event_t;
 
 /*
@@ -17332,14 +17332,14 @@ typedef struct scan_event_data {
 typedef struct scan_chan_tlv {
 	uint16 type; /* slice index */
 	uint16 len; /* data length */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data); /* chanspec list */
+	uint8 data[BCM_FLEX_ARRAY]; /* chanspec list */
 } scan_chan_tlv_t;
 
 typedef struct scan_event_data_v2 {
 	uint32 version;
 	uint32 flags;
 	uint32 num_tlvs; /* no of chanspec list tlvs */
-	BCM_DECLARE_FLEX_ARRAY(uint8, tlvs);
+	uint8  tlvs[BCM_FLEX_ARRAY];
 } scan_event_data_v2_t;
 #define WL_SCAN_EVENT_FIXED_LEN_V2	OFFSETOF(scan_event_data_v2_t, tlvs)
 
@@ -17472,7 +17472,7 @@ typedef struct wl_tko_status {
 	uint8 count;		/* number of status entries (i.e. equals
 				 * max TCP connections supported)
 	                         */
-	BCM_DECLARE_FLEX_ARRAY(uint8, status);	/* variable length field contain status for
+	uint8 status[BCM_FLEX_ARRAY];	/* variable length field contain status for
 				 * each TCP connection index
 				 */
 } wl_tko_status_t;
@@ -17628,7 +17628,7 @@ typedef enum net_detect_wake_reason {
 typedef struct net_detect_wake_data {
 	net_detect_wake_reason_t    nd_wake_reason;
 	uint32			    nd_wake_date_length;
-	uint8			    nd_wake_data[];	    /**< Wake data (currently unused) */
+	uint8			    nd_wake_data[0];	    /**< Wake data (currently unused) */
 } net_detect_wake_data_t;
 
 /* endif NET_DETECT */
@@ -17733,7 +17733,7 @@ typedef struct wl_rrm_config_ioc {
 	uint16 id;      /* subiovar cmd ID */
 	uint16 len;     /* total length of all bytes in data[] */
 	uint16 PAD;     /* 4-byte boundary padding */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);  /* payload */
+	uint8 data[BCM_FLEX_ARRAY];  /* payload */
 } wl_rrm_config_ioc_t;
 
 enum {
@@ -17778,7 +17778,7 @@ typedef struct frngreq {
 	uint8 num_aps;			/* Number of APs to range, at least min_ap_count */
 	uint16 max_age;			/* Max elapsed time before FTM request, 0xFFFF = any */
 	uint16 reps;			/* Number of repetitions of this measurement type */
-	BCM_DECLARE_FLEX_ARRAY(frngreq_target_t, targets);	/* Target BSSIDs to range */
+	frngreq_target_t targets[BCM_FLEX_ARRAY];	/* Target BSSIDs to range */
 } frngreq_t;
 
 typedef struct frngrep_range {
@@ -17879,7 +17879,7 @@ typedef struct wl_el_set_all_type_s_v1 {
 	uint16	version;
 	uint16	len;
 	uint32	max_sets;
-	BCM_DECLARE_FLEX_ARRAY(wl_el_set_type_v1_t, set_type); /* set-Type Values Array */
+	wl_el_set_type_v1_t set_type[BCM_FLEX_ARRAY]; /* set-Type Values Array */
 } wl_el_set_all_type_v1_t;
 
 typedef struct wl_staprio_cfg {
@@ -17947,7 +17947,7 @@ typedef struct wlc_bcn_len_hist {
 	uint32	max_bcnlen;		/**< Max beacon length received */
 	uint32	min_bcnlen;		/**< Min beacon length received */
 	uint32	ringbuff_len;		/**< Length of the ring buffer 'bcnlen_ring' */
-	BCM_DECLARE_FLEX_ARRAY(uint32, bcnlen_ring);	/**< ring buffer storing received beacon lengths */
+	uint32	bcnlen_ring[BCM_FLEX_ARRAY];	/**< ring buffer storing received beacon lengths */
 } wlc_bcn_len_hist_t;
 
 /* WDS net interface types */
@@ -18623,7 +18623,7 @@ typedef struct wl_proxd_iov {
 	wl_proxd_session_id_t	sid;
 	wl_proxd_type_t		ftm_type;	/* 11az ftm type. valid for PROXD ver >= 0x0400 */
 	uint8			PAD[1];
-	BCM_DECLARE_FLEX_ARRAY(wl_proxd_tlv_t, tlvs);	/**< variable */
+	wl_proxd_tlv_t		tlvs[BCM_FLEX_ARRAY];	/**< variable */
 } wl_proxd_iov_t;
 
 #else /* !FTM */
@@ -18781,7 +18781,7 @@ typedef struct wl_proxd_rtt_result_v1 {
 	uint16				num_rtt;	/* 0 if no detail */
 	uint16				num_meas;	/* number of ftm frames seen OTA */
 	uint8				pad[2];
-	BCM_DECLARE_FLEX_ARRAY(wl_proxd_rtt_sample_v1_t, rtt);		/* variable */
+	wl_proxd_rtt_sample_v1_t	rtt[BCM_FLEX_ARRAY];		/* variable */
 } wl_proxd_rtt_result_v1_t;
 
 #define WL_PROXD_RTT_SAMPLE_VERSION_2	2
@@ -18828,7 +18828,7 @@ typedef struct wl_proxd_rtt_result_v2 {
 	uint16				num_rtt;	/* 0 if no detail */
 	uint16				num_meas;	/* number of ftm frames seen OTA */
 	uint8				pad[2];
-	BCM_DECLARE_FLEX_ARRAY(wl_proxd_rtt_sample_v2_t, rtt);	/* variable len: first is avg_rtt */
+	wl_proxd_rtt_sample_v2_t	rtt[BCM_FLEX_ARRAY];	/* variable len: first is avg_rtt */
 } wl_proxd_rtt_result_v2_t;
 
 #define WL_PROXD_RTT_SAMPLE_VERSION_3	3
@@ -18939,12 +18939,12 @@ typedef uint16 wl_proxd_ftm_caps_t;
 
 typedef struct wl_proxd_tlv_id_list {
 	uint16			num_ids;
-	BCM_DECLARE_FLEX_ARRAY(uint16, ids);
+	uint16			ids[BCM_FLEX_ARRAY];
 } wl_proxd_tlv_id_list_t;
 
 typedef struct wl_proxd_session_id_list {
 	uint16 num_ids;
-	BCM_DECLARE_FLEX_ARRAY(wl_proxd_session_id_t, ids);
+	wl_proxd_session_id_t ids[BCM_FLEX_ARRAY];
 } wl_proxd_session_id_list_t;
 
 typedef struct wl_proxd_tpk {
@@ -19007,7 +19007,7 @@ typedef struct wl_proxd_range_req {
 	uint16			init_delay_range;	/**< in TUs */
 	uint8			PAD;
 	uint8			num_nbr;		/**< number of (possible) neighbors */
-	BCM_DECLARE_FLEX_ARRAY(nbr_element_t, nbr);
+	nbr_element_t		nbr[BCM_FLEX_ARRAY];
 } wl_proxd_range_req_t;
 
 #define WL_PROXD_LCI_LAT_OFF	0
@@ -19083,7 +19083,7 @@ typedef struct wl_proxd_avail24 {
 	uint16  num_slots;
 	wl_proxd_time_slot_t slots[1];	/**< ROM compat - not used */
 	wl_proxd_intvl_t	repeat;
-	BCM_DECLARE_FLEX_ARRAY(wl_proxd_time_slot_t, ts0);
+	wl_proxd_time_slot_t ts0[BCM_FLEX_ARRAY];
 } wl_proxd_avail24_t;
 #define WL_PROXD_AVAIL24_TIMESLOT(_avail24, _i) (&(_avail24)->ts0[(_i)])
 #define WL_PROXD_AVAIL24_TIMESLOT_OFFSET(_avail24) OFFSETOF(wl_proxd_avail24_t, ts0)
@@ -19098,7 +19098,7 @@ typedef struct wl_proxd_avail {
 	uint16	max_slots; /**< for query only */
 	uint16  num_slots;
 	wl_proxd_intvl_t	repeat;
-	BCM_DECLARE_FLEX_ARRAY(wl_proxd_time_slot_t, slots);
+	wl_proxd_time_slot_t slots[BCM_FLEX_ARRAY];
 } wl_proxd_avail_t;
 #define WL_PROXD_AVAIL_TIMESLOT(_avail, _i) (&(_avail)->slots[(_i)])
 #define WL_PROXD_AVAIL_TIMESLOT_OFFSET(_avail) OFFSETOF(wl_proxd_avail_t, slots)
@@ -19309,7 +19309,7 @@ typedef struct wl_proxd_event {
 	wl_proxd_method_t	method;
 	wl_proxd_session_id_t	sid;
 	uint8			pad[2];		/* This field is used fragmentation purpose */
-	BCM_DECLARE_FLEX_ARRAY(wl_proxd_tlv_t, tlvs);	/**< variable */
+	wl_proxd_tlv_t tlvs[BCM_FLEX_ARRAY];	/**< variable */
 } wl_proxd_event_t;
 
 enum {
@@ -19695,7 +19695,7 @@ typedef struct wnm_bss_select_factor_cfg {
 	uint16 type;
 	uint16 PAD;
 	uint16 count;
-	BCM_DECLARE_FLEX_ARRAY(wnm_bss_select_factor_params_t, params);
+	wnm_bss_select_factor_params_t params[BCM_FLEX_ARRAY];
 } wnm_bss_select_factor_cfg_t;
 
 #define WNM_BSS_SELECT_WEIGHT_VERSION   1
@@ -19921,7 +19921,7 @@ typedef struct wl_iqest_value {
 typedef struct wl_iqest_result {
 	uint8 nvalues;
 	uint8 PAD[3];
-	BCM_DECLARE_FLEX_ARRAY(wl_iqest_value_t, value);
+	wl_iqest_value_t value[BCM_FLEX_ARRAY];
 } wl_iqest_result_t;
 
 #define WL_PRIO_ROAM_PROF_V1 (1u)
@@ -20277,7 +20277,7 @@ typedef struct wl_txpwrcap_dump_v4 {
 	* On main,-non-sdb follows by sdb2g and then sdb5g
 	* On aux slice - aux2g then aux5g.
 	*/
-	BCM_DECLARE_FLEX_ARRAY(uint8, pwrcap); /* variable size power caps (wl_txpwrcap_t) */
+	uint8 pwrcap[BCM_FLEX_ARRAY]; /* variable size power caps (wl_txpwrcap_t) */
 } wl_txpwrcap_dump_v4_t;
 
 typedef struct wl_txpwrcap_dump_v5 {
@@ -20341,7 +20341,7 @@ typedef struct {
 	uint16  length; /* length in bytes */
 	uint8   num_ccgrp;
 	/* followed by one or more wl_txpwrcap_ccgrp_info_t */
-	BCM_DECLARE_FLEX_ARRAY(wl_txpwrcap_ccgrp_info_t, ccgrp_data);
+	wl_txpwrcap_ccgrp_info_t ccgrp_data[BCM_FLEX_ARRAY];
 } wl_txpwrcap_info_t;
 
 typedef struct wl_txpwrcap_tbl {
@@ -20810,7 +20810,7 @@ typedef struct ecounters_config_request {
 	uint16 timeout;		/* timeout in seconds. */
 	uint16 num_events;	/* Number of events to report. */
 	uint16 ntypes;		/* Number of entries in type array. */
-	BCM_DECLARE_FLEX_ARRAY(uint16, type);		/* Statistics Types (tags) to retrieve. */
+	uint16 type[BCM_FLEX_ARRAY];		/* Statistics Types (tags) to retrieve. */
 } ecounters_config_request_t;
 
 #define ECOUNTERS_EVENTMSGS_VERSION_1		1
@@ -20825,7 +20825,7 @@ typedef struct ecounters_config_request {
 typedef struct ecounters_eventmsgs_ext {
 	uint8 version;
 	uint8 len;
-	BCM_DECLARE_FLEX_ARRAY(uint8, mask);
+	uint8 mask[BCM_FLEX_ARRAY];
 } ecounters_eventmsgs_ext_t;
 
 typedef struct ecounters_trigger_config {
@@ -20834,7 +20834,7 @@ typedef struct ecounters_trigger_config {
 	uint16 rsvd;		/* reserved */
 	uint16 PAD;		/* pad/reserved */
 	uint16 ntypes;		/* number of types/tags */
-	BCM_DECLARE_FLEX_ARRAY(uint16, type);		/* list of types */
+	uint16 type[BCM_FLEX_ARRAY];		/* list of types */
 } ecounters_trigger_config_t;
 
 #define ECOUNTERS_TRIGGER_REASON_VERSION_1	1
@@ -21575,7 +21575,7 @@ typedef struct wlc_fbt_auth_resp {
 	uint8 status;  /**< Status of parsing FBT authentication
 					Request in application
 					*/
-	BCM_DECLARE_FLEX_ARRAY(uint8, ies); /**< IEs contains MDIE, RSNIE,
+	uint8 ies[BCM_FLEX_ARRAY]; /**< IEs contains MDIE, RSNIE,
 					FBTIE (ANonce, SNonce,R0KH-ID, R1KH-ID)
 					*/
 } wlc_fbt_auth_resp_t;
@@ -21586,7 +21586,7 @@ typedef struct wlc_fbt_action_resp {
 	uint16 length; /**< length of structure */
 	uint8 macaddr[ETHER_ADDR_LEN]; /**< station mac address */
 	uint8 data_len;  /**< len of ie from Category */
-	BCM_DECLARE_FLEX_ARRAY(uint8, data); /**< data contains category, action, sta address, target ap,
+	uint8 data[BCM_FLEX_ARRAY]; /**< data contains category, action, sta address, target ap,
 						status code,fbt response frame body
 						*/
 } wlc_fbt_action_resp_t;
@@ -21851,7 +21851,7 @@ typedef struct mesh_peer_info_dump {
 	uint32 version;
 	uint16 count;   /* number of results */
 	uint16 remaining; /* remaining rsults */
-	BCM_DECLARE_FLEX_ARRAY(mesh_peer_info_ext_t, mpi_ext);
+	mesh_peer_info_ext_t    mpi_ext[BCM_FLEX_ARRAY];
 } mesh_peer_info_dump_t;
 
 #define WL_MESH_PEER_RES_FIXED_SIZE (OFFSETOF(mesh_peer_info_dump_t, mpi_ext))
@@ -21900,7 +21900,7 @@ typedef struct _wl_fbt_params {
 
 	uint16 param_type;		/* type of parameter defined below */
 	uint16 param_len;		/* length of the param_value */
-	BCM_DECLARE_FLEX_ARRAY(uint8, param_value);		/* variable length */
+	uint8 param_value[BCM_FLEX_ARRAY];		/* variable length */
 } wl_fbt_params_t;
 
 #define WL_FBT_PARAM_TYPE_RSNIE			0
@@ -22114,7 +22114,7 @@ typedef struct rsdb_caps_response {
 	uint8 rsdb;		/* TRUE for rsdb chip */
 	uint8 num_of_cores;	/* no of d11 cores */
 	uint16 flags;		/* Flags to indicate various capabilities */
-	BCM_DECLARE_FLEX_ARRAY(uint8, num_chains);	/* Tx/Rx chains for each core */
+	uint8 num_chains[BCM_FLEX_ARRAY];	/* Tx/Rx chains for each core */
 } rsdb_caps_response_t;
 
 /* Data structures for rsdb bands */
@@ -22127,7 +22127,7 @@ typedef struct rsdb_bands
 	uint8 ver;
 	uint8 len;
 	uint16 num_cores;	/* num of D11 cores */
-	BCM_DECLARE_FLEX_ARRAY(int16, band);		/* The band operating on each of the d11 cores */
+	int16 band[BCM_FLEX_ARRAY];		/* The band operating on each of the d11 cores */
 } rsdb_bands_t;
 
 /* rsdb config */
@@ -22248,7 +22248,7 @@ typedef struct sb_channel_sequence {
 	sched_flag_t sched_flags; /* (sdb-tdm or sdb-sb or Dual-Time) */
 	uint8 num_seq; /* number of chan_seq_tlv following */
 	uint16 PAD;
-	BCM_DECLARE_FLEX_ARRAY(chan_seq_tlv_t, seq);
+	chan_seq_tlv_t seq[BCM_FLEX_ARRAY];
 } sb_channel_sequence_t;
 
 typedef struct slice_chan_seq {
@@ -22256,7 +22256,7 @@ typedef struct slice_chan_seq {
 	uint8 num_chanspecs;
 	uint8 dur;
 	uint8 PAD;
-	BCM_DECLARE_FLEX_ARRAY(chanspec_t, chanspecs);
+	chanspec_t chanspecs[BCM_FLEX_ARRAY];
 } slice_chan_seq_t;
 
 #define SLOT_BSS_SLICE_TYPE_DUR_MAX_RANGE	2u
@@ -22844,7 +22844,7 @@ typedef struct wl_heb_cnt_v1 {
 	/* structure control */
 	uint16 version;	/* structure version */
 	uint16 length;	/* data length (starting after this field) */
-	BCM_DECLARE_FLEX_ARRAY(wl_heb_int_cnt_v1_t, heb_int_cnt);
+	wl_heb_int_cnt_v1_t heb_int_cnt[BCM_FLEX_ARRAY];
 } wl_heb_cnt_v1_t;
 
 // struct for configuring HEB
@@ -22883,7 +22883,7 @@ typedef struct wl_heb_int_status_v1 {
 typedef struct wl_heb_status_v1 {
 	uint16 version;	/* structure version */
 	uint16 length;	/* data length (starting after this field) */
-	BCM_DECLARE_FLEX_ARRAY(wl_heb_reg_status_v1_t, heb_status);
+	wl_heb_reg_status_v1_t heb_status[BCM_FLEX_ARRAY];
 } wl_heb_status_v1_t;
 
 /* HWA */
@@ -23657,7 +23657,7 @@ typedef struct wlc_clm_power_limits_req {
 	/* Output. Length of TLV-encoded PPR data that follows this structure */
 	uint32 ppr_tlv_size;
 	/* Output. Beginning of buffer for TLV-encoded PPR data */
-	BCM_DECLARE_FLEX_ARRAY(uint8, ppr_tlv);
+	uint8 ppr_tlv[BCM_FLEX_ARRAY];
 } wlc_clm_power_limits_req_t;
 
 /* Input. Do not apply SAR limits */
@@ -24994,17 +24994,17 @@ typedef struct rpsnoa_param {
 
 typedef struct rpsnoa_iovar {
 	rpsnoa_cmnhdr_t hdr;
-	BCM_DECLARE_FLEX_ARRAY(rpsnoa_data_t, data);
+	rpsnoa_data_t data[BCM_FLEX_ARRAY];
 } rpsnoa_iovar_t;
 
 typedef struct rpsnoa_iovar_status {
 	rpsnoa_cmnhdr_t hdr;
-	BCM_DECLARE_FLEX_ARRAY(rpsnoa_stats_t, stats);
+	rpsnoa_stats_t stats[BCM_FLEX_ARRAY];
 } rpsnoa_iovar_status_t;
 
 typedef struct rpsnoa_iovar_params {
 	rpsnoa_cmnhdr_t hdr;
-	BCM_DECLARE_FLEX_ARRAY(rpsnoa_param_t, param);
+	rpsnoa_param_t param[BCM_FLEX_ARRAY];
 } rpsnoa_iovar_params_t;
 
 /* Per-interface reportable stats types */
@@ -26673,7 +26673,7 @@ enum wl_tx_histogram_id {
 typedef struct wl_tx_hist {
 	uint16 hist_bmap;	/* bit N indicates histogram follows for priority or fifo N */
 	uint16 hist_count;	/* count of histograms in var len array */
-	BCM_DECLARE_FLEX_ARRAY(uint32, hist); /* var len array of histograms each prefix by hist length */
+	uint32 hist[BCM_FLEX_ARRAY]; /* var len array of histograms each prefix by hist length */
 } wl_tx_hist_t;
 
 #define WL_TX_HIST_FIXED_LEN	(OFFSETOF(wl_tx_hist_t, hist))
@@ -26750,7 +26750,7 @@ enum wl_tx_queue_depth_id {
 typedef struct wl_tx_queue_depth {
 	uint16 queue_depth_bmap;	/* bitmap of queue depth in var len array */
 	uint16 queue_depth_count;	/* count of queue depth in var len array */
-	BCM_DECLARE_FLEX_ARRAY(uint16, queue_depth);		/* var len array of queue depth */
+	uint16 queue_depth[BCM_FLEX_ARRAY];		/* var len array of queue depth */
 } wl_tx_queue_depth_t;
 
 #define WL_TX_QUEUE_DEPTH_FIXED_LEN	(OFFSETOF(wl_tx_queue_depth_t, queue_depth))
@@ -27801,7 +27801,7 @@ typedef struct sdtc_config {
 	uint8		sdtc_id;	/* 0xFF indicates, all core id's enable */
 	uint8		PAD;		/* 32 bit alignment */
 	uint16		num_of_registers; /* if no of reg is "0",it will use default SDTC config */
-	BCM_DECLARE_FLEX_ARRAY(sdtc_regs_t, regs);	/* Array of register list */
+	sdtc_regs_t	regs[BCM_FLEX_ARRAY];	/* Array of register list */
 } sdtc_config_t;
 
 typedef struct sdtc_enab_atid_list {
@@ -29377,7 +29377,7 @@ typedef struct wl_csi_data_info {
 	uint8 num_rx;				/* number of rx cores in data */
 	uint8 num_streams;			/* number of streams in data */
 	uint8 num_rssi;				/* number of rssi in following array */
-	BCM_DECLARE_FLEX_ARRAY(int8, rssi);		/* variable length array of rssi of each core */
+	int8 rssi[BCM_FLEX_ARRAY];		/* variable length array of rssi of each core */
 } wl_csi_data_info_t;
 
 /* WL_CSI_SUBCMD_GET_DATA GET subcommand data fragment request */
@@ -29391,7 +29391,7 @@ typedef struct wl_csi_get_data_resp {
 	uint32 total_length;			/* total length of CSI data */
 	uint32 offset;				/* CSI data offset read */
 	uint32 length;				/* length of CSI data in following array */
-	BCM_DECLARE_FLEX_ARRAY(uint32, csi_data);	/* variable length array of CSI data */
+	uint32 csi_data[BCM_FLEX_ARRAY];	/* variable length array of CSI data */
 } wl_csi_get_data_resp_t;
 
 /* User roam cache size updated 10 so that

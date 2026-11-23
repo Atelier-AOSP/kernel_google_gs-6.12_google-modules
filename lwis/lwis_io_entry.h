@@ -42,18 +42,6 @@ void *lwis_io_entry_result(void *read_buf, struct lwis_io_entry *entry, int reg_
 			   bool is_periodic);
 
 /**
- * lwis_io_entry_is_type_batch_compatible() - Check if an I/O entry is batch compatible.
- * @entry: The I/O entry to check.
- *
- * This function determines if the given LWIS I/O entry is of a type that can be
- * processed in a batch. Batch-compatible entries are typically standard
- * register read/write operations that can be efficiently handled together.
- *
- * Return: True if the entry is batch-compatible, false otherwise.
- */
-bool lwis_io_entry_is_type_batch_compatible(struct lwis_io_entry *entry);
-
-/**
  * lwis_io_entry_process() - Process a single LWIS I/O entry.
  * @lwis_dev: The LWIS device to process the entry for.
  * @entry:    The I/O entry to process.

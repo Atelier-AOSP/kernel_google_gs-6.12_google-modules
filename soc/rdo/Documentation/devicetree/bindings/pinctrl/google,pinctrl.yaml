@@ -107,6 +107,12 @@ properties:
   irq-pad-mapping:
     description: Map 1:1 to pad and interrupts-extended info.
 
+  gia-routed-shared-irq:
+    description: |
+      Specifies which IRQs are routed via GIA and shared with remote subsystems.
+      For these pins, disable_irq will only mask the parent GIA input to
+      maintain signal visibility for concurrent monitoring.
+
   pinctrl-0:
     description: |
       List of phandles, each pointing at a pin configuration node

@@ -56,6 +56,11 @@ void rvh_sched_setaffinity_mod(void *data, struct task_struct *task,
 		return;
 	}
 
+	if (should_auto_latency_sensitive(task, in_mask, NULL))
+		set_auto_adpf(task, true);
+	else
+		set_auto_adpf(task, false);
+
 	if (capable(CAP_SYS_NICE))
 		return;
 
@@ -90,14 +95,14 @@ static inline void boost_priority_task(struct task_struct *p)
 	task_rq_unlock(rq, p, &rf);
 }
 
-void vh_set_task_comm_pixel_mod(void *data, struct task_struct *p)
+void rvh_set_task_comm_pixel_mod(void *data, struct task_struct *p, bool exec)
 {
 	char tmp[LIB_PATH_LENGTH];
 	char *tok, *str;
 	unsigned long flags;
 
 	spin_lock_irqsave(&priority_task_name_lock, flags);
-	strlcpy(tmp, priority_task_name, LIB_PATH_LENGTH);
+	strscpy(tmp, priority_task_name, sizeof(tmp));
 	spin_unlock_irqrestore(&priority_task_name_lock, flags);
 	str = tmp;
 
@@ -114,6 +119,7 @@ void vh_set_task_comm_pixel_mod(void *data, struct task_struct *p)
 			}
 		}
 	}
+	queue_delayed_notification(p, VENDOR_SCHED_CMD_TASK_RENAME, 0, 0);
 }
 
 int set_prefer_idle_task_name(void)
@@ -124,7 +130,7 @@ int set_prefer_idle_task_name(void)
 	int ret = -1;
 
 	spin_lock(&prefer_idle_task_name_lock);
-	strlcpy(tmp, prefer_idle_task_name, LIB_PATH_LENGTH);
+	strscpy(tmp, prefer_idle_task_name, sizeof(tmp));
 	spin_unlock(&prefer_idle_task_name_lock);
 
 	if (*tmp != '\0') {

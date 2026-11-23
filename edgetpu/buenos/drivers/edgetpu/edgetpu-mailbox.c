@@ -16,6 +16,7 @@
 
 #include <gcip/gcip-memory.h>
 
+#include "edgetpu-client.h"
 #include "edgetpu-config.h"
 #include "edgetpu-device-group.h"
 #include "edgetpu-dt-mailbox-adapter.h"
@@ -222,7 +223,6 @@ void edgetpu_mailbox_reinit_external_mailbox(struct edgetpu_device_group *group)
 
 void edgetpu_mailbox_restore_active_ext_mailbox_queues(struct edgetpu_dev *etdev)
 {
-	struct edgetpu_list_group *l;
 	struct edgetpu_device_group *group;
 	struct edgetpu_device_group **groups;
 	size_t i, n = 0;
@@ -244,7 +244,7 @@ void edgetpu_mailbox_restore_active_ext_mailbox_queues(struct edgetpu_dev *etdev
 	 * etdev->groups_lock. To prevent the potential deadlock that
 	 * edgetpu_device_group_add() holds group->lock then etdev->groups_lock.
 	 */
-	etdev_for_each_group(etdev, l, group) {
+	list_for_each_entry(group, &etdev->groups, group_list_node) {
 		/*
 		 * Quick skip without holding group->lock.
 		 * Disbanded groups can never go back to the normal state.
@@ -476,7 +476,8 @@ static int edgetpu_mailbox_external_alloc(struct edgetpu_device_group *group,
 #else
 		csr_base = edgetpu_mailbox_get_ext_csr_base(mgr->etdev, i);
 		/* External mailboxes do not have doorbells to the AP. */
-		mailbox = edgetpu_mailbox_alloc(mgr->etdev, csr_base, /*irq=*/0, i);
+		mailbox = edgetpu_mailbox_alloc(mgr->etdev, csr_base, /*irq=*/0, i,
+						/*msi_enabled=*/false);
 #endif /* EDGETPU_USE_CMF */
 		if (!IS_ERR(mailbox)) {
 			mgr->ext_mailboxes[i - mgr->ext_index_from] = mailbox;
@@ -610,7 +611,7 @@ static int edgetpu_mailbox_external_disable_free(struct edgetpu_client *client)
 
 void edgetpu_mailbox_external_disable_free_locked(struct edgetpu_device_group *group)
 {
-	if (pm_runtime_get_if_active(group->etdev->dev, false) > 0) {
+	if (pm_runtime_get_if_active(group->etdev->dev) > 0) {
 		int ret;
 
 		ret = edgetpu_mailbox_deactivate_external_mailbox(group);

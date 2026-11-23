@@ -3,7 +3,7 @@
  * of the BOOKER NCI (non coherent interconnect) based Broadcom chips.
  * Note: this file is used for both dongle and DHD builds.
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -95,7 +95,7 @@
 #define SLAVEPORT_ADDR_SIZE(adesc)	(1u << ((adesc & SLAVEPORT_ADDR_SIZE_MASK) + \
 			SLAVEPORT_ADDR_MIN_SHIFT))
 
-#define GET_NEXT_EROM_ADDR(addr)	((uint32*)((uintptr)(addr) + 4u))
+#define GET_NEXT_EROM_ADDR(addr)	((uint32 *)((uintptr)(addr) + 4u))
 
 #define NCI_DEFAULT_CORE_UNIT		(0u)
 
@@ -154,11 +154,11 @@ enum {
 #define NCI_ADD_NUM(addr, size)		(NCI_ADDR2NUM(addr) + (size))
 #define NCI_SUB_NUM(addr, size)		(NCI_ADDR2NUM(addr) - (size))
 #ifdef DONGLEBUILD
-#define NCI_ADD_ADDR(addr, size)	((uint32*)REG_MAP(NCI_ADD_NUM((addr), (size)), 0u))
-#define NCI_SUB_ADDR(addr, size)	((uint32*)REG_MAP(NCI_SUB_NUM((addr), (size)), 0u))
+#define NCI_ADD_ADDR(addr, size)	((uint32 *)REG_MAP(NCI_ADD_NUM((addr), (size)), 0u))
+#define NCI_SUB_ADDR(addr, size)	((uint32 *)REG_MAP(NCI_SUB_NUM((addr), (size)), 0u))
 #else /* !DONGLEBUILD */
-#define NCI_ADD_ADDR(addr, size)	((uint32*)(NCI_ADD_NUM((addr), (size))))
-#define NCI_SUB_ADDR(addr, size)	((uint32*)(NCI_SUB_NUM((addr), (size))))
+#define NCI_ADD_ADDR(addr, size)	((uint32 *)(NCI_ADD_NUM((addr), (size))))
+#define NCI_SUB_ADDR(addr, size)	((uint32 *)(NCI_SUB_NUM((addr), (size))))
 #endif /* DONGLEBUILD */
 #define NCI_INC_ADDR(addr, size)	((addr) = NCI_ADD_ADDR((addr), (size)))
 #define NCI_DEC_ADDR(addr, size)	((addr) = NCI_SUB_ADDR((addr), (size)))
@@ -182,10 +182,26 @@ enum {
 #define BP_AUX_PMNI			0x6u
 #define BP_SCAN_PMNI			0x7u
 #define BP_SAQM_PMNI			0x8u
+/* AI Backplane ID's */
+#define BP_NIC400_CB			0x0u
+#define BP_NIC400_WL			0x1u
+#define BP_APB_WL			0x2u
+#define BP_APB_CB0			0x3u
+#define BP_APB_CB1			0x4u
+#define BP_CCI400			0x5u
 
 #define PCIE_WRITE_SIZE			4u
 
 #define BACKPLANE_ID_STR_SIZE		11u
+char BACKPLANE_ID_NAME_AI[][BACKPLANE_ID_STR_SIZE] = {
+	"NIC400_CB",
+	"NIC400_WL",
+	"APB_WL0",
+	"APB_CB0",
+	"APB_CB1",
+	"CCI400",
+	"\0"
+};
 char BACKPLANE_ID_NAME_4397A0[][BACKPLANE_ID_STR_SIZE] = {
 	"BOOKER",
 	"NIC400",
@@ -240,16 +256,24 @@ uint32 nci_log_level = NCI_DEFAULT_LOG_LEVEL;
 #else
 #ifndef BCM_BOOTLOADER
 #define NCI_ERROR(args) do { \
-		if (nci_log_level & NCI_LOG_LEVEL_ERROR) { posttrap_printf args; } \
+		if (nci_log_level & NCI_LOG_LEVEL_ERROR) { \
+			posttrap_printf args; \
+		} \
 	} while (0u)
 #define NCI_TRACE(args) do { \
-		if (nci_log_level & NCI_LOG_LEVEL_TRACE) { posttrap_printf args; } \
+		if (nci_log_level & NCI_LOG_LEVEL_TRACE) { \
+			posttrap_printf args; \
+		} \
 	} while (0u)
 #define NCI_INFO(args)  do { \
-		if (nci_log_level & NCI_LOG_LEVEL_INFO) { posttrap_printf args; } \
+		if (nci_log_level & NCI_LOG_LEVEL_INFO) { \
+			posttrap_printf args; \
+		} \
 	} while (0u)
 #define NCI_PRINT(args) do { \
-		if (nci_log_level & NCI_LOG_LEVEL_PRINT) { posttrap_printf args; } \
+		if (nci_log_level & NCI_LOG_LEVEL_PRINT) { \
+			posttrap_printf args; \
+		} \
 	} while (0u)
 #else
 #define NCI_ERROR(args)
@@ -340,8 +364,7 @@ typedef struct dmp_regs {
 	uint32 dmpstatus;
 } dmp_regs_t;
 
-typedef struct dump_regs
-{
+typedef struct dump_regs {
 	uint32 offset;
 	uint32 bit_map;
 } dump_regs_t;
@@ -352,16 +375,17 @@ static const dump_regs_t nci_wrapper_regs[] = {
 };
 
 #ifdef _RTE_
-static nci_info_t *knci_info = NULL;
+static nci_info_t *knci_info;
 #endif /* _RTE_ */
 
 static void nci_update_shared_pmni_iface(nci_info_t *nci);
-static void nci_save_iface1_reg(si_t *sih, interface_desc_t *desc, uint32 iface_desc_1);
-static uint32* nci_save_slaveport_addr(nci_info_t *nci,
+static void nci_save_iface1_reg(si_t *sih, interface_desc_t *desc, uint32 iface_desc_1,
+	uint32 *erom2ptr);
+static uint32 *nci_save_slaveport_addr(nci_info_t *nci,
 	interface_desc_t *desc, uint32 *erom2ptr);
 static int nci_get_coreunit(nci_cores_t *cores, uint32 numcores, uint cid,
 	uint32 iface_desc_1);
-static nci_cores_t* nci_initial_parse(nci_info_t *nci, uint32 *erom2ptr, uint32 *core_idx);
+static nci_cores_t *nci_initial_parse(nci_info_t *nci, uint32 *erom2ptr, uint32 *core_idx);
 static void nci_check_extra_core(nci_info_t *nci, uint32 *erom2ptr, uint32 *core_idx);
 static void _nci_setcoreidx_pcie_bus(const si_t *sih, volatile void **regs, uint32 curmap,
 	uint32 curwrap);
@@ -455,7 +479,8 @@ BCMATTACHFN(nci_init)(si_t *sih, chipcregs_t *cc, uint bustype)
 	/* It is used only when NCI_ERROR is used */
 	BCM_REFERENCE(err_at);
 
-	if ((nci = MALLOCZ(sii->osh, sizeof(*nci))) == NULL) {
+	nci = MALLOCZ(sii->osh, sizeof(*nci));
+	if (nci == NULL) {
 		err_at = 1u;
 		goto end;
 	}
@@ -464,31 +489,40 @@ BCMATTACHFN(nci_init)(si_t *sih, chipcregs_t *cc, uint bustype)
 	nci->osh = sii->osh;
 	nci->refcnt++;
 
-	nci->cc_erom2base = R_REG(nci->osh, CC_REG_ADDR(cc, EromPtrOffset));
+	nci->cc_erom2base = GET_NODEPTR(R_REG(nci->osh, CC_REG_ADDR(cc, EromPtrOffset)));
 	nci->bustype = bustype;
 	switch (nci->bustype) {
-		case SI_BUS:
-			nci->erom2base = (uint32*)REG_MAP(nci->cc_erom2base, 0u);
-			nci->oobr_base = (uint32*)REG_MAP(GET_OOBR_BASE(nci->cc_erom2base), 0u);
-			nci->erom1base = (uint32*)REG_MAP(GET_EROM1_BASE(nci->cc_erom2base), 0u);
+	case SI_BUS:
+		nci->erom2base = (uint32 *)REG_MAP(nci->cc_erom2base, 0u);
+		nci->oobr_base = (uint32 *)REG_MAP(GET_OOBR_BASE(nci->cc_erom2base), 0u);
+		nci->erom1base = (uint32 *)REG_MAP(GET_EROM1_BASE(nci->cc_erom2base), 0u);
 
-			break;
+		break;
 
-		case PCI_BUS:
-			/* Set wrappers address */
-			sii->curwrap = (void *)((uintptr)cc + SI_CORE_SIZE);
-			/* Set access window to Erom Base(For NCI, EROM starts with OOBR) */
-			OSL_PCI_WRITE_CONFIG(nci->osh, PCI_BAR0_WIN, PCI_ACCESS_SIZE,
-				GET_EROM1_BASE(nci->cc_erom2base));
-			nci->erom1base = (uint32*)((uintptr)cc);
-			nci->erom2base = (uint32*)((uintptr)cc + NCI_EROM1_LEN(nci->cc_erom2base));
+	case PCI_BUS:
+		/* Set wrappers address */
+		sii->curwrap = (void *)((uintptr)cc + SI_CORE_SIZE);
+		/* Set access window to Erom Base(For NCI, EROM starts with OOBR) */
+		OSL_PCI_WRITE_CONFIG(nci->osh, PCI_BAR0_WIN, PCI_ACCESS_SIZE,
+			GET_EROM1_BASE(nci->cc_erom2base));
+		nci->erom1base = (uint32 *)((uintptr)cc);
+		nci->erom2base = (uint32 *)((uintptr)cc + NCI_EROM1_LEN(nci->cc_erom2base));
 
-			break;
+		break;
 
-		default:
-			err_at = 2u;
-			ASSERT(0u);
-			goto end;
+#ifdef BCMSDIO
+	case SPI_BUS:
+	case SDIO_BUS:
+		nci->erom2base = (uint32 *)((uintptr)nci->cc_erom2base);
+		nci->oobr_base = (uint32 *)((uintptr)GET_OOBR_BASE(nci->cc_erom2base));
+		nci->erom1base = (uint32 *)((uintptr)GET_EROM1_BASE(nci->cc_erom2base));
+		break;
+#endif  /* BCMSDIO */
+
+	default:
+		err_at = 2u;
+		ASSERT(0u);
+		goto end;
 	}
 
 	nci->max_cores = nci_find_numcores(sih);
@@ -497,7 +531,8 @@ BCMATTACHFN(nci_init)(si_t *sih, chipcregs_t *cc, uint bustype)
 		goto end;
 	}
 
-	if ((cores = MALLOCZ(nci->osh, sizeof(*cores) * nci->max_cores)) == NULL) {
+	cores = MALLOCZ(nci->osh, sizeof(*cores) * nci->max_cores);
+	if (cores == NULL) {
 		err_at = 4u;
 		goto end;
 	}
@@ -590,14 +625,17 @@ end:
  * Return : Void
  */
 static void
-BCMATTACHFN(nci_save_iface1_reg)(si_t *sih, interface_desc_t *desc, uint32 iface_desc_1)
+BCMATTACHFN(nci_save_iface1_reg)(si_t *sih, interface_desc_t *desc, uint32 iface_desc_1,
+	uint32 *erom2ptr)
 {
 	si_info_t *sii = SI_INFO(sih);
+	nci_info_t *nci = sii->nci_info;
 	char (*bpid_str)[BACKPLANE_ID_STR_SIZE];
 	uint8 bpid, apb_start, apb_end;
 
 	BCM_REFERENCE(sii);
 	BCM_REFERENCE(BACKPLANE_ID_NAME_4397A0);
+	BCM_REFERENCE(BACKPLANE_ID_NAME_AI);
 	BCM_REFERENCE(BACKPLANE_ID_NAME);
 	BCM_REFERENCE(bpid_str);
 
@@ -616,11 +654,22 @@ BCMATTACHFN(nci_save_iface1_reg)(si_t *sih, interface_desc_t *desc, uint32 iface
 		if (desc->num_addr_reg) {
 			NCI_ERROR(("nci_save_iface1_reg: Master NODEPTR Addresses is not zero "
 				"i.e. %d\n", GET_NUM_ADDR_REG(iface_desc_1)));
-			ASSERT(0u);
+			return;
 		}
 	} else {
-		/* SLAVE 'NumAddressRegion' one less than actual slave ports, so increment by 1 */
-		desc->num_addr_reg++;
+		/* SLAVE 'NumAddressRegion' one less than actual slave ports, so increment by 1
+		 * if WORDOFFSET bigger then 1.
+		 * In the last slave descriptor, WORDOFFSET is 0 and NUM_ADDR_REG is 0,
+		 * increment by 1 if the next dword is not ID_ENDMARKER (0xFFFFFFFF).
+		 */
+		if (GET_WORDOFFSET(desc->iface_desc_1) > 1u) {
+			desc->num_addr_reg++;
+		} else if (GET_WORDOFFSET(desc->iface_desc_1) == 0) {
+			uint32 adesc = R_REG(nci->osh, erom2ptr);
+			if (adesc != ID_ENDMARKER) {
+				desc->num_addr_reg++;
+			}
+		}
 	}
 
 	bpid = ID_BPID(desc->iface_desc_1);
@@ -643,6 +692,15 @@ BCMATTACHFN(nci_save_iface1_reg)(si_t *sih, interface_desc_t *desc, uint32 iface
 		}
 
 		bpid_str = BACKPLANE_ID_NAME_4397A0;
+	} else if (BCM4384_CHIP(CHIPID(sii->pub.chip))) {
+		apb_start = BP_APB_WL;
+		apb_end = BP_CCI400;
+
+		if (bpid == BP_NIC400_CB || bpid == BP_NIC400_WL) {
+			desc->is_nic400 = 1u;
+			desc->is_axi = 1u;
+		}
+		bpid_str = BACKPLANE_ID_NAME_AI;
 	} else {
 		apb_start = BP_WL_PMNI;
 		apb_end = BP_SAQM_PMNI;
@@ -690,8 +748,9 @@ BCMATTACHFN(nci_save_slaveport_addr)(nci_info_t *nci,
 	uint32 addr_idx;
 
 	/* Allocate 'NumAddressRegion' of Slave Port */
-	if ((desc->sp = (slave_port_t *)MALLOCZ(
-		nci->osh, (sizeof(*sp) * desc->num_addr_reg))) == NULL) {
+	desc->sp = (slave_port_t *)MALLOCZ(nci->osh,
+			(sizeof(*sp) * desc->num_addr_reg));
+	if (desc->sp == NULL) {
 		NCI_ERROR(("\tnci_save_slaveport_addr: Memory Allocation failed for Slave Port\n"));
 		return NULL;
 	}
@@ -754,7 +813,7 @@ BCMATTACHFN(nci_check_extra_core)(nci_info_t *nci, uint32 *erom2ptr, uint32 *cor
 		if (nci->bustype == PCI_BUS) {
 			OSL_PCI_WRITE_CONFIG(nci->osh, PCI_BAR0_WIN, PCI_ACCESS_SIZE,
 				GET_OOBR_BASE(nci->cc_erom2base));
-			nci->oobr_base = (uint32*)((uintptr)nci->erom1base);
+			nci->oobr_base = (uint32 *)((uintptr)nci->erom1base);
 		}
 
 		offset = GET_COREOFFSET(iface_desc_1);
@@ -805,7 +864,7 @@ BCMATTACHFN(nci_check_extra_core)(nci_info_t *nci, uint32 *erom2ptr, uint32 *cor
 		core->dmp_regs_off = dmp_regs_off;
 
 		NCI_TRACE(("nci_check_extra_core: COREINFO:%#x CId:%#x CUnit=%#x CRev=%#x"
-			"CMfg=%#x\n", core->coreinfo, core->coreid, core->coreunit,
+			" CMfg=%#x\n", core->coreinfo, core->coreid, core->coreunit,
 			CORE_REV(core->coreinfo), CORE_MFG(core->coreinfo)));
 
 		/* Interface Config Register */
@@ -863,7 +922,7 @@ BCMATTACHFN(nci_initial_parse)(nci_info_t *nci, uint32 *erom2ptr, uint32 *core_i
 		if (nci->bustype == PCI_BUS) {
 			OSL_PCI_WRITE_CONFIG(nci->osh, PCI_BAR0_WIN, PCI_ACCESS_SIZE,
 				GET_OOBR_BASE(nci->cc_erom2base));
-			nci->oobr_base = (uint32*)((uintptr)nci->erom1base);
+			nci->oobr_base = (uint32 *)((uintptr)nci->erom1base);
 		}
 
 		ptr = NCI_ADD_ADDR(nci->oobr_base, GET_COREOFFSET(iface_desc_1));
@@ -944,7 +1003,7 @@ BCMATTACHFN(nci_find_numcores)(si_t *sih)
 	/* No of OOBR Cores */
 	switch (BUSTYPE(sih->bustype)) {
 	case SI_BUS:
-		oobr_reg = (volatile hndoobr_reg_t*)REG_MAP(GET_OOBR_BASE(nci->cc_erom2base),
+		oobr_reg = (volatile hndoobr_reg_t *)REG_MAP(GET_OOBR_BASE(nci->cc_erom2base),
 				SI_CORE_SIZE);
 		break;
 
@@ -955,8 +1014,15 @@ BCMATTACHFN(nci_find_numcores)(si_t *sih)
 
 		OSL_PCI_WRITE_CONFIG(nci->osh, PCI_BAR0_WIN, PCI_ACCESS_SIZE,
 			GET_OOBR_BASE(nci->cc_erom2base));
-		oobr_reg = (volatile hndoobr_reg_t*)sii->curmap;
+		oobr_reg = (volatile hndoobr_reg_t *)sii->curmap;
 		break;
+
+#ifdef BCMSDIO
+	case SPI_BUS:
+	case SDIO_BUS:
+		oobr_reg = (volatile hndoobr_reg_t *)nci->oobr_base;
+		break;
+#endif  /* BCMSDIO */
 
 	default:
 		NCI_ERROR(("nci_find_numcores: Invalid bustype %d\n", BUSTYPE(sih->bustype)));
@@ -1115,7 +1181,7 @@ BCMATTACHFN(nci_scan)(si_t *sih)
 			NCI_INC_ADDR(erom2ptr, NCI_WORD_SIZE);
 
 			/* Interface Descriptor Register */
-			nci_save_iface1_reg(sih, desc, iface_desc_1);
+			nci_save_iface1_reg(sih, desc, iface_desc_1, erom2ptr);
 			if (desc->master && desc->num_addr_reg) {
 				err = NCI_MASTER_INVALID_ADDR;
 				goto end;
@@ -1133,7 +1199,7 @@ BCMATTACHFN(nci_scan)(si_t *sih)
 				desc->node_type?"NIC-400":"BOOKER", desc->node_ptr));
 
 			/* Slave Port Addresses */
-			if (!desc->master) {
+			if (!desc->master && desc->num_addr_reg) {
 				erom2ptr = nci_save_slaveport_addr(nci, desc, erom2ptr);
 				if (erom2ptr == NULL) {
 					NCI_ERROR(("nci_scan: Invalid EROM2PTR\n"));
@@ -1160,7 +1226,6 @@ end:
 	if (err) {
 		NCI_ERROR(("nci_scan: Failed with Code %d\n", err));
 		nci->num_cores = 0;
-		ASSERT(0u);
 	}
 
 	return nci->num_cores;
@@ -1278,6 +1343,159 @@ BCMATTACHFN(nci_dump_erom)(void *ctx)
 	return;
 }
 
+/**
+ * Function : nci_cores_to_ai_cores
+ * Description : Function converts nci->cores to sii->cores_info data structures.
+ * Used in AI Chips only.
+ *
+ * @paramter[in]
+ * @nci : This is 'nci_info_t' data structure, where all EROM parsed Cores are saved.
+ *
+ * Return : void
+ */
+void
+BCMATTACHFN(nci_cores_to_ai_cores)(si_t *sih)
+{
+	si_info_t *sii = SI_INFO(sih);
+	si_cores_info_t *cores_info = (si_cores_info_t *)sii->cores_info;
+	axi_wrapper_t *axi_wrapper = sii->axi_wrapper;
+	nci_info_t *nci = (nci_info_t *)sii->nci_info;
+	nci_cores_t *nci_core;
+	uint32 core_idx;
+
+	SI_MSG_DBG_REG(("%s: Enter\n", __FUNCTION__));
+
+	sii->axi_num_wrappers = 0;
+
+	for (core_idx = 0u; core_idx < nci->num_cores; core_idx++) {
+		interface_desc_t *desc;
+		slave_port_t *sp;
+		uint32 addr_idx, iface_idx, ai_idx;
+		uint32 cid, mfg, crev, cib;
+		bool is_core = FALSE;
+		uint8 m_idx = 0, s_idx = 0;
+		nci_core = &nci->cores[core_idx];
+
+		cid = nci_core->coreid;
+		mfg = CORE_MFG(nci_core->coreinfo);
+		crev = CORE_REV(nci_core->coreinfo);
+
+		ai_idx = sii->numcores;
+
+		/* Find if componnet is a core */
+		for (iface_idx = 0u; iface_idx < nci_core->iface_cnt; iface_idx++) {
+			desc = &nci_core->desc[iface_idx];
+			is_core = is_core || desc->is_axi;
+		}
+
+		SI_VMSG(("Found component 0x%04x/0x%04x rev %d\n", mfg, cid, crev));
+
+		/* A component which is not a core */
+		if (is_core == FALSE) {
+			if ((cid != NS_CCB_CORE_ID) && (cid != PMU_CORE_ID) &&
+				(cid != GCI_CORE_ID) && (cid != SR_CORE_ID) &&
+				(cid != HUB_CORE_ID) && (cid != HND_OOBR_CORE_ID) &&
+				(cid != CCI400_CORE_ID) && (cid != SPMI_SLAVE_CORE_ID) &&
+#if defined(__ARM_ARCH_7R__)
+				(cid != SDTC_CORE_ID) &&
+#endif /* __ARM_ARCH_7R__ */
+				TRUE) {
+				continue;
+			}
+		}
+
+		/* revision from cib used in ai functions */
+		cib = (crev << CIB_REV_SHIFT) & CIB_REV_MASK;
+
+		//cores_info->cia[ai_idx] = cia;
+		cores_info->cib[ai_idx] = cib;
+		cores_info->coreid[ai_idx] = cid;
+
+		if (BUSTYPE(sih->bustype) == PCI_BUS &&
+			(cid == PCI_CORE_ID || cid == PCIE_CORE_ID || cid == PCIE2_CORE_ID)) {
+			sii->pub.buscoretype = (uint16)cid;
+		}
+
+		/* Master and Salve wrappers */
+		for (iface_idx = 0u; iface_idx < nci_core->iface_cnt; iface_idx++) {
+			desc = &nci_core->desc[iface_idx];
+
+			if (desc->is_axi) {
+				if (desc->master) {
+					if (m_idx == 0) {
+						cores_info->wrapba[ai_idx] = desc->node_ptr;
+					} else if (m_idx == 1) {
+						cores_info->wrapba2[ai_idx] = desc->node_ptr;
+					} else if (m_idx == 2) {
+						cores_info->wrapba3[ai_idx] = desc->node_ptr;
+					}
+					m_idx++;
+				} else if (m_idx == 0) {
+					if (s_idx == 0) {
+						cores_info->wrapba[ai_idx] = desc->node_ptr;
+					} else if (s_idx == 1) {
+						cores_info->wrapba2[ai_idx] = desc->node_ptr;
+					} else if (s_idx == 2) {
+						cores_info->wrapba3[ai_idx] = desc->node_ptr;
+					}
+					s_idx++;
+				}
+				axi_wrapper[sii->axi_num_wrappers].mfg = mfg;
+				axi_wrapper[sii->axi_num_wrappers].cid = cid;
+				axi_wrapper[sii->axi_num_wrappers].rev = crev;
+				axi_wrapper[sii->axi_num_wrappers].wrapper_type =
+					(desc->master) ? AI_MASTER_WRAPPER : AI_SLAVE_WRAPPER;
+				axi_wrapper[sii->axi_num_wrappers].wrapper_addr = desc->node_ptr;
+
+				SI_VMSG(("%s WRAPPER: %d, mfg:%x, cid:%x, rev:%x, addr:%x\n",
+					desc->master?"MASTER":"SLAVE", sii->axi_num_wrappers,
+					mfg, cid, crev, desc->node_ptr));
+
+				sii->axi_num_wrappers++;
+			}
+
+			/* Slave Port Addresses */
+			sp = desc->sp;
+			if (!sp) {
+				continue;
+			}
+			for (addr_idx = 0u; addr_idx < desc->num_addr_reg; addr_idx++) {
+
+				if (sp[addr_idx].extaddrl == 0u) {
+					if (desc->is_axi) {
+						/* First base address of second slave port */
+						if (addr_idx == 0) {
+							cores_info->csp2ba[ai_idx] =
+								sp[addr_idx].addrl;
+							cores_info->csp2ba_size[ai_idx] =
+								(sp[addr_idx].addrh -
+								sp[addr_idx].addrl + 1);
+						}
+					} else {
+						/* First Slave Address Descriptor should be port 0:
+						 * the main register space for the core
+						 */
+						if (addr_idx == 0) {
+							cores_info->coresba[ai_idx] =
+								sp[addr_idx].addrl;
+							cores_info->coresba_size[ai_idx] =
+								(sp[addr_idx].addrh -
+								sp[addr_idx].addrl + 1);
+						} else if (addr_idx == 1) {
+							cores_info->coresba2[ai_idx] =
+								sp[addr_idx].addrl;
+							cores_info->coresba2_size[ai_idx] =
+								(sp[addr_idx].addrh -
+								sp[addr_idx].addrl + 1);
+						}
+					}
+				}
+			}
+		}
+		sii->numcores++;
+	}
+}
+
 /*
  * Switch to 'coreidx', issue a single arbitrary 32bit register mask & set operation,
  * switch back to the original core, and return the new value.
@@ -1350,7 +1568,7 @@ BCMPOSTTRAPFN(nci_corereg)(const si_t *sih, uint coreidx, uint regoff, uint mask
 		origidx = si_coreidx(&sii->pub);
 
 		/* switch core */
-		r = (volatile uint32*)((volatile uchar*)nci_setcoreidx(&sii->pub, coreidx) +
+		r = (volatile uint32 *)((volatile uchar *)nci_setcoreidx(&sii->pub, coreidx) +
 			regoff);
 	}
 	ASSERT(r != NULL);
@@ -1441,7 +1659,7 @@ nci_corereg_writeonly(si_t *sih, uint coreidx, uint regoff, uint mask, uint val)
 		origidx = si_coreidx(&sii->pub);
 
 		/* switch core */
-		r = (volatile uint32*) ((volatile uchar*) nci_setcoreidx(&sii->pub, coreidx) +
+		r = (volatile uint32 *) ((volatile uchar *) nci_setcoreidx(&sii->pub, coreidx) +
 			regoff);
 	}
 	ASSERT(r != NULL);
@@ -1531,7 +1749,7 @@ nci_corereg_addr(si_t *sih, uint coreidx, uint regoff)
 
 	if (!fast) {
 		ASSERT(sii->curidx == coreidx);
-		r = (volatile uint32*) ((volatile uchar*)sii->curmap + regoff);
+		r = (volatile uint32 *) ((volatile uchar *)sii->curmap + regoff);
 	}
 
 	return (r);
@@ -1712,7 +1930,7 @@ BCMPOSTTRAPFN(_nci_setcoreidx)(const si_t *sih, uint coreidx, uint wrapper_idx)
 
 	NCI_TRACE(("_nci_setcoreidx coreidx %u\n", coreidx));
 	if (!GOODIDX(coreidx, nci->num_cores)) {
-		return (NULL);
+		return NULL;
 	}
 	/*
 	 * If the user has provided an interrupt mask enabled function,
@@ -1737,6 +1955,13 @@ BCMPOSTTRAPFN(_nci_setcoreidx)(const si_t *sih, uint coreidx, uint wrapper_idx)
 	case PCI_BUS:
 		_nci_setcoreidx_pcie_bus(sih, &regs, curmap, curwrap);
 		break;
+#ifdef BCMSDIO
+	case SPI_BUS:
+	case SDIO_BUS:
+		sii->curmap = regs = (void *)((uintptr)curmap);
+		sii->curwrap = (void *)((uintptr)curwrap);
+		break;
+#endif  /* BCMSDIO */
 
 	default:
 		NCI_ERROR(("_nci_stcoreidx Invalid bustype %d\n", BUSTYPE(sih->bustype)));
@@ -1771,7 +1996,7 @@ BCMPOSTTRAPFN(nci_setcore)(si_t *sih, uint coreid, uint coreunit)
 	core_idx = nci_findcoreidx(sih, coreid, coreunit);
 
 	if (!GOODIDX(core_idx, nci->num_cores)) {
-		return (NULL);
+		return NULL;
 	}
 	return nci_setcoreidx(sih, core_idx);
 }
@@ -1952,6 +2177,12 @@ BCMPOSTTRAPFN(nci_core_reset_iface)(const si_t *sih, uint32 bits, uint32 resetbi
 			GET_OOBR_BASE(nci->cc_erom2base));
 		break;
 
+#ifdef BCMSDIO
+	case SPI_BUS:
+	case SDIO_BUS:
+		break;
+#endif  /* BCMSDIO */
+
 	default:
 		NCI_ERROR(("nci_core_reset_iface Invalid bustype %d\n", BUSTYPE(sih->bustype)));
 		break;
@@ -2029,16 +2260,8 @@ BCMPOSTTRAPFN(nci_core_reset_enable)(const si_t *sih, uint32 bits, uint32 resetb
 		if (core->desc[iface_idx].is_shared_pmni) {
 			continue;
 		}
-#ifdef BOOKER_NIC400_INF
-		if (core->desc[iface_idx].node_type == NODE_TYPE_NIC400) {
-			nci_setcoreidx_wrap(sih, sii->curidx, iface_idx);
-			ai_core_reset_ext(sih, bits, resetbits);
-		} else
-#endif /* BOOKER_NIC400_INF */
-		{
-			nci_setcoreidx_wrap(sih, sii->curidx, iface_idx);
-			nci_core_reset_iface(sih, bits, resetbits, iface_idx, FALSE);
-		}
+		nci_setcoreidx_wrap(sih, sii->curidx, iface_idx);
+		nci_core_reset_iface(sih, bits, resetbits, iface_idx, FALSE);
 	}
 
 	/* Force the clock enable. */
@@ -2111,16 +2334,7 @@ nci_core_disable(const si_t *sih, uint32 bits)
 		goto end;
 	}
 
-#ifdef BOOKER_NIC400_INF
-	/* If Wrapper is of NIC400, then call AI functionality */
-	if (nci->cores[sii->curidx].desc[iface_idx].node_type == NODE_TYPE_NIC400) {
-		ai_core_disable(sih, bits);
-		goto end;
-	} else
-#endif /* BOOKER_NIC400_INF */
-	{
-		nci_core_reset_enable(sih, bits, 0u, FALSE);
-	}
+	nci_core_reset_enable(sih, bits, 0u, FALSE);
 end:
 	return;
 }
@@ -2133,21 +2347,6 @@ BCMPOSTTRAPFN(nci_iscoreup)(const si_t *sih)
 	nci_cores_t *core = &nci->cores[sii->curidx];
 	amni_regs_t *amni = (amni_regs_t *)(uintptr)sii->curwrap;
 	uint32 reset_ctrl;
-
-#ifdef BOOKER_NIC400_INF
-	int32 iface_idx = nci_find_first_wrapper_idx(nci, sii->curidx);
-
-	if (iface_idx < 0) {
-		NCI_ERROR(("nci_iscoreup: First Wrapper is not found\n"));
-		ASSERT(0u);
-		return FALSE;
-	}
-
-	/* If Wrapper is of NIC400, then call AI functionality */
-	if (core->desc[iface_idx].master && (core->desc[iface_idx].node_type == NODE_TYPE_NIC400)) {
-		return ai_iscoreup(sih);
-	}
-#endif /* BOOKER_NIC400_INF */
 
 	if (SRPWR_ENAB() && core->domain != DOMAIN_AAON) {
 		si_srpwr_request(sih, 1u << core->domain, 1u << core->domain);
@@ -2312,7 +2511,7 @@ BCMPOSTTRAPFN(nci_get_axi_addr)(const si_t *sih, uint32 *size, uint32 baidx)
 	}
 	if (iface_idx < core_info->iface_cnt) {
 		if ((core_info->desc[iface_idx].num_addr_reg > baidx) &&
-			(&core_info->desc[iface_idx].sp[baidx] != NULL)) {
+			(core_info->desc[iface_idx].sp != NULL)) {
 			addr = core_info->desc[iface_idx].sp[baidx].addrl;
 			if (size) {
 				uint32 adesc = core_info->desc[iface_idx].sp[baidx].adesc;
@@ -2353,7 +2552,7 @@ BCMPOSTTRAPFN(nci_get_core_baaddr)(const si_t *sih, uint32 *size, int32 baidx)
 	}
 	if (iface_idx < core_info->iface_cnt) {
 		if ((core_info->desc[iface_idx].num_addr_reg > baidx) &&
-			(&core_info->desc[iface_idx].sp[baidx] != NULL)) {
+			(core_info->desc[iface_idx].sp != NULL)) {
 			addr = core_info->desc[iface_idx].sp[baidx].addrl;
 			if (size) {
 				uint32 adesc = core_info->desc[iface_idx].sp[baidx].adesc;
@@ -2416,6 +2615,7 @@ BCMPOSTTRAPFN(nci_core_cflags)(const si_t *sih, uint32 mask, uint32 val)
 	uint32 orig_bar0_win1 = 0;
 	int32 iface_idx;
 	uint32 w;
+	volatile dmp_regs_t *io = sii->curwrap;
 
 	BCM_REFERENCE(iface_idx);
 
@@ -2429,69 +2629,59 @@ BCMPOSTTRAPFN(nci_core_cflags)(const si_t *sih, uint32 mask, uint32 val)
 		goto end;
 	}
 
-#ifdef BOOKER_NIC400_INF
-	/* If Wrapper is of NIC400, then call AI functionality */
-	if (core->desc[iface_idx].master && (core->desc[iface_idx].node_type == NODE_TYPE_NIC400)) {
-		aidmp_t *ai = sii->curwrap;
+	/* BOOKER */
+	/* Point to OOBR base */
+	switch (BUSTYPE(sih->bustype)) {
+	case SI_BUS:
+		io = (volatile dmp_regs_t *)
+			REG_MAP(GET_OOBR_BASE(nci->cc_erom2base), SI_CORE_SIZE);
+		break;
 
-		if (mask || val) {
-			 w = ((R_REG(sii->osh, &ai->ioctrl) & ~mask) | val);
-			W_REG(sii->osh, &ai->ioctrl, w);
-		}
-		reg_read = R_REG(sii->osh, &ai->ioctrl);
-	} else
-#endif /* BOOKER_NIC400_INF */
-	{
-		volatile dmp_regs_t *io = sii->curwrap;
+	case PCI_BUS:
+		/* Save Original Bar0 Win1 */
+		orig_bar0_win1 =
+			OSL_PCI_READ_CONFIG(nci->osh, PCI_BAR0_WIN, PCI_ACCESS_SIZE);
 
-		/* BOOKER */
-		/* Point to OOBR base */
-		switch (BUSTYPE(sih->bustype)) {
-		case SI_BUS:
-			io = (volatile dmp_regs_t*)
-				REG_MAP(GET_OOBR_BASE(nci->cc_erom2base), SI_CORE_SIZE);
-			break;
+		OSL_PCI_WRITE_CONFIG(nci->osh, PCI_BAR0_WIN, PCI_ACCESS_SIZE,
+			GET_OOBR_BASE(nci->cc_erom2base));
+		io = (volatile dmp_regs_t *)sii->curmap;
+		break;
 
-		case PCI_BUS:
-			/* Save Original Bar0 Win1 */
-			orig_bar0_win1 =
-				OSL_PCI_READ_CONFIG(nci->osh, PCI_BAR0_WIN, PCI_ACCESS_SIZE);
+#ifdef BCMSDIO
+	case SPI_BUS:
+	case SDIO_BUS:
+		io = (volatile dmp_regs_t *)nci->oobr_base;
+		break;
+#endif  /* BCMSDIO */
 
-			OSL_PCI_WRITE_CONFIG(nci->osh, PCI_BAR0_WIN, PCI_ACCESS_SIZE,
-				GET_OOBR_BASE(nci->cc_erom2base));
-			io = (volatile dmp_regs_t*)sii->curmap;
-			break;
-
-		default:
-			NCI_ERROR(("nci_core_cflags Invalid bustype %d\n", BUSTYPE(sih->bustype)));
-			goto end;
-		}
-
-		if (core->desc[iface_idx].oobr_core) {
-			/* Point to DMP Control */
-			io = (dmp_regs_t*)(NCI_ADD_ADDR(io, nci->cores[sii->curidx].dmp_regs_off));
-
-			if (mask || val) {
-				w = ((R_REG(sii->osh, &io->dmpctrl) & ~mask) | val);
-				W_REG(sii->osh, &io->dmpctrl, w);
-				NCI_INFO(("nci_core_cflags coreid.unit 0x%x.%d WREG dmpctrl "
-					"value=0x%x\n", nci->cores[sii->curidx].coreid,
-					nci->cores[sii->curidx].coreunit, w));
-
-				/* poll for the reset to happen or wait for NCI_SPINWAIT_TIMEOUT */
-				SPINWAIT_TRAP(((reg_read = R_REG(nci->osh, &io->dmpctrl)) !=
-					w), NCI_SPINWAIT_TIMEOUT);
-			}
-			reg_read = R_REG(sii->osh, &io->dmpctrl);
-		}
-
-		/* Point back to original base */
-		if (BUSTYPE(sih->bustype) == PCI_BUS) {
-			OSL_PCI_WRITE_CONFIG(nci->osh, PCI_BAR0_WIN,
-				PCI_ACCESS_SIZE, orig_bar0_win1);
-		}
+	default:
+		NCI_ERROR(("nci_core_cflags Invalid bustype %d\n", BUSTYPE(sih->bustype)));
+		goto end;
 	}
 
+	if (core->desc[iface_idx].oobr_core) {
+		/* Point to DMP Control */
+		io = (dmp_regs_t *)(NCI_ADD_ADDR(io, nci->cores[sii->curidx].dmp_regs_off));
+
+		if (mask || val) {
+			w = ((R_REG(sii->osh, &io->dmpctrl) & ~mask) | val);
+			W_REG(sii->osh, &io->dmpctrl, w);
+			NCI_INFO(("nci_core_cflags coreid.unit 0x%x.%d WREG dmpctrl "
+				"value=0x%x\n", nci->cores[sii->curidx].coreid,
+				nci->cores[sii->curidx].coreunit, w));
+
+			/* poll for the reset to happen or wait for NCI_SPINWAIT_TIMEOUT */
+			SPINWAIT_TRAP(((reg_read = R_REG(nci->osh, &io->dmpctrl)) !=
+				w), NCI_SPINWAIT_TIMEOUT);
+		}
+		reg_read = R_REG(sii->osh, &io->dmpctrl);
+	}
+
+	/* Point back to original base */
+	if (BUSTYPE(sih->bustype) == PCI_BUS) {
+		OSL_PCI_WRITE_CONFIG(nci->osh, PCI_BAR0_WIN,
+			PCI_ACCESS_SIZE, orig_bar0_win1);
+	}
 end:
 	return reg_read;
 }
@@ -2525,34 +2715,32 @@ BCMPOSTTRAPFN(nci_core_cflags_wo)(const si_t *sih, uint32 mask, uint32 val)
 		goto end;
 	}
 
-#ifdef BOOKER_NIC400_INF
-	/* If Wrapper is of NIC400, then call AI functionality */
-	if (core->desc[iface_idx].master && (core->desc[iface_idx].node_type == NODE_TYPE_NIC400)) {
-		aidmp_t *ai = sii->curwrap;
-		if (mask || val) {
-			w = ((R_REG(sii->osh, &ai->ioctrl) & ~mask) | val);
-			W_REG(sii->osh, &ai->ioctrl, w);
-		}
-	}
-#endif /* BOOKER_NIC400_INF */
-	else if (core->desc[iface_idx].oobr_core) {
+	if (core->desc[iface_idx].oobr_core) {
 		/* BOOKER */
 		/* Point to OOBR base */
 		switch (BUSTYPE(sih->bustype)) {
 		case SI_BUS:
-			io = (volatile dmp_regs_t*)
+			io = (volatile dmp_regs_t *)
 				REG_MAP(GET_OOBR_BASE(nci->cc_erom2base), SI_CORE_SIZE);
 			break;
 
 		case PCI_BUS:
 			/* Save Original Bar0 Win1 */
 			orig_bar0_win1 =
-				OSL_PCI_READ_CONFIG(nci->osh, PCI_BAR0_WIN, PCI_ACCESS_SIZE);
+				OSL_PCI_READ_CONFIG(nci->osh, PCI_BAR0_WIN,
+				PCI_ACCESS_SIZE);
 
 			OSL_PCI_WRITE_CONFIG(nci->osh, PCI_BAR0_WIN, PCI_ACCESS_SIZE,
 				GET_OOBR_BASE(nci->cc_erom2base));
-			io = (volatile dmp_regs_t*)sii->curmap;
+			io = (volatile dmp_regs_t *)sii->curmap;
 			break;
+
+#ifdef BCMSDIO
+		case SPI_BUS:
+		case SDIO_BUS:
+			io = (volatile dmp_regs_t *)nci->oobr_base;
+			break;
+#endif  /* BCMSDIO */
 
 		default:
 			NCI_ERROR(("nci_core_cflags_wo Invalid bustype %d\n",
@@ -2561,7 +2749,7 @@ BCMPOSTTRAPFN(nci_core_cflags_wo)(const si_t *sih, uint32 mask, uint32 val)
 		}
 
 		/* Point to DMP Control */
-		io = (dmp_regs_t*)(NCI_ADD_ADDR(io, nci->cores[sii->curidx].dmp_regs_off));
+		io = (dmp_regs_t *)(NCI_ADD_ADDR(io, nci->cores[sii->curidx].dmp_regs_off));
 
 		if (mask || val) {
 			w = ((R_REG(sii->osh, &io->dmpctrl) & ~mask) | val);
@@ -2611,26 +2799,14 @@ nci_core_sflags(const si_t *sih, uint32 mask, uint32 val)
 		goto end;
 	}
 
-#ifdef BOOKER_NIC400_INF
-	/* If Wrapper is of NIC400, then call AI functionality */
-	if (core->desc[iface_idx].master && (core->desc[iface_idx].node_type == NODE_TYPE_NIC400)) {
-		aidmp_t *ai = sii->curwrap;
-		if (mask || val) {
-			w = ((R_REG(sii->osh, &ai->iostatus) & ~mask) | val);
-			W_REG(sii->osh, &ai->iostatus, w);
-		}
-
-		reg_read = R_REG(sii->osh, &ai->iostatus);
-	}
-#endif /* BOOKER_NIC400_INF */
-	else if (core->desc[iface_idx].oobr_core) {
+	if (core->desc[iface_idx].oobr_core) {
 		volatile dmp_regs_t *io = sii->curwrap;
 
 		/* BOOKER */
 		/* Point to OOBR base */
 		switch (BUSTYPE(sih->bustype)) {
 		case SI_BUS:
-			io = (volatile dmp_regs_t*)
+			io = (volatile dmp_regs_t *)
 				REG_MAP(GET_OOBR_BASE(nci->cc_erom2base), SI_CORE_SIZE);
 			break;
 
@@ -2641,8 +2817,15 @@ nci_core_sflags(const si_t *sih, uint32 mask, uint32 val)
 
 			OSL_PCI_WRITE_CONFIG(nci->osh, PCI_BAR0_WIN, PCI_ACCESS_SIZE,
 			GET_OOBR_BASE(nci->cc_erom2base));
-			io = (volatile dmp_regs_t*)sii->curmap;
+			io = (volatile dmp_regs_t *)sii->curmap;
 			break;
+
+#ifdef BCMSDIO
+		case SPI_BUS:
+		case SDIO_BUS:
+			io = (volatile dmp_regs_t *)nci->oobr_base;
+			break;
+#endif  /* BCMSDIO */
 
 		default:
 			NCI_ERROR(("nci_core_sflags Invalid bustype %d\n", BUSTYPE(sih->bustype)));
@@ -2650,7 +2833,7 @@ nci_core_sflags(const si_t *sih, uint32 mask, uint32 val)
 		}
 
 		/* Point to DMP Control */
-		io = (dmp_regs_t*)(NCI_ADD_ADDR(io, nci->cores[sii->curidx].dmp_regs_off));
+		io = (dmp_regs_t *)(NCI_ADD_ADDR(io, nci->cores[sii->curidx].dmp_regs_off));
 
 		if (mask || val) {
 			w = ((R_REG(sii->osh, &io->dmpstatus) & ~mask) | val);
@@ -2808,15 +2991,15 @@ end:
 	return ret;
 }
 
-uint32 last_axi_error_log_status = 0;
-uint32 last_axi_error_core = 0;
-uint32 last_axi_error_wrap = 0;
-uint32 last_axi_errlog_lo = 0;
-uint32 last_axi_errlog_hi = 0;
-uint32 last_axi_errlog_id = 0;
-uint32 last_axi_errlog_trans_sts = 0;
+uint32 last_axi_error_log_status;
+uint32 last_axi_error_core;
+uint32 last_axi_error_wrap;
+uint32 last_axi_errlog_lo;
+uint32 last_axi_errlog_hi;
+uint32 last_axi_errlog_id;
+uint32 last_axi_errlog_trans_sts;
 
-#if defined (AXI_TIMEOUTS)
+#if defined(AXI_TIMEOUTS)
 static bool g_backplane_logs_enabled = FALSE;
 /*
  * Clears BP timeout/error if set on all cores.
@@ -2940,7 +3123,7 @@ BCMPOSTTRAPFN(nci_wrapper_get_last_error)(const si_t *sih, uint32 *error_status,
 uint32
 BCMPOSTTRAPFN(nci_get_axi_timeout_reg)(void)
 {
-	return (GOODREGS(last_axi_errlog_lo) ? last_axi_errlog_lo : 0);
+	return GOODREGS(last_axi_errlog_lo) ? last_axi_errlog_lo : 0;
 }
 #endif /* AXI_TIMEOUTS */
 
@@ -3120,7 +3303,7 @@ BCMPOSTTRAPFN(nci_wrapper_dump_binary)(const si_t *sih, uchar *p)
 					if ((bitmap & 0x1u)) {
 						*ptr32++ = daddr;
 						*ptr32++ = R_REG(sii->osh,
-							(uint32*)((unsigned long)addr));
+							(uint32 *)((unsigned long)addr));
 					}
 					bitmap = bitmap >> 0x1u;
 					addr++;
@@ -3130,5 +3313,15 @@ BCMPOSTTRAPFN(nci_wrapper_dump_binary)(const si_t *sih, uchar *p)
 		}
 	}
 
+	return 0;
+}
+
+int nci_get_amni_slave_cfg_cc_reg_addrs(si_t *sih, volatile uint32 **idm_errstatus_addr,
+	volatile uint32 **idm_intstatus_addr)
+{
+	const si_info_t *sii = SI_INFO(sih);
+	amni_regs_t *amni = (amni_regs_t *)(uintptr)sii->curwrap;
+	*idm_errstatus_addr = &amni->ni.idm_errstatus;
+	*idm_intstatus_addr = &amni->ni.idm_interrupt_status;
 	return 0;
 }

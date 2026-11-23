@@ -125,7 +125,7 @@ int lwis_i2c_set_state(struct lwis_i2c_device *i2c, const char *state_str)
 	return 0;
 }
 
-static int setup_i2c_read(struct lwis_i2c_device *i2c, uint64_t offset, uint64_t *value,
+static int setup_i2c_read(struct lwis_i2c_device *i2c, uint64_t offset,
 			  struct i2c_msg_context *context, struct i2c_msg *msg)
 {
 	struct i2c_client *client;
@@ -147,7 +147,7 @@ static int setup_i2c_read(struct lwis_i2c_device *i2c, uint64_t offset, uint64_t
 		return -EINVAL;
 	}
 
-	value_bits = i2c->base_dev.native_value_bitwidth;
+	value_bits = i2c->base_dev.native_read_value_bitwidth;
 	value_bytes = value_bits / BITS_PER_BYTE;
 	if (!check_bitwidth(value_bits, MIN_DATA_BITS, MAX_DATA_BITS)) {
 		dev_err(i2c->base_dev.dev, "Invalid value bitwidth %d\n", value_bits);
@@ -196,7 +196,7 @@ static int setup_i2c_write(struct lwis_i2c_device *i2c, uint64_t offset, uint64_
 		return -EINVAL;
 	}
 
-	value_bits = i2c->base_dev.native_value_bitwidth;
+	value_bits = i2c->base_dev.native_write_value_bitwidth;
 	value_bytes = value_bits / BITS_PER_BYTE;
 	if (!check_bitwidth(value_bits, MIN_DATA_BITS, MAX_DATA_BITS)) {
 		dev_err(i2c->base_dev.dev, "Invalid value bitwidth %d\n", value_bits);
@@ -323,7 +323,7 @@ int lwis_i2c_write(struct lwis_i2c_device *i2c, uint64_t offset, uint64_t value)
 		return -EINVAL;
 	}
 
-	value_bits = i2c->base_dev.native_value_bitwidth;
+	value_bits = i2c->base_dev.native_write_value_bitwidth;
 	value_bytes = value_bits / BITS_PER_BYTE;
 	if (!check_bitwidth(value_bits, MIN_DATA_BITS, MAX_DATA_BITS)) {
 		dev_err(i2c->base_dev.dev, "Invalid value bitwidth %d\n", value_bits);
@@ -381,7 +381,7 @@ int lwis_i2c_io_entry_mod(struct lwis_i2c_device *i2c, struct lwis_io_entry *ent
 		return -EINVAL;
 	}
 
-	ret = setup_i2c_read(i2c, entry->mod.offset, &reg_value, &context, msg);
+	ret = setup_i2c_read(i2c, entry->mod.offset, &context, msg);
 	if (ret) {
 		release_i2c_msg_context(&i2c->base_dev, &context);
 		return ret;
@@ -395,7 +395,7 @@ int lwis_i2c_io_entry_mod(struct lwis_i2c_device *i2c, struct lwis_io_entry *ent
 		return ret;
 	}
 
-	parse_i2c_result(entry, &context, msg);
+	reg_value = lwis_be_buf_to_value(context.rbuf, msg[1].len);
 	reg_value &= ~entry->mod.val_mask;
 	reg_value |= entry->mod.val_mask & entry->mod.val;
 	release_i2c_msg_context(&i2c->base_dev, &context);
@@ -406,7 +406,7 @@ static int setup_i2c_xfer(struct lwis_i2c_device *i2c_dev, struct lwis_io_entry 
 			  struct i2c_msg_context *context, struct i2c_msg *msgs)
 {
 	if (entry->type == LWIS_IO_ENTRY_READ) {
-		return setup_i2c_read(i2c_dev, entry->rw.offset, &entry->rw.val, context, msgs);
+		return setup_i2c_read(i2c_dev, entry->rw.offset, context, msgs);
 	} else if (entry->type == LWIS_IO_ENTRY_WRITE) {
 		return setup_i2c_write(i2c_dev, entry->rw.offset, entry->rw.val, context, msgs);
 	} else if (entry->type == LWIS_IO_ENTRY_READ_BATCH) {

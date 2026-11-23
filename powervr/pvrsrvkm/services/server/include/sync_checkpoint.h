@@ -281,6 +281,23 @@ void
 SyncCheckpointFree(PSYNC_CHECKPOINT psSyncCheckpoint);
 
 /*************************************************************************/ /*!
+@Function       SyncCheckpointFreeProxy
+
+@Description    Free a synchronisation checkpoint on the specified
+                synchronisation checkpoint context for a foreign fence.
+                This free path will not defer free of FPF foreign fences.
+
+@Input          psSyncCheckpoint        The synchronisation checkpoint to free
+
+@Return         PVRSRV_OK if the synchronisation checkpoint was
+                successfully freed.
+                PVRSRV_ERROR_NOT_READY if FPF fence not ready to free.
+*/
+/*****************************************************************************/
+PVRSRV_ERROR
+SyncCheckpointFreeProxy(PSYNC_CHECKPOINT psSyncCheckpoint);
+
+/*************************************************************************/ /*!
 @Function       SyncCheckpointSignal
 
 @Description    Signal the synchronisation checkpoint
@@ -896,6 +913,7 @@ PVRSRV_ERROR SyncCheckpointGetDevIDs(PSYNC_CHECKPOINT psSyncCheckpoint,
                                      IMG_INT32 *piKernelDevId,
                                      IMG_UINT32 *puiInternalDevId);
 
+#if defined(SUPPORT_FASTPATH_FENCE) || defined(SUPPORT_FOREIGN_FENCE_TOKEN)
 /*************************************************************************/ /*!
 @Function       SyncCheckpointInjectFFToken
 
@@ -913,4 +931,5 @@ PVRSRV_ERROR SyncCheckpointGetDevIDs(PSYNC_CHECKPOINT psSyncCheckpoint,
 /*****************************************************************************/
 void SyncCheckpointInjectFFToken(PSYNC_CHECKPOINT psSyncCheckpoint,
                                  IMG_UINT16 ui16FFToken);
+#endif /* defined(SUPPORT_FASTPATH_FENCE) || defined(SUPPORT_FOREIGN_FENCE_TOKEN) */
 #endif /* SYNC_CHECKPOINT_H */

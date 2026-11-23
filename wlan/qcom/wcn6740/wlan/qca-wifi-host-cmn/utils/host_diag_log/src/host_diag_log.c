@@ -169,7 +169,7 @@ void host_diag_log_wlock(uint32_t reason, const char *wake_lock_name,
 	wlan_diag_event.reason = reason;
 	wlan_diag_event.timeout = timeout;
 	wlan_diag_event.name_len = strlen(wake_lock_name);
-	strlcpy(&wlan_diag_event.name[0],
+	strscpy(&wlan_diag_event.name[0],
 			wake_lock_name,
 			wlan_diag_event.name_len+1);
 
@@ -325,8 +325,8 @@ void host_log_acs_req_event(uint8_t *intf, const uint8_t *hw_mode, uint16_t bw,
 {
 	WLAN_HOST_DIAG_EVENT_DEF(acs_req, struct host_event_wlan_acs_req);
 
-	qdf_str_lcopy(acs_req.intf, intf, HOST_EVENT_INTF_STR_LEN);
-	qdf_str_lcopy(acs_req.hw_mode, hw_mode, HOST_EVENT_HW_MODE_STR_LEN);
+	qdf_str_scopy(acs_req.intf, intf, HOST_EVENT_INTF_STR_LEN);
+	qdf_str_scopy(acs_req.hw_mode, hw_mode, HOST_EVENT_HW_MODE_STR_LEN);
 	acs_req.bw = bw;
 	acs_req.ht = ht;
 	acs_req.vht = vht;
@@ -354,7 +354,7 @@ void host_log_acs_scan_done(const uint8_t *status,
 	WLAN_HOST_DIAG_EVENT_DEF(acs_scan_done,
 				 struct host_event_wlan_acs_scan_done);
 
-	qdf_str_lcopy(acs_scan_done.status, status, HOST_EVENT_STATUS_STR_LEN);
+	qdf_str_scopy(acs_scan_done.status, status, HOST_EVENT_STATUS_STR_LEN);
 	acs_scan_done.vdev_id = vdev_id;
 	acs_scan_done.scan_id = scan_id;
 

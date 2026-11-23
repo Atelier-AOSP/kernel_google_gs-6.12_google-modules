@@ -28,6 +28,8 @@
 
 #define ODPM_RAIL_NAME_STR_LEN_MAX 49
 
+#define ODPM_VNODE_NUM 11
+
 // Shared Memory Table (unit:byte)
 //     [0:7]   (8 bytes)  VERSION
 //   [8:263] (256 bytes)  CHANNEL
@@ -151,6 +153,13 @@ struct mba_send_node {
 	struct list_head list;
 };
 
+struct odpm_virt_node {
+	const char *node_name;
+	u32 *telem_channel_idx;
+	int telem_channel_idx_count;
+	u64 total_acc_power;
+};
+
 /**
  * dynamic struct google_odpm
  */
@@ -180,6 +189,22 @@ struct google_odpm {
 	 * A value of 0 disables the feature.
 	 */
 	u32 rate_limit_ms;
+
+	bool   support_virt_nodes;
+	struct odpm_virt_node virt_nodes[ODPM_VNODE_NUM];
+};
+
+struct odpm_rail_energy {
+	/* Config */
+	const char *regulator_name;
+	const char *schematic_name;
+	const char *subsystem_name;
+	enum odpm_pmic_type pmic_type;
+	enum odpm_rail_type rail_type;
+
+	/* Data */
+	u64 acc_energy;
+	u64 timestamp_ms;
 };
 
 enum odpm_mba_msg_type {
@@ -239,5 +264,16 @@ enum odpm_trans_type {
 
 struct iio_dev *google_get_odpm_iio_dev(void);
 int inst_read(struct device *dev, int data_type);
+
+/**
+ * google_odpm_get_rail_energy() - Get the accumulated energy data for all rails.
+ *
+ * This function retrieves the latest accumulated energy measurements for each
+ * configured ODPM rail. It might take less than 100 ms to get the data from the PMIC.
+ *
+ * Return: A pointer to a constant array of struct odpm_rail_energy containing
+ *         the energy data, or NULL on error.
+ */
+const struct odpm_rail_energy *google_odpm_get_rail_energy(void);
 
 #endif // __GOOGLE_ODPM_H__

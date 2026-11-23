@@ -1,2 +1,0 @@
-# SPDX-License-Identifier: GPL-2.0-only
-obj-$(CONFIG_GOOGLE_CPM_LOG) += google_cpmlog.o

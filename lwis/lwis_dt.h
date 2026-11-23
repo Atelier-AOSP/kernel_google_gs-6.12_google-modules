@@ -13,9 +13,10 @@
 #include "lwis_device.h"
 #include "lwis_device_i2c.h"
 #include "lwis_device_i3c_proxy.h"
-#include "lwis_device_spi.h"
 #include "lwis_device_ioreg.h"
+#include "lwis_device_pwrseq.h"
 #include "lwis_device_slc.h"
+#include "lwis_device_spi.h"
 #include "lwis_device_test.h"
 #include "lwis_device_top.h"
 
@@ -54,6 +55,12 @@ int lwis_ioreg_device_parse_dt(struct lwis_ioreg_device *ioreg_dev);
  *  SLC devices.
  */
 int lwis_slc_device_parse_dt(struct lwis_slc_device *slc_dev);
+
+/*
+ *  lwis_pwrseq_device_parse_dt: Parse device configurations specifically for
+ *  PWRSEQ devices.
+ */
+int lwis_pwrseq_device_parse_dt(struct lwis_pwrseq_device *pwrseq_dev);
 
 /*
  *  lwis_top_device_parse_dt: Parse device configurations specifically for

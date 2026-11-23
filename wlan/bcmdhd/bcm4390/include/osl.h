@@ -79,9 +79,8 @@ typedef void  (*osl_wreg_fn_t)(void *ctx, volatile void *reg, unsigned int val, 
 #define PKTDBG_TRACE(osh, pkt, bit)	BCM_REFERENCE(osh)
 #endif
 
-#ifndef BCM_UPTIME_PROFILE
+/* DEPRECATED! */
 #define OSL_GETCYCLES_PROF(x)
-#endif
 
 /* --------------------------------------------------------------------------
 ** Register manipulation macros.
@@ -162,14 +161,15 @@ typedef void  (*osl_wreg_fn_t)(void *ctx, volatile void *reg, unsigned int val, 
 #endif /* !OSL_GET_PMU_ACCU_TICK64_US */
 
 #ifndef OSL_SYS_HALT
-#ifdef __COVERITY__
+#if defined(__COVERITY__)
 /*
- * For Coverity builds, provide a definition that allows Coverity
- * to model the lack of return. This avoids Coverity False Positive
- * defects associated with data inconsistency being detected after
- * we otherwise would have halted.
+ * For Coverity and Klocwork builds, provide a definition that allows Coverity and Klocwork to
+ * model the lack of return. This avoids Coverity and Klocwork False Positive defects associated
+ * with data inconsistency being detected after we otherwise would have halted.
  */
 #define OSL_SYS_HALT()   __coverity_panic__()
+#elif defined(__KLOCWORK__)
+#define OSL_SYS_HALT()	kw_panic()
 #elif defined (WL_UNITTEST)
 #define OSL_SYS_HALT()	assert(0)
 #else
@@ -514,7 +514,10 @@ extern uint32 g_mb_depth;
 #define MB_START(var) \
 		uint mb_memuse_before_##var = MALLOCED(NULL); g_mb_depth++
 
-#define MB_END(var, fmt, ...) \
+/* The variable argument list includes 'fmt' as the first param. This ensures that there is at least
+ * one argument in '...', as required by (pre-C23) ISO C for variadic macros.
+ */
+#define MB_END(var, ...) \
 		do { \
 			uint mb_memuse_##var = MALLOCED(NULL) - mb_memuse_before_##var; \
 			g_mb_depth--; \
@@ -523,13 +526,13 @@ extern uint32 g_mb_depth;
 				for (uint _i = 0; _i < g_mb_depth; _i++) { \
 					printf("-"); \
 				} \
-				printf(fmt, ##__VA_ARGS__); \
+				printf(__VA_ARGS__); \
 				printf(" %d, %d\n", mb_memuse_##var, MALLOCED(NULL)); \
 			} \
 		} while (0)
 #else
 #define MB_START(var)
-#define MB_END(var, fmt, ...)
+#define MB_END(var, ...)
 #endif /* BCMDBG_MEM_BREAKUP */
 
 /* ASSERT NULL check should not be enabled for ROM build */

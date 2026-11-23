@@ -157,7 +157,7 @@ static int dwc3_google_setup_role_switch(struct dwc3_google *gdwc3)
 	return 0;
 }
 
-int dwc3_google_parse_ots_clocks(struct dwc3_google *gdwc3)
+static int dwc3_google_parse_ots_clocks(struct dwc3_google *gdwc3)
 {
 	int i;
 
@@ -167,7 +167,7 @@ int dwc3_google_parse_ots_clocks(struct dwc3_google *gdwc3)
 	return devm_clk_bulk_get(gdwc3->dev, gdwc3->drv_data->num_ots_clks, gdwc3->ots_clocks);
 }
 
-int dwc3_google_parse_clocks(struct dwc3_google *gdwc3)
+static int dwc3_google_parse_clocks(struct dwc3_google *gdwc3)
 {
 	int i;
 
@@ -177,7 +177,7 @@ int dwc3_google_parse_clocks(struct dwc3_google *gdwc3)
 	return devm_clk_bulk_get(gdwc3->dev, gdwc3->drv_data->num_clks, gdwc3->clocks);
 }
 
-int dwc3_google_parse_ots_resets(struct dwc3_google *gdwc3)
+static int dwc3_google_parse_ots_resets(struct dwc3_google *gdwc3)
 {
 	int i;
 
@@ -188,7 +188,7 @@ int dwc3_google_parse_ots_resets(struct dwc3_google *gdwc3)
 		gdwc3->drv_data->num_ots_rsts, gdwc3->ots_resets);
 }
 
-int dwc3_google_parse_resets(struct dwc3_google *gdwc3)
+static int dwc3_google_parse_resets(struct dwc3_google *gdwc3)
 {
 	int i;
 
@@ -525,7 +525,7 @@ detach_genpd_dev:
 	return ret;
 }
 
-static int dwc3_google_remove(struct platform_device *pdev)
+static void dwc3_google_remove(struct platform_device *pdev)
 {
 	struct dwc3_google *gdwc3 = platform_get_drvdata(pdev);
 
@@ -541,7 +541,6 @@ static int dwc3_google_remove(struct platform_device *pdev)
 		google_unconfigure_glue(gdwc3);
 		pm_runtime_set_suspended(&pdev->dev);
 	}
-	return 0;
 }
 
 

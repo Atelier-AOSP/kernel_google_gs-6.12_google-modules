@@ -696,16 +696,19 @@ static long qbt_ioctl(
 		pr_debug("QBT_ACQUIRE_WAKELOCK\n");
 		timed_wakelock_acquire(&drvdata->ioctl_wakelock, timeout.timeout_ms);
 
-		rpm_res = pm_runtime_resume_and_get(&drvdata->spi_pinctrl_pdev->dev);
-		if (rpm_res < 0)
-			pr_info("pm_runtime_resume_and_get failed: %d\n", rpm_res);
+		if (drvdata->spi_pinctrl_pdev) {
+			rpm_res = pm_runtime_resume_and_get(&drvdata->spi_pinctrl_pdev->dev);
+			if (rpm_res < 0)
+				pr_info("pm_runtime_resume_and_get failed: %d\n", rpm_res);
+		}
 		break;
 	}
 	case QBT_RELEASE_WAKELOCK:
 	{
 		pr_debug("QBT_RELEASE_WAKELOCK\n");
 		timed_wakelock_release(&drvdata->ioctl_wakelock, false);
-		pm_runtime_put(&drvdata->spi_pinctrl_pdev->dev);
+		if (drvdata->spi_pinctrl_pdev)
+			pm_runtime_put(&drvdata->spi_pinctrl_pdev->dev);
 		break;
 	}
 	case QBT_GET_TOUCH_FD_VERSION:
@@ -1313,16 +1316,17 @@ static int qbt_read_device_tree(struct platform_device *pdev,
 
 	pinctrl_np = of_parse_phandle(pdev->dev.of_node, "spi-gpio-provider", 0);
 	if (!pinctrl_np) {
-		dev_err(&pdev->dev, "Failed to get spi-gpio-provider phandle\n");
-		rc = -EINVAL;
-		goto end;
-	}
-
-	drvdata->spi_pinctrl_pdev = of_find_device_by_node(pinctrl_np);
-	of_node_put(pinctrl_np);
-	if (!drvdata->spi_pinctrl_pdev) {
-		dev_err(&pdev->dev, "Failed to find spi pinctrl platform device\n");
-		rc = -EPROBE_DEFER;
+		dev_warn(&pdev->dev, "no spi-gpio-provider phandle\n");
+		drvdata->spi_pinctrl_pdev = NULL;
+	} else {
+		drvdata->spi_pinctrl_pdev = of_find_device_by_node(pinctrl_np);
+		of_node_put(pinctrl_np);
+		if (!drvdata->spi_pinctrl_pdev) {
+			dev_err(&pdev->dev, "Failed to find spi pinctrl platform device\n");
+			rc = -EPROBE_DEFER;
+		} else {
+			dev_dbg(&pdev->dev, "spi pinctrl platform device found\n");
+		}
 	}
 end:
 	return rc;
@@ -1394,7 +1398,7 @@ end:
 	pr_debug("exit : %d\n", rc);
 	return rc;
 }
-static int qbt_remove(struct platform_device *pdev)
+static void qbt_remove(struct platform_device *pdev)
 {
 	pr_debug("entry\n");
 	struct qbt_drvdata *drvdata = platform_get_drvdata(pdev);
@@ -1418,8 +1422,8 @@ static int qbt_remove(struct platform_device *pdev)
 	cleanup_timed_wakelock(&drvdata->gpio_wakelock);
 	cleanup_timed_wakelock(&drvdata->ipc_irq_wakelock);
 	input_unregister_handler(&qbt_touch_handler);
-	put_device(&drvdata->spi_pinctrl_pdev->dev);
-	return 0;
+	if (drvdata->spi_pinctrl_pdev)
+		put_device(&drvdata->spi_pinctrl_pdev->dev);
 }
 static int qbt_suspend(struct platform_device *pdev, pm_message_t state)
 {

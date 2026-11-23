@@ -61,7 +61,7 @@ struct gsa_mbox *init_test_gsa_mbox(struct kunit *test, struct platform_device *
 
 	mbox->send_mbox_msg = send_mbox_msg;
 	mbox->dev = &pdev->dev;
-	mbox->slots[0].client = (struct mbox_client){
+	mbox->msg_slot.client = (struct mbox_client){
 		.dev = &pdev->dev,
 		.tx_block = true,
 		.tx_tout = 100,
@@ -70,16 +70,16 @@ struct gsa_mbox *init_test_gsa_mbox(struct kunit *test, struct platform_device *
 		.tx_done = mbox_tx_done,
 		.tx_prepare = mbox_tx_prepare,
 	};
-	mbox->slots[0].rsp_buffer = NULL;
+	mbox->msg_slot.rsp_buffer = NULL;
 	/*
 	 * The send_mbox_message function ptr needs to receive a pointer to channel.
 	 * The mock send_mbox_message needs to call the rx_callback, which needs a client.
 	 * Attach client to the channel so we can access it within the mock function.
 	 */
-	mbox->slots[0].channel = kunit_kzalloc(test, sizeof(mbox->slots[0].channel), GFP_KERNEL);
-	mbox->slots[0].channel->cl = &mbox->slots[0].client;
+	mbox->msg_slot.channel = kunit_kzalloc(test, sizeof(mbox->msg_slot.channel), GFP_KERNEL);
+	mbox->msg_slot.channel->cl = &mbox->msg_slot.client;
 	mutex_init(&mbox->share_reg_lock);
-	init_completion(&mbox->slots[0].mbox_cmd_completion);
+	init_completion(&mbox->msg_slot.mbox_cmd_completion);
 
 	return mbox;
 }

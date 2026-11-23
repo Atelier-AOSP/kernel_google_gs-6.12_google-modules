@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 checkpatch(
     name = "checkpatch",
     checkpatch_pl = "//common:scripts/checkpatch.pl",
@@ -35,7 +40,6 @@ ddk_module(
         "include/**/*.h",
     ]),
     includes = [
-        "gcip-kernel-driver/drivers/gcip/iif/include",
         "gcip-kernel-driver/include",
         "include",
     ],
@@ -48,18 +52,18 @@ ddk_module(
         "gxp-common-platform.c",
         "gxp-mailbox-driver.c",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/edgetpu/rio/drivers/edgetpu:edgetpu.rio",
         "//private/google-modules/edgetpu/rio/drivers/edgetpu:headers",
+        "//private/google-modules/iif",
+        "//private/google-modules/iif:iif_headers",
         "//private/google-modules/power/mitigation:google_bcl",
         "//private/google-modules/power/mitigation:headers",
-        "//private/google-modules/soc/gs:gs_soc_module",
         "//private/google-modules/soc/gs:headers",
+        "//private/google-modules/soc/gs/drivers/soc/google:exynos_pm_qos",
+        "//private/google-modules/soc/gs/drivers/soc/google/cal-if:cmupmucal",
         "//private/google-modules/soc/gs/drivers/soc/google/gsa:gsa_ko",
+        "//private/google-modules/soc/gs/drivers/thermal/samsung:gs_thermal",
     ],
 )

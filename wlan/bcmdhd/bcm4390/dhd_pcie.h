@@ -610,6 +610,9 @@ typedef struct dhd_bus {
 #ifdef OEM_ANDROID
 	bool chk_pm;	/* To avoid counting of wake up from Runtime PM */
 #endif /* OEM_ANDROID */
+#ifdef DHD_DEFER_L1SS_ENABLE_IN_RESUME
+	struct work_struct l1ss_enable_work;
+#endif /* DHD_DEFER_L1SS_ENABLE_IN_RESUME */
 #if defined(PCIE_INB_DW)
 	bool calc_ds_exit_latency;
 	bool deep_sleep; /* Indicates deep_sleep set or unset by the DHD IOVAR deep_sleep */
@@ -929,11 +932,7 @@ extern void dhdpcie_bus_ringbell_2_fast(struct dhd_bus *bus, uint32 value, bool 
 extern void dhdpcie_dongle_reset(dhd_bus_t *bus);
 extern int dhd_bus_cfg_sprom_ctrl_bp_reset(struct dhd_bus *bus);
 extern int dhd_bus_cfg_ss_ctrl_bp_reset(struct dhd_bus *bus);
-#ifdef DHD_PCIE_NATIVE_RUNTIMEPM
 extern int dhdpcie_bus_suspend(struct  dhd_bus *bus, bool state, bool byint);
-#else
-extern int dhdpcie_bus_suspend(struct  dhd_bus *bus, bool state);
-#endif /* DHD_PCIE_NATIVE_RUNTIMEPM */
 extern int dhdpcie_pci_suspend_resume(struct  dhd_bus *bus, bool state);
 extern uint32 dhdpcie_force_alp(struct dhd_bus *bus, bool enable);
 extern uint32 dhdpcie_set_l1_entry_time(struct dhd_bus *bus, int force_l1_entry_time);

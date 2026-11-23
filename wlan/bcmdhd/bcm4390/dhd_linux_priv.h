@@ -475,10 +475,10 @@ typedef struct dhd_info {
 	tsk_ctl_t lb_rxpost_thread;
 #endif /* DHD_LB_RXPOST */
 
-#if defined(DHD_FILE_DUMP_EVENT) && defined(DHD_FW_COREDUMP)
+#if (defined(DHD_FILE_DUMP_EVENT) || defined(DHD_DMPD)) && defined(DHD_FW_COREDUMP)
 	osl_atomic_t dump_status;
 	struct work_struct dhd_dump_proc_work;
-#endif /* DHD_FILE_DUMP_EVENT && DHD_FW_COREDUMP */
+#endif /* (DHD_FILE_DUMP_EVENT || DHD_DMPD) && DHD_FW_COREDUMP */
 #ifdef DEBUGABILITY
 	struct proc_dir_entry *dhd_trace_proc;
 #endif /* DEBUGABILITY */

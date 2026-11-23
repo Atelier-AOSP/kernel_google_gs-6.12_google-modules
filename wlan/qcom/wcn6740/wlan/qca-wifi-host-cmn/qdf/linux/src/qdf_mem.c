@@ -215,7 +215,7 @@ static void qdf_mem_header_init(struct qdf_mem_header *header, qdf_size_t size,
 	header->domain = qdf_debug_domain_get();
 	header->freed = false;
 
-	qdf_str_lcopy(header->func, func, QDF_MEM_FUNC_NAME_SIZE);
+	qdf_str_scopy(header->func, func, QDF_MEM_FUNC_NAME_SIZE);
 
 	header->line = line;
 	header->size = size;
@@ -377,7 +377,7 @@ static bool qdf_mem_meta_table_insert(struct __qdf_mem_info *table,
 
 	for (i = 0; i < QDF_MEM_STAT_TABLE_SIZE; i++) {
 		if (!table[i].count) {
-			qdf_str_lcopy(table[i].func, meta->func,
+			qdf_str_scopy(table[i].func, meta->func,
 				      QDF_MEM_FUNC_NAME_SIZE);
 			table[i].line = meta->line;
 			table[i].size = meta->size;
@@ -804,7 +804,7 @@ qdf_print_major_nbuf_allocs(uint32_t threshold,
 			meta.size = p_node->size;
 			meta.caller = NULL;
 			meta.time = p_node->time;
-			qdf_str_lcopy(meta.func, p_node->func_name,
+			qdf_str_scopy(meta.func, p_node->func_name,
 				      QDF_MEM_FUNC_NAME_SIZE);
 
 			is_full = qdf_mem_meta_table_insert(table, &meta);

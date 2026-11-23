@@ -18,6 +18,8 @@
 #include <drm/drm_of.h>
 #include <drm/vs_drm.h>
 
+#include <trace/dpu_trace.h>
+
 #include "vs_dc.h"
 #include "vs_dc_pre.h"
 #include "vs_dc_hw.h"
@@ -27,11 +29,28 @@
 #include "vs_gem.h"
 #include "display_compress/vs_dc_dsc.h"
 #include "vs_trace.h"
+#include "vs_trace_9x00.h"
 
 #include <drm/vs_drm_fourcc.h>
 #include <drm/drm_vblank.h>
 
-static inline u8 to_vs_format(u32 format)
+static int dc_get_fe_idx(const struct device *dev)
+{
+	struct vs_dc *dc = dev_get_drvdata(dev->parent);
+	int i;
+
+	if (!dc)
+		return -ENODEV;
+
+	for (i = 0; i < DC_FE_NUM; i++) {
+		if (dc->fe_dev[i] == dev)
+			return i;
+	}
+
+	return -ENODEV;
+}
+
+static inline u8 to_vs_format(u32 format, u64 mod)
 {
 	u8 f = FORMAT_A8R8G8B8;
 
@@ -109,6 +128,10 @@ static inline u8 to_vs_format(u32 format)
 		break;
 	case DRM_FORMAT_P210:
 		f = FORMAT_P210;
+		break;
+	case DRM_FORMAT_YUV420_10BIT:
+		if (fourcc_mod_vs_get_type(mod) == DRM_FORMAT_MOD_VS_TYPE_CUSTOM)
+			f = FORMAT_YUV420_PACKED_10BIT;
 		break;
 	default:
 		break;
@@ -215,7 +238,7 @@ bool vs_dc_is_yuv_format(u32 format)
 	case FORMAT_NV16:
 	case FORMAT_P010:
 	case FORMAT_P210:
-	case FORMAT_YUV420_PACKED:
+	case FORMAT_YUV420_PACKED_10BIT:
 		is_yuv = true;
 		break;
 	default:
@@ -238,15 +261,15 @@ static inline u8 to_vs_display_id(struct vs_dc *dc, struct drm_crtc *crtc)
 	return id;
 }
 
-static inline u16 get_dma_image_width(const struct dc_hw_roi *roi, const struct dc_hw_fb *fb)
+static inline u16 get_dma_image_width(const struct drm_vs_dma *dma, struct dc_hw_fb *fb)
 {
 	u16 width = 0, height = 0;
 
-	if (roi) {
-		switch (roi->mode) {
+	if (dma) {
+		switch (dma->mode) {
+		case VS_DMA_NORMAL:
 		case VS_DMA_ONE_ROI:
-			width = roi->in_rect[0].w;
-			height = roi->in_rect[0].h;
+			pr_err("%s Invalid drm_vs_dma_mode set: %d.\n", __func__, dma->mode);
 			break;
 		default:
 			width = fb->width;
@@ -262,7 +285,8 @@ static inline u16 get_dma_image_width(const struct dc_hw_roi *roi, const struct 
 }
 
 static void vs_dc_update_sram(struct vs_dc *dc, struct vs_plane *plane, struct dc_hw_fb *fb,
-			      struct dc_hw_plane *hw_plane, const struct dc_hw_scale *scale)
+			      struct dc_hw_plane *hw_plane, const struct dc_hw_scale *scale,
+			      const struct drm_vs_dma *dma)
 {
 	struct device *dev = dc->hw.dev;
 	u32 sp_size = 0;
@@ -277,14 +301,13 @@ static void vs_dc_update_sram(struct vs_dc *dc, struct vs_plane *plane, struct d
 	u32 hw_id = hw_plane->info->id;
 	u16 sp_alignment = dc->hw.info->dma_sram_alignment;
 	bool sp_extra_buffer = dc->hw.info->dma_sram_extra_buffer;
-
 	plane->sram.sp_unit_size = dc->hw.info->dma_sram_unit_size;
 
 	/* cursor layer doesn't use sram pool */
 	if (hw_plane->info->type == DRM_PLANE_TYPE_CURSOR)
 		return;
 
-	if (scale != NULL)
+	if (scale)
 		scale_enable = scale->enable;
 
 	if (fb->enable) {
@@ -295,8 +318,9 @@ static void vs_dc_update_sram(struct vs_dc *dc, struct vs_plane *plane, struct d
 		/* b/451837126: pass (NULL, fb) to force using full FB dimensions */
 		width = get_dma_image_width(NULL, fb);
 
-		vs_dpu_get_dma_sram_size(fb->format, fb->tile_mode, fb->rotation, width, &sp_size,
-					 sp_alignment, sp_extra_buffer, plane->sram.sp_unit_size);
+		vs_dpu_get_dma_sram_size(fb->format, fb->tile_mode, fb->rotation, width,
+					 &sp_size, sp_alignment, sp_extra_buffer,
+					 plane->sram.sp_unit_size);
 		if (plane->sram.sp_handle && plane->sram.sp_size != sp_size) {
 			realloc = 1;
 			dma_sram_alloc = true;
@@ -418,7 +442,7 @@ static void update_plane_fb(struct vs_plane *plane, u8 display_id, struct dc_hw_
 	fb->zpos = vs_plane_state->blend_id;
 	fb->enable = state->visible;
 	fb->secure = is_secure;
-	fb->format = to_vs_format(drm_fb->format->format);
+	fb->format = to_vs_format(drm_fb->format->format, drm_fb->modifier);
 	update_swizzle(drm_fb->format->format, fb);
 	fb->tile_mode = to_vs_tile_mode(drm_fb);
 
@@ -820,9 +844,89 @@ static void vs_dc_set_plane_pattern(struct device *dev, struct vs_plane *plane)
 	else if (pattern.mode == VS_RMAP_V)
 		pattern.ramp_step = 65535 / src_h * 2048;
 
+	if (dc_fe_power_get(dev, true) < 0) {
+		dev_err(dev, "Unable to get FE power to set plane pattern\n");
+		return;
+	}
 	dc_hw_set_plane_pattern(&dc->hw, hw_id, &pattern);
+	dc_fe_power_put(dev, false);
 }
-#endif
+
+static void _get_u32_value_after_str(char *p, char *str, u32 size, u32 *value)
+{
+	char *cur = p;
+	int ret = 0;
+
+	cur = strstr(p, str);
+	if (cur) {
+		cur += size;
+		ret = kstrtoul(cur, 10, (unsigned long *)value);
+		if (ret) {
+			pr_err("%s: failed to kstrtoul: %d\n", __func__, ret);
+		}
+	}
+}
+
+static void vs_dc_set_plane_qos(struct device *dev, struct vs_plane *plane, const char __user *ubuf,
+				size_t len)
+{
+	struct vs_dc *dc = dev_get_drvdata(dev);
+	struct drm_plane_state *state = plane->base.state;
+	struct vs_plane_state *plane_state = to_vs_plane_state(state);
+	char buf[256];
+	u8 i, hw_id;
+
+	hw_id = dc->planes[plane->id].id;
+
+	if (len > sizeof(buf) - 1) {
+		pr_err("%s: input string size out of range.\n", __func__);
+		return;
+	}
+
+	if (copy_from_user(buf, ubuf, len)) {
+		pr_err("%s: copy from user failed.\n", __func__);
+		return;
+	}
+
+	for (i = 0; i < MAX_QOS_LEVLE; i++) {
+		char temp[14];
+		char temp_1[14];
+		char temp_2[11];
+
+		snprintf(temp, 14, "fe0QosValue%d:", i);
+		snprintf(temp_1, 14, "fe1QosValue%d:", i);
+		snprintf(temp_2, 11, "qosValue%d:", i);
+
+		_get_u32_value_after_str(buf, temp, 14, &plane_state->qos.fe0_qos_value[i]);
+		_get_u32_value_after_str(buf, temp_1, 14, &plane_state->qos.fe1_qos_value[i]);
+		_get_u32_value_after_str(buf, temp_2, 11, &plane_state->qos.plane_qos_value[i]);
+	}
+
+	plane_state->qos.dirty = true;
+
+	/* update status to hw status */
+	memcpy(&dc->hw.plane[hw_id].qos, &plane_state->qos, sizeof(struct dc_hw_plane_qos));
+}
+
+static int vs_dc_show_plane_qos_status(struct seq_file *s)
+{
+	struct drm_plane *plane = s->private;
+	struct vs_plane_state *plane_state = to_vs_plane_state(plane->state);
+	u8 i;
+
+	if (!plane_state->qos.dirty)
+		dc_hw_get_fe_qos_value(&plane_state->qos);
+
+	for (i = 0; i < MAX_QOS_LEVLE; i++) {
+		seq_printf(s, "\tFE0 QOS value %d= [%d]\n", i, plane_state->qos.fe0_qos_value[i]);
+		seq_printf(s, "\tFE1 QOS value %d= [%d]\n", i, plane_state->qos.fe1_qos_value[i]);
+		seq_printf(s, "\tplane QOS value %d= [%d]\n", i,
+			   plane_state->qos.plane_qos_value[i]);
+	}
+
+	return 0;
+}
+#endif /* CONFIG_DEBUG_FS */
 
 static void update_plane(struct vs_dc *dc, struct vs_plane *plane)
 {
@@ -833,7 +937,9 @@ static void update_plane(struct vs_dc *dc, struct vs_plane *plane)
 	struct dc_hw_fb fb = { 0 };
 	struct dc_hw_plane *hw_plane = &dc->hw.plane[plane->id];
 	const struct dc_hw_scale *scale = &hw_plane->scale;
+	const struct drm_vs_dma *dma = NULL;
 	u8 display_id = 0;
+	u64 fb_modifier = plane_state->base.fb->modifier;
 	int i;
 	bool ret;
 
@@ -843,11 +949,15 @@ static void update_plane(struct vs_dc *dc, struct vs_plane *plane)
 		return;
 	}
 
+	if (plane_info->roi)
+		dma = vs_dc_drm_plane_property_get(plane_state, "DMA_CONFIG", NULL);
+
 	display_id = to_vs_display_id(dc, state->crtc);
 
 	update_fbc(dc, plane);
 
 	update_plane_fb(plane, display_id, &fb, plane_info);
+	plane_state->base.fb->modifier = fb_modifier;
 
 	dc_hw_update_plane(&dc->hw, plane->id, &fb);
 
@@ -873,8 +983,7 @@ static void update_plane(struct vs_dc *dc, struct vs_plane *plane)
 	update_plane_ext_fb(dc, plane->id, plane_state);
 
 	update_plane_clear(dc, plane->id, plane_state);
-
-	vs_dc_update_sram(dc, plane, &fb, hw_plane, scale);
+	vs_dc_update_sram(dc, plane, &fb, hw_plane, scale, dma);
 
 	for (i = 0; i < plane->properties.num; i++) {
 		ret = vs_dc_update_drm_property(dc, plane_info->id, &plane_state->drm_states[i],
@@ -912,10 +1021,13 @@ static void vs_dc_update_plane(struct device *dev, struct vs_plane *plane)
 
 static void vs_dc_disable_plane(struct device *dev, struct vs_plane *plane)
 {
+	struct drm_plane_state *state = plane->base.state;
+	struct vs_plane_state *plane_state = to_vs_plane_state(state);
 	struct vs_plane_info *plane_info;
 	struct vs_dc *dc = dev_get_drvdata(dev);
 	struct dc_hw_plane *hw_plane = &dc->hw.plane[plane->id];
 	const struct dc_hw_scale *scale = &hw_plane->scale;
+	const struct drm_vs_dma *dma = NULL;
 	enum drm_plane_type type = plane->base.type;
 	struct dc_hw_fb fb = { 0 };
 	struct dc_hw_rcd_mask rcd_mask = { 0 };
@@ -930,6 +1042,9 @@ static void vs_dc_disable_plane(struct device *dev, struct vs_plane *plane)
 		dev_err(dev, "%s: invalid plane id: %d\n", __func__, plane->id);
 		return;
 	}
+
+	if (plane_info->roi)
+		dma = vs_dc_drm_plane_property_get(plane_state, "DMA_CONFIG", NULL);
 
 	switch (type) {
 	case DRM_PLANE_TYPE_PRIMARY:
@@ -949,7 +1064,7 @@ static void vs_dc_disable_plane(struct device *dev, struct vs_plane *plane)
 		dc_hw_update_plane_position(&dc->hw, plane->id, &pos);
 		dc_hw_update_plane_std_bld(&dc->hw, plane->id, &std_bld);
 		dc_hw_update_plane_clear(&dc->hw, plane->id, &clear);
-		vs_dc_update_sram(dc, plane, &fb, &dc->hw.plane[plane->id], scale);
+		vs_dc_update_sram(dc, plane, &fb, &dc->hw.plane[plane->id], scale, dma);
 		break;
 	default:
 		break;
@@ -964,7 +1079,6 @@ static bool vs_dc_mod_supported(const struct vs_plane_info *plane_info, u64 modi
 
 	if (plane_info->modifiers == NULL)
 		return false;
-
 	for (mods = plane_info->modifiers; *mods != DRM_FORMAT_MOD_INVALID; mods++) {
 		if (*mods == vs_modifier)
 			return true;
@@ -988,14 +1102,17 @@ static int check_plane_sram_dma_size(const struct vs_dc_info *info,
 	u32 dma_sram_max_size_kb = plane_info->dma_sram_max_size_kb;
 	u32 dma_sram_max_size = dma_sram_max_size_kb << 10;
 	u32 dma_sram_size = 0;
+	u16 width;
 
 	if (!dma_sram_max_size_kb)
 		return 0;
 
-	ret = vs_dpu_get_dma_sram_size(to_vs_format(fb->format->format), to_vs_tile_mode(fb),
-				       to_vs_rotation(plane_state->rotation), fb->width,
-				       &dma_sram_size, dma_sram_alignment, dma_sram_extra_buffer,
-				       dma_sram_unit_size);
+	width = plane_state->rotation & (DRM_MODE_ROTATE_90 | DRM_MODE_ROTATE_270) ? fb->height :
+										     fb->width;
+	ret = vs_dpu_get_dma_sram_size(to_vs_format(fb->format->format, fb->modifier),
+				       to_vs_tile_mode(fb), to_vs_rotation(plane_state->rotation),
+				       width, &dma_sram_size, dma_sram_alignment,
+				       dma_sram_extra_buffer, dma_sram_unit_size);
 	if (ret) {
 		dev_warn(dev, "[Reject] plane %d failed to calculate sram dma size\n",
 			 plane_info->id);
@@ -1041,7 +1158,7 @@ static int check_plane_sram_scl_size(const struct vs_dc_info *info,
 	if (!scale.enable)
 		return 0;
 
-	ret = vs_dpu_get_fescl_sram_size(to_vs_format(fb->format->format),
+	ret = vs_dpu_get_fescl_sram_size(to_vs_format(fb->format->format, fb->modifier),
 					 min(scale.src_w >> 16, scale.dst_w), &scl_sram_size);
 	if (ret) {
 		dev_warn(dev, "[Reject] plane %d failed to calculate sram scaler size\n",
@@ -1615,6 +1732,286 @@ static int check_y2r_changed(struct drm_plane_state *plane_state)
 		dev_err(dev, "%s: Y2R coefficients provided for an RGB frame!", __func__);
 		return -EINVAL;
 	}
+
+	return 0;
+}
+
+static u32 _map_format_uncompress(u32 format)
+{
+	u32 f = FORMAT_ARGB;
+
+	switch (format) {
+	case DRM_FORMAT_ARGB16161616F:
+	case DRM_FORMAT_ABGR16161616F:
+		f = FORMAT_ARGB16161616;
+		break;
+	case DRM_FORMAT_NV16:
+	case DRM_FORMAT_NV61:
+	case DRM_FORMAT_P210:
+		f = FORMAT_YUV422;
+		break;
+	case DRM_FORMAT_YUV420:
+	case DRM_FORMAT_YVU420:
+	case DRM_FORMAT_NV12:
+	case DRM_FORMAT_NV21:
+	case DRM_FORMAT_P010:
+		f = FORMAT_YUV420;
+		break;
+	default:
+		f = FORMAT_ARGB;
+		break;
+	}
+
+	return f;
+}
+
+static u32 _map_format_pvric(u32 format)
+{
+	u32 f = FORMAT_ARGB_PV;
+
+	switch (format) {
+	case DRM_FORMAT_ARGB16161616F:
+	case DRM_FORMAT_ABGR16161616F:
+		f = FORMAT_ARGB16161616_PV;
+		break;
+	case DRM_FORMAT_YUV420:
+	case DRM_FORMAT_YVU420:
+	case DRM_FORMAT_NV12:
+	case DRM_FORMAT_NV21:
+		f = FORMAT_YUV420_8BIT_PV;
+		break;
+	case DRM_FORMAT_P010:
+		f = FORMAT_YUV420_10BIT_PV;
+		break;
+	default:
+		f = FORMAT_ARGB_PV;
+		break;
+	}
+
+	return f;
+}
+
+int check_roi_offset_align(struct drm_framebuffer *fb, const struct vs_dc_info *info, u16 offset_x,
+			   u16 offset_y)
+{
+	u16 format_mod;
+	u32 format = 0;
+
+	if (!info->format_limit)
+		return 0;
+
+	format_mod = fourcc_mod_vs_get_type(fb->modifier);
+
+	if (format_mod == DRM_FORMAT_MOD_VS_TYPE_NORMAL)
+		format = _map_format_uncompress(fb->format->format);
+	else if (format_mod == DRM_FORMAT_MOD_VS_TYPE_PVRIC)
+		format = _map_format_pvric(fb->format->format);
+	switch (format) {
+	case FORMAT_YUV420:
+		if (offset_x % 2 != 0 || offset_y % 2 != 0) {
+			pr_err("%s: roi offset size does not meet format alignnment requirments.\n",
+			       __func__);
+			return -EINVAL;
+		}
+		break;
+	case FORMAT_YUV422:
+		if (offset_x % 2 != 0) {
+			pr_err("%s: roi offset size does not meet format alignnment requirments.\n",
+			       __func__);
+			return -EINVAL;
+		}
+		break;
+	case FORMAT_YUV420_8BIT_PV:
+	case FORMAT_YUV420_10BIT_PV:
+		if (offset_x % 2 != 0 || offset_y % 2 != 0) {
+			pr_err("%s: roi offset size does not meet format alignnment requirments.\n",
+			       __func__);
+			return -EINVAL;
+		}
+		break;
+	default:
+		break;
+	}
+	return 0;
+}
+
+static void vs_get_format_limit(u32 format, const struct format_limit_info *format_list, u16 size,
+				u16 type)
+{
+	u32 i;
+
+	for (i = 0; i < size; i++) {
+		if (format_list->format == format && format_list->type == type)
+			break;
+		format_list++;
+	}
+}
+
+int check_format_limit(struct drm_framebuffer *fb, const struct vs_dc_info *info, u16 width,
+		       u16 height, u16 type)
+{
+	u64 format_mod;
+	u32 format = 0;
+	const struct format_limit_info *format_limit;
+	char *type_str;
+
+	format_mod = fourcc_mod_vs_get_type(fb->modifier);
+
+	if (format_mod == DRM_FORMAT_MOD_VS_TYPE_NORMAL)
+		format = _map_format_uncompress(fb->format->format);
+	else if (format_mod == DRM_FORMAT_MOD_VS_TYPE_PVRIC)
+		format = _map_format_pvric(fb->format->format);
+
+	vs_get_format_limit(format, info->format_limit, info->format_limit_size, type);
+	format_limit = info->format_limit;
+	switch (type) {
+	case SRC:
+		type_str = "src";
+		break;
+	case ROI:
+		type_str = "roi";
+		break;
+	case SCALER:
+		type_str = "scaler";
+		break;
+	default:
+		type_str = "src";
+		break;
+	}
+
+	if (width < format_limit->min_width || width > format_limit->max_width ||
+	    height < format_limit->min_height || height > format_limit->max_height) {
+		pr_err("%s: %s size exceed the format limit.\n", __func__, type_str);
+		return -EINVAL;
+	}
+	if (fb->width % format_limit->width_align != 0 ||
+	    fb->height % format_limit->height_align != 0) {
+		pr_err("%s: %s size does not meet format alignnment requirments.\n", __func__,
+		       type_str);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int check_tile_size(struct drm_framebuffer *fb)
+{
+	u32 format = 0;
+	u8 tile_mode = 0;
+	int ret = 0;
+
+	if (fourcc_mod_vs_get_type(fb->modifier) != DRM_FORMAT_MOD_VS_TYPE_PVRIC)
+		return 0;
+
+	tile_mode = fourcc_mod_vs_get_tile_mode(fb->modifier);
+	if (tile_mode == DRM_FORMAT_MOD_VS_DEC_LINEAR)
+		return 0;
+
+	format = _map_format_pvric(fb->format->format);
+	switch (tile_mode) {
+	case DRM_FORMAT_MOD_VS_DEC_TILE_16X4:
+		if (fb->width % 16 != 0 || fb->height % 4 != 0)
+			ret = -EINVAL;
+		break;
+	case DRM_FORMAT_MOD_VS_DEC_TILE_8X8:
+		if (format == FORMAT_YUV420_8BIT_PV) {
+			if (fb->width % 32 != 0 || fb->height % 8 != 0)
+				ret = -EINVAL;
+		} else if (format == FORMAT_YUV420_10BIT_PV) {
+			if (fb->width % 16 != 0 || fb->height % 8 != 0)
+				ret = -EINVAL;
+		}
+		break;
+	case DRM_FORMAT_MOD_VS_DEC_TILE_32X2:
+		if (fb->width % 32 != 0 || fb->height % 2 != 0)
+			ret = -EINVAL;
+		break;
+	default:
+		break;
+	}
+
+	if (ret)
+		pr_err("%s: format size does not meet tile alignnment requirments.\n", __func__);
+
+	return ret;
+}
+
+static int check_fb_address(struct vs_plane *plane, struct drm_plane_state *state)
+{
+	u64 address, u_address, v_address = 0x0;
+	u32 stride, u_stride, v_stride = 0;
+	u16 format_mod;
+	u32 format = 0;
+	u8 num_planes, i;
+	struct drm_framebuffer *fb;
+	dma_addr_t dma_addr[3];
+
+	fb = state->fb;
+	stride = fb->pitches[0];
+	u_stride = fb->pitches[1];
+	v_stride = fb->pitches[2];
+	num_planes = fb->format->num_planes;
+
+	for (i = 0; i < num_planes; i++) {
+		dma_addr[i] = vs_fb_get_dma_addr(fb, i);
+	}
+	address = (u64)dma_addr[0];
+	u_address = (u64)dma_addr[1];
+	v_address = (u64)dma_addr[2];
+
+	format_mod = fourcc_mod_vs_get_type(fb->modifier);
+	if (format_mod == DRM_FORMAT_MOD_VS_TYPE_NORMAL)
+		format = _map_format_uncompress(fb->format->format);
+	else if (format_mod == DRM_FORMAT_MOD_VS_TYPE_PVRIC)
+		format = _map_format_pvric(fb->format->format);
+
+	if (!format)
+		return 0;
+
+	switch (format) {
+	case FORMAT_ARGB:
+		if ((address & 0xFF) != 0 || (stride & 0x1F) != 0) {
+			pr_err("%s: format base address/stride does not meet 256Byte/32Byte alignnment requirments.\n",
+			       __func__);
+			return -EINVAL;
+		}
+		break;
+	case FORMAT_YUV420:
+	case FORMAT_YUV422:
+		if ((address & 0xFF) != 0 || (u_address & 0xFF) != 0 || (v_address & 0xFF) != 0 ||
+		    (stride & 0x1F) != 0 || (u_stride & 0x1F) != 0 || (v_stride & 0x1F) != 0) {
+			pr_err("%s: format base address/stride does not meet 256Byte/32Byte alignnment requirments.\n",
+			       __func__);
+			return -EINVAL;
+		}
+		break;
+	case FORMAT_ARGB16161616:
+		if ((address & 0xFF) != 0 || (stride & 0x3F) != 0) {
+			pr_err("%s: format base address/stride does not meet 256Byte/64Byte alignnment requirments.\n",
+			       __func__);
+			return -EINVAL;
+		}
+		break;
+	case FORMAT_ARGB_PV:
+	case FORMAT_ARGB16161616_PV:
+		if ((address & 0xFF) != 0 || (stride & 0xFF) != 0) {
+			pr_err("%s: format base address/stride does not meet 256Byte/256Byte alignnment requirments.\n",
+			       __func__);
+			return -EINVAL;
+		}
+		break;
+	case FORMAT_YUV420_10BIT_PV:
+		if ((address & 0xFF) != 0 || (u_address & 0xFF) != 0 || (v_address & 0xFF) != 0 ||
+		    (stride & 0xFF) != 0 || (u_stride & 0xFF) != 0 || (v_stride & 0xFF) != 0) {
+			pr_err("%s: format base address/stride does not meet 256Byte/256Byte alignnment requirments.\n",
+			       __func__);
+			return -EINVAL;
+		}
+		break;
+	default:
+		break;
+	}
+
 	return 0;
 }
 
@@ -1659,6 +2056,15 @@ static int vs_dc_check_plane(struct device *dev, struct vs_plane *plane,
 	const struct dc_hw_plane *hw_plane = NULL;
 	const struct drm_vs_sbs *sbs = NULL;
 	int ret = 0;
+
+	if (dc->hw.info->format_limit) {
+		if (check_format_limit(fb, dc->hw.info, fb->width, fb->height, SRC))
+			return -EINVAL;
+		if (check_tile_size(fb))
+			return -EINVAL;
+		if (check_fb_address(plane, state))
+			return -EINVAL;
+	}
 
 	plane_info = get_plane_info(plane->id, dc->hw.info);
 	if (!plane_info) {
@@ -1865,197 +2271,134 @@ const struct vs_plane_funcs dc_plane_funcs = {
 	.update = vs_dc_update_plane,
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	.set_pattern = vs_dc_set_plane_pattern,
+	.set_qos = vs_dc_set_plane_qos,
+	.show_qos = vs_dc_show_plane_qos_status,
 #endif /* CONFIG_DEBUG_FS */
 	.disable = vs_dc_disable_plane,
 	.check = vs_dc_check_plane,
 	.format_mod_support = vs_dc_plane_format_mode_support,
 };
 
-static const struct of_device_id fe0_driver_dt_match[] = {
-	{ .compatible = "verisilicon,dpu_fe0" },
-	{},
-};
-MODULE_DEVICE_TABLE(of, fe0_driver_dt_match);
+/* FE power functions */
 
-static int fe0_bind(struct device *dev, struct device *master, void *data)
+int dc_fe_power_get(struct device *dev, bool sync)
 {
-	struct drm_device *drm_dev = data;
-	struct vs_drm_private *priv = drm_dev->dev_private;
-	struct vs_dc *dc = dev_get_drvdata(priv->dc_dev);
-	const struct vs_dc_info *dc_info;
-	struct vs_plane *plane;
-	struct drm_plane *drm_plane, *tmp;
-	const struct vs_plane_info *plane_info;
-	struct dc_hw_plane *hw_plane;
-	int i, ret;
-	u32 max_width = 0, max_height = 0;
-	u32 min_width = 0xffff, min_heigth = 0xffff;
-	enum drm_plane_type plane_type;
-	u32 possible_crtcs;
+	struct vs_dc *dc = dev_get_drvdata(dev);
+	int ret = 0, ret_tmp = 0;
+	int i;
 
-	if (!drm_dev || !dc) {
-		dev_err(dev, "devices are not created.\n");
-		return -ENODEV;
+	WARN_ONCE(!sync, "Async fe power_get called from %ps\n", __builtin_return_address(0));
+	DPU_ATRACE_BEGIN(__func__);
+
+	for (i = 0; i < DC_FE_NUM; i++) {
+		if (!dc->fe_dev[i])
+			continue;
+
+		if (sync)
+			ret_tmp = pm_runtime_get_sync(dc->fe_dev[i]);
+		else
+			ret_tmp = pm_runtime_get(dc->fe_dev[i]);
+
+		trace_disp_dc_fe_power_get(i, dc->fe_dev[i], sync, ret_tmp);
+
+		if (unlikely(ret_tmp < 0))
+			dev_err(dev, "fe%d_power_get: %ps: sync:%d ret:%d\n", i,
+				__builtin_return_address(0), sync, ret_tmp);
+		ret = ret ? ret : ret_tmp;
 	}
 
-	dev_set_drvdata(dev, dc);
-
-	ret = vs_dc_power_get(priv->dc_dev, true);
-	if (ret < 0)
-		dev_err(dev, "%s: failed to power ON\n", __func__);
-
-	ret = dc_fe0_hw_init(&dc->hw);
-	if (ret < 0) {
-		dev_err(dev, "Failed to initialize fe0 hardware.\n");
-		return ret;
-	}
-
-	ret = vs_dc_power_put(priv->dc_dev, true);
-	if (ret < 0)
-		dev_err(dev, "failed to power OFF\n");
-
-	dc_info = dc->hw.info;
-	for (i = 0; i < dc_info->plane_fe0_num; i++) {
-		plane_info = &dc->hw.info->planes_fe0[i];
-		hw_plane = &dc->hw.plane[i];
-
-		/*
-		 * Convert the plane type from PRIMARY to OVERLAY when there is no matching CRTC.
-		 * This will prevent the drm_mode_config_validate function from logging a warning
-		 * on an unbalanced number of PRIMARY planes and CRTCs.
-		 */
-		plane_type = plane_info->type;
-		if ((plane_type == DRM_PLANE_TYPE_PRIMARY) && !(dc->crtc[plane_info->crtc_id]))
-			plane_type = DRM_PLANE_TYPE_OVERLAY;
-
-		possible_crtcs = dc->crtc_mask;
-
-		if (plane_info->rcd_plane) {
-			/*
-			 * rcd planes are bound to a single outctrl,
-			 * skip creation if not created
-			 */
-			if (!dc->crtc[plane_info->crtc_id])
-				continue;
-			possible_crtcs = 1 << plane_info->crtc_id;
-		}
-
-		plane = vs_plane_create(hw_plane, drm_dev, dc_info, plane_type, i, possible_crtcs,
-					&dc_plane_funcs);
-		if (!plane) {
-			dev_err(dev, "Failed to create plane.\n");
-			ret = -ENOMEM;
-			goto err_cleanup_planes;
-		}
-
-		plane->id = i;
-		dc->planes[i].base = plane;
-		dc->planes[i].id = plane_info->id;
-
-		plane->dev = dev;
-		plane->funcs = &dc_plane_funcs;
-
-		if ((plane_type == DRM_PLANE_TYPE_PRIMARY) && (dc->crtc[plane_info->crtc_id]))
-			dc->crtc[plane_info->crtc_id]->base.primary = &plane->base;
-
-		if ((plane_info->type == DRM_PLANE_TYPE_CURSOR) &&
-		    (dc->crtc[plane_info->crtc_id])) {
-			dc->crtc[plane_info->crtc_id]->base.cursor = &plane->base;
-
-			drm_dev->mode_config.cursor_width = plane_info->max_width;
-			drm_dev->mode_config.cursor_height = plane_info->max_height;
-		}
-
-		min_width = (min_width > plane_info->min_width) ? plane_info->min_width : min_width;
-		min_heigth = (min_heigth > plane_info->min_height) ? plane_info->min_height :
-								     min_heigth;
-		/*
-		 * Note: these values are used for multiple independent things:
-		 * hw display mode filtering, plane buffer sizes, writeback buffer size ...
-		 * Use the combined maximum values here to cover all use cases, and do more
-		 * specific checking in the respective code paths.
-		 */
-		max_width = (max_width < plane_info->max_width) ? plane_info->max_width : max_width;
-		max_height = (max_height < plane_info->max_height) ? plane_info->max_height :
-								     max_height;
-	}
-
-	drm_dev->mode_config.min_width = (min_width > drm_dev->mode_config.min_width) ?
-						 drm_dev->mode_config.min_width :
-						 min_width;
-	drm_dev->mode_config.min_height = (min_heigth > drm_dev->mode_config.min_height) ?
-						  drm_dev->mode_config.min_height :
-						  min_heigth;
-	drm_dev->mode_config.max_width = (max_width < drm_dev->mode_config.max_width) ?
-						 drm_dev->mode_config.max_width :
-						 max_width;
-	drm_dev->mode_config.max_height = (max_height < drm_dev->mode_config.max_height) ?
-						  drm_dev->mode_config.max_height :
-						  max_height;
-
-	vs_drm_update_alignment(drm_dev, dc_info->pitch_alignment, dc_info->addr_alignment);
-
-	return 0;
-
-err_cleanup_planes:
-	list_for_each_entry_safe(drm_plane, tmp, &drm_dev->mode_config.plane_list, head)
-		if (drm_plane->possible_crtcs & dc->crtc_mask)
-			vs_plane_destroy(drm_plane);
+	DPU_ATRACE_END(__func__);
 
 	return ret;
 }
 
-static void fe0_unbind(struct device *dev, struct device *master, void *data)
+int dc_fe_power_put(struct device *dev, bool sync)
 {
-	struct drm_device *drm_dev = data;
-	struct drm_plane *drm_plane, *tmp;
+	struct vs_dc *dc = dev_get_drvdata(dev);
+	int ret = 0, ret_tmp = 0;
+	int i;
+
+	DPU_ATRACE_BEGIN(__func__);
+
+	for (i = 0; i < DC_FE_NUM; i++) {
+		if (!dc->fe_dev[i])
+			continue;
+
+		if (sync)
+			ret_tmp = pm_runtime_put_sync(dc->fe_dev[i]);
+		else
+			ret_tmp = pm_runtime_put(dc->fe_dev[i]);
+
+		trace_disp_dc_fe_power_put(i, dc->fe_dev[i], sync, ret_tmp);
+
+		if (unlikely(ret_tmp < 0))
+			dev_err(dev, "fe%d_power_put: %ps: sync:%d ret:%d\n", i,
+				__builtin_return_address(0), sync, ret_tmp);
+		ret = ret ? ret : ret_tmp;
+	}
+
+	DPU_ATRACE_END(__func__);
+
+	return ret;
+}
+
+/* FE irq handling */
+
+static void dc_handle_fe_interrupts(struct device *dev)
+{
+	struct vs_dc *dc = dev_get_drvdata(dev);
+	struct dc_hw_interrupt_status status = { 0 };
+	unsigned long *bus_errs;
+	bool *hw_has_bus_errs;
+	const char *bus_errs_trace_name;
+	enum dc_hw_reset_pos reset_pos;
+	int fe_idx = dc_get_fe_idx(dev);
+
+	if (fe_idx < 0 || fe_idx >= DC_FE_NUM)
+		return;
+
+	if (fe_idx == 0) {
+		dc_hw_get_fe0_interrupt(&dc->hw, &status);
+		bus_errs = status.fe0_bus_errors;
+		hw_has_bus_errs = &dc->hw.fe0_has_bus_errors;
+		bus_errs_trace_name = "fe0_bus_errors";
+		reset_pos = FE0_SW_RESET;
+	} else {
+		dc_hw_get_fe1_interrupt(&dc->hw, &status);
+		bus_errs = status.fe1_bus_errors;
+		hw_has_bus_errs = &dc->hw.fe1_has_bus_errors;
+		bus_errs_trace_name = "fe1_bus_errors";
+		reset_pos = FE1_SW_RESET;
+	}
+
+	if (!bitmap_empty(bus_errs, DC_HW_FE_BUS_ERROR_COUNT)) {
+		dev_warn(dev, "handle_fe_interrupts: fe%d_bus_errors: %#lx\n", fe_idx, bus_errs[0]);
+		trace_disp_bus_err_irqs(bus_errs_trace_name, bus_errs[0]);
+		*hw_has_bus_errs = true;
+	}
+
+	trace_disp_frame_irqs(0, 0, 0, status.layer_frm_done, 0, 0);
+	trace_disp_reset_irqs(status.layer_reset_done, status.reset_status[reset_pos], 0, 0);
+
+	if (status.reset_status[reset_pos])
+		dc->hw.reset_status[reset_pos] = status.reset_status[reset_pos];
+}
+
+static irqreturn_t dc_fe_isr(int irq, void *data)
+{
+	struct device *dev = data;
 	struct vs_dc *dc = dev_get_drvdata(dev);
 
-	dc_fe0_hw_deinit(&dc->hw);
+	spin_lock(&dc->int_lock);
+	dc_handle_fe_interrupts(dev);
+	spin_unlock(&dc->int_lock);
 
-	list_for_each_entry_safe(drm_plane, tmp, &drm_dev->mode_config.plane_list, head)
-		vs_plane_destroy(drm_plane);
+	return IRQ_HANDLED;
 }
 
-static const struct component_ops fe0_component_ops = {
-	.bind = fe0_bind,
-	.unbind = fe0_unbind,
-};
+/* FE common probe/bind functions */
 
-static int dc_fe0_probe(struct platform_device *pdev)
-{
-	struct device *dev = &pdev->dev;
-
-	return component_add(dev, &fe0_component_ops);
-}
-
-static int dc_fe0_remove(struct platform_device *pdev)
-{
-	struct device *dev = &pdev->dev;
-
-	component_del(dev, &fe0_component_ops);
-
-	dev_set_drvdata(dev, NULL);
-
-	return 0;
-}
-
-struct platform_driver dc_fe0_platform_driver = {
-	.probe = dc_fe0_probe,
-	.remove = dc_fe0_remove,
-	.driver = {
-		.name = "vs-dc-fe0",
-		.of_match_table = of_match_ptr(fe0_driver_dt_match),
-	},
-};
-
-static const struct of_device_id fe1_driver_dt_match[] = {
-	{ .compatible = "verisilicon,dpu_fe1" },
-	{},
-};
-MODULE_DEVICE_TABLE(of, fe1_driver_dt_match);
-
-static int fe1_bind(struct device *dev, struct device *master, void *data)
+static int dc_fe_bind(struct device *dev, struct device *master, void *data)
 {
 	struct drm_device *drm_dev = data;
 	struct vs_drm_private *priv = drm_dev->dev_private;
@@ -2063,40 +2406,51 @@ static int fe1_bind(struct device *dev, struct device *master, void *data)
 	const struct vs_dc_info *dc_info;
 	struct vs_plane *plane;
 	struct drm_plane *drm_plane, *tmp;
-	const struct vs_plane_info *plane_info;
-	struct dc_hw_plane *hw_plane;
+	const struct vs_plane_info *plane_info_array;
+	int plane_num;
+	int plane_offset;
 	int i, j, ret;
+	int fe_idx = dc_get_fe_idx(dev);
 	u32 max_width = 0, max_height = 0;
 	u32 min_width = 0xffff, min_heigth = 0xffff;
 	enum drm_plane_type plane_type;
 	u32 possible_crtcs;
+
+	if (fe_idx < 0 || fe_idx >= DC_FE_NUM)
+		return (fe_idx < 0) ? fe_idx : -EINVAL;
 
 	if (!drm_dev || !dc) {
 		dev_err(dev, "devices are not created.\n");
 		return -ENODEV;
 	}
 
-	ret = vs_dc_power_get(priv->dc_dev, true);
-	if (ret < 0)
-		dev_err(dev, "%s: failed to power ON\n", __func__);
+	dc_component_enable_irqs(dev, &dc->fe_irq_info[fe_idx]);
 
-	dev_set_drvdata(dev, dc);
+	if (fe_idx == 0)
+		ret = dc_fe0_hw_init(&dc->hw);
+	else
+		ret = dc_fe1_hw_init(&dc->hw);
 
-	ret = dc_fe1_hw_init(&dc->hw);
 	if (ret < 0) {
-		dev_err(dev, "Failed to initialize fe0 hardware.\n");
+		dev_err(dev, "Failed to initialize fe%d hardware.\n", fe_idx);
 		return ret;
 	}
 
-	ret = vs_dc_power_put(priv->dc_dev, true);
-	if (ret < 0)
-		dev_err(dev, "failed to power OFF\n");
-
 	dc_info = dc->hw.info;
-	for (i = 0; i < dc_info->plane_fe1_num; i++) {
-		j = i + dc_info->plane_fe0_num;
-		plane_info = &dc_info->planes_fe1[i];
-		hw_plane = &dc->hw.plane[j];
+	if (fe_idx == 0) {
+		plane_info_array = dc_info->planes_fe0;
+		plane_num = dc_info->plane_fe0_num;
+		plane_offset = 0;
+	} else {
+		plane_info_array = dc_info->planes_fe1;
+		plane_num = dc_info->plane_fe1_num;
+		plane_offset = dc_info->plane_fe0_num;
+	}
+
+	for (i = 0; i < plane_num; i++) {
+		j = i + plane_offset;
+		const struct vs_plane_info *plane_info = &plane_info_array[i];
+		struct dc_hw_plane *hw_plane = &dc->hw.plane[j];
 
 		/*
 		 * Convert the plane type from PRIMARY to OVERLAY when there is no matching CRTC.
@@ -2184,48 +2538,124 @@ err_cleanup_planes:
 	return ret;
 }
 
-static void fe1_unbind(struct device *dev, struct device *master, void *data)
+static void dc_fe_unbind(struct device *dev, struct device *master, void *data)
 {
 	struct drm_device *drm_dev = data;
 	struct drm_plane *drm_plane, *tmp;
 	struct vs_dc *dc = dev_get_drvdata(dev);
+	int fe_idx = dc_get_fe_idx(dev);
 
-	dc_fe1_hw_deinit(&dc->hw);
+	if (fe_idx < 0 || fe_idx >= DC_FE_NUM)
+		return;
+
+	dc_component_disable_irqs(dev, &dc->fe_irq_info[fe_idx]);
+
+	if (fe_idx == 0)
+		dc_fe0_hw_deinit(&dc->hw);
+	else
+		dc_fe1_hw_deinit(&dc->hw);
 
 	list_for_each_entry_safe(drm_plane, tmp, &drm_dev->mode_config.plane_list, head)
-		vs_plane_destroy(drm_plane);
+		if (drm_plane->possible_crtcs & dc->crtc_mask)
+			vs_plane_destroy(drm_plane);
 }
 
-static const struct component_ops fe1_component_ops = {
-	.bind = fe1_bind,
-	.unbind = fe1_unbind,
+static const struct component_ops dc_fe_component_ops = {
+	.bind = dc_fe_bind,
+	.unbind = dc_fe_unbind,
 };
 
-static int dc_fe1_probe(struct platform_device *pdev)
+static int dc_fe_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct vs_dc *dc = dev_get_drvdata(dev->parent);
+	u32 fe_idx;
+	int ret;
 
-	return component_add(dev, &fe1_component_ops);
+	if (!dc)
+		return -ENODEV;
+
+	ret = of_property_read_u32(dev->of_node, "fe_id", &fe_idx);
+	if (ret) {
+		dev_err(dev, "failed to read fe_id property\n");
+		return ret;
+	}
+
+	if (fe_idx >= DC_FE_NUM) {
+		dev_err(dev, "invalid fe index: %u\n", fe_idx);
+		return -EINVAL;
+	}
+
+	dev_set_drvdata(dev, dc);
+	dc->fe_dev[fe_idx] = dev;
+
+	ret = dc_component_parse_irqs(dev, &dc->fe_irq_info[fe_idx], dc_fe_isr);
+	if (ret)
+		return ret;
+
+	ret = devm_pm_runtime_enable(dev);
+	if (ret)
+		dev_err(dev, "runtime pm enabled but failed to add disable action: %d\n", ret);
+
+	return component_add(dev, &dc_fe_component_ops);
 }
 
-static int dc_fe1_remove(struct platform_device *pdev)
+static void dc_fe_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct vs_dc *dc = dev_get_drvdata(dev);
+	int fe_idx;
 
-	component_del(dev, &fe1_component_ops);
+	if (dc) {
+		fe_idx = dc_get_fe_idx(dev);
+		if (fe_idx >= 0)
+			dc->fe_dev[fe_idx] = NULL;
+	}
 
+	component_del(dev, &dc_fe_component_ops);
 	dev_set_drvdata(dev, NULL);
+}
+
+static const struct of_device_id fe_driver_dt_match[] = {
+	{ .compatible = "verisilicon,dpu_fe" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, fe_driver_dt_match);
+
+#if IS_ENABLED(CONFIG_PM_SLEEP)
+static int dc_fe_pm_runtime_suspend(struct device *dev)
+{
+	int fe_idx = dc_get_fe_idx(dev);
+
+	trace_disp_dc_fe_disable(fe_idx);
 
 	return 0;
 }
 
-struct platform_driver dc_fe1_platform_driver = {
-	.probe = dc_fe1_probe,
-	.remove = dc_fe1_remove,
+static int dc_fe_pm_runtime_resume(struct device *dev)
+{
+	int fe_idx = dc_get_fe_idx(dev);
 
+	trace_disp_dc_fe_enable(fe_idx);
+
+	return 0;
+}
+
+static const struct dev_pm_ops dc_fe_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
+	SET_RUNTIME_PM_OPS(dc_fe_pm_runtime_suspend, dc_fe_pm_runtime_resume, NULL)
+};
+#endif
+
+struct platform_driver dc_fe_platform_driver = {
+	.probe = dc_fe_probe,
+	.remove = dc_fe_remove,
 	.driver = {
-		.name = "vs-dc-fe1",
-		.of_match_table = of_match_ptr(fe1_driver_dt_match),
+		.name = "vs-dc-fe",
+		.of_match_table = of_match_ptr(fe_driver_dt_match),
+#if IS_ENABLED(CONFIG_PM_SLEEP)
+		.pm = &dc_fe_pm_ops,
+#endif
 	},
 };
 

@@ -15,3 +15,8 @@ EXPORT_TRACEPOINT_SYMBOL(reg_dump_line);
 EXPORT_TRACEPOINT_SYMBOL(disp_dpu_underrun);
 EXPORT_TRACEPOINT_SYMBOL(disp_dpu_line_underrun);
 EXPORT_TRACEPOINT_SYMBOL(disp_vblank_irq_enable);
+EXPORT_TRACEPOINT_SYMBOL(disp_frame_start_timeout);
+EXPORT_TRACEPOINT_SYMBOL(disp_frame_done_timeout);
+EXPORT_TRACEPOINT_SYMBOL(disp_frame_start_missing);
+EXPORT_TRACEPOINT_SYMBOL(disp_frame_done_missing);
+

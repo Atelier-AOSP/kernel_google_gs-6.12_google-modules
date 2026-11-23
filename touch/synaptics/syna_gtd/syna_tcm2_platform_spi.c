@@ -1539,7 +1539,7 @@ static int syna_spi_probe(struct spi_device *spi)
 	LOGI("dma_mode %s", syna_spi_hw_if.dma_mode ? "enabled" : "disabled");
 #endif
 #if IS_ENABLED(CONFIG_SPI_S3C64XX_GS)
-	s3c64xx_sdd = spi_master_get_devdata(spi->master);
+	s3c64xx_sdd = spi_controller_get_devdata(spi->controller);
 	syna_spi_hw_if.s3c64xx_sci = s3c64xx_sdd->cntrlr_info;
 #endif
 

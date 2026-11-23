@@ -284,7 +284,7 @@ typedef enum {
 typedef struct {
     uint16 tag;
     uint16 len; /* length of value */
-    uint8 value[];
+    uint8 value[0];
 } tlv_log;
 
 typedef struct per_packet_status_entry {
@@ -335,7 +335,7 @@ typedef struct per_packet_status_entry {
 #if defined(LINUX)
 typedef struct log_conn_event {
     uint16 event;
-    tlv_log tlvs[];
+    tlv_log tlvs[0];
 	/*
 	* separate parameter structure per event to be provided and optional data
 	* the event_data is expected to include an official android part, with some

@@ -334,13 +334,15 @@ typedef struct
 #endif
 
 /* Define an atomic counter type. */
-#if (defined(__linux__) && !defined(__KERNEL__)) || defined(__APPLE__)
+#if (defined(__linux__) && !defined(__KERNEL__)) || defined(__APPLE__) || defined(__QNXNTO__)
 	#if defined(__cplusplus)
 		#include <atomic>
-        typedef std::atomic<int32_t> ATOMIC_COUNTER_T;
+		typedef std::atomic<int32_t> ATOMIC_COUNTER_T;
+		typedef std::atomic<uint64_t> ATOMIC_U64_COUNTER_T;
 	#else /* defined(__cplusplus) */
 		#include <stdatomic.h>
-        typedef atomic_int_least32_t ATOMIC_COUNTER_T;
+		typedef atomic_int_least32_t ATOMIC_COUNTER_T;
+		typedef atomic_uint_least64_t ATOMIC_U64_COUNTER_T;
 		_Static_assert(sizeof(ATOMIC_COUNTER_T) == 4, "The size of ATOMIC_COUNTER_T in C must be 4 otherwise C++ compatibility is broken.");
 	#endif /* defined(__cplusplus) */
 #endif /* (defined(__linux__) && !defined(__KERNEL__)) || defined(__APPLE__) */

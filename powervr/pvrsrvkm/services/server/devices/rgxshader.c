@@ -110,16 +110,33 @@ _GetShaderFileName(PVRSRV_DEVICE_NODE * psDeviceNode,
 				   IMG_CHAR           * pszShaderpFilenameStr)
 {
 	PVRSRV_RGXDEV_INFO *psDevInfo = psDeviceNode->pvDevice;
+	IMG_INT iRet;
 
-	OSSNPrintf(pszShaderFilenameStr, RGX_SHADER_FILENAME_MAX_SIZE,
-			   RGX_SH_FILENAME "." RGX_BVNC_STR_FMTSPEC,
-			   psDevInfo->sDevFeatureCfg.ui32B, psDevInfo->sDevFeatureCfg.ui32V,
-			   psDevInfo->sDevFeatureCfg.ui32N, psDevInfo->sDevFeatureCfg.ui32C);
+	iRet = OSSNPrintf(pszShaderFilenameStr,
+	                  RGX_SHADER_FILENAME_MAX_SIZE,
+	                  RGX_SH_FILENAME "." RGX_BVNC_STR_FMTSPEC,
+	                  psDevInfo->sDevFeatureCfg.ui32B,
+	                  psDevInfo->sDevFeatureCfg.ui32V,
+	                  psDevInfo->sDevFeatureCfg.ui32N,
+	                  psDevInfo->sDevFeatureCfg.ui32C);
+	if (iRet >= RGX_SHADER_FILENAME_MAX_SIZE)
+	{
+		PVR_ASSERT(IMG_FALSE);
+		pszShaderFilenameStr[RGX_SHADER_FILENAME_MAX_SIZE-1] = '\0';
+	}
 
-	OSSNPrintf(pszShaderpFilenameStr, RGX_SHADER_FILENAME_MAX_SIZE,
-			   RGX_SH_FILENAME "." RGX_BVNC_STRP_FMTSPEC,
-			   psDevInfo->sDevFeatureCfg.ui32B, psDevInfo->sDevFeatureCfg.ui32V,
-			   psDevInfo->sDevFeatureCfg.ui32N, psDevInfo->sDevFeatureCfg.ui32C);
+	iRet = OSSNPrintf(pszShaderpFilenameStr,
+	                  RGX_SHADER_FILENAME_MAX_SIZE,
+	                  RGX_SH_FILENAME "." RGX_BVNC_STRP_FMTSPEC,
+	                  psDevInfo->sDevFeatureCfg.ui32B,
+	                  psDevInfo->sDevFeatureCfg.ui32V,
+	                  psDevInfo->sDevFeatureCfg.ui32N,
+	                  psDevInfo->sDevFeatureCfg.ui32C);
+	if (iRet >= RGX_SHADER_FILENAME_MAX_SIZE)
+	{
+		PVR_ASSERT(IMG_FALSE);
+		pszShaderpFilenameStr[RGX_SHADER_FILENAME_MAX_SIZE-1] = '\0';
+	}
 }
 
 PVRSRV_ERROR

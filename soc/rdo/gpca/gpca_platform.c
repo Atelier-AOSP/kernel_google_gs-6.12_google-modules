@@ -170,13 +170,13 @@ exit:
 	return ret;
 }
 
-static int gpca_platform_remove(struct platform_device *pdev)
+static void gpca_platform_remove(struct platform_device *pdev)
 {
 	struct gpca_dev *gpca_dev;
 
 	gpca_dev = platform_get_drvdata(pdev);
 	if (!gpca_dev)
-		return -ENODEV;
+		return;
 
 	cancel_work_sync(&gpca_dev->gpca_op_process);
 	cancel_work_sync(&gpca_dev->gpca_cmd_process_req);
@@ -189,7 +189,6 @@ static int gpca_platform_remove(struct platform_device *pdev)
 	gpca_op_queue_deinit(gpca_dev);
 
 	destroy_device(gpca_dev);
-	return 0;
 }
 
 static int gpca_system_suspend(struct device *dev)

@@ -93,20 +93,20 @@ int thermal_ntc_map_data(int input, enum adc_map_index inp_type,
  * @sens: sensor data
  *
  * Return: 0 on success.
- *	- Other errors returned by metric APIs.
  */
 int thermal_ntc_configure_sensor(struct google_sensor_data *sens)
 {
 	int ret = 0;
 
-	// Register for temperature residency stats
+	// Register for temperature residency stats.
+	// Failure to register stats should not result in probe error.
 	tr_handle tr_stats_handle = register_ntc_temp_residency_stats(
 		thermal_zone_device_type(sens->tzd), THERMAL_NTC_STATS_GROUP);
 	if (tr_stats_handle < 0) {
 		dev_err(sens->dev,
 			"Failed to register temperature residency stats for sensor:%s. ret: %d\n",
 			thermal_zone_device_type(sens->tzd), tr_stats_handle);
-		return tr_stats_handle;
+		goto ntc_configure_err;
 	}
 
 	ret = ntc_temp_residency_stats_set_thresholds(tr_stats_handle, ntc_stats_thresholds,
@@ -114,10 +114,14 @@ int thermal_ntc_configure_sensor(struct google_sensor_data *sens)
 	if (ret < 0) {
 		dev_err(sens->dev, "Failed to set ntc_stats_thresholds for sensor:%s. ret = %d\n",
 			thermal_zone_device_type(sens->tzd), ret);
-		return ret;
+		goto ntc_configure_err;
 	}
 
 	sens->sens_data.ntc_data.tr_stats_handle = tr_stats_handle;
+	return 0;
+
+ntc_configure_err:
+	sens->sens_data.ntc_data.tr_stats_handle = -EINVAL;
 	return 0;
 }
 
@@ -482,16 +486,11 @@ ntc_irq_exit:
 int thermal_ntc_post_configure(struct list_head *sensor_list)
 {
 	struct google_sensor_data *sens;
-	int ret = 0;
+	int ret;
 
 	thermal_ntc_sens_list = sensor_list;
-	mutex_lock(&thermal_ntc_irq_lock);
 
-	ret = ntc_cpm_mbox_register_notification(HW_RX_CB_NTC, &thermal_ntc_irq_notifier);
-	if (ret) {
-		pr_err("ntc_thermal: Error registering for CPM callback. err:%d\n", ret);
-		goto post_configure_exit;
-	}
+	mutex_lock(&thermal_ntc_irq_lock);
 	list_for_each_entry(sens, thermal_ntc_sens_list, node) {
 		sens->sens_data.ntc_data.irq_handle_phase = false;
 		sens->sens_data.ntc_data.irq_temp = THERMAL_TEMP_INVALID;
@@ -504,12 +503,14 @@ int thermal_ntc_post_configure(struct list_head *sensor_list)
 			dev_err(sens->dev,
 				"Thermistor channel:%d trip enable error. %d\n",
 				sens->sensor_id, ret);
-			ret = 0;
 		}
 	}
-
-post_configure_exit:
 	mutex_unlock(&thermal_ntc_irq_lock);
+
+	ret = ntc_cpm_mbox_register_notification(HW_RX_CB_NTC, &thermal_ntc_irq_notifier);
+	if (ret)
+		pr_err("ntc_thermal: Error registering for CPM callback. err:%d\n", ret);
+
 	return ret;
 }
 
@@ -594,31 +595,13 @@ void thermal_ntc_cleanup(struct platform_device *pdev)
 	cancel_delayed_work_sync(&ntc_dwork);
 }
 
-/* thermal_ntc_set_trip_hyst - A NOP function to provide as callback.
- *
- * Thermal core requires the drivers to provide a set_trip_hyst callback to make
- * the hysteresis sysfs node writable. This NOP function is to satisfy this
- * requirement. NTC helper relies on set_trips callback to get the trip and hyst
- * to monitor.
- * @tzd: thermal zone device.
- * @trip_id: trip index.
- * @temp temperature.
- *
- * Return: 0 always.
- */
-int thermal_ntc_set_trip_hyst(struct thermal_zone_device *tzd, int trip_id, int temp)
-{
-	return 0;
-}
-
-int __thermal_ntc_set_trip_temp(struct thermal_zone_device *tzd, int trip_id, int temp)
+int __thermal_ntc_set_trip_temp(struct thermal_zone_device *tzd, const struct thermal_trip *trip,
+				int temp)
 {
 	struct google_sensor_data *sens = thermal_zone_device_priv(tzd);
-	struct thermal_trip trip;
 	int ret = 0;
 
-	ret = __thermal_zone_get_trip(tzd, trip_id, &trip);
-	if (ret || trip.type != THERMAL_TRIP_HOT)
+	if (trip->type != THERMAL_TRIP_HOT)
 		return ret;
 	if (dt_hot_trip == THERMAL_TEMP_INVALID)
 		return ret;
@@ -641,16 +624,17 @@ int __thermal_ntc_set_trip_temp(struct thermal_zone_device *tzd, int trip_id, in
  * and caps it. This will prevent any rougue user from disabling the hot trip.
  *
  * @tzd: thermal zone device.
- * @trip_id: trip index.
+ * @trip: trip pointer.
  * @temp temperature.
  *
  * Return: 0 always.
  */
-int thermal_ntc_set_trip_temp(struct thermal_zone_device *tzd, int trip_id, int temp)
+int thermal_ntc_set_trip_temp(struct thermal_zone_device *tzd, const struct thermal_trip *trip,
+			      int temp)
 {
 	/* Enable changing the hot trip only for userdebug build. */
 #if IS_ENABLED(CONFIG_DEBUG_FS)
-	return __thermal_ntc_set_trip_temp(tzd, trip_id, temp);
+	return __thermal_ntc_set_trip_temp(tzd, trip, temp);
 #else
 	return 0;
 #endif

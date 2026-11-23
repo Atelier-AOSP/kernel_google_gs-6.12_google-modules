@@ -24,6 +24,7 @@
 #include <linux/usb/typec_mux.h>
 #include <linux/usb/role.h>
 #include <linux/firmware.h>
+#include <soc/google/google-usb-phy.h>
 #include <soc/google/google-usb-phy-dp.h>
 
 #include "google-usb-phy-dp-tune.h"
@@ -33,9 +34,13 @@
 #define USB_PHY_FW_BIN_NAME "usb_phy_fw.bin"
 #define GPHY_DELAY_US 10
 /* TODO(rdbabiera): timeout is set to 10x of old value for USB->DP TCA switching */
-#define GPHY_TIMEOUT_US 100000
+#define GPHY_TIMEOUT_US 2500000
 #define GPHY_TX_RX_ACK_DELAY_US 5000
 #define GPHY_TX_RX_ACK_TIMEOUT_US 100000
+
+/* 0.500 ms, 10 ms */
+#define GPHY_DP_WA_DELAY_US 500
+#define GPHY_DP_WA_TIMEOUT_US 10000
 
 /* Phy AON_FW_VERSION parsing*/
 #define AON_FW_VERSION_0(a,b,c) \
@@ -49,26 +54,189 @@
 
 #define AON_FW_VERSION_2_27_0 AON_FW_VERSION_0(2, 27, 0)
 
+#define USB_PHY_PARA_LST_DPTX		phy_tune_params
+#define USB_PHY_PARA_NUM_DPTX		num_phy_tune_params
+#define USB_PHY_PARA_LST_DPTOP		phy_tune_params_g1
+#define USB_PHY_PARA_NUM_DPTOP		num_phy_tune_params_g1
+
+#define USB_PHY_LVL_OVRD_IN_NAME	"sup_dig_lvl_ovrd_in_val"
+
 #define USB_PHY_READ_DPTX(_offset)		readw(gphy->dptx_phy_regs_base + _offset)
 #define USB_PHY_READ_DPTOP(_offset)		readl(gphy->dp_top_csr_base + _offset)
 
-#define GOOGLE_USB_PHY_REG_ATTR(_name, _offset, _reg_group) \
-static ssize_t _name##_show(struct device *dev, struct device_attribute *attr, char *buf)	\
-{												\
-	struct google_usb_phy *gphy = dev_get_drvdata(dev);					\
-	u32 res;										\
-												\
-	mutex_lock(&gphy->lock);								\
-	if (gphy->phy_state != COMBO_PHY_TCA_READY) {						\
-		mutex_unlock(&gphy->lock);							\
-		return -EPERM;									\
-	}											\
-	res = (u32) USB_PHY_READ_##_reg_group(_offset);		\
-	mutex_unlock(&gphy->lock);								\
-												\
-	return sysfs_emit(buf, "offset=0x%X, value=0x%08X\n", _offset, res);			\
-}												\
-static DEVICE_ATTR_RO(_name)
+#define USB_PHY_WRITE_DPTX(_offset, _value) \
+	writew(_value, gphy->dptx_phy_regs_base + _offset)
+#define USB_PHY_WRITE_DPTOP(_offset, _value) \
+	writel(_value, gphy->dp_top_csr_base + _offset)
+
+#define USB_PHY_PARA_CHK_DPTX(_name, _offset)	(strcmp(params[i].name, #_name) == 0)
+#define USB_PHY_PARA_CHK_DPTOP(_name, _offset)	(_offset == params[i].offset)
+
+#define GOOGLE_USB_PHY_REG_ATTR(_name, _offset, _reg_group)			\
+static ssize_t _name##_show(struct device *dev,					\
+				struct device_attribute *attr, char *buf)	\
+{										\
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);			\
+	u32 res;								\
+										\
+	mutex_lock(&gphy->lock);						\
+	if (gphy->phy_state != COMBO_PHY_TCA_READY) {				\
+		mutex_unlock(&gphy->lock);					\
+		return -EPERM;							\
+	}									\
+	res = (u32)USB_PHY_READ_##_reg_group(_offset);				\
+	mutex_unlock(&gphy->lock);						\
+										\
+	return sysfs_emit(buf, "offset=0x%X, value=0x%08X\n", _offset, res);	\
+}										\
+										\
+static ssize_t _name##_store(struct device *dev,				\
+				struct device_attribute *attr,			\
+				const char *buf, size_t n)			\
+{										\
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);			\
+	u32 res;								\
+										\
+	if (kstrtoint(buf, 16, &res) < 0)					\
+		return -EINVAL;							\
+										\
+	struct phy_tune_param *params = gphy->USB_PHY_PARA_LST_##_reg_group;	\
+	for (int i = 0; i < gphy->USB_PHY_PARA_NUM_##_reg_group; i++) {		\
+		if (USB_PHY_PARA_CHK_##_reg_group(_name##_val, _offset)) {	\
+			params[i].value = res;					\
+			break;							\
+		}								\
+	}									\
+										\
+	mutex_lock(&gphy->lock);						\
+	if (gphy->phy_state != COMBO_PHY_TCA_READY) {				\
+		mutex_unlock(&gphy->lock);					\
+		return -EPERM;							\
+	}									\
+	USB_PHY_WRITE_##_reg_group(_offset, res);				\
+	mutex_unlock(&gphy->lock);						\
+										\
+	return n;								\
+}										\
+static DEVICE_ATTR_RW(_name)
+
+#define GOOGLE_USB_PHY_COEFF_ATTR(_name, _reg_group, _field, _type)		\
+static ssize_t _field##_show(struct device *dev,				\
+				struct device_attribute *attr, char *buf)	\
+{										\
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);			\
+	u32 res;								\
+	int len = 0;								\
+										\
+	mutex_lock(&gphy->lock);						\
+	if (gphy->phy_state != COMBO_PHY_TCA_READY) {				\
+		mutex_unlock(&gphy->lock);					\
+		return -EPERM;							\
+	}									\
+	res = (u32) USB_PHY_READ_##_reg_group(DP_##_type##_OFFSET);		\
+	mutex_unlock(&gphy->lock);						\
+										\
+	_type _name = {0};							\
+	_name.reg_value = res;							\
+	len += sysfs_emit_at(buf, len, "0x%02X,0x%02X (%2d,%2d)\n",		\
+			_name.bf.protocol1_ext_tx_eq_##_field##_g1_lane0,	\
+			_name.bf.protocol1_ext_tx_eq_##_field##_g1_lane1,	\
+			_name.bf.protocol1_ext_tx_eq_##_field##_g1_lane0,	\
+			_name.bf.protocol1_ext_tx_eq_##_field##_g1_lane1);	\
+										\
+	return len;								\
+}										\
+										\
+static ssize_t _field##_store(struct device *dev,				\
+				struct device_attribute *attr,			\
+				const char *buf, size_t n)			\
+{										\
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);			\
+	u32 res;								\
+	_type _name = {0};							\
+										\
+	if (kstrtoint(buf, 10, &res) < 0)					\
+		return -EINVAL;							\
+										\
+	struct phy_tune_param *params = gphy->USB_PHY_PARA_LST_##_reg_group;	\
+	for (int i = 0; i < gphy->USB_PHY_PARA_NUM_##_reg_group; i++) {		\
+		if (params[i].offset == DP_##_type##_OFFSET) {			\
+			_name.reg_value = params[i].value;			\
+			_name.bf.protocol1_ext_tx_eq_##_field##_g1_lane0 = res;	\
+			_name.bf.protocol1_ext_tx_eq_##_field##_g1_lane1 = res;	\
+			params[i].value = _name.reg_value;			\
+			break;							\
+		}								\
+	}									\
+										\
+	mutex_lock(&gphy->lock);						\
+	if (gphy->phy_state != COMBO_PHY_TCA_READY) {				\
+		mutex_unlock(&gphy->lock);					\
+		return -EPERM;							\
+	}									\
+	USB_PHY_WRITE_##_reg_group(DP_##_type##_OFFSET, _name.reg_value);	\
+	mutex_unlock(&gphy->lock);						\
+										\
+	return n;								\
+}										\
+static DEVICE_ATTR_RW(_field)
+
+#define GOOGLE_USB_PHY_PARA_ATTR(_name, _reg_group, _field, _type)		\
+static ssize_t _field##_show(struct device *dev,				\
+				struct device_attribute *attr, char *buf)	\
+{										\
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);			\
+	u32 res;								\
+	int len = 0;								\
+										\
+	mutex_lock(&gphy->lock);						\
+	if (gphy->phy_state != COMBO_PHY_TCA_READY) {				\
+		mutex_unlock(&gphy->lock);					\
+		return -EPERM;							\
+	}									\
+	res = (u32) USB_PHY_READ_##_reg_group(SUP_DIG_##_type);			\
+	mutex_unlock(&gphy->lock);						\
+										\
+	_type _name = {0};							\
+	_name.reg_value = res;							\
+	len += sysfs_emit_at(buf, len, "0x%02X (%2d)\n",			\
+					_name.bf.tx_##_field##_lvl,		\
+					_name.bf.tx_##_field##_lvl);		\
+										\
+	return len;								\
+}										\
+										\
+static ssize_t _field##_store(struct device *dev,				\
+				struct device_attribute *attr,			\
+				const char *buf, size_t n)			\
+{										\
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);			\
+	u32 res;								\
+	_type _name = {0};							\
+										\
+	if (kstrtoint(buf, 10, &res) < 0)					\
+		return -EINVAL;							\
+										\
+	struct phy_tune_param *params = gphy->USB_PHY_PARA_LST_##_reg_group;	\
+	for (int i = 0; i < gphy->USB_PHY_PARA_NUM_##_reg_group; i++) {		\
+		if (strcmp(params[i].name, USB_PHY_##_type##_NAME) == 0) {	\
+			_name.reg_value = params[i].value;			\
+			_name.bf.tx_##_field##_lvl = res;			\
+			params[i].value = _name.reg_value;			\
+			break;							\
+		}								\
+	}									\
+	mutex_lock(&gphy->lock);						\
+	if (gphy->phy_state != COMBO_PHY_TCA_READY) {				\
+		mutex_unlock(&gphy->lock);					\
+		return -EPERM;							\
+	}									\
+	USB_PHY_WRITE_##_reg_group(SUP_DIG_##_type, _name.reg_value);		\
+	mutex_unlock(&gphy->lock);						\
+										\
+	return n;								\
+}										\
+static DEVICE_ATTR_RW(_field)
 
 static unsigned int fw_name_to_version(const char *name)
 {
@@ -151,6 +319,10 @@ enum combo_phy_state {
 /* Use safe number for custom mode */
 #define TYPEC_STATE_NO_CONN		10
 
+/* Phy Workarounds */
+#define U3_PHY_FORCE_SS_RXDET_DISABLE	BIT(0)
+#define U3_PHY_FORCE_USB31_CONNECTED	BIT(1)
+
 struct google_usb_phy_driverdata {
 	const char *u3p_clk_names[GOOGLE_U3PHY_MAX_CLOCKS];
 	int	num_u3p_clks;
@@ -160,8 +332,9 @@ struct google_usb_phy_driverdata {
 	void (*pm_callback)(struct device *dev, bool resume);
 	void (*program_usb2_otps)(struct device *dev);
 	void (*program_usb3_otps)(struct device *dev);
-	const struct usb_phy_init_config *usb_power_config_table;
-	size_t usb_power_config_count;
+	void (*set_power_config)(struct device *dev);
+	void (*typec_disable_ack_set)(struct device *dev, int val);
+	u8 mplla_coarse_start_0_val;
 };
 
 struct google_usb_phy_otpdata {
@@ -170,16 +343,19 @@ struct google_usb_phy_otpdata {
 	u32 data;
 };
 
-struct usb_phy_init_config {
-	uintptr_t offset;
-	uintptr_t mask;
-	uint32_t value;
-};
-
 struct phy_tune_param {
 	char name[48];
 	u32 offset;
 	u32 value;
+};
+
+struct aux_tune_params {
+	u32 aux_ctrl : 4;
+	u32 aux_dp_dn_swap : 1;
+	u32 aux_hys_tune : 2;
+	u32 aux_pwdnb : 1;
+	u32 aux_vod_tune : 1;
+	u32 reserved_32_9 : 23;
 };
 
 struct google_usb_phy {
@@ -195,6 +371,7 @@ struct google_usb_phy {
 	void __iomem *dp_pipe_lane1_regs_base;
 	void __iomem *dwc3_lcsr_deemph_base;
 	void __iomem *usb2_ss_base;
+	void __iomem *upcs_config_reg;
 	struct clk_bulk_data u2phy_clocks[GOOGLE_U2PHY_NUM_CLOCKS];
 	struct clk_bulk_data u3phy_clocks[GOOGLE_U3PHY_MAX_CLOCKS];
 	struct clk *phy_fw_clk;
@@ -222,6 +399,9 @@ struct google_usb_phy {
 	struct phy_tune_param *phy_tune_params;
 	int num_phy_tune_params_g1;
 	struct phy_tune_param *phy_tune_params_g1;
+	u32 phy_workarounds;
+	bool aux_tune_ovrd_en;
+	struct aux_tune_params aux_tune_params_ovrd;
 };
 
 struct google_usb_phy_otp_names {
@@ -308,7 +488,7 @@ static struct google_usb_phy_otp_names otp_names[GOOGLE_USB_NUM_OTPS] = {
 	}
 };
 
-int wait_for_sram_init(struct google_usb_phy *gphy)
+static int wait_for_sram_init(struct google_usb_phy *gphy)
 {
 	DP_USBCS_PHY_CFG1 creg;
 
@@ -354,7 +534,7 @@ static void phy_debug_dump(struct google_usb_phy *gphy)
 #endif
 }
 
-int wait_for_lane0_phystatus(struct google_usb_phy *gphy)
+static int wait_for_lane0_phystatus(struct google_usb_phy *gphy)
 {
 	int ret;
 	TCA_PSTATE_0 creg;
@@ -415,7 +595,7 @@ static void set_sram_bypass(struct google_usb_phy *gphy, int bypass)
 	writel(phy_cfg1.reg_value, gphy->dp_top_csr_base + DP_USBCS_PHY_CFG1_OFFSET);
 }
 
-void set_ext_load_done(struct google_usb_phy *gphy, int done)
+static void set_ext_load_done(struct google_usb_phy *gphy, int done)
 {
 	DP_USBCS_PHY_CFG1 phy_cfg1;
 
@@ -442,21 +622,31 @@ static void disable_usb2_phy(struct google_usb_phy *gphy)
 	writel(phy_cfg21.reg_value, gphy->usb2_cfg_csr_base + USB2PHY_CFG21_OFFSET);
 }
 
-static void set_power_config(struct google_usb_phy *gphy)
+static void lga_set_power_config(struct device *dev)
 {
-	const struct google_usb_phy_driverdata *drvdata = gphy->drv_data;
-	size_t i;
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+	PHY_power_config_reg1 power_config;
 
-	for (i = 0; i < drvdata->usb_power_config_count; i++) {
-		const struct usb_phy_init_config *config =
-			&drvdata->usb_power_config_table[i];
-		uint32_t reg_value;
+	power_config.reg_value = readl(gphy->dp_top_csr_base
+		+ DP_TOP_CSR_PHY_POWER_CONFIG_REG1_OFFSET);
+	power_config.bf.pg_mode_en = 1;
+	power_config.bf.upcs_pipe_config = 0x260;
+	writel(power_config.reg_value, gphy->dp_top_csr_base
+		+ DP_TOP_CSR_PHY_POWER_CONFIG_REG1_OFFSET);
+}
 
-		reg_value = readl(gphy->dp_top_csr_base + config->offset);
-		reg_value = (reg_value & ~config->mask) |
-			    (config->value & config->mask);
-		writel(reg_value, gphy->dp_top_csr_base + config->offset);
-	}
+static void mbu_set_power_config(struct device *dev)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+	PHY_power_config_reg1 power_config;
+
+	power_config.reg_value = readl(gphy->dp_top_csr_base
+		+ DP_TOP_CSR_PHY_POWER_CONFIG_REG1_OFFSET);
+	power_config.bf.pg_mode_en = 1;
+	writel(power_config.reg_value, gphy->dp_top_csr_base
+		+ DP_TOP_CSR_PHY_POWER_CONFIG_REG1_OFFSET);
+
+	writel(0x260, gphy->upcs_config_reg);
 }
 
 static void set_vbus_valid(struct google_usb_phy *gphy)
@@ -596,7 +786,7 @@ static void lga_pm_callback(struct device *dev, bool resume)
 			bulk_array[i].id = names_array[i]; \
 	}
 
-int google_usb_phy_parse_clocks(struct google_usb_phy *gphy)
+static int google_usb_phy_parse_clocks(struct google_usb_phy *gphy)
 {
 	int ret;
 	const char *u2phy_clock_names[GOOGLE_U2PHY_NUM_CLOCKS] = {
@@ -623,7 +813,7 @@ int google_usb_phy_parse_clocks(struct google_usb_phy *gphy)
 	return 0;
 }
 
-int google_usb_phy_parse_resets(struct google_usb_phy *gphy)
+static int google_usb_phy_parse_resets(struct google_usb_phy *gphy)
 {
 	gphy->u2phy_reset = devm_reset_control_get_exclusive(gphy->dev, "usb2_phy_reset");
 	if (IS_ERR(gphy->u2phy_reset)) {
@@ -688,6 +878,47 @@ static int google_u2phy_exit(struct phy *phy)
 	return 0;
 }
 
+/* ---------- USB3 PHY Workarounds Start ---------- */
+
+static void google_u3phy_force_ss_rx_det_disable_internal(struct google_usb_phy *gphy,
+							  bool force_override)
+{
+	union TCA_CTRLSYNCMODE_DBG2 tca_dbg2;
+
+	if (!(gphy->phy_workarounds & U3_PHY_FORCE_SS_RXDET_DISABLE))
+		return;
+
+	dev_info(gphy->dev, "%s: %d", __func__, force_override);
+
+	tca_dbg2.reg_value = readl(gphy->dptx_tca_regs_base + TCA_CTRLSYNCMODE_DBG2_OFFSET);
+	if (force_override)
+		tca_dbg2.bf.ctrl_if_ovrrd_en |= (CTRL_IF_OVVRD_SS_RXDET_DISABLE);
+	else
+		tca_dbg2.bf.ctrl_if_ovrrd_en &= ~(CTRL_IF_OVVRD_SS_RXDET_DISABLE);
+	tca_dbg2.bf.ctrl_if_ovrrd_val &= ~(CTRL_IF_OVVRD_SS_RXDET_DISABLE);
+	writel(tca_dbg2.reg_value, gphy->dptx_tca_regs_base + TCA_CTRLSYNCMODE_DBG2_OFFSET);
+}
+
+static void google_u3phy_force_usb31_connected(struct google_usb_phy *gphy, bool val)
+{
+	union TCA_CTRLSYNCMODE_DBG2 tca_dbg2;
+
+	if (!(gphy->phy_workarounds & U3_PHY_FORCE_USB31_CONNECTED))
+		return;
+
+	dev_info(gphy->dev, "%s: %d", __func__, val);
+
+	tca_dbg2.reg_value = readl(gphy->dptx_tca_regs_base + TCA_CTRLSYNCMODE_DBG2_OFFSET);
+	if (val)
+		tca_dbg2.bf.ctrl_if_ovrrd_en |= (CTRL_IF_OVVRD_USB31_CTRL_CONNECTED);
+	else
+		tca_dbg2.bf.ctrl_if_ovrrd_en &= ~(CTRL_IF_OVVRD_USB31_CTRL_CONNECTED);
+	tca_dbg2.bf.ctrl_if_ovrrd_val |= CTRL_IF_OVVRD_USB31_CTRL_CONNECTED;
+	writel(tca_dbg2.reg_value, gphy->dptx_tca_regs_base + TCA_CTRLSYNCMODE_DBG2_OFFSET);
+}
+
+/* ---------- USB3 PHY Workarounds End ---------- */
+
 /*
  * combo_phy_bringup_locked: bringup USB+DP Combo PHY
  *
@@ -699,6 +930,8 @@ static int combo_phy_bringup_locked(struct google_usb_phy *gphy)
 {
 	int ret = 0;
 	u16 aon_fw_ver_0, aon_fw_ver_1, reg;
+	union SUP_DIG_MPLLA_MPLL_PWR_CTL_MPLL_PWR_FSM_CFG_0 fsm_cfg;
+	union SUP_DIG_MPLLA_MPLL_PWR_CTL_MPLL_TUNE_VAL tune_val;
 
 	/* Used for comparing phy firmware that was written Vs read back */
 	u16 *phy_fw_val_read_back = NULL;
@@ -711,7 +944,7 @@ static int combo_phy_bringup_locked(struct google_usb_phy *gphy)
 		}
 	}
 
-	set_power_config(gphy);
+	gphy->drv_data->set_power_config(gphy->dev);
 	set_vbus_valid(gphy);
 
 	set_phy0_mplla_ssc_en(gphy);
@@ -727,6 +960,10 @@ static int combo_phy_bringup_locked(struct google_usb_phy *gphy)
 	if (gphy->drv_data->program_usb3_otps)
 		gphy->drv_data->program_usb3_otps(gphy->dev);
 
+	/* W4A: Step 1.1 */
+	google_u3phy_force_ss_rx_det_disable_internal(gphy, true);
+	google_u3phy_force_usb31_connected(gphy, true);
+
 	ret = clk_bulk_prepare_enable(gphy->drv_data->num_u3p_clks, gphy->u3phy_clocks);
 	if (ret)
 		return ret;
@@ -737,8 +974,10 @@ static int combo_phy_bringup_locked(struct google_usb_phy *gphy)
 
 	usleep_range(1000, 1100);
 	ret = wait_for_sram_init(gphy);
-	if (ret)
+	if (ret) {
+		dev_err(gphy->dev, "wait for sram init timed out");
 		goto disable_u3phy_clocks;
+	}
 
 	if (gphy->phy_sram_base) {
 		dev_dbg(gphy->dev, "Updating SRAM\n");
@@ -782,11 +1021,44 @@ static int combo_phy_bringup_locked(struct google_usb_phy *gphy)
 
 	google_tune_usb3g1_phy(gphy);
 
+	if (gphy->drv_data->mplla_coarse_start_0_val > 0) {
+		dev_info(gphy->dev, "RAWCMN_DIG_AON_MPLLA_CAL_BANK_SEL: 0x%x\n",
+			 readw(gphy->dptx_phy_regs_base + RAWCMN_DIG_AON_MPLLA_CAL_BANK_SEL));
+		dev_info(gphy->dev, "RAWCMN_DIG_AON_MPLLA_TUNE_DONE: 0x%x\n",
+			 readw(gphy->dptx_phy_regs_base + RAWCMN_DIG_AON_MPLLA_TUNE_DONE));
+
+		fsm_cfg.reg_value =
+			readw(gphy->dptx_phy_regs_base +
+			      SUP_DIG_MPLLA_MPLL_PWR_CTL_MPLL_PWR_FSM_CFG_0_OFFSET);
+		fsm_cfg.bf.coarse_start_0 = gphy->drv_data->mplla_coarse_start_0_val;
+		writew(fsm_cfg.reg_value, gphy->dptx_phy_regs_base +
+		       SUP_DIG_MPLLA_MPLL_PWR_CTL_MPLL_PWR_FSM_CFG_0_OFFSET);
+	}
+
 	set_ext_load_done(gphy, 1);
 
 	ret = wait_for_lane0_phystatus(gphy);
-	if (ret)
+	if (ret) {
+		dev_err(gphy->dev, "wait for lane0 phy status timed out");
 		goto free_mem;
+	}
+
+	if (gphy->drv_data->mplla_coarse_start_0_val > 0) {
+		tune_val.reg_value = readw(gphy->dptx_phy_regs_base +
+					   SUP_DIG_MPLLA_MPLL_PWR_CTL_MPLL_TUNE_VAL_OFFSET);
+		dev_info(gphy->dev, "RAWCMN_DIG_AON_MPLLA_CAL_BANK_SEL: 0x%x\n",
+			 readw(gphy->dptx_phy_regs_base + RAWCMN_DIG_AON_MPLLA_CAL_BANK_SEL));
+		dev_info(gphy->dev, "RAWCMN_DIG_AON_MPLLA_TUNE_DONE: 0x%x\n",
+			 readw(gphy->dptx_phy_regs_base + RAWCMN_DIG_AON_MPLLA_TUNE_DONE));
+		dev_info(gphy->dev, "MPLLA coarse tune val: 0x%x\n",
+			 tune_val.bf.mpll_coarse_tune_val);
+
+		if (tune_val.bf.mpll_coarse_tune_val <= gphy->drv_data->mplla_coarse_start_0_val) {
+			dev_err(gphy->dev, "MPLLA coarse tune value matches coarse start value\n");
+			ret = -EIO;
+			goto free_mem;
+		}
+	}
 
 	/* Read FW version post loading*/
 	aon_fw_ver_0 = readw(gphy->dptx_phy_regs_base + RAWCMN_DIG_AON_FW_VERSION_0);
@@ -901,6 +1173,151 @@ static int google_u3phy_power_on(struct phy *phy)
 	gphy->typec_mode = mode_cache;
 	mutex_unlock(&gphy->lock);
 	return ret;
+}
+
+/* ---------- USB3 PHY Callbacks Start ---------- */
+
+extern void google_u3phy_force_ss_rx_det_disable(struct phy *phy,
+						 bool force_override)
+{
+	struct google_usb_phy_instance *gphy_inst = phy_get_drvdata(phy);
+	struct google_usb_phy *gphy = gphy_instance_to_gphy(gphy_inst);
+
+	google_u3phy_force_ss_rx_det_disable_internal(gphy, force_override);
+}
+EXPORT_SYMBOL_GPL(google_u3phy_force_ss_rx_det_disable);
+
+extern int google_u3phy_soft_reset(struct phy *phy, bool mpll_override)
+{
+	struct google_usb_phy_instance *gphy_inst = phy_get_drvdata(phy);
+	struct google_usb_phy *gphy = gphy_instance_to_gphy(gphy_inst);
+	union SUP_DIG_MPLLA_OVRD_IN_0_REG mplla_ovrd;
+	union SUP_DIG_ASIC_OUT_0_REG asic_out;
+	TCA_PSTATE_1 pstate;
+	int ret;
+
+	dev_info(gphy->dev, "%s: %d", __func__, mpll_override);
+
+	pstate.reg_value = readl(gphy->dptx_tca_regs_base + TCA_PSTATE_1_OFFSET);
+	dev_info(gphy->dev, "TCA_PSTATE_1 = 0x%x\n", pstate.reg_value);
+
+	/* mpll_override will result in fabric timeout if USB controller below P2 */
+	ret = readl_poll_timeout_atomic(gphy->dptx_tca_regs_base + TCA_PSTATE_1_OFFSET,
+			pstate.reg_value, pstate.bf.usb32_lane0_powerdown < TCA_PSTATE_POWERDOWN_P3,
+			GPHY_DP_WA_DELAY_US, GPHY_DP_WA_TIMEOUT_US);
+	if (ret) {
+		dev_info(gphy->dev, "%s: PHY is not in P2 or higher, pstate 0x%x",
+			__func__, pstate.bf.usb32_lane0_powerdown);
+		return -1;
+	}
+
+	/* Entry Sequence */
+	if (mpll_override) {
+		/*
+		 * Enable MPLLA override, turn of MPLLA
+		 * W4a: Step#5 and Step#6
+		 */
+		mplla_ovrd.reg_value = readw(gphy->dptx_phy_regs_base + SUP_DIG_MPLLA_OVRD_IN_0);
+		mplla_ovrd.bf.mplla_en_orvd_val = 0;
+		mplla_ovrd.bf.mplla_en_orvd_en = 1;
+		writew(mplla_ovrd.reg_value, gphy->dptx_phy_regs_base + SUP_DIG_MPLLA_OVRD_IN_0);
+
+		/*
+		 * Poll for MPLLA state off
+		 * W4a: Step#7
+		 */
+		ret = readw_poll_timeout_atomic(gphy->dptx_phy_regs_base + SUP_DIG_ASIC_OUT_0,
+						asic_out.reg_value, asic_out.bf.mplla_state == 0,
+						GPHY_DELAY_US, GPHY_TIMEOUT_US);
+		dev_info(gphy->dev, "%s: mplla poll %s\n", __func__, ret ? "failed" : "succeeded");
+
+		/*
+		 * Wait for 10 us
+		 * W4a: Step#8
+		 */
+		udelay(10);
+	/* Exit Sequence */
+	} else {
+		/*
+		 * Disable MPLLA override
+		 * W4a: Step#11
+		 */
+		mplla_ovrd.reg_value = readw(gphy->dptx_phy_regs_base + SUP_DIG_MPLLA_OVRD_IN_0);
+		mplla_ovrd.bf.mplla_en_orvd_en = 0;
+		writew(mplla_ovrd.reg_value, gphy->dptx_phy_regs_base + SUP_DIG_MPLLA_OVRD_IN_0);
+		dev_info(gphy->dev, "%s: mplla override cleared\n", __func__);
+	}
+	return 0;
+}
+EXPORT_SYMBOL_GPL(google_u3phy_soft_reset);
+
+/* ---------- USB3 PHY Callbacks End ---------- */
+
+/* ---------- AUX Controller PHY Callbacks Start ---------- */
+static int google_u2phy_aux_init(struct phy *phy)
+{
+	int err;
+	AUX_USB2_PHY_CFG aux_u2phy_cfg;
+	USB2_SS_CTRL_1 u2ss_ctrl_1;
+	USB2_SS_CTRL_4 u2ss_ctrl_4;
+	struct google_usb_phy_instance *gphy_inst = phy_get_drvdata(phy);
+	struct google_usb_phy *gphy = gphy_instance_to_gphy(gphy_inst);
+
+	dev_dbg(gphy->dev, "Google u2phy aux init\n");
+
+	u2ss_ctrl_4.reg_value = readl(gphy->usb2_ss_base + USB2SS_CTRL4_OFFSET);
+	u2ss_ctrl_4.bf.usb2phy_ref_freq_sel = 0;
+	writel(u2ss_ctrl_4.reg_value, gphy->usb2_ss_base + USB2SS_CTRL4_OFFSET);
+
+	aux_u2phy_cfg.reg_value = readl(gphy->usb2_cfg_csr_base +
+					DP_TOP_CSR_AUX_U2PHY_CFG_OFFSET);
+	aux_u2phy_cfg.bf.usb2phy_phy_tx_dig_bypass_sel = 0;
+	writel(aux_u2phy_cfg.reg_value,
+	       gphy->usb2_cfg_csr_base + DP_TOP_CSR_AUX_U2PHY_CFG_OFFSET);
+
+	u2ss_ctrl_1.reg_value = readl(gphy->usb2_ss_base + USB2SS_CTRL1_OFFSET);
+	u2ss_ctrl_1.bf.usb2phy_phy_cfg_pll_fb_div = 368;
+	writel(u2ss_ctrl_1.reg_value, gphy->usb2_ss_base + USB2SS_CTRL1_OFFSET);
+
+	err = clk_bulk_prepare_enable(GOOGLE_U2PHY_NUM_CLOCKS,
+				      gphy->u2phy_clocks);
+	if (err)
+		return err;
+
+	err = reset_control_deassert(gphy->u2phy_reset);
+	if (err)
+		goto disable_u2phy_aux_clocks;
+
+	aux_u2phy_cfg.reg_value = readl(gphy->usb2_cfg_csr_base +
+					DP_TOP_CSR_AUX_U2PHY_CFG_OFFSET);
+	aux_u2phy_cfg.bf.usb2phy_phy_enable = 1;
+	writel(aux_u2phy_cfg.reg_value,
+	       gphy->usb2_cfg_csr_base + DP_TOP_CSR_AUX_U2PHY_CFG_OFFSET);
+
+	return 0;
+
+disable_u2phy_aux_clocks:
+	clk_bulk_disable_unprepare(GOOGLE_U2PHY_NUM_CLOCKS, gphy->u2phy_clocks);
+	return err;
+}
+
+static int google_u2phy_aux_exit(struct phy *phy)
+{
+	AUX_USB2_PHY_CFG aux_u2phy_cfg;
+	struct google_usb_phy_instance *gphy_inst = phy_get_drvdata(phy);
+	struct google_usb_phy *gphy = gphy_instance_to_gphy(gphy_inst);
+
+	dev_dbg(gphy->dev, "Google u2phy aux exit\n");
+
+	aux_u2phy_cfg.reg_value = readl(gphy->usb2_cfg_csr_base +
+					DP_TOP_CSR_AUX_U2PHY_CFG_OFFSET);
+	aux_u2phy_cfg.bf.usb2phy_phy_enable = 0;
+	writel(aux_u2phy_cfg.reg_value,
+	       gphy->usb2_cfg_csr_base + DP_TOP_CSR_AUX_U2PHY_CFG_OFFSET);
+
+	reset_control_assert(gphy->u2phy_reset);
+	clk_bulk_disable_unprepare(GOOGLE_U2PHY_NUM_CLOCKS, gphy->u2phy_clocks);
+	return 0;
 }
 
 /* ---------- DP PHY Callbacks Start ---------- */
@@ -1032,9 +1449,15 @@ extern int google_dpphy_aux_powerup(struct phy *phy)
 	}
 
 	aux_ctrl.reg_value = readl(gphy->dp_top_csr_base + DP_TOP_CSR_AUX_CTRL_OFFSET);
-	aux_ctrl.bf.phy_aux_ctrl = 1;
-	aux_ctrl.bf.phy_aux_hys_tune = 2;
-	aux_ctrl.bf.phy_aux_vod_tune = 1;
+	if (gphy->aux_tune_ovrd_en) {
+		aux_ctrl.bf.phy_aux_ctrl = gphy->aux_tune_params_ovrd.aux_ctrl;
+		aux_ctrl.bf.phy_aux_hys_tune = gphy->aux_tune_params_ovrd.aux_hys_tune;
+		aux_ctrl.bf.phy_aux_vod_tune = gphy->aux_tune_params_ovrd.aux_vod_tune;
+	} else {
+		aux_ctrl.bf.phy_aux_ctrl = 1;
+		aux_ctrl.bf.phy_aux_hys_tune = 2;
+		aux_ctrl.bf.phy_aux_vod_tune = 1;
+	}
 	writel(aux_ctrl.reg_value, gphy->dp_top_csr_base + DP_TOP_CSR_AUX_CTRL_OFFSET);
 
 	udelay(300);
@@ -1050,6 +1473,16 @@ extern int google_dpphy_aux_powerup(struct phy *phy)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(google_dpphy_aux_powerup);
+
+static void mbu_typec_disable_ack_set(struct device *dev, int val)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+	union TCA_OVERRIDE_REG0 tca_ovrd;
+
+	tca_ovrd.reg_value = readl(gphy->dp_top_csr_base + DP_TOP_CSR_TCA_OVERRIDE_REG0_OFFSET);
+	tca_ovrd.bf.reg_dpalt_disable_ack = val;
+	writel(tca_ovrd.reg_value, gphy->dp_top_csr_base + DP_TOP_CSR_TCA_OVERRIDE_REG0_OFFSET);
+}
 
 /* ---------- DP PHY Callbacks End ---------- */
 
@@ -1402,6 +1835,9 @@ tca_ready:
 		goto done;
 	}
 
+	if (gphy->drv_data->typec_disable_ack_set)
+		gphy->drv_data->typec_disable_ack_set(gphy->dev, 1);
+
 	tca_clk_rst.reg_value = readl(gphy->dptx_tca_regs_base + TCA_CLK_RST_OFFSET);
 	tca_clk_rst.bf.tca_ref_clk_en = 1;
 	writel(tca_clk_rst.reg_value, gphy->dptx_tca_regs_base + TCA_CLK_RST_OFFSET);
@@ -1430,6 +1866,9 @@ tca_ready:
 	/* Flag phy_users to prevent tear down by USB */
 	gphy->phy_users |= COMBO_PHY_USER_DP;
 
+	if (gphy->drv_data->typec_disable_ack_set)
+		gphy->drv_data->typec_disable_ack_set(gphy->dev, 0);
+
 done:
 	mutex_unlock(&gphy->lock);
 	return ret;
@@ -1452,6 +1891,9 @@ static int google_dpphy_exit(struct phy *phy)
 	dev_info(gphy->dev, "Google DP PHY exit\n");
 
 	mutex_lock(&gphy->lock);
+
+	if (gphy->drv_data->typec_disable_ack_set)
+		gphy->drv_data->typec_disable_ack_set(gphy->dev, 1);
 
 	gphy->phy_users &= ~COMBO_PHY_USER_DP;
 	/* Tear down ComboPHY is DP is last PHY user */
@@ -1489,7 +1931,7 @@ static const struct dev_pm_ops google_usb_phy_dev_pm_ops = {
 };
 
 static struct phy *google_usb_phy_xlate(struct device *dev,
-	struct of_phandle_args *args)
+	const struct of_phandle_args *args)
 {
 	struct google_usb_phy *gphy = dev_get_drvdata(dev);
 
@@ -1953,7 +2395,7 @@ static int google_usb_phy_debugfs_init(struct device *dev)
 	int ret;
 	char lane_name[16];
 
-	gphy->debugfs_root = debugfs_create_dir("google_usb_phy", NULL);
+	gphy->debugfs_root = debugfs_create_dir(dev_name(dev), NULL);
 	if (IS_ERR_OR_NULL(gphy->debugfs_root))
 		return PTR_ERR(gphy->debugfs_root);
 
@@ -2076,6 +2518,114 @@ static ssize_t phy_tune_params_show(struct device *dev, struct device_attribute 
 }
 static DEVICE_ATTR_RO(phy_tune_params);
 
+static ssize_t aux_tune_ovrd_en_show(struct device *dev, struct device_attribute *attr,
+				     char *buf)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "%d\n", gphy->aux_tune_ovrd_en);
+}
+
+static ssize_t aux_tune_ovrd_en_store(struct device *dev, struct device_attribute *attr,
+				      const char *buf, size_t size)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+	bool val;
+	int res;
+
+	res = kstrtobool(buf, &val);
+	if (res)
+		return res;
+
+	gphy->aux_tune_ovrd_en = val;
+	return size;
+}
+static DEVICE_ATTR_RW(aux_tune_ovrd_en);
+
+static ssize_t aux_ctrl_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "0x%x\n", gphy->aux_tune_params_ovrd.aux_ctrl);
+}
+
+static ssize_t aux_ctrl_store(struct device *dev, struct device_attribute *attr, const char *buf,
+			      size_t size)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+	int res;
+	u8 val;
+
+	res = kstrtou8(buf, 0, &val);
+	if (res)
+		return res;
+
+	if (val > 0xF) {
+		dev_err(dev, "invalid aux_ctrl value: 0x%x\n", val);
+		return -EINVAL;
+	}
+
+	gphy->aux_tune_params_ovrd.aux_ctrl = val;
+	return size;
+}
+static DEVICE_ATTR_RW(aux_ctrl);
+
+static ssize_t aux_hys_tune_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "0x%x\n", gphy->aux_tune_params_ovrd.aux_hys_tune);
+}
+
+static ssize_t aux_hys_tune_store(struct device *dev, struct device_attribute *attr,
+				  const char *buf, size_t size)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+	int res;
+	u8 val;
+
+	res = kstrtou8(buf, 0, &val);
+	if (res)
+		return res;
+
+	if (val > 0x3) {
+		dev_err(dev, "invalid aux_hys_tune value: 0x%x\n", val);
+		return -EINVAL;
+	}
+
+	gphy->aux_tune_params_ovrd.aux_hys_tune = val;
+	return size;
+}
+static DEVICE_ATTR_RW(aux_hys_tune);
+
+static ssize_t aux_vod_tune_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+
+	return sysfs_emit(buf, "0x%x\n", gphy->aux_tune_params_ovrd.aux_vod_tune);
+}
+
+static ssize_t aux_vod_tune_store(struct device *dev, struct device_attribute *attr,
+				  const char *buf, size_t size)
+{
+	struct google_usb_phy *gphy = dev_get_drvdata(dev);
+	int res;
+	u8 val;
+
+	res = kstrtou8(buf, 0, &val);
+	if (res)
+		return res;
+
+	if (val > 0x1) {
+		dev_err(dev, "invalid aux_vod_tune value: 0x%x\n", val);
+		return -EINVAL;
+	}
+
+	gphy->aux_tune_params_ovrd.aux_vod_tune = val;
+	return size;
+}
+static DEVICE_ATTR_RW(aux_vod_tune);
+
 GOOGLE_USB_PHY_REG_ATTR(sup_dig_lvl_ovrd_in, SUP_DIG_LVL_OVRD_IN, DPTX);
 
 GOOGLE_USB_PHY_REG_ATTR(phy_cfg4, DP_USBCS_PHY_CFG4_OFFSET, DPTOP);
@@ -2095,6 +2645,24 @@ static const struct attribute_group phy_registers_group = {
 	.attrs = phy_register_attrs,
 };
 
+GOOGLE_USB_PHY_COEFF_ATTR(phy_cfg4, DPTOP, main, USBCS_PHY_CFG4);
+GOOGLE_USB_PHY_COEFF_ATTR(phy_cfg5, DPTOP, post, USBCS_PHY_CFG5);
+GOOGLE_USB_PHY_COEFF_ATTR(phy_cfg6, DPTOP, pre, USBCS_PHY_CFG6);
+GOOGLE_USB_PHY_PARA_ATTR(phy_lvl_ovrd, DPTX, vboost, LVL_OVRD_IN);
+
+static struct attribute *phy_coeff_attrs[] = {
+	&dev_attr_main.attr,
+	&dev_attr_post.attr,
+	&dev_attr_pre.attr,
+	&dev_attr_vboost.attr,
+	NULL
+};
+
+static const struct attribute_group phy_coeffs_group = {
+	.name = "phy_coeffs",
+	.attrs = phy_coeff_attrs,
+};
+
 static struct attribute *usb_phy_attrs[] = {
 	&dev_attr_phy_tune_params.attr,
 	NULL
@@ -2104,9 +2672,24 @@ static const struct attribute_group usb_phy_group = {
 	.attrs = usb_phy_attrs,
 };
 
+static struct attribute *aux_tune_params_attrs[] = {
+	&dev_attr_aux_tune_ovrd_en.attr,
+	&dev_attr_aux_ctrl.attr,
+	&dev_attr_aux_hys_tune.attr,
+	&dev_attr_aux_vod_tune.attr,
+	NULL
+};
+
+static const struct attribute_group aux_tune_params_group = {
+	.name = "aux_tune_params",
+	.attrs = aux_tune_params_attrs,
+};
+
 static const struct attribute_group *usb_phy_groups[] = {
 	&usb_phy_group,
 	&phy_registers_group,
+	&phy_coeffs_group,
+	&aux_tune_params_group,
 	NULL,
 };
 
@@ -2248,6 +2831,13 @@ static int google_usb_phy_probe(struct platform_device *pdev)
 			return PTR_ERR(gphy->usb2_ss_base);
 	}
 
+	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "upcs_config_reg");
+	if (res) {
+		gphy->upcs_config_reg = devm_ioremap_resource(dev, res);
+		if (IS_ERR(gphy->upcs_config_reg))
+			return PTR_ERR(gphy->upcs_config_reg);
+	}
+
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "phy_sram");
 	if (res) {
 		gphy->phy_sram_base = devm_ioremap_resource(dev, res);
@@ -2279,6 +2869,11 @@ static int google_usb_phy_probe(struct platform_device *pdev)
 				ret = request_firmware(&gphy->fw, gphy->fw_name, gphy->dev);
 			}
 
+			if (ret == -ENOENT) {
+				dev_err(dev, "Firmware not found, defer probing\n");
+				return -EPROBE_DEFER;
+			}
+
 			if (ret) {
 				dev_err(dev, "Fail to request firmware %s\n", gphy->fw_name);
 				return ret;
@@ -2291,6 +2886,13 @@ static int google_usb_phy_probe(struct platform_device *pdev)
 			goto free_firmware;
 		}
 	}
+
+	/* PHY Workarounds */
+	if (of_property_read_bool(node, "soft-reset-war"))
+		gphy->phy_workarounds |= U3_PHY_FORCE_SS_RXDET_DISABLE;
+
+	if (of_property_read_bool(node, "force-u31-war"))
+		gphy->phy_workarounds |= U3_PHY_FORCE_USB31_CONNECTED;
 
 	ret = google_dpphy_tune_init(dev);
 	if (ret && ret != -EINVAL)
@@ -2380,7 +2982,7 @@ free_firmware:
 	return ret;
 }
 
-static int google_usb_phy_remove(struct platform_device *pdev)
+static void google_usb_phy_remove(struct platform_device *pdev)
 {
 	struct google_usb_phy *gphy = dev_get_drvdata(&pdev->dev);
 
@@ -2391,13 +2993,7 @@ static int google_usb_phy_remove(struct platform_device *pdev)
 	google_usb_phy_debugfs_remove(gphy);
 	google_dpphy_sysfs_destroy(gphy);
 	release_firmware(gphy->fw);
-	return 0;
 }
-
-static const struct usb_phy_init_config lga_usb_power_config_table[] = {
-	{DP_TOP_CSR_PHY_POWER_CONFIG_REG1_OFFSET, GENMASK(1, 1), 0x2 },
-	{DP_TOP_CSR_PHY_POWER_CONFIG_REG1_OFFSET, GENMASK(31, 14), (0x260 << 14) },
-};
 
 static const struct google_usb_phy_driverdata lga_drvdata = {
 	.u3p_clk_names = {
@@ -2423,14 +3019,58 @@ static const struct google_usb_phy_driverdata lga_drvdata = {
 	.pm_callback = lga_pm_callback,
 	.program_usb2_otps = google_usb_program_usb2_otps,
 	.program_usb3_otps = google_usb_program_usb3_otps,
-	.usb_power_config_table = lga_usb_power_config_table,
-	.usb_power_config_count = ARRAY_SIZE(lga_usb_power_config_table),
+	.set_power_config = lga_set_power_config,
+};
+
+static const struct google_usb_phy_driverdata mbu_drvdata = {
+	.u3p_clk_names = {
+		"usb3dp_phy_reset_clk"
+	},
+	.num_u3p_clks = 1,
+	.google_u2phy_ops = {
+		.init = google_u2phy_init,
+		.exit = google_u2phy_exit,
+		.owner = THIS_MODULE,
+	},
+	.google_u3phy_ops = {
+		.init = google_u3phy_init,
+		.power_on = google_u3phy_power_on,
+		.exit = google_u3phy_exit,
+		.owner = THIS_MODULE,
+	},
+	.google_dpphy_ops = {
+		.init = google_dpphy_init,
+		.exit = google_dpphy_exit,
+		.owner = THIS_MODULE,
+	},
+	// pm_callback to configure pmgt_ref_clk_req is not required in MBU per b/322477603
+	.program_usb2_otps = google_usb_program_usb2_otps,
+	.program_usb3_otps = google_usb_program_usb3_otps,
+	.set_power_config = mbu_set_power_config,
+	.typec_disable_ack_set = mbu_typec_disable_ack_set,
+	.mplla_coarse_start_0_val = 0x50,
+};
+
+static const struct google_usb_phy_driverdata mbu_aux_drvdata = {
+	.google_u2phy_ops = {
+		.init = google_u2phy_aux_init,
+		.exit = google_u2phy_aux_exit,
+		.owner = THIS_MODULE,
+	},
 };
 
 static const struct of_device_id google_usb_phy_match[] = {
 	{
 		.compatible = "google,usb_phy-lga",
 		.data = &lga_drvdata,
+	},
+	{
+		.compatible = "google,usb_phy-mbu",
+		.data = &mbu_drvdata,
+	},
+	{
+		.compatible = "google,usb_phy-mbu-aux",
+		.data = &mbu_aux_drvdata,
 	},
 	{ /* sentinel */ },
 };

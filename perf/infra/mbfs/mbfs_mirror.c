@@ -6,12 +6,11 @@
 #include <linux/device.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
+#include <linux/namei.h>
 #include <linux/string.h>
 #include <perf/mbfs.h>
-#include <perf/mbfs_protocol.h>
 
 #include "mbfs_base.h"
-#include "mbfs_backend.h"
 
 #define PR_ALERT(fmt, ...) pr_alert("%s:%d: " fmt, __func__, __LINE__, ##__VA_ARGS__)
 #define PR_ERR(fmt, ...) pr_err("%s:%d: " fmt, __func__, __LINE__, ##__VA_ARGS__)
@@ -25,8 +24,9 @@
 
 #define TOP_FOLDER_IN_FIRMWARE_DIR "mbfs_root"
 
-// The kobject associated with the top folder under /sys/firmware/
+// The kobject and inode associated with the top folder under /sys/firmware/
 static struct kobject *top_kobj_in_firmware;
+static struct inode *top_inode;
 
 static DEFINE_MUTEX(mbfs_cherry_pick_mutex);
 
@@ -67,6 +67,37 @@ struct mbfs_file {
 	struct attribute base_attr;
 	struct tree_node ftn;
 };
+
+static struct inode *find_inode_from_kobject(struct kobject *kobj)
+{
+	char *rel_path = NULL;
+	char *full_path = NULL;
+	int full_path_len;
+	struct path sysfs_path;
+	struct inode *inode = NULL;
+	int ret;
+
+	rel_path = kobject_get_path(kobj, GFP_KERNEL);
+	if (!rel_path)
+		return NULL;
+
+	full_path_len = strlen("/sys") + strlen(rel_path) + 1;
+	full_path = kmalloc(full_path_len, GFP_KERNEL);
+	if (!full_path)
+		goto exit;
+
+	snprintf(full_path, full_path_len, "/sys%s", rel_path);
+	ret = kern_path(full_path, 0, &sysfs_path);
+	if (ret == 0) {
+		inode = igrab(sysfs_path.dentry->d_inode);
+		path_put(&sysfs_path);
+	}
+
+	kfree(full_path);
+exit:
+	kfree(rel_path);
+	return inode;
+}
 
 static ssize_t mbfs_file_show(struct kobject *kobj, struct attribute *attr, char *buf)
 {
@@ -186,9 +217,25 @@ static const struct sysfs_ops mbfs_sysfs_ops = {
 	.store = mbfs_file_store,
 };
 
+static void mbfs_get_ownership(const struct kobject *kobj, kuid_t *uid, kgid_t *gid)
+{
+	/*
+	 * Newly created folders/files in mbfs inherit uid and gid
+	 * from the TOP_FOLDER_IN_FIRMWARE_DIR.
+	 */
+	if (top_inode) {
+		*uid = top_inode->i_uid;
+		*gid = top_inode->i_gid;
+	} else {
+		*uid = GLOBAL_ROOT_UID;
+		*gid = GLOBAL_ROOT_GID;
+	}
+}
+
 static const struct kobj_type folder_ktype = {
 	.release = NULL, /* because devres_alloc is used when creating the folder */
 	.sysfs_ops = &mbfs_sysfs_ops,
+	.get_ownership = mbfs_get_ownership,
 };
 
 static void mbfs_delete_sysfs_folder(struct device *dev, void *res)
@@ -400,6 +447,7 @@ static int mbfs_refresh_sysfs_file(struct mbfs_folder *parent_folder,
 }
 
 static int mbfs_get_nth_child_desc(struct device *dev, union mbfs_client_handle handle,
+				   struct kobject *parent_kobj,
 				   enum mbfs_node_type node_type, uint32_t n,
 				   union mbfs_client_handle *child_handle,
 				   struct mbfs_client_node_desc *child_desc)
@@ -415,15 +463,33 @@ static int mbfs_get_nth_child_desc(struct device *dev, union mbfs_client_handle 
 
 	mbfs_ret = mbfs_get_node_desc(*child_handle, child_desc);
 	if (mbfs_ret) {
-		if (mbfs_ret == MBFS_FORBIDDEN) {
-			DEV_DBG(dev,
-				"Calling mbfs_get_node_desc for an invisible child: %d, name: %s\n",
-				n, child_desc->name);
-		} else {
+		char *parent_path;
+
+		parent_path = kobject_get_path(parent_kobj, GFP_KERNEL);
+		if (!parent_path) {
+			/* This can happen only if there is no memory to allocate or some kobj
+			 * in path has no name
+			 */
 			DEV_ERR(dev,
-				"Error calling mbfs_get_node_desc for child: %d, name: %s, err: %s\n",
-				n, child_desc->name, get_mbfs_error_string(mbfs_ret));
+				"Error calling kobject_get_path for: %s, mbfs get node ret: %s\n",
+				(char *)parent_kobj->name, get_mbfs_error_string(mbfs_ret));
+			return mbfs_error2linux(mbfs_ret);
 		}
+		switch (mbfs_ret) {
+		case MBFS_FORBIDDEN:
+		case MBFS_NOT_FOUND:
+			DEV_DBG(dev,
+				"Error mbfs_get_node_desc failed for child: %d, parent path: %s, err: %s\n",
+				n, parent_path, get_mbfs_error_string(mbfs_ret));
+			break;
+		default:
+			DEV_ERR(dev,
+				"Error calling mbfs_get_node_desc for child: %d, parent path: %s, err: %s\n",
+				n, parent_path, get_mbfs_error_string(mbfs_ret));
+		}
+
+		kfree(parent_path);
+
 		return mbfs_error2linux(mbfs_ret);
 	}
 
@@ -449,8 +515,8 @@ static void refresh_map_mbfs_to_sysfs(struct mbfs_folder *folder, struct device 
 	int ret;
 
 	for (int i = 0; i < desc->num_files; i++) {
-		ret = mbfs_get_nth_child_desc(dev, handle, MBFS_FILE, i, &child_handle,
-					      &child_desc);
+		ret = mbfs_get_nth_child_desc(dev, handle, &folder->base_kobj, MBFS_FILE, i,
+					      &child_handle, &child_desc);
 		if (ret)
 			continue;
 
@@ -466,8 +532,8 @@ static void refresh_map_mbfs_to_sysfs(struct mbfs_folder *folder, struct device 
 	for (int i = 0; i < desc->num_subfolders; i++) {
 		struct mbfs_folder *child_folder;
 
-		ret = mbfs_get_nth_child_desc(dev, handle, MBFS_FOLDER, i, &child_handle,
-					      &child_desc);
+		ret = mbfs_get_nth_child_desc(dev, handle, &folder->base_kobj, MBFS_FOLDER, i,
+					      &child_handle, &child_desc);
 		if (ret)
 			continue;
 
@@ -620,7 +686,6 @@ static ssize_t cherry_pick_store(struct kobject *kobj, struct kobj_attribute *at
 	int ret = 0;
 	struct mbfs_client_backend *backend = NULL;
 	struct mbfs_folder *root_folder;
-
 	char current_token[MAX_MBFS_NAME_LENGTH + 1] = { 0 };
 	const char *next_token = path;
 
@@ -639,6 +704,9 @@ static ssize_t cherry_pick_store(struct kobject *kobj, struct kobj_attribute *at
 	}
 
 	mutex_lock(&mbfs_cherry_pick_mutex);
+
+	if (top_inode == NULL)
+		top_inode = find_inode_from_kobject(top_kobj_in_firmware);
 
 	if (backend->root_folder == NULL) {
 		ret = create_root_mbfs_folder(backend->dev, &root_folder, current_token);
@@ -699,6 +767,7 @@ static int __init mbfs_init(void)
 
 static void __exit mbfs_exit(void)
 {
+	iput(top_inode);
 	sysfs_remove_group(top_kobj_in_firmware, &mbfs_top_folder_attr_group);
 	kobject_put(top_kobj_in_firmware);
 }

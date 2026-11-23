@@ -93,14 +93,6 @@ DECLARE_EVENT_CLASS(display,
 		__entry->te_count)
 );
 
-DEFINE_EVENT(display, disp_frame_start_timeout,
-	TP_PROTO(int display_id, u32 output_id, struct vs_crtc *vs_crtc),
-	TP_ARGS(display_id, output_id, vs_crtc)
-);
-DEFINE_EVENT(display, disp_frame_start_missing,
-	TP_PROTO(int display_id, u32 output_id, struct vs_crtc *vs_crtc),
-	TP_ARGS(display_id, output_id, vs_crtc)
-);
 DEFINE_EVENT(display, disp_frame_start,
 	TP_PROTO(int display_id, u32 output_id, struct vs_crtc *vs_crtc),
 	TP_ARGS(display_id, output_id, vs_crtc)
@@ -109,38 +101,9 @@ DEFINE_EVENT(display, disp_frame_done,
 	TP_PROTO(int display_id, u32 output_id, struct vs_crtc *vs_crtc),
 	TP_ARGS(display_id, output_id, vs_crtc)
 );
-DEFINE_EVENT(display, disp_frame_done_missing,
-	TP_PROTO(int display_id, u32 output_id, struct vs_crtc *vs_crtc),
-	TP_ARGS(display_id, output_id, vs_crtc)
-);
 DEFINE_EVENT(display, disp_commit_done,
 	TP_PROTO(int display_id, u32 output_id, struct vs_crtc *vs_crtc),
 	TP_ARGS(display_id, output_id, vs_crtc)
-);
-
-TRACE_EVENT(disp_frame_done_timeout,
-	TP_PROTO(int display_id, u32 output_id, struct vs_crtc *vs_crtc),
-	TP_ARGS(display_id, output_id, vs_crtc),
-	TP_STRUCT__entry(
-		__field(int, display_id)
-		__field(u32, output_id)
-		__field(int, frames_pending)
-		__field(bool, frame_transfer_pending)
-		__field(int, te_count)
-		__field(bool, during_disable)
-	),
-	TP_fast_assign(
-		__entry->display_id = display_id;
-		__entry->output_id = output_id;
-		__entry->frames_pending = atomic_read(&vs_crtc->frames_pending);
-		__entry->frame_transfer_pending = vs_crtc->frame_transfer_pending;
-		__entry->te_count = atomic_read(&vs_crtc->te_count);
-		__entry->during_disable = !vs_crtc->base.state->active;
-	),
-	TP_printk("display_id: %d output_id: %d frames_pending: %d frame_transfer_pending: %d te_count: %d%s",
-		__entry->display_id, __entry->output_id, __entry->frames_pending,
-		__entry->frame_transfer_pending, __entry->te_count,
-		__entry->during_disable ? " during disable" : "")
 );
 
 DECLARE_EVENT_CLASS(disp_be_intr,
@@ -359,39 +322,6 @@ TRACE_EVENT_CONDITION(disp_reset_irqs,
 		__entry->be_rst_done)
 );
 
-TRACE_EVENT_CONDITION(disp_err_irqs,
-	TP_PROTO(u16 pvric_err, u8 underrun, u8 data_lost),
-	TP_ARGS(pvric_err, underrun, data_lost),
-	TP_CONDITION(pvric_err || underrun || data_lost),
-	TP_STRUCT__entry(
-		__field(u16, pvric_err)
-		__field(u8, underrun)
-		__field(u8, data_lost)
-	),
-	TP_fast_assign(
-		__entry->pvric_err = pvric_err;
-		__entry->underrun = underrun;
-		__entry->data_lost = data_lost;
-	),
-	TP_printk("pvric_err: %#x underrun: %#x data_lost: %#x",
-		__entry->pvric_err, __entry->underrun, __entry->data_lost)
-);
-
-TRACE_EVENT_CONDITION(disp_bus_err_irqs,
-	TP_PROTO(const char *name, long data),
-	TP_ARGS(name, data),
-	TP_CONDITION(data),
-	TP_STRUCT__entry(
-		__string(name, name)
-		__field(long, data)
-	),
-	TP_fast_assign(
-		__assign_str(name, name);
-		__entry->data = data;
-	),
-	TP_printk("%s: %#lx", __get_str(name), __entry->data)
-);
-
 DECLARE_EVENT_CLASS(disp_qos_set_bw,
 	TP_PROTO(int display_id, u32 avg_bw_mbps, u32 peak_bw_mbps, u32 rt_bw_mbps),
 	TP_ARGS(display_id, avg_bw_mbps, peak_bw_mbps, rt_bw_mbps),
@@ -451,38 +381,36 @@ TRACE_EVENT(disp_qos_boost_fab_clk,
 		__entry->display_id, __entry->fab_khz, __entry->core_khz));
 
 DECLARE_EVENT_CLASS(disp_commit_wait,
-	TP_PROTO(int display_id, u32 old_plane_mask, u32 new_plane_mask, u32 swapped_plane_mask,
+	TP_PROTO(int display_id, u32 swapped_plane_mask, u32 enabling_secure_mask,
 		 int frames_pending),
-	TP_ARGS(display_id, old_plane_mask, new_plane_mask, swapped_plane_mask, frames_pending),
+	TP_ARGS(display_id, swapped_plane_mask, enabling_secure_mask, frames_pending),
 	TP_STRUCT__entry(
 		__field(int, display_id)
-		__field(u32, old_plane_mask)
-		__field(u32, new_plane_mask)
 		__field(u32, swapped_plane_mask)
+		__field(u32, enabling_secure_mask)
 		__field(int, frames_pending)
 	),
 	TP_fast_assign(
 		__entry->display_id = display_id;
-		__entry->old_plane_mask = old_plane_mask;
-		__entry->new_plane_mask = new_plane_mask;
 		__entry->swapped_plane_mask = swapped_plane_mask;
+		__entry->enabling_secure_mask = enabling_secure_mask;
 		__entry->frames_pending = frames_pending;
 	),
-	TP_printk("display_id: %d old_plane_mask: %#x new_plane_mask: %#x swapped_plane_mask: %#x frames_pending: %d",
-		__entry->display_id, __entry->old_plane_mask, __entry->new_plane_mask,
-		__entry->swapped_plane_mask, __entry->frames_pending)
+	TP_printk("display_id: %d swapped_plane_mask: %#x enabling_secure_mask: %#x frames_pending: %d",
+		__entry->display_id, __entry->swapped_plane_mask,
+		__entry->enabling_secure_mask, __entry->frames_pending)
 );
 
 DEFINE_EVENT(disp_commit_wait, disp_commit_wait_begin,
-	TP_PROTO(int display_id, u32 old_plane_mask, u32 new_plane_mask, u32 swapped_plane_mask,
+	TP_PROTO(int display_id, u32 swapped_plane_mask, u32 enabling_secure_mask,
 		 int frames_pending),
-	TP_ARGS(display_id, old_plane_mask, new_plane_mask, swapped_plane_mask, frames_pending)
+	TP_ARGS(display_id, swapped_plane_mask, enabling_secure_mask, frames_pending)
 );
 
 DEFINE_EVENT(disp_commit_wait, disp_commit_wait_done,
-	TP_PROTO(int display_id, u32 old_plane_mask, u32 new_plane_mask, u32 swapped_plane_mask,
+	TP_PROTO(int display_id, u32 swapped_plane_mask, u32 enabling_secure_mask,
 		 int frames_pending),
-	TP_ARGS(display_id, old_plane_mask, new_plane_mask, swapped_plane_mask, frames_pending)
+	TP_ARGS(display_id, swapped_plane_mask, enabling_secure_mask, frames_pending)
 );
 
 /* Specific HW Programming Traces */
@@ -537,7 +465,7 @@ DECLARE_EVENT_CLASS(disp_hw_layer_feature,
 	),
 	TP_fast_assign(
 			__entry->hw_id = hw_id;
-			__assign_str(prop, prop);
+			__assign_str(prop);
 			__assign_vstr(vstr, fmt, va);
 	),
 	TP_printk("[Layer%d] %s: %s", __entry->hw_id, __get_str(prop),
@@ -563,7 +491,7 @@ DECLARE_EVENT_CLASS(disp_hw_out_ctrl_feature,
 	),
 	TP_fast_assign(
 			__entry->hw_id = hw_id;
-			__assign_str(prop, prop);
+			__assign_str(prop);
 			__assign_vstr(vstr, fmt, va);
 	),
 	TP_printk("[Out_ctrl%d] %s: %s", __entry->hw_id, __get_str(prop),
@@ -589,7 +517,7 @@ DECLARE_EVENT_CLASS(disp_hw_wb_feature,
 	),
 	TP_fast_assign(
 			__entry->hw_id = hw_id;
-			__assign_str(prop, prop);
+			__assign_str(prop);
 			__assign_vstr(vstr, fmt, va);
 	),
 	TP_printk("[Writeback%d] %s: %s", __entry->hw_id, __get_str(prop),
@@ -799,9 +727,9 @@ TRACE_EVENT_CONDITION(disp_hw_feature_data,
 	),
 	TP_fast_assign(
 			__entry->component = component;
-			__assign_str(prop, prop);
+			__assign_str(prop);
 			__entry->hw_id = hw_id;
-			__assign_str(data_label, data_label);
+			__assign_str(data_label);
 			memcpy(__get_dynamic_array(data), data, data_len);
 	),
 	TP_printk("[%s%d] %s: %s=[%s]", show_trace_component(__entry->component),
@@ -843,7 +771,7 @@ DECLARE_EVENT_CLASS(disp_hw_feature_en_dirty,
 	TP_fast_assign(
 			__entry->component = component;
 			__entry->hw_id = hw_id;
-			__assign_str(prop, prop);
+			__assign_str(prop);
 			__entry->en = en;
 			__entry->dirty = dirty;
 	),
@@ -895,7 +823,7 @@ DECLARE_EVENT_CLASS(disp_hw_feature_en,
 	TP_fast_assign(
 			__entry->component = component;
 			__entry->hw_id = hw_id;
-			__assign_str(prop, prop);
+			__assign_str(prop);
 			__entry->en = en;
 	),
 	TP_printk("[%s%d] %s: en:%d", show_trace_component(__entry->component),
@@ -941,7 +869,7 @@ DECLARE_EVENT_CLASS(disp_hw_reg_switch,
 			__field(bool, en)
 	),
 	TP_fast_assign(
-			__assign_str(name, name);
+			__assign_str(name);
 			__entry->hw_id = hw_id;
 			__entry->en = en;
 	),
@@ -999,8 +927,8 @@ TRACE_EVENT(disp_set_property,
 			__field(u64, val)
 	),
 	TP_fast_assign(
-			__assign_str(name, name);
-			__assign_str(prop, prop);
+			__assign_str(name);
+			__assign_str(prop);
 			__entry->val = val;
 	),
 	TP_printk("[%s] %s val:%llu", __get_str(name), __get_str(prop), __entry->val)

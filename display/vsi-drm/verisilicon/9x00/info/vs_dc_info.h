@@ -20,6 +20,7 @@
 #else
 #define DC_PLANE_NUM 12
 #endif
+#define DC_FE_NUM 2
 #define DC_DISPLAY_NUM 5
 #define DC_OUTPUT_NUM 6
 #define DC_WB_NUM 3
@@ -27,6 +28,11 @@
 /* Chip IDs for 9x00 */
 #define VS_CHIP_ID_9200 0x9200
 #define VS_CHIP_ID_9400 0x9400
+
+/* Chip Customer IDs for 9x00 */
+#define VS_CHIP_CID_316 0x316
+#define VS_CHIP_CID_32A 0x32A
+#define VS_CHIP_CID_20000005 0x20000005
 
 /* Compile time assert */
 #define vs_dc_ct_assert(cond, msg) __vs_dc_assert_impl(cond, __LINE__, msg)
@@ -217,6 +223,15 @@ struct vs_plane_info {
 	u32 data_extend : 1;
 };
 
+/*for dsc and vdc size */
+struct dec_size_info {
+	u32 max_w;
+	u32 max_h;
+	u32 slice_max_w;
+	u32 slice_max_h;
+	u64 pixel_count;
+};
+
 struct vs_display_info {
 	const char *name;
 	u8 id;
@@ -284,6 +299,7 @@ struct vs_wb_info {
 	u8 src_mask; /* the mask of valid display path*/
 
 	u8 program_point : 1;
+	u32 init_wb_point;
 	u8 dither : 1;
 	u8 csc : 1; /* for R2Y */
 	u8 compressed : 1;
@@ -291,6 +307,91 @@ struct vs_wb_info {
 	u8 wb_stall : 1;
 };
 
+/**
+ * struct vs_dc_info - Structure holding Display Controller (DC) hardware information.
+ * @name: Name of the chip or configuration.
+ * @chip_id: Unique identifier for the chip.
+ * @revision: Hardware revision of the chip.
+ * @pid: Product ID.
+ * @cid: Customer ID.
+ * @plane_num: Total number of planes.
+ * @plane_fe0_num: Number of planes in Front End 0.
+ * @plane_fe1_num: Number of planes in Front End 1.
+ * @planes_fe0: Pointer to plane info for Front End 0.
+ * @planes_fe1: Pointer to plane info for Front End 1.
+ * @format_limit: Pointer to format limit information.
+ * @format_limit_size: Size of the format limit array.
+ * @layer_num: Total number of layers.
+ * @layer_fe0_num: Number of layers in Front End 0.
+ * @layer_fe1_num: Number of layers in Front End 1.
+ * @display_num: Number of display outputs.
+ * @displays: Pointer to display information array.
+ * @wb_num: Number of write-back paths.
+ * @write_back: Pointer to write-back information array.
+ * @max_bpc: Maximum bits per component supported.
+ * @pitch_alignment: Required alignment for buffer pitch.
+ * @addr_alignment: Required alignment for buffer address.
+ * @fe0_dma_sram_size: SRAM size for Front End 0 DMA (in Kbytes).
+ * @fe1_dma_sram_size: SRAM size for Front End 1 DMA (in Kbytes).
+ * @fe0_scl_sram_size: SRAM size for Front End 0 Scaler (in Kbytes).
+ * @fe1_scl_sram_size: SRAM size for Front End 1 Scaler (in Kbytes).
+ * @max_blend_layer: Maximum number of layers that can be blended.
+ * @max_ext_layer: Maximum number of external layers.
+ * @max_seg_num: Maximum number of segments.
+ * @dump_reg_access_table: Pointer to the table of registers to skip during regdump.
+ * @dump_reg_access_table_secure: Pointer to the table of secure registers to skip during regdump.
+ * @urgent_cmd_config: Configuration for urgent command threshold.
+ * @urgent_vid_config: Configuration for urgent video threshold.
+ * @max_eotf_size: Maximum size of the Electro-Optical Transfer Function (EOTF) LUT.
+ * @max_tonemap_size: Maximum size of the tone mapping LUT.
+ * @max_oetf_size: Maximum size of the Opto-Electronic Transfer Function (OETF) LUT.
+ * @max_degamma_size: Maximum size of the de-gamma LUT.
+ * @max_gamma_size: Maximum size of the gamma LUT.
+ * @cgm_lut_size: Size of the Color Gamut Management (CGM) 3D LUT.
+ * @cgm_ex_lut_size: Size of the CGM 3D LUT for ROI.
+ * @pre_eotf_bits: Bit depth for Front End EOTF module input.
+ * @hdr_bits: Bit depth for HDR processing.
+ * @oetf_bits: Bit depth for Front End OETF module output.
+ * @bld_cgm_bits: Bit depth for blend EOTF, gamut map, and OETF modules.
+ * @pre_degamma_bits: Bit depth for de-gamma input.
+ * @degamma_bits: Bit depth for de-gamma output.
+ * @cgm_lut_bits: Bit depth for CGM LUT.
+ * @gamma_bits: Bit depth for gamma LUT.
+ * @blur_coef_bits: Bit depth for blur coefficients.
+ * @intr_dest: Interrupt destination (bit0: NS, bit1: TZ, bit2: GSA, bit3: AOC).
+ * @std_color_lut: Whether standard color LUT is supported.
+ * @multi_roi: Whether multiple Regions of Interest (ROI) are supported.
+ * @pipe_sync: Whether pipeline synchronization is supported.
+ * @mmu_prefetch: Whether MMU prefetch is supported.
+ * @panel_sync: Whether panel synchronization is supported.
+ * @cap_dec: Compression capability bitmask. Uses (1 << DRM_FORMAT_MOD_VS_TYPE_*) to indicate
+ *           support for DEC400, PVRIC, DECNANO, and ETC2.
+ * @roi_y_gap: Gap between ROI in Y direction.
+ * @vrr: Whether Variable Refresh Rate (VRR) is supported.
+ * @dma_sram_alignment: DMA SRAM pool buffer line alignment in bytes.
+ * @dma_sram_extra_buffer: Whether extra buffer for DMA SRAM is supported.
+ * @dma_sram_unit_size: Unit size for DMA SRAM.
+ * @linear_yuv_rotation: Whether rotation is supported for linear YUV.
+ * @any_resolution: Whether any resolution is supported.
+ * @ppc: Pixels per clock.
+ * @vblank_margin_pct: Vertical blanking margin percentage.
+ * @h_bubble_pct: Horizontal bubble percentage.
+ * @rotation_prefetch_line: Number of lines for rotation prefetch.
+ * @rotation_pipeline_delay_us: Pipeline delay for rotation in microseconds.
+ * @rotation_pipeline_latency_us: Pipeline latency for rotation in microseconds.
+ * @rotation_nominal_cycle_num: Numerator for rotation nominal cycle calculation.
+ * @rotation_nominal_cycle_denom: Denominator for rotation nominal cycle calculation.
+ * @axi_bus_bit_width: AXI bus bit width.
+ * @axi_bus_util_pct: AXI bus utilization percentage.
+ * @max_nv12_uncomp_rot_width: Maximum width for NV12 uncompressed rotation.
+ * @max_nv12_uncomp_rot_height: Maximum height for NV12 uncompressed rotation.
+ * @fe_axqos_threshold_mbps: Front End AXI QoS threshold in Mbps.
+ * @fe_axqos_high: Front End AXI QoS high value.
+ * @fe_axqos_low: Front End AXI QoS low value.
+ * @default_rd_peak_bw_margin_pct: Default read peak bandwidth margin percentage.
+ * @default_rd_rt_bw_margin_pct: Default read real-time bandwidth margin percentage.
+ * @default_rd_rt_bw_min_mbps: Default read real-time bandwidth minimal value.
+ */
 struct vs_dc_info {
 	const char *name;
 	u32 chip_id;
@@ -304,6 +405,8 @@ struct vs_dc_info {
 	u8 plane_fe1_num;
 	const struct vs_plane_info *planes_fe0;
 	const struct vs_plane_info *planes_fe1;
+	const struct format_limit_info *format_limit;
+	u8 format_limit_size;
 	u8 layer_num;
 	u8 layer_fe0_num;
 	u8 layer_fe1_num;
@@ -320,7 +423,6 @@ struct vs_dc_info {
 	u16 pitch_alignment;
 	u16 addr_alignment;
 
-	/* SRAM POOL SIZE (Kbytes) */
 	u16 fe0_dma_sram_size;
 	u16 fe1_dma_sram_size;
 	u16 fe0_scl_sram_size;
@@ -344,41 +446,36 @@ struct vs_dc_info {
 	u16 max_oetf_size;
 	u16 max_degamma_size;
 	u16 max_gamma_size;
-	u16 cgm_lut_size; /* for 3D lut */
-	u16 cgm_ex_lut_size; /* for roi 3D lut */
+	u16 cgm_lut_size;
+	u16 cgm_ex_lut_size;
 
-	u8 pre_eotf_bits; /* for FE EOTF module */
+	u8 pre_eotf_bits;
 	u8 hdr_bits;
-	u8 oetf_bits; /* for FE OETF module */
-	u8 bld_cgm_bits; /* for blend EOTF, gamut map and OETF modules */
-	u8 pre_degamma_bits; /* degamma in bits */
-	u8 degamma_bits; /* degamma out bits */
+	u8 oetf_bits;
+	u8 bld_cgm_bits;
+	u8 pre_degamma_bits;
+	u8 degamma_bits;
 	u8 cgm_lut_bits;
 	u8 gamma_bits;
 	u8 blur_coef_bits;
-	u8 intr_dest; /*bit0 for NS, bit1 for TZ, bit2 for GSA, bit3 for AOC*/
+	u8 intr_dest;
 
 	u32 std_color_lut : 1;
 	u32 multi_roi : 1;
 	u32 pipe_sync : 1;
 	u32 mmu_prefetch : 1;
 	u32 panel_sync : 1;
-	/* cap_dec ===>
-	 *  (1 << DRM_FORMAT_MOD_VS_TYPE_COMPRESSED) means support dec400
-	 *  (1 << DRM_FORMAT_MOD_VS_TYPE_PVRIC) means support pvric
-	 *  (1 << DRM_FORMAT_MOD_VS_TYPE_DECNANO) means support DECNANO
-	 *  (1 << DRM_FORMAT_MOD_VS_TYPE_ETC2) means support ETC2
-	 */
 	u32 cap_dec;
 	u8 roi_y_gap;
 
 	u8 vrr : 1;
 
-	u16 dma_sram_alignment; /* DMA sram pool buffer line alignment (Byte) */
+	u16 dma_sram_alignment;
 	u8 dma_sram_extra_buffer : 1;
 	u8 dma_sram_unit_size;
 
 	u8 linear_yuv_rotation : 1;
+	u8 any_resolution : 1;
 
 	u8 ppc;
 	u8 vblank_margin_pct;
@@ -395,6 +492,38 @@ struct vs_dc_info {
 	u16 fe_axqos_threshold_mbps;
 	u32 fe_axqos_high;
 	u32 fe_axqos_low;
+	u32 default_rd_peak_bw_margin_pct;
+	u32 default_rd_rt_bw_margin_pct;
+	u32 default_rd_rt_bw_min_mbps;
+};
+
+enum check_format_type {
+	SRC,
+	ROI,
+	SCALER,
+};
+
+struct format_limit_info {
+	enum check_format_type type;
+	u32 format;
+	u8 width_align;
+	u8 height_align;
+	u16 min_width;
+	u16 max_width;
+	u16 min_height;
+	u16 max_height;
+};
+
+enum color_format_type {
+	FORMAT_ARGB,
+	FORMAT_YUV420,
+	FORMAT_YUV422,
+	FORMAT_ARGB16161616,
+	/* PVRIC */
+	FORMAT_ARGB_PV,
+	FORMAT_YUV420_8BIT_PV,
+	FORMAT_YUV420_10BIT_PV,
+	FORMAT_ARGB16161616_PV,
 };
 
 const struct vs_dc_info *vs_dc_get_chip_info(u32 chip_id, u32 revision, u32 pid, u32 cid);

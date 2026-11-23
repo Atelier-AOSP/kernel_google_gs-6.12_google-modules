@@ -30,7 +30,7 @@ static ssize_t _get_dsi_sscd_regdump(struct dw_mipi_dsi2h *dsi2h, char *buffer, 
 	p = drm_coredump_printer(&iter);
 
 	scnprintf(desc, sizeof(desc), "DSI%u", dsi2h->plat_data->mux_id);
-	gs_reg_dump_with_skips(desc, dsi2h->base, 0, dsi2h->reg_size, &p, NULL);
+	gs_reg_dump_with_skips(desc, dsi2h->base, 0, dsi2h->reg_size, &p, dsi2h->reg_table);
 
 	return count - iter.remain;
 }

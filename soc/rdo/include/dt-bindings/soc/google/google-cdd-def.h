@@ -7,13 +7,6 @@
 #ifndef GOOGLE_CDD_DEF_H
 #define GOOGLE_CDD_DEF_H
 
-/* CDD regions */
-#define CDD_HEADER_ADDR				(0x951F8000)
-#define CDD_HEADER_SIZE				(0x00008000)
-
-#define CDD_LOG_KEVENTS_ADDR			(0x90200000)
-#define CDD_LOG_KEVENTS_SIZE			(0x00500000)
-
 /* ACTION */
 #define GO_DEFAULT		"default"
 #define GO_DEFAULT_ID		0

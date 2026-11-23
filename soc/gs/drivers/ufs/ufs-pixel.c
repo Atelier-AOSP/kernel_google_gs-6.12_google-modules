@@ -7,21 +7,26 @@
  * Authors: Jaegeuk Kim <jaegeuk@google.com>
  */
 
-#include <core/ufshcd-priv.h>
 #include <linux/workqueue.h>
-#include <misc/sbbm.h>
+#include <trace/hooks/ufshcd.h>
 #include <ufs/ufs.h>
-#include "ufs-pixel.h"
+#include <ufs/ufshcd.h>
+
+#include <misc/sbbm.h>
+
+#ifndef HAVE_UFSHCD_RPM_GET_SYNC
+#include <drivers/ufs/core/ufshcd-priv.h>
+#endif
+
 #include "ufs-pixel-crypto.h"
 #if IS_ENABLED(CONFIG_SCSI_UFS_PIXEL_FIPS140)
 #include "ufs-pixel-fips.h"
 #endif
+#include "ufs-pixel.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/ufs_pixel.h>
-
 #undef CREATE_TRACE_POINTS
-#include <trace/hooks/ufshcd.h>
 
 /* UFSHCD error handling flags */
 enum {
@@ -338,7 +343,7 @@ static inline void record_ufs_stats(struct ufs_hba *hba)
 	}
 }
 
-void pixel_ufs_update_req_stats(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
+static void pixel_ufs_update_req_stats(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
 {
 	struct pixel_ufs *ufs = to_pixel_ufs(hba);
 	struct pixel_req_stats *rst;
@@ -921,10 +926,8 @@ static ssize_t manual_gc_store(struct device *dev,
 		}
 	}
 
-	if (!ufs->manual_gc.hagc_support) {
-		err = ufshcd_bkops_ctrl(hba, (value == MANUAL_GC_ON) ?
-					BKOPS_STATUS_NON_CRITICAL:
-					BKOPS_STATUS_CRITICAL);
+	if (!ufs->manual_gc.hagc_support && value == MANUAL_GC_ON) {
+		err = ufshcd_bkops_ctrl(hba);
 		if (!hba->auto_bkops_enabled)
 			err = -EAGAIN;
 	}
@@ -1776,8 +1779,8 @@ static DEVICE_ATTR_RO(_name)
 
 PIXEL_HC_REG_ATTR(cap, _CONTROLLER_CAPABILITIES);
 PIXEL_HC_REG_ATTR(ver, _UFS_VERSION);
-PIXEL_HC_REG_ATTR(hcpid, _CONTROLLER_DEV_ID);
-PIXEL_HC_REG_ATTR(hcmid, _CONTROLLER_PROD_ID);
+PIXEL_HC_REG_ATTR(hcpid, _CONTROLLER_PID);
+PIXEL_HC_REG_ATTR(hcmid, _CONTROLLER_MID);
 PIXEL_HC_REG_ATTR(ahit, _AUTO_HIBERNATE_IDLE_TIMER);
 PIXEL_HC_REG_ATTR(is, _INTERRUPT_STATUS);
 PIXEL_HC_REG_ATTR(ie, _INTERRUPT_ENABLE);
@@ -1841,7 +1844,7 @@ static struct attribute *pixel_sysfs_power_info[] = {
 };
 
 static const struct attribute_group pixel_sysfs_power_info_group = {
-	.name = "power_info",
+	.name = "pixel_power_info",
 	.attrs = pixel_sysfs_power_info,
 };
 

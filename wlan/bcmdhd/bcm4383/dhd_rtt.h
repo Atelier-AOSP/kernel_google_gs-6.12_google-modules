@@ -25,7 +25,6 @@
 
 #include <dngl_stats.h>
 #include "wifi_stats.h"
-
 #define RTT_MAX_TARGET_CNT 50
 #define RTT_MAX_FRAME_CNT 25
 #define RTT_MAX_RETRY_CNT 10
@@ -34,7 +33,7 @@
 #define DEFAULT_FTM_FREQ 5180
 #define DEFAULT_FTM_CNTR_FREQ0 5210
 #define RTT_MAX_GEOFENCE_TARGET_CNT 8
-
+#define FTM_IOC_BUFSZ  2048	/* ioc buffsize for our module (> BCM_XTLV_HDR_SIZE) */
 #define TARGET_INFO_SIZE(count) (sizeof(rtt_mc_az_target_info_t) * count)
 
 #define TARGET_TYPE(target) (target->type)
@@ -91,6 +90,21 @@ enum rtt_status {
 typedef int64_t wifi_timestamp; /* In microseconds (us) */
 typedef int64_t wifi_timespan;
 typedef int32 wifi_rssi_rtt;
+
+typedef enum {
+	FTM_SUBCMD_FLAG_METHOD	= 0x01,	/* FTM method command */
+	FTM_SUBCMD_FLAG_SESSION = 0x02,	/* FTM session command */
+	FTM_SUBCMD_FLAG_ALL = FTM_SUBCMD_FLAG_METHOD | FTM_SUBCMD_FLAG_SESSION
+} ftm_subcmd_flag_t;
+
+typedef struct ftm_subcmd_info {
+	int16 version; /* FTM version (optional) */
+	char *name; /* cmd-name string as cmdline input */
+	wl_proxd_cmd_t cmdid; /* cmd-id */
+	bcm_xtlv_unpack_cbfn_t *handler; /* cmd response handler (optional) */
+	ftm_subcmd_flag_t cmdflag; /* CMD flag (optional)  */
+} ftm_subcmd_info_t;
+
 
 typedef enum rtt_type_e {
 	RTT_INVALID		= 0u,
@@ -385,6 +399,83 @@ enum rtt_cipher_type_e {
 };
 typedef uint16 rtt_cipher_type_t;
 
+typedef struct ftm_strmap_entry {
+	int32		id;
+	char		*text;
+} ftm_strmap_entry_t;
+
+static const ftm_strmap_entry_t ftm_event_type_loginfo[] = {
+	/* wl_proxd_event_type_t,		text-string */
+	{ WL_PROXD_EVENT_NONE,			"none" },
+	{ WL_PROXD_EVENT_SESSION_CREATE,	"session create" },
+	{ WL_PROXD_EVENT_SESSION_START,		"session start" },
+	{ WL_PROXD_EVENT_FTM_REQ,		"FTM req" },
+	{ WL_PROXD_EVENT_BURST_START,		"burst start" },
+	{ WL_PROXD_EVENT_BURST_END,		"burst end" },
+	{ WL_PROXD_EVENT_SESSION_END,		"session end" },
+	{ WL_PROXD_EVENT_SESSION_RESTART,	"session restart" },
+	{ WL_PROXD_EVENT_BURST_RESCHED,		"burst rescheduled" },
+	{ WL_PROXD_EVENT_SESSION_DESTROY,	"session destroy" },
+	{ WL_PROXD_EVENT_RANGE_REQ,		"range request" },
+	{ WL_PROXD_EVENT_FTM_FRAME,		"FTM frame" },
+	{ WL_PROXD_EVENT_DELAY,			"delay" },
+	{ WL_PROXD_EVENT_VS_INITIATOR_RPT,	"initiator-report " }, /* rx initiator-rpt */
+	{ WL_PROXD_EVENT_RANGING,		"ranging " },
+#ifdef WL_RTT_LCI
+	{ WL_PROXD_EVENT_LCI_MEAS_REP,		"lci report" },
+	{ WL_PROXD_EVENT_CIVIC_MEAS_REP,	"civic report" },
+#endif /* WL_RTT_LCI */
+	{ WL_PROXD_EVENT_COLLECT,		"collect" },
+	{ WL_PROXD_EVENT_MF_STATS,		"mf_stats" },
+	{ WL_PROXD_EVENT_START_WAIT,		"start-wait"},
+#ifdef WL_PMSR
+	{ WL_FTM_EVENT_PMSR_RESULT, 		"pmsr-result"}
+#endif /* WL_PMSR */
+};
+
+#ifdef WL_PMSR
+
+typedef enum pmsr_ftm_reason_e {
+	PMSR_STATUS_SUCCESS,
+	PMSR_STATUS_REFUSED,
+	PMSR_STATUS_TIMEOUT,
+	PMSR_STATUS_FAILURE
+} pmsr_ftm_reason_t;
+
+typedef struct pmsr_ftm_status_map_host_entry {
+	wl_proxd_status_t proxd_status;
+	pmsr_ftm_reason_t rtt_reason;
+} pmsr_ftm_status_map_host_entry_t;
+
+static const pmsr_ftm_status_map_host_entry_t pmsr_ftm_status_map_info[] = {
+	{WL_FTM_E_CHANSW, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_INCOMPLETE, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_OVERRIDDEN, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_ASAP_FAILED, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_MISMATCH, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_DUP_SESSION, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_REMOTE_FAIL, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_REMOTE_INCAPABLE, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_PROTO, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_EXPIRED, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_NOACK, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_DEFERRED, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_INVALID_SID, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_REMOTE_CANCEL, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_CANCELED, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_INVALID_SESSION, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_BAD_STATE, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_ERROR, PMSR_STATUS_FAILURE},
+	{WL_FTM_E_NOTSTARTED, PMSR_STATUS_REFUSED},
+	{WL_FTM_E_INVALIDMEAS, PMSR_STATUS_REFUSED},
+	{WL_FTM_E_INCAPABLE, PMSR_STATUS_REFUSED},
+	{WL_FTM_E_OK, PMSR_STATUS_SUCCESS},
+	{WL_FTM_E_DELETED, PMSR_STATUS_SUCCESS},
+	{WL_FTM_E_SCHED_FAIL, PMSR_STATUS_TIMEOUT},
+	{WL_FTM_E_TIMEOUT, PMSR_STATUS_TIMEOUT},
+};
+
+#endif /* WL_PMSR */
 /*
  * Keep Adding more reasons
  * going forward if needed
@@ -566,6 +657,15 @@ typedef struct rtt_mc_az_result {
 	} u;
 } rtt_mc_az_result_t;
 
+typedef struct rtt_event_data_info {
+	wl_proxd_ftm_session_status_t *session_status;
+	rtt_mc_az_result_t *rtt_result;
+#ifdef WL_PMSR
+	wl_ftm_pmsr_result_v1_t *pmsr_result;
+#endif /* WL_PMSR */
+	bcm_xtlv_t *tlv;
+} rtt_event_data_info_t;
+
 /* RTT Capabilities */
 typedef struct rtt_capabilities {
 	uint8 rtt_one_sided_supported;  /* if 1-sided rtt data collection is supported */
@@ -629,6 +729,10 @@ chanspec_t dhd_rtt_convert_to_chspec(wifi_channel_info channel);
 int dhd_rtt_idx_to_burst_duration(uint idx);
 
 int dhd_rtt_set_cfg(dhd_pub_t *dhd, rtt_config_params_t *params);
+
+#ifdef DHD_RTT_USE_FTM_RANGE
+int dhd_rtt_stop_ranging(dhd_pub_t *dhd);
+#endif /* DHD_RTT_USE_FTM_RANGE */
 
 #ifdef WL_NAN
 void dhd_rtt_initialize_geofence_cfg(dhd_pub_t *dhd);
@@ -717,6 +821,18 @@ int dhd_rtt_init(dhd_pub_t *dhd);
 
 int dhd_rtt_deinit(dhd_pub_t *dhd);
 
+int dhd_rtt_ftm_enable(dhd_pub_t *dhd, bool enable);
+
+void dhd_rtt_abort_legacy_ranging(dhd_pub_t *dhd);
+
+wl_proxd_iov_t *
+rtt_alloc_getset_buf(dhd_pub_t *dhd, wl_proxd_method_t method, wl_proxd_session_id_t session_id,
+	wl_proxd_cmd_t cmdid, uint16 tlvs_bufsize, uint16 *p_out_bufsize,
+	uint8 ftm_type);
+
+int rtt_unpack_xtlv_cbfn(void *ctx, const uint8 *p_data, uint16 tlvid, uint16 len);
+
+const ftm_strmap_entry_t *ftm_get_event_type_loginfo(wl_proxd_event_type_t	event_type);
 #ifdef WL_CFG80211
 #ifdef WL_NAN
 int dhd_rtt_handle_nan_rtt_session_end(dhd_pub_t *dhd,

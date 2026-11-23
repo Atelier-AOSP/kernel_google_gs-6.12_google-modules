@@ -3,26 +3,38 @@
  * Copyright 2025 Google LLC
  */
 
+#include <linux/clk-provider.h>
 #include <linux/debugfs.h>
 #include <linux/dev_printk.h>
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/gfp_types.h>
-#include <linux/of_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
-
 #include <trace/hooks/ufshcd.h>
 #include <ufs/ufshcd.h>
 
-#include "../pinctrl/google/common.h"
 #ifndef HAVE_UFSHCD_RPM_GET_SYNC
-#include "core/ufshcd-priv.h"
+#include <drivers/ufs/core/ufshcd-priv.h>
 #endif
+
 #include "ufs-google-dbg.h"
 #include "ufs-google-platform.h"
 #include "ufs-google.h"
+
+#define PIXEL_STORE_ATTR(__name)                                 \
+	static int __name##_show(struct seq_file *s, void *data) \
+	{                                                        \
+		return -ENOENT;                                  \
+	}                                                        \
+	DEFINE_SHOW_STORE_ATTRIBUTE(__name)
+
+#define UFS_DEBUGFS_FILE(NAME, MODE) \
+	{ .name = #NAME, .mode = MODE, .fops = &NAME##_fops }
+
+#define file_to_hba(file) \
+	((struct ufs_hba *)((struct seq_file *)file->private_data)->private)
 
 enum register_dump_status {
 	REGISTER_DUMP_VALID,
@@ -32,12 +44,11 @@ enum register_dump_status {
 struct ufs_google_dbg {
 	struct ufs_google_host *host;
 	struct dentry *debugfs;
+	struct dentry *faultfs;
 
 	void __iomem *psm_status_hsios_mmio;
 	void __iomem *psm_status_ufs_hc_mmio;
 	void __iomem *psm_status_ufs_phy_mmio;
-	void __iomem *hsios_stby_bk_mmio;
-	void __iomem *hsios_bk_mmio;
 
 	struct work_struct register_dump_work;
 	/*
@@ -60,9 +71,6 @@ enum reg_base {
 	BASE_PSM_STATUS_HSIOS,
 	BASE_PSM_STATUS_UFS_HC,
 	BASE_PSM_STATUS_UFS_PHY,
-	BASE_UFS_RESETB,
-	BASE_UFS_PWR_EN,
-	BASE_UFS_REFCLK,
 	BASE_LEN,
 
 	BASE_CUSTOM, // Customized dump range
@@ -106,12 +114,6 @@ static void *__iomem base_to_addr(struct ufs_google_host *host,
 		return dbg->psm_status_ufs_hc_mmio;
 	case BASE_PSM_STATUS_UFS_PHY:
 		return dbg->psm_status_ufs_phy_mmio;
-	case BASE_UFS_RESETB:
-		return dbg->hsios_bk_mmio;
-	case BASE_UFS_PWR_EN:
-		return dbg->hsios_bk_mmio;
-	case BASE_UFS_REFCLK:
-		return dbg->hsios_stby_bk_mmio;
 	/* TODO: add support to dump clk setting (mux / div) */
 	default:
 		return ERR_PTR(EINVAL);
@@ -143,21 +145,6 @@ static struct reg_group ufs_reg_groups[] = {
 		.name = "ufs_top",
 		.base = BASE_UFS_TOP,
 		.reg_list = top_registers,
-	},
-	{
-		.name = "ufs_resetb",
-		.base = BASE_UFS_RESETB,
-		.reg_list = ufs_resetb_registers,
-	},
-	{
-		.name = "ufs_pwr_en",
-		.base = BASE_UFS_PWR_EN,
-		.reg_list = ufs_pwr_en_registers,
-	},
-	{
-		.name = "ufs_refclk",
-		.base = BASE_UFS_REFCLK,
-		.reg_list = ufs_refclk_registers,
 	},
 	{} /* Sentinel element */
 };
@@ -390,9 +377,6 @@ struct dme_cmd_context {
 	u8 peer;
 };
 
-#define UFS_GOOGLE_DEBUGFS_FILE(NAME, MODE) \
-	{ .name = #NAME, .mode = MODE, .fops = &NAME##_fops }
-
 static int dme_cmd_open(struct inode *inode, struct file *file)
 {
 	file->private_data = inode->i_private;
@@ -534,8 +518,8 @@ static const struct file_operations dme_set_fops = {
 };
 
 static const struct debugfs_file_info dme_debugfs_files[] = {
-	UFS_GOOGLE_DEBUGFS_FILE(dme_get, 0644),
-	UFS_GOOGLE_DEBUGFS_FILE(dme_set, 0200),
+	UFS_DEBUGFS_FILE(dme_get, 0644),
+	UFS_DEBUGFS_FILE(dme_set, 0200),
 	{ .name = NULL }
 };
 
@@ -558,7 +542,7 @@ ufs_create_dme_debugfs_file(struct ufs_hba *hba, struct dentry *parent,
 			file_info->name);
 }
 
-int ufs_init_dme_debugfs_files(struct ufs_hba *hba, struct dentry *parent)
+static int ufs_init_dme_debugfs_files(struct ufs_hba *hba, struct dentry *parent)
 {
 	const struct debugfs_file_info *file_info;
 	struct dentry *dme_root;
@@ -571,6 +555,140 @@ int ufs_init_dme_debugfs_files(struct ufs_hba *hba, struct dentry *parent)
 		ufs_create_dme_debugfs_file(hba, dme_root, file_info);
 
 	return 0;
+}
+
+static ssize_t ufs_inject_ufs_en_power_loss_write(struct file *file,
+						  const char __user *buf,
+						  size_t count, loff_t *ppos)
+{
+	struct ufs_hba *hba = file_to_hba(file);
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	static const ulong ufs_en_glitch_max_ms = 55;
+	static const ulong ufs_en_glitch_min_ms = 50;
+
+	if (!(host->caps & GCAP_RSC_UFS_EN_GPIO)) {
+		dev_info(hba->dev, "pwr_en not present\n");
+		return -EIO;
+	}
+
+	dev_info(hba->dev,
+		 "Inject power loss by toggle UFS_EN (%ld-%ld ms off)\n",
+		 ufs_en_glitch_min_ms, ufs_en_glitch_max_ms);
+	gpiod_set_value(host->pwr_en, 0);
+	usleep_range(ufs_en_glitch_min_ms * 1000, ufs_en_glitch_max_ms * 1000);
+	gpiod_set_value(host->pwr_en, 1);
+
+	return count;
+}
+PIXEL_STORE_ATTR(ufs_inject_ufs_en_power_loss);
+
+/*
+ * ufs_inject_vcc_power_loss_show - Intended to simulate unresponsive device by
+ * switching off vcc while device is in ACTIVE power mode. (suggested by Hynix)
+ */
+static ssize_t ufs_inject_device_hang_write(struct file *file,
+					    const char __user *buf,
+					    size_t count, loff_t *ppos)
+{
+	struct ufs_hba *hba = file_to_hba(file);
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+	struct ufs_vreg_info *info = &hba->vreg_info;
+	struct ufs_vreg *vcc = info->vcc;
+	static const ulong glitch_min_us = 1000;
+	static const ulong glitch_max_us = 2000;
+	int ret = 0;
+
+	if (!(host->caps & GCAP_DECOUPLE_UFS_EN))
+		dev_info(hba->dev,
+			 "UFS_EN not decoupled. VCC fault injection might not work.\n");
+
+	/* ensure device is active when vcc is turned off */
+	ufshcd_rpm_get_sync(hba);
+
+	dev_info(hba->dev, "Inject power loss by toggle %s (%ld-%ld us off)\n",
+		 vcc->name, glitch_min_us, glitch_max_us);
+
+	ret = regulator_disable(vcc->reg);
+	if (ret) {
+		dev_info(hba->dev, "%s disable fail (%d)\n", vcc->name, ret);
+		goto out;
+	}
+
+	usleep_range(glitch_min_us, glitch_max_us);
+
+	ret = regulator_enable(vcc->reg);
+	if (ret) {
+		dev_info(hba->dev, "%s enable fail (%d)\n", vcc->name, ret);
+	}
+
+out:
+	ufshcd_rpm_put(hba);
+
+	return ret ?: count;
+}
+PIXEL_STORE_ATTR(ufs_inject_device_hang);
+
+/**
+ * Injecting REF_CLK glitch can induce UIC error.
+ */
+static ssize_t ufs_inject_ref_clk_glitch_write(struct file *file,
+					       const char __user *buf,
+					       size_t count, loff_t *ppos)
+{
+	struct ufs_hba *hba = file_to_hba(file);
+	struct ufs_google_host *host = ufshcd_get_variant(hba);
+
+	if (!__clk_is_enabled(host->gpio_refclk)) {
+		dev_info(hba->dev, "Skipped. Please create I/O traffic\n");
+		return -EINVAL;
+	}
+
+	if (!(host->caps & GCAP_RSC_GPIO_REF_CLK)) {
+		dev_info(hba->dev, "refclk not present\n");
+		return -EIO;
+	}
+
+	dev_info(hba->dev, "Inject HW UIC error by toggle REF_CLK\n");
+	clk_disable_unprepare(host->gpio_refclk);
+	clk_prepare_enable(host->gpio_refclk);
+
+	return count;
+}
+PIXEL_STORE_ATTR(ufs_inject_ref_clk_glitch);
+
+static const struct debugfs_file_info fault_debugfs_files[] = {
+	UFS_DEBUGFS_FILE(ufs_inject_ufs_en_power_loss, 0222),
+	UFS_DEBUGFS_FILE(ufs_inject_device_hang, 0222),
+	UFS_DEBUGFS_FILE(ufs_inject_ref_clk_glitch, 0222),
+	{}
+};
+
+static void ufs_init_debugfs_dir(struct ufs_hba *hba, struct dentry *parent,
+				 struct dentry **ref_node, const char *dir_name,
+				 const struct debugfs_file_info *debugfs_files,
+				 void *data)
+{
+	struct dentry *node, *root;
+	const struct debugfs_file_info *file_info;
+
+	root = debugfs_create_dir(dir_name, parent);
+	if (IS_ERR_OR_NULL(root)) {
+		dev_info(hba->dev, "failed to create debugfs dir %s (%ld)",
+			 dir_name, PTR_ERR(root));
+		return;
+	}
+	if (ref_node)
+		*ref_node = root;
+
+	for (file_info = debugfs_files; file_info->name; file_info++) {
+		node = debugfs_create_file(file_info->name, file_info->mode,
+					   root, data, file_info->fops);
+		if (IS_ERR(node)) {
+			dev_err(hba->dev,
+				"failed to create debugfs entry %s in %s\n",
+				file_info->name, dir_name);
+		}
+	}
 }
 
 int ufs_google_init_debugfs(struct ufs_hba *hba)
@@ -587,6 +705,9 @@ int ufs_google_init_debugfs(struct ufs_hba *hba)
 		return -EPERM;
 
 	dbg->debugfs = root;
+
+	ufs_init_debugfs_dir(hba, root, &dbg->faultfs, "fault",
+			     fault_debugfs_files, hba);
 
 	ufs_init_reg_debugfs_files(hba, root);
 	ufs_init_dme_debugfs_files(hba, root);
@@ -605,54 +726,6 @@ void ufs_google_remove_debugfs(struct ufs_hba *hba)
 	debugfs_remove_recursive(dbg->debugfs);
 }
 
-static void __iomem *ufs_google_get_pinctrl_base(struct device *dev,
-						 const char *phandle_name,
-						 int index,
-						 const char *controller_name)
-{
-	struct platform_device *pinctrl_pdev;
-	struct device_node *controller_node;
-	struct device_node *config_node;
-	struct google_pinctrl *gctl;
-	void __iomem *csr_base;
-
-	config_node = of_parse_phandle(dev->of_node, phandle_name, index);
-	if (!config_node) {
-		dev_err(dev, "failed to parse phandle for %s\n",
-			controller_name);
-		return ERR_PTR(-EINVAL);
-	}
-
-	controller_node = of_get_parent(config_node);
-	of_node_put(config_node);
-	if (!controller_node) {
-		dev_err(dev, "failed to get parent for %s\n", controller_name);
-		return ERR_PTR(-ENODEV);
-	}
-
-	pinctrl_pdev = of_find_device_by_node(controller_node);
-	of_node_put(controller_node);
-	if (!pinctrl_pdev) {
-		dev_err(dev, "failed to find platform device for %s\n",
-			controller_name);
-		return ERR_PTR(-ENODEV);
-	}
-
-	gctl = platform_get_drvdata(pinctrl_pdev);
-	if (!gctl) {
-		dev_err(dev, "failed to get drvdata for %s\n", controller_name);
-		csr_base = ERR_PTR(-ENODEV);
-		goto out_put_device;
-	}
-
-	csr_base = gctl->csr_base;
-
-out_put_device:
-	put_device(&pinctrl_pdev->dev);
-
-	return csr_base;
-}
-
 int ufs_google_init_dbg(struct ufs_hba *hba)
 {
 	struct ufs_google_host *host;
@@ -669,6 +742,10 @@ int ufs_google_init_dbg(struct ufs_hba *hba)
 	host->dbg = dbg;
 	dbg->host = host;
 
+	dbg->psm_status_hsios_mmio = host->hsios_psm_status_mmio;
+	dbg->psm_status_ufs_hc_mmio = host->ufs_hc_psm_status_mmio;
+	dbg->psm_status_ufs_phy_mmio = host->ufs_phy_psm_status_mmio;
+
 	reg_count = ufs_google_count_regs();
 	dbg->regs_snapshot_values =
 		devm_kcalloc(dev, reg_count, sizeof(*dbg->regs_snapshot_values),
@@ -680,28 +757,6 @@ int ufs_google_init_dbg(struct ufs_hba *hba)
 	spin_lock_init(&dbg->register_snapshot_lock);
 	INIT_WORK(&dbg->register_dump_work, ufs_google_dbg_dump_work);
 	dbg->reg_dump_status = REGISTER_DUMP_INVALID;
-
-	dbg->psm_status_hsios_mmio = host->hsios_psm_status_mmio;
-	dbg->psm_status_ufs_hc_mmio = host->ufs_hc_psm_status_mmio;
-	dbg->psm_status_ufs_phy_mmio = host->ufs_phy_psm_status_mmio;
-
-	dbg->hsios_bk_mmio = ufs_google_get_pinctrl_base(dev, "pinctrl-0", 0,
-							 "hsios_pinctrl");
-	if (IS_ERR(dbg->hsios_bk_mmio)) {
-		dev_err(dev, "Failed to get hsios_pinctrl_mmio, error: %ld\n",
-			PTR_ERR(dbg->hsios_bk_mmio));
-		dbg->hsios_bk_mmio = NULL;
-	}
-
-	dbg->hsios_stby_bk_mmio =
-		ufs_google_get_pinctrl_base(dev, "pinctrl-1", 0,
-					    "hsios_stby_pinctrl");
-	if (IS_ERR(dbg->hsios_stby_bk_mmio)) {
-		dev_err(dev,
-			"Failed to get hsios_stby_pinctrl_mmio, error: %ld\n",
-			PTR_ERR(dbg->hsios_stby_bk_mmio));
-		dbg->hsios_stby_bk_mmio = NULL;
-	}
 
 	return 0;
 }
@@ -731,7 +786,7 @@ void ufs_google_dbg_register_dump(struct ufs_hba *hba)
 	 * being processed, we want to return immediately without waiting.
 	 */
 	if (!spin_trylock(&dbg->register_snapshot_lock)) {
-		dev_warn(hba->dev,
+		dev_info(hba->dev,
 			 "%s: printing registers is in progress, skipping\n",
 			 __func__);
 		return;
@@ -753,7 +808,7 @@ void ufs_google_dbg_register_dump(struct ufs_hba *hba)
 		 * existing data before the worker has a chance to print it.
 		 */
 		spin_unlock(&dbg->register_snapshot_lock);
-		dev_warn(hba->dev,
+		dev_info(hba->dev,
 			 "%s: printing registers is pending, skipping\n",
 			 __func__);
 	}

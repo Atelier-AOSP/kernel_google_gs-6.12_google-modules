@@ -45,6 +45,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "osfunc.h"
 #include "pvr_debug.h"
 #include "cache_ops.h"
+#include <linux/dma-map-ops.h>
 
 void OSCPUCacheFlushRangeKM(PVRSRV_DEVICE_NODE *psDevNode,
 							void *pvVirtStart,
@@ -70,9 +71,19 @@ void OSCPUCacheFlushRangeKM(PVRSRV_DEVICE_NODE *psDevNode,
 #if !defined(NO_HARDWARE)
 	else
 	{
-		PVR_DPF((PVR_DBG_WARNING,
-		         "%s: System doesn't implement cache maintenance. Skipping!",
-		         __func__));
+		struct device *dev;
+		dev = psDevNode->psDevConfig->pvOSDevice;
+
+		if (dev)
+		{
+			dma_sync_single_for_device(dev, sCPUPhysStart.uiAddr,
+			                           sCPUPhysEnd.uiAddr - sCPUPhysStart.uiAddr,
+			                           DMA_TO_DEVICE);
+
+			dma_sync_single_for_cpu(dev, sCPUPhysStart.uiAddr,
+			                        sCPUPhysEnd.uiAddr - sCPUPhysStart.uiAddr,
+			                        DMA_FROM_DEVICE);
+		}
 	}
 #endif
 }
@@ -101,9 +112,15 @@ void OSCPUCacheCleanRangeKM(PVRSRV_DEVICE_NODE *psDevNode,
 #if !defined(NO_HARDWARE)
 	else
 	{
-		PVR_DPF((PVR_DBG_WARNING,
-		         "%s: System doesn't implement cache maintenance. Skipping!",
-		         __func__));
+		struct device *dev;
+		dev = psDevNode->psDevConfig->pvOSDevice;
+
+		if (dev)
+		{
+			dma_sync_single_for_device(dev, sCPUPhysStart.uiAddr,
+			                           sCPUPhysEnd.uiAddr - sCPUPhysStart.uiAddr,
+			                           DMA_TO_DEVICE);
+		}
 	}
 #endif
 }
@@ -132,9 +149,15 @@ void OSCPUCacheInvalidateRangeKM(PVRSRV_DEVICE_NODE *psDevNode,
 #if !defined(NO_HARDWARE)
 	else
 	{
-		PVR_DPF((PVR_DBG_WARNING,
-		         "%s: System doesn't implement cache maintenance. Skipping!",
-		         __func__));
+		struct device *dev;
+		dev = psDevNode->psDevConfig->pvOSDevice;
+
+		if (dev)
+		{
+			dma_sync_single_for_cpu(dev, sCPUPhysStart.uiAddr,
+			                        sCPUPhysEnd.uiAddr - sCPUPhysStart.uiAddr,
+			                        DMA_FROM_DEVICE);
+		}
 	}
 #endif
 }

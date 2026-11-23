@@ -495,9 +495,10 @@ int PVRSRVDeviceResume(struct drm_device *psDev)
 int PVRSRVDeviceServicesOpen(PVRSRV_DEVICE_NODE *psDeviceNode,
                              struct drm_file *psDRMFile)
 {
+	static DEFINE_MUTEX(sDeviceInitMutex);
 	PVRSRV_DATA *psPVRSRVData = PVRSRVGetPVRSRVData();
 	ENV_CONNECTION_PRIVATE_DATA sPrivData;
-	PVRSRV_CONNECTION_PRIV *psConnectionPriv = NULL;
+	PVRSRV_CONNECTION_PRIV *psConnectionPriv;
 	PVRSRV_ERROR eError;
 	int iErr = 0;
 
@@ -508,28 +509,19 @@ int PVRSRVDeviceServicesOpen(PVRSRV_DEVICE_NODE *psDeviceNode,
 		goto out;
 	}
 
-	PVRSRVDeviceInitPvzLock(psDeviceNode);
-	if (psDeviceNode->eDevState == PVRSRV_DEVICE_STATE_CREATED)
-	{
-		eError = PVRSRVCommonDeviceInitialise(psDeviceNode);
-		if (eError != PVRSRV_OK)
-		{
-			PVR_DPF((PVR_DBG_ERROR, "%s: Failed to initialise device (%s)",
-					 __func__, PVRSRVGetErrorString(eError)));
-			PVRSRVDeviceInitPvzUnlock(psDeviceNode);
-			iErr = -ENODEV;
-			goto out;
-		}
-	}
-	else if (psDeviceNode->eDevState == PVRSRV_DEVICE_STATE_BAD)
+	mutex_lock(&sDeviceInitMutex);
+	/*
+	 * If the first attempt already set the state to bad,
+	 * there is no point in going the second time, so get out
+	 */
+	if (psDeviceNode->eDevState == PVRSRV_DEVICE_STATE_BAD)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "%s: Driver already in bad state. Device open failed.",
 				 __func__));
-		PVRSRVDeviceInitPvzUnlock(psDeviceNode);
 		iErr = -ENODEV;
+		mutex_unlock(&sDeviceInitMutex);
 		goto out;
 	}
-	PVRSRVDeviceInitPvzUnlock(psDeviceNode);
 
 	if (psDRMFile->driver_priv != NULL)
 	{
@@ -543,6 +535,7 @@ int PVRSRVDeviceServicesOpen(PVRSRV_DEVICE_NODE *psDeviceNode,
 		{
 			PVR_DPF((PVR_DBG_WARNING, "%s: Reusing services connection", __func__));
 			iErr = 0;
+			mutex_unlock(&sDeviceInitMutex);
 			goto out;
 		}
 		else
@@ -551,6 +544,7 @@ int PVRSRVDeviceServicesOpen(PVRSRV_DEVICE_NODE *psDeviceNode,
 			         "%s: Connection has already been initialised",
 			         __func__));
 			iErr = -EINVAL;
+			mutex_unlock(&sDeviceInitMutex);
 			goto out;
 		}
 	}
@@ -561,9 +555,27 @@ int PVRSRVDeviceServicesOpen(PVRSRV_DEVICE_NODE *psDeviceNode,
 	{
 		PVR_DPF((PVR_DBG_ERROR, "%s: No memory to allocate driver_priv data", __func__));
 		iErr = -ENOMEM;
-		goto out;
+		mutex_unlock(&sDeviceInitMutex);
+		goto fail_alloc_connection_priv;
 	}
 	psConnectionPriv->ui32Type = DKF_CONNECTION_FLAG_SERVICES;
+
+	PVRSRVDeviceInitPvzLock(psDeviceNode);
+	if (psDeviceNode->eDevState == PVRSRV_DEVICE_STATE_CREATED)
+	{
+		eError = PVRSRVCommonDeviceInitialise(psDeviceNode);
+		if (eError != PVRSRV_OK)
+		{
+			PVR_DPF((PVR_DBG_ERROR, "%s: Failed to initialise device (%s)",
+					 __func__, PVRSRVGetErrorString(eError)));
+			iErr = -ENODEV;
+			PVRSRVDeviceInitPvzUnlock(psDeviceNode);
+			mutex_unlock(&sDeviceInitMutex);
+			goto fail_device_init;
+		}
+	}
+	PVRSRVDeviceInitPvzUnlock(psDeviceNode);
+	mutex_unlock(&sDeviceInitMutex);
 
 	sPrivData.psDevNode = psDeviceNode;
 	sPrivData.psDRMFile = psDRMFile;
@@ -578,7 +590,7 @@ int PVRSRVDeviceServicesOpen(PVRSRV_DEVICE_NODE *psDeviceNode,
 	if (eError != PVRSRV_OK)
 	{
 		iErr = -ENOMEM;
-		goto out;
+		goto fail_connect;
 	}
 
 #if (PVRSRV_DEVICE_INIT_MODE == PVRSRV_LINUX_DEV_INIT_ON_CONNECT)
@@ -586,9 +598,14 @@ int PVRSRVDeviceServicesOpen(PVRSRV_DEVICE_NODE *psDeviceNode,
 #endif
 	psDRMFile->driver_priv = (void*)psConnectionPriv;
 
+	goto out;
+
+fail_connect:
+fail_device_init:
+	psDRMFile->driver_priv = NULL;
+	kfree(psConnectionPriv);
+fail_alloc_connection_priv:
 out:
-	if (psDRMFile->driver_priv != psConnectionPriv)
-		kfree(psConnectionPriv);
 	return iErr;
 }
 
@@ -608,7 +625,7 @@ static int PVRSRVDeviceSyncOpen(PVRSRV_DEVICE_NODE *psDeviceNode,
 	PVRSRV_DATA *psPVRSRVData = PVRSRVGetPVRSRVData();
 	CONNECTION_DATA *psConnection = NULL;
 	ENV_CONNECTION_PRIVATE_DATA sPrivData;
-	PVRSRV_CONNECTION_PRIV *psConnectionPriv = NULL;
+	PVRSRV_CONNECTION_PRIV *psConnectionPriv;
 	PVRSRV_ERROR eError;
 	int iErr = 0;
 
@@ -668,8 +685,14 @@ static int PVRSRVDeviceSyncOpen(PVRSRV_DEVICE_NODE *psDeviceNode,
 	{
 		PVR_DPF((PVR_DBG_ERROR, "%s: No memory to allocate connection data", __func__));
 		iErr = -ENOMEM;
-		goto out;
+		goto fail_alloc_connection;
 	}
+#if (PVRSRV_DEVICE_INIT_MODE == PVRSRV_LINUX_DEV_INIT_ON_CONNECT)
+	psConnectionPriv->pvConnectionData = (void*)psConnection;
+#else
+	psConnectionPriv->pvSyncConnectionData = (void*)psConnection;
+#endif
+
 
 	sPrivData.psDevNode = psDeviceNode;
 	sPrivData.psDRMFile = psDRMFile;
@@ -680,20 +703,20 @@ static int PVRSRVDeviceSyncOpen(PVRSRV_DEVICE_NODE *psDeviceNode,
 	{
 		PVR_DPF((PVR_DBG_ERROR, "%s: OSConnectionPrivateDataInit() failed (%s)",
 		        __func__, PVRSRVGetErrorString(eError)));
-		kfree(psConnection);
-		iErr = -ENOMEM;
-		goto out;
+		goto fail_private_data_init;
 	}
 
 #if defined(SUPPORT_NATIVE_FENCE_SYNC) && !defined(USE_PVRSYNC_DEVNODE)
-	iErr = pvr_sync_open(psConnection, psDRMFile);
+#if (PVRSRV_DEVICE_INIT_MODE == PVRSRV_LINUX_DEV_INIT_ON_CONNECT)
+	iErr = pvr_sync_open(psConnectionPriv->pvConnectionData, psDRMFile);
+#else
+	iErr = pvr_sync_open(psConnectionPriv->pvSyncConnectionData, psDRMFile);
+#endif
 	if (iErr)
 	{
 		PVR_DPF((PVR_DBG_ERROR, "%s: pvr_sync_open() failed(%d)",
 				__func__, iErr));
-		OSConnectionPrivateDataDeInit(psConnection->hOsPrivateData);
-		kfree(psConnection);
-		goto out;
+		goto fail_pvr_sync_open;
 	}
 #endif
 
@@ -702,13 +725,30 @@ static int PVRSRVDeviceSyncOpen(PVRSRV_DEVICE_NODE *psDeviceNode,
 	psConnectionPriv->pfDeviceRelease = pvr_sync_close;
 #endif
 #endif
-
 	psConnectionPriv->ui32Type = DKF_CONNECTION_FLAG_SYNC;
 	psDRMFile->driver_priv = psConnectionPriv;
+	goto out;
 
+#if defined(SUPPORT_NATIVE_FENCE_SYNC) && !defined(USE_PVRSYNC_DEVNODE)
+fail_pvr_sync_open:
+	OSConnectionPrivateDataDeInit(psConnection->hOsPrivateData);
+#endif
+fail_private_data_init:
+	kfree(psConnection);
+fail_alloc_connection:
+#if (PVRSRV_DEVICE_INIT_MODE == PVRSRV_LINUX_DEV_INIT_ON_CONNECT)
+	psDRMFile->driver_priv = NULL;
+	kfree(psConnectionPriv);
+#else
+	/* We can't completely destroy the connection because the services
+	 * connection continues to exist, and it could be in use right now!
+	 * It will all be freed once the fd is closed.
+	 *
+	 * The connection type will revert back to being a services connection.
+	 */
+	psConnectionPriv->ui32Type = DKF_CONNECTION_FLAG_SERVICES;
+#endif
 out:
-	if (psDRMFile->driver_priv != psConnectionPriv)
-		kfree(psConnectionPriv);
 	return iErr;
 #else /* if defined(SUPPORT_NATIVE_FENCE_SYNC) */
 	/* Ioctl should not be being called (no DDK support for native sync) */

@@ -36,7 +36,9 @@
 #include <drm/vs_drm.h>
 
 #include <gs_drm/gs_drm_connector.h>
-#include <gs_drm/gs_fault_event.h>
+#if IS_ENABLED(CONFIG_GS_PERF_DOMAIN)
+#include <perf/core/perf_domain.h>
+#endif
 #include <trace/dpu_trace.h>
 
 #include "vs_crtc.h"
@@ -62,8 +64,7 @@
 #include <drm/sscd/gs_sscd_dpu.h>
 
 #define VS_DC_AUTOSUPEND_DELAY_MS 30
-// Underrun event will be emitted for almost every frame at 120 FPS. (8.33ms)
-#define UNDERRUN_LOG_RATELIMIT_MS 8
+#define FRAMEDONE_TIMEOUT msecs_to_jiffies(100)
 
 struct vs_dc_sscd_state_priv {
 	struct drm_state_history_data sh_data;
@@ -71,61 +72,7 @@ struct vs_dc_sscd_state_priv {
 };
 #define cfgs_to_priv(ptr) container_of((void *)(ptr), struct vs_dc_sscd_state_priv, cfgs)
 
-int vs_dc_power_get(struct device *dev, bool sync)
-{
-	int ret;
-
-	DPU_ATRACE_BEGIN(__func__);
-	if (sync) {
-		ret = pm_runtime_get_sync(dev);
-	} else {
-		ret = pm_runtime_get(dev);
-		/* runtime_get might return -EINPROGRESS if there exists deferred runtime_get */
-		if (ret == -EINPROGRESS) {
-			dev_dbg(dev, "%s: %ps ignore return EINPROGRESS\n", __func__,
-				__builtin_return_address(0));
-		}
-	}
-
-	if (unlikely(ret < 0 && ret != -EINPROGRESS))
-		dev_err(dev, "%s: %ps: sync:%d ret:%d\n", __func__, __builtin_return_address(0),
-			sync, ret);
-
-	trace_disp_dc_power_get(dev, sync, ret);
-	dev_dbg(dev, "%s: %ps: sync:%d power_usage_count:%d\n", __func__,
-		__builtin_return_address(0), sync, atomic_read(&dev->power.usage_count));
-	DPU_ATRACE_END(__func__);
-
-	return (ret == -EINPROGRESS) ? 0 : ret;
-}
-
-int vs_dc_power_put(struct device *dev, bool sync)
-{
-	int ret;
-
-	DPU_ATRACE_BEGIN(__func__);
-	if (sync)
-		ret = pm_runtime_put_sync(dev);
-	else
-		ret = pm_runtime_put(dev);
-
-	/* runtime_put might return -EAGAIN if there exists deferred runtime_get */
-	if (ret == -EAGAIN) {
-		dev_dbg(dev, "%s: %ps ignore return EAGAIN\n", __func__,
-			__builtin_return_address(0));
-	}
-
-	if (unlikely(ret < 0 && ret != -EAGAIN))
-		dev_err(dev, "%s: %ps: sync:%d ret:%d\n", __func__, __builtin_return_address(0),
-			sync, ret);
-
-	trace_disp_dc_power_put(dev, sync, ret);
-	dev_dbg(dev, "%s: %ps: sync:%d power_usage_count:%d\n", __func__,
-		__builtin_return_address(0), sync, atomic_read(&dev->power.usage_count));
-	DPU_ATRACE_END(__func__);
-
-	return (ret == -EAGAIN) ? 0 : ret;
-}
+static unsigned int framedone_timeout;
 
 bool is_display_cmd_sw_trigger(struct dc_hw_display *display)
 {
@@ -133,26 +80,26 @@ bool is_display_cmd_sw_trigger(struct dc_hw_display *display)
 	       !(display->mode.output_mode & VS_OUTPUT_MODE_CMD_AUTO);
 }
 
-static void vs_dc_enable_irqs(struct vs_dc *dc)
+void dc_component_enable_irqs(struct device *dev, struct dc_irq_info *irq_info)
 {
 	int i;
 
-	for (i = 0; i < dc->irq_num; i++)
-		enable_irq(dc->irqs[i]);
+	for (i = 0; i < irq_info->irq_num; i++)
+		enable_irq(irq_info->irqs[i]);
 
-	dc->irq_enable_count++;
-	trace_disp_dc_enable_irqs(dc);
+	irq_info->enable_count++;
+	trace_disp_dc_enable_irqs(dev, irq_info);
 }
 
-static void vs_dc_disable_irqs(struct vs_dc *dc)
+void dc_component_disable_irqs(struct device *dev, struct dc_irq_info *irq_info)
 {
 	int i;
 
-	for (i = 0; i < dc->irq_num; i++)
-		disable_irq(dc->irqs[i]);
+	for (i = 0; i < irq_info->irq_num; i++)
+		disable_irq(irq_info->irqs[i]);
 
-	dc->irq_enable_count--;
-	trace_disp_dc_disable_irqs(dc);
+	irq_info->enable_count--;
+	trace_disp_dc_disable_irqs(dev, irq_info);
 }
 
 static void vs_dc_do_hw_reset(struct device *dev)
@@ -201,6 +148,9 @@ static void vs_dc_do_hw_reset(struct device *dev)
 static int vs_dc_res_disable(struct device *dev)
 {
 	struct vs_dc *dc = dev_get_drvdata(dev);
+
+	if (!dc)
+		return 0;
 
 	mutex_lock(&dc->dc_lock);
 	dev_dbg(dev, "%s\n", __func__);
@@ -370,7 +320,7 @@ static int vs_dc_sscd_reg_payload_prepare(struct device *dev, struct sscd_payloa
 	};
 	int i, ret;
 
-	ret = pm_runtime_get_if_active(dev, true);
+	ret = dc_be_power_get_if_active(dev);
 	if (ret <= 0) {
 		if (ret < 0)
 			dev_err(dev, "Failed to power ON, ret %d\n", ret);
@@ -381,7 +331,7 @@ static int vs_dc_sscd_reg_payload_prepare(struct device *dev, struct sscd_payloa
 
 	payload->cfgs = kcalloc(ARRAY_SIZE(regs), sizeof(*payload->cfgs), GFP_KERNEL);
 	if (!payload->cfgs) {
-		pm_runtime_put(dev);
+		dc_be_power_put(dev, false);
 		return -ENOMEM;
 	}
 
@@ -403,7 +353,7 @@ static int vs_dc_sscd_reg_payload_prepare(struct device *dev, struct sscd_payloa
 		}
 	}
 
-	ret = pm_runtime_put(dev);
+	ret = dc_be_power_put(dev, false);
 	if (ret < 0)
 		dev_err(dev, "Failed to power OFF, ret %d\n", ret);
 
@@ -416,7 +366,7 @@ static int vs_dc_sscd_reg_payload_prepare(struct device *dev, struct sscd_payloa
 
 err_destroy:
 	vs_dc_sscd_reg_payload_destroy(dev, payload);
-	pm_runtime_put(dev);
+	dc_be_power_put(dev, false);
 	return ret;
 }
 
@@ -511,258 +461,49 @@ static int dc_init(struct device *dev)
 	return ret;
 }
 
-static void vs_dc_update_irq_status(struct vs_dc *dc, int irq_num, int irq_idx)
+static void dc_update_irq_status(struct dc_irq_info *irq_info, int irq_num, int irq_idx)
 {
 	ssize_t ret_masked, ret_pending;
 	bool masked, pending;
 	struct irq_desc *irq_desc = irq_to_desc(irq_num);
 
 	if (irq_desc)
-		dc->irq_depths[irq_idx] = irq_desc->depth;
+		irq_info->irq_depths[irq_idx] = irq_desc->depth;
 
 	ret_masked = irq_get_irqchip_state(irq_num, IRQCHIP_STATE_MASKED, &masked);
 	ret_pending = irq_get_irqchip_state(irq_num, IRQCHIP_STATE_PENDING, &pending);
 
 	if (!ret_masked)
-		assign_bit(irq_idx, dc->irq_masked_status, masked);
+		assign_bit(irq_idx, irq_info->irq_masked_status, masked);
 	if (!ret_pending)
-		assign_bit(irq_idx, dc->irq_pending_status, pending);
+		assign_bit(irq_idx, irq_info->irq_pending_status, pending);
+}
+
+static void dc_update_irq_statuses(struct device *dev, struct dc_irq_info *irq_info)
+{
+	int i;
+
+	for (i = 0; i < irq_info->irq_num; ++i)
+		dc_update_irq_status(irq_info, irq_info->irqs[i], i);
+
+	trace_disp_dc_irq_status(dev, irq_info);
 }
 
 void vs_dc_update_irq_statuses(struct vs_dc *dc)
 {
 	int i;
 
-	for (i = 0; i < dc->irq_num; ++i)
-		vs_dc_update_irq_status(dc, dc->irqs[i], i);
-
-	trace_disp_dc_irq_status(dc);
-}
-
-static void vs_dc_underrun_workaround(struct vs_dc *dc, struct drm_crtc *crtc,
-				      struct dc_hw_display *display, u8 display_id, bool enable)
-{
-	struct vs_crtc *vs_crtc = to_vs_crtc(crtc);
-
-	if (!(display->mode.output_mode & VS_OUTPUT_MODE_CMD) ||
-	    (display->mode.output_mode & VS_OUTPUT_MODE_CMD_AUTO))
-		return;
-
-	if (vs_crtc->underrun_enabled != enable) {
-		dc_hw_clear_underrun_interrupt(&dc->hw, display_id);
-		dc_hw_enable_underrun_interrupt(&dc->hw, display_id, enable);
-		vs_crtc->underrun_enabled = enable;
-		DPU_ATRACE_INT_PID_FMT(enable, vs_crtc->trace_pid, "underrun_en[%d]", display_id);
+	for (i = 0; i < DC_FE_NUM; i++) {
+		if (dc->fe_dev[i])
+			dc_update_irq_statuses(dc->fe_dev[i], &dc->fe_irq_info[i]);
 	}
+	dc_update_irq_statuses(dc->hw.dev, &dc->dc_irq_info);
 }
 
-static void _vs_dc_handle_underrun(struct vs_dc *dc, struct vs_crtc *vs_crtc,
-				   bool cmd_mode_start_scan_now)
+void vs_dc_handle_interrupts(struct vs_dc *dc)
 {
 	struct device *dev = dc->hw.dev;
-	struct dc_hw_display *display = &dc->hw.display[vs_crtc->id];
-	u32 output_id = display->output_id;
-	unsigned long now = jiffies;
-
-	if (!vs_crtc->frame_transfer_pending) {
-		dev_dbg(dev, "output_id[%d] underrun false positive, no transfer, mode:%#x\n",
-			output_id, display->mode.output_mode);
-		return;
-	}
-
-	if (is_display_cmd_sw_trigger(display) &&
-	    (!vs_crtc->ddic_cmd_mode_start_scan || cmd_mode_start_scan_now)) {
-		dev_dbg(dev, "output_id[%d] underrun false positive, %s, mode:%#x\n", output_id,
-			(!vs_crtc->ddic_cmd_mode_start_scan) ? "no panel scan out yet" :
-							       "panel just start scan out",
-			display->mode.output_mode);
-		return;
-	}
-
-	trace_disp_dpu_line_underrun(output_id, atomic_read(&vs_crtc->frames_pending),
-				     atomic_read(&vs_crtc->te_count));
-	atomic_inc(&vs_crtc->line_underrun_count);
-	if (is_display_cmd_sw_trigger(display))
-		dev_dbg(dev,
-			"output_id[%d] underrun detected, mode:%#x (te count %d, line underrun count %d)\n",
-			output_id, display->mode.output_mode, atomic_read(&vs_crtc->te_count),
-			atomic_read(&vs_crtc->line_underrun_count));
-	else
-		dev_warn(
-			dev,
-			"output_id[%d] underrun detected, mode:%#x (te count %d, line underrun count %d)\n",
-			output_id, display->mode.output_mode, atomic_read(&vs_crtc->te_count),
-			atomic_read(&vs_crtc->line_underrun_count));
-
-	if (!time_before(now, vs_crtc->last_notify_dpu_underrun_time +
-			 msecs_to_jiffies(UNDERRUN_LOG_RATELIMIT_MS))) {
-
-		/**
-		 * TODO(b/492411195): move the non_blocking_gs_fault_event_emit call to
-		 * _vs_dc_handle_frame_done.
-		 */
-		non_blocking_gs_fault_event_emit(dev, GS_FAULT_EVENT_TYPE_DPU_UNDERRUN, 1);
-		vs_crtc->last_notify_dpu_underrun_time = now;
-		dev_dbg(dev, "Emitting DPU underrun fault event.");
-	} else {
-		dev_dbg(dev, "Skipping DPU underrun fault event emission due to rate limiting.");
-	}
-}
-
-static void _vs_dc_handle_frame_start(struct vs_dc *dc, struct vs_crtc *vs_crtc, u8 display_id)
-{
-	struct device *dev = dc->hw.dev;
-	struct dc_hw_display *display = &dc->hw.display[display_id];
-	u8 output_id = display->output_id;
-	pid_t pid = vs_crtc->trace_pid;
-
-	/* Detect the issue where there is a frame start interrupt but no SOF trigger */
-	if (!vs_crtc->first_frame_trigger) {
-		dev_warn(dev,
-			 "invalid frame start event, display_id:%d output_id:%d frames_pending:%d\n",
-			 display_id, output_id, atomic_read(&vs_crtc->frames_pending));
-		return;
-	}
-
-	vs_dc_underrun_workaround(dc, &vs_crtc->base, display, display_id, true);
-	DPU_ATRACE_INT_PID_FMT(1, pid, "frame_tx[%d]", output_id);
-	trace_disp_frame_start(display_id, output_id, vs_crtc);
-	atomic_set(&vs_crtc->line_underrun_count, 0);
-	vs_crtc->frame_transfer_pending = true;
-	vs_crtc_handle_frm_start(&vs_crtc->base);
-}
-
-static void _vs_dc_handle_frame_done(struct vs_dc *dc, struct vs_crtc *vs_crtc, u8 display_id)
-{
-	struct dc_hw_display *display = &dc->hw.display[display_id];
-	u8 output_id = display->output_id;
-	pid_t pid = vs_crtc->trace_pid;
-	unsigned int crtc_index = vs_crtc->base.index;
-
-	DPU_ATRACE_INT_PID_FMT(0, pid, "frame_tx[%d]", output_id);
-	dc_hw_display_frame_done(&dc->hw, display_id);
-	vs_crtc->ltm_hist_query_pending = false;
-	if (!atomic_dec_if_positive(&vs_crtc->frames_pending))
-		vs_dc_underrun_workaround(dc, &vs_crtc->base, display, display_id, false);
-	DPU_ATRACE_INT_PID_FMT(atomic_read(&vs_crtc->frames_pending), pid, "frames_pending[%u]",
-			       crtc_index);
-	if (atomic_read(&vs_crtc->line_underrun_count)) {
-		trace_disp_dpu_underrun(output_id, atomic_read(&vs_crtc->frames_pending),
-					atomic_read(&vs_crtc->te_count));
-		atomic_inc(&vs_crtc->frame_underrun_count);
-	}
-	trace_disp_frame_done(display_id, output_id, vs_crtc);
-	vs_crtc->frame_transfer_pending = false;
-	atomic_inc(&vs_crtc->frame_done_count);
-	wake_up_all(&vs_crtc->framedone_waitq);
-
-	vs_crtc->needs_hw_reset = false;
-
-	vs_crtc->recovery.count = 0;
-}
-
-static void _vs_dc_handle_frame_interrupts(struct vs_dc *dc, struct vs_crtc *vs_crtc, u8 display_id,
-					   const struct dc_hw_interrupt_status *status)
-{
-	struct device *dev = dc->hw.dev;
-	struct dc_hw_display *display = &dc->hw.display[display_id];
-	u8 output_id = display->output_id;
-	u8 output_mask = BIT(output_id);
-	int frm_start, frm_done;
-	bool command_mode = is_display_cmd_sw_trigger(display);
-	struct frame_irq_err_counters *err_counters = &vs_crtc->frame_irq_err_counters;
-
-	frm_start = (output_mask & status->output_frm_start) ? 1 : 0;
-	if (output_mask & status->of_output_frm_start) {
-		if (!frm_start) {
-			dev_err(dev, "invalid irq state[%u]: frm_start overflow without status\n",
-				output_id);
-			err_counters->illegal_irq_state++;
-		}
-		frm_start++;
-	}
-	frm_done = (output_mask & status->output_frm_done) ? 1 : 0;
-	if (output_mask & status->of_output_frm_done) {
-		if (!frm_done) {
-			dev_err(dev, "invalid irq state[%u]: frm_done overflow without status\n",
-				output_id);
-			err_counters->illegal_irq_state++;
-		}
-		frm_done++;
-	}
-	if ((frm_done == 2) && (frm_start == 0)) {
-		dev_err(dev, "invalid irq state[%u]: adjacent frm_done\n", output_id);
-		err_counters->illegal_irq_state++;
-	}
-	if ((frm_start == 2) && (frm_done == 0)) {
-		dev_err(dev, "invalid irq state[%u]: adjacent frm_start\n", output_id);
-		err_counters->illegal_irq_state++;
-	}
-	if ((frm_start == 2) && (frm_done == 2)) {
-		dev_warn(dev, "invalid irq state[%u]: unknown how many frame irqs missed\n",
-			 output_id);
-		err_counters->full_frame_overflow++;
-	}
-	if (command_mode && (frm_start == 2) && (frm_done == 1)) {
-		dev_warn(dev, "invalid irq state[%u]: frame started w/o waiting for prev done\n",
-			 output_id);
-		err_counters->frame_start_overflow_cmd++;
-	}
-
-	/* Log states implying large interrupt handling delays */
-	if (frm_start >= 1 && frm_done >= 1 &&
-	    (frm_start == 2 || frm_done == 2 || !vs_crtc->frame_transfer_pending)) {
-		dev_warn(
-			dev,
-			"dpu irq gap[%u]: irq handling gap larger than frame transfer duration (frm_start:%u frm_done:%u)\n",
-			output_id, frm_start, frm_done);
-		err_counters->full_frame_length_irq_gap++;
-	}
-
-	/*
-	 * Execute frame handlers based on combination of irq conditions
-	 *
-	 * This is meant to account for presumed order of events in reality,
-	 * given that simultaneous handling of these interrupts is indicative of
-	 * interrupt handling being delayed enough for the first handler to find
-	 * multiple irq bits set.
-	 */
-	if (!frm_start && !frm_done) {
-		/* no additional handling needed */
-		return;
-	} else if (frm_start > frm_done) {
-		_vs_dc_handle_frame_start(dc, vs_crtc, display_id);
-
-		if (frm_start > 1) // unexpected frm_start overflow
-			atomic_dec_if_positive(&vs_crtc->frames_pending);
-	} else if (frm_start < frm_done) {
-		_vs_dc_handle_frame_done(dc, vs_crtc, display_id);
-
-		if (frm_done > 1) { // frm_done overflow
-			_vs_dc_handle_frame_start(dc, vs_crtc, display_id);
-			_vs_dc_handle_frame_done(dc, vs_crtc, display_id);
-		}
-	} else { // frm_done == frm_start
-		if (vs_crtc->frame_transfer_pending) {
-			_vs_dc_handle_frame_done(dc, vs_crtc, display_id);
-			_vs_dc_handle_frame_start(dc, vs_crtc, display_id);
-		} else {
-			_vs_dc_handle_frame_start(dc, vs_crtc, display_id);
-			_vs_dc_handle_frame_done(dc, vs_crtc, display_id);
-		}
-	}
-}
-
-static void vs_dc_handle_interrupts(struct vs_dc *dc)
-{
-	struct device *dev = dc->hw.dev;
-	const struct vs_dc_info *dc_info = dc->hw.info;
-	const struct vs_wb_info *wb_info = dc_info->write_back;
-	u32 i;
 	struct dc_hw_interrupt_status status = { 0 };
-	struct dc_hw_display *display;
-	u8 display_id, display_mask;
-	u8 output_id, output_mask;
 
 	dc_hw_get_interrupt(&dc->hw, &status);
 
@@ -804,104 +545,10 @@ static void vs_dc_handle_interrupts(struct vs_dc *dc)
 	trace_disp_reset_irqs(status.layer_reset_done, status.reset_status[FE0_SW_RESET],
 			      status.reset_status[FE1_SW_RESET], status.reset_status[BE_SW_RESET]);
 
-	for (i = 0; i < dc_info->display_num; i++) {
-		struct vs_crtc *vs_crtc = dc->crtc[i];
-		struct drm_crtc *crtc = &vs_crtc->base;
-		pid_t pid;
-		bool ddic_cmd_mode_start_scan_now = false;
+	dc_handle_per_display_interrupts(dc, &status);
 
-		display = &dc->hw.display[i];
-		display_id = dc_info->displays[i].id;
-		display_mask = BIT(display_id);
-		output_id = display->output_id;
-		output_mask = BIT(output_id);
-
-		if (!vs_crtc)
-			continue;
-
-		/* skip disabled displays */
-		if (!display->config_status)
-			continue;
-
-		pid = vs_crtc->trace_pid;
-
-		dev_dbg(dev,
-			"%s: i=%u display_id=%u display_mask=%#x config_status=%d output_id=%u output_mask=%#x\n",
-			__func__, i, display_id, display_mask, display->config_status, output_id,
-			output_mask);
-
-		if (display->mode.output_mode & VS_OUTPUT_MODE_CMD &&
-		    !(display->mode.output_mode & VS_OUTPUT_MODE_CMD_DE_SYNC)) {
-			if (output_mask & status.output_te_rising) {
-				int te_high_level = 1;
-				/* if seeing TE rising edge during dpu scanout, warn underrun */
-				if (vs_crtc->frame_transfer_pending) {
-					te_high_level = 2;
-					DPU_ATRACE_INT_PID_FMT(
-						atomic_add_return(1, &vs_crtc->unexpected_te_count),
-						pid, "unexpected_te_count[%d]", output_id);
-					dev_dbg(dev, "%s: unexpected TE(%d)\n", __func__,
-						atomic_read(&vs_crtc->unexpected_te_count));
-				}
-				DPU_ATRACE_INT_PID_FMT(te_high_level, pid, "TE[%d]", output_id);
-				if (display->mode.v_sync_polarity) {
-					drm_crtc_handle_vblank(crtc);
-					atomic_inc(&vs_crtc->te_count);
-					vs_crtc->ddic_cmd_mode_start_scan = false;
-				} else {
-					vs_crtc->ddic_cmd_mode_start_scan = true;
-					ddic_cmd_mode_start_scan_now = true;
-				}
-			}
-
-			if (output_mask & status.output_te_falling) {
-				DPU_ATRACE_INT_PID_FMT(0, pid, "TE[%d]", output_id);
-				if (!display->mode.v_sync_polarity) {
-					drm_crtc_handle_vblank(crtc);
-					atomic_inc(&vs_crtc->te_count);
-					vs_crtc->ddic_cmd_mode_start_scan = false;
-				} else {
-					vs_crtc->ddic_cmd_mode_start_scan = true;
-					ddic_cmd_mode_start_scan_now = true;
-				}
-			}
-		} else {
-			if (output_mask & status.output_frm_start) {
-				display->vblank_count++;
-				drm_crtc_handle_vblank(crtc);
-			}
-		}
-
-		/* For both frame_start and frame_done interrupts */
-		_vs_dc_handle_frame_interrupts(dc, vs_crtc, i, &status);
-
-		if (output_mask & status.output_underrun)
-			_vs_dc_handle_underrun(dc, vs_crtc, ddic_cmd_mode_start_scan_now);
-	}
-
-	if (status.wb_frm_done || status.wb_datalost) {
-		for (i = 0; i < dc_info->wb_num; i++) {
-			struct vs_writeback_connector *vs_wb_conn = dc->writeback[i];
-			bool wb_stall_support = wb_info[vs_wb_conn->id].wb_stall;
-
-			if ((BIT(vs_wb_conn->id) & status.wb_datalost) && !wb_stall_support) {
-				DPU_ATRACE_INSTANT_PID_FMT(current->tgid, "wb_datalost[%d]", i);
-				dev_warn(dev, "%s: data lost intr for wb%d\n", __func__,
-					 vs_wb_conn->id);
-				vs_wb_conn->frame_pending--;
-			}
-
-			if (BIT(vs_wb_conn->id) & status.wb_frm_done) {
-				DPU_ATRACE_INSTANT_PID_FMT(current->tgid, "wb_frame_done[%d]",
-							   vs_wb_conn->id);
-				dev_dbg(dev, "%s: frame done for wb%d\n", __func__,
-					 vs_wb_conn->id);
-				vs_wb_conn->frame_pending--;
-				wake_up_all(&vs_wb_conn->framedone_waitq);
-				vs_writeback_handle_vblank(vs_wb_conn);
-			}
-		}
-	}
+	if (status.wb_frm_done || status.wb_datalost)
+		dc_handle_wb_interrupts(dc, &status);
 
 	/* save reset status bits */
 	if (status.reset_status[FE0_SW_RESET])
@@ -916,13 +563,19 @@ static void vs_dc_handle_interrupts(struct vs_dc *dc)
 
 static irqreturn_t dc_isr(int irq, void *data)
 {
-	struct vs_dc *dc = data;
+	struct device *dev = data;
+	struct vs_dc *dc = dev_get_drvdata(dev);
 
 	spin_lock(&dc->int_lock);
 	vs_dc_handle_interrupts(dc);
 	spin_unlock(&dc->int_lock);
 
 	return IRQ_HANDLED;
+}
+
+unsigned int vs_dc_get_framedone_timeout(void)
+{
+	return framedone_timeout;
 }
 
 void vs_dc_check_interrupts(struct device *dev)
@@ -933,6 +586,49 @@ void vs_dc_check_interrupts(struct device *dev)
 	spin_lock_irqsave(&dc->int_lock, flags);
 	vs_dc_handle_interrupts(dc);
 	spin_unlock_irqrestore(&dc->int_lock, flags);
+}
+
+int vs_get_wb_frm_done_ioctl(struct drm_device *dev, void *data, struct drm_file *file_priv)
+{
+	struct drm_vs_wb_frm_done *args = data;
+	struct vs_drm_private *priv = dev->dev_private;
+	struct vs_dc *dc = NULL;
+	int ret = -EBUSY;
+
+	if (!priv->dc_dev)
+		return -EINVAL;
+
+	dc = dev_get_drvdata(priv->dc_dev);
+	if (!dc)
+		return -EINVAL;
+
+	switch (args->wb_id) {
+	case HW_WB_0:
+		args->wb_frm_done = dc->hw.wb[HW_WB_0].wb_frm_done;
+		if (args->wb_frm_done) {
+			dc->hw.wb[HW_WB_0].wb_frm_done = false;
+			ret = 0;
+		}
+		break;
+	case HW_WB_1:
+		args->wb_frm_done = dc->hw.wb[HW_WB_1].wb_frm_done;
+		if (args->wb_frm_done) {
+			dc->hw.wb[HW_WB_1].wb_frm_done = false;
+			ret = 0;
+		}
+		break;
+	case HW_BLEND_WB:
+		args->wb_frm_done = dc->hw.wb[HW_BLEND_WB].wb_frm_done;
+		if (args->wb_frm_done) {
+			dc->hw.wb[HW_BLEND_WB].wb_frm_done = false;
+			ret = 0;
+		}
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return ret;
 }
 
 int vs_dc_sw_reset(struct drm_device *drm_dev)
@@ -950,8 +646,11 @@ int vs_dc_sw_reset(struct drm_device *drm_dev)
 	if (!dc)
 		return -EINVAL;
 
-	if (vs_dc_power_get(dev, true) < 0)
-		dev_err(dev, "%s: failed to power ON\n", __func__);
+	if (dc_be_power_get(dev, true) < 0)
+		dev_err(dev, "sw_reset BE failed to power ON\n");
+	if (dc_fe_power_get(dev, true) < 0)
+		dev_err(dev, "sw reset FE failed to power ON\n");
+	/* TODO (b/479235001): split sw reset between FE and BE */
 
 	/* reset the hardware */
 	dc_hw_do_reset(&dc->hw);
@@ -962,8 +661,12 @@ int vs_dc_sw_reset(struct drm_device *drm_dev)
 	/* reset the DRM state. */
 	drm_mode_config_reset(drm_dev);
 
-	if (vs_dc_power_put(dev, true) < 0)
-		dev_err(dev, "%s: failed to power OFF\n", __func__);
+
+	/* TODO (b/479235001): split sw reset between FE and BE */
+	if (dc_fe_power_put(dev, true) < 0)
+		dev_err(dev, "sw reset FE failed to power OFF\n");
+	if (dc_be_power_put(dev, true) < 0)
+		dev_err(dev, "sw_reset BE failed to power OFF\n");
 
 	return 0;
 }
@@ -1003,6 +706,15 @@ int vs_get_feature_cap_ioctl(struct drm_device *dev, void *data, struct drm_file
 		break;
 	case VS_FEATURE_CAP_LINEAR_YUV_ROTATION:
 		args->cap = dc->hw.info->linear_yuv_rotation;
+		break;
+	case VS_FEATURE_CAP_ANY_RESOLUTION:
+		args->cap = dc->hw.info->any_resolution;
+		break;
+	case VS_FEATURE_CAP_MAX_WIDTH:
+		args->cap = dc->hw.wb[0].info->max_width;
+		break;
+	case VS_FEATURE_CAP_MAX_HEIGHT:
+		args->cap = dc->hw.wb[0].info->max_height;
 		break;
 	default:
 		return -EINVAL;
@@ -1211,10 +923,10 @@ int vs_get_ltm_hist_ioctl(struct drm_device *dev, void *data, struct drm_file *f
 	if (!display_info->ltm && !display_info->gtm)
 		return -ENODEV;
 
-	ret = pm_runtime_get_if_in_use(priv->dc_dev);
+	ret = dc_be_power_get_if_active(priv->dc_dev);
 	if (ret > 0) {
 		ret = vs_crtc_get_ltm_hist(file_priv, vs_crtc, &dc->hw, args);
-		pm_runtime_put_sync(priv->dc_dev);
+		dc_be_power_put(priv->dc_dev, true);
 	}
 
 	return ret;
@@ -1278,11 +990,14 @@ static int dc_bind(struct device *dev, struct device *master, void *data)
 		return -ENODEV;
 	}
 
-	ret = vs_dc_power_get(dev, true);
+	ret = dc_be_power_get(dev, true);
 	if (ret < 0)
-		dev_err(dev, "%s: failed to power ON\n", __func__);
+		dev_err(dev, "dc_bind BE failed to power ON\n");
+	ret = dc_fe_power_get(dev, true);
+	if (ret < 0)
+		dev_err(dev, "dc_bind FE failed to power ON\n");
 
-	vs_dc_enable_irqs(dc);
+	dc_component_enable_irqs(dev, &dc->dc_irq_info);
 
 	ret = dc_init(dev);
 	if (ret < 0) {
@@ -1308,9 +1023,12 @@ static int dc_bind(struct device *dev, struct device *master, void *data)
 
 	vs_drm_update_alignment(drm_dev, dc_info->pitch_alignment, dc_info->addr_alignment);
 
-	ret = vs_dc_power_put(dev, true);
+	ret = dc_fe_power_put(dev, true);
 	if (ret < 0)
-		dev_err(dev, "%s: failed to power OFF\n", __func__);
+		dev_err(dev, "dc_bind FE failed to power OFF\n");
+	ret = dc_be_power_put(dev, true);
+	if (ret < 0)
+		dev_err(dev, "dc_bind BE failed to power OFF\n");
 
 	device_create_file(dev, &dev_attr_early_wakeup);
 
@@ -1335,7 +1053,7 @@ static int dc_bind(struct device *dev, struct device *master, void *data)
 err_clean_dc:
 	dc_deinit(dev);
 err_init_dc:
-	if (vs_dc_power_put(dev, true) < 0)
+	if (dc_be_power_put(dev, true) < 0)
 		dev_err(dev, "%s: failed to power OFF during error cleanup\n", __func__);
 	return ret;
 }
@@ -1344,16 +1062,26 @@ static void dc_unbind(struct device *dev, struct device *master, void *data)
 {
 	struct drm_device *drm_dev = data;
 	struct vs_dc *dc = dev_get_drvdata(dev);
+	int ret;
 
-	vs_dc_disable_irqs(dc);
+	dc_component_disable_irqs(dev, &dc->dc_irq_info);
 
 	if (dc->disp_sscd) {
 		display_sscd_device_free(dc->disp_sscd);
 		dc->disp_sscd = NULL;
 	}
+
 	device_remove_file(dev, &dev_attr_early_wakeup);
 
-	dc_deinit(dev);
+	ret = dc_be_power_get(dev, true);
+	if (ret >= 0) {
+		dc_deinit(dev);
+		ret = dc_be_power_put(dev, false);
+		if (ret < 0)
+			dev_err(dev, "dc_unbind BE failed to power OFF\n");
+	} else {
+		dev_err(dev, "dc_unbind BE failed to power ON for deinit; skipping deinit\n");
+	}
 
 	vs_drm_iommu_detach_device(drm_dev, dev);
 }
@@ -1426,6 +1154,50 @@ clean_up:
 	return ret;
 }
 
+int dc_component_parse_irqs(struct device *dev, struct dc_irq_info *irq_info,
+			    irq_handler_t handler)
+{
+	int ret = 0;
+	int i;
+
+	/* count irqs */
+	irq_info->irq_num = platform_irq_count(to_platform_device(dev));
+	if (irq_info->irq_num <= 0) {
+		ret = irq_info->irq_num;
+		irq_info->irq_num = 0;
+		goto out;
+	}
+
+	/* allocate space for them */
+	irq_info->irqs =
+		devm_kmalloc_array(dev, irq_info->irq_num, sizeof(*irq_info->irqs), GFP_KERNEL);
+	if (!irq_info->irqs) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	irq_info->irq_depths = devm_kmalloc_array(
+		dev, irq_info->irq_num, sizeof(*irq_info->irq_depths), GFP_KERNEL | __GFP_ZERO);
+	if (!irq_info->irq_depths) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	/* request irqs and assign handler */
+	for (i = 0; i < irq_info->irq_num; ++i) {
+		int irq = platform_get_irq(to_platform_device(dev), i);
+
+		ret = devm_request_irq(dev, irq, handler, IRQF_NO_AUTOEN, dev_name(dev), dev);
+		if (ret < 0) {
+			dev_err(dev, "Failed to install irq %u (idx:%d)\n", irq, i);
+			goto out;
+		}
+		irq_info->irqs[i] = irq;
+	}
+
+out:
+	return ret;
+}
+
 static int dc_parse_dt(struct device *dev, struct vs_dc *dc)
 {
 	if (dc->path) {
@@ -1445,6 +1217,13 @@ static int dc_parse_dt(struct device *dev, struct vs_dc *dc)
 
 	of_property_read_u32(dev->of_node, "min-core-clk",
 			     &dc->min_qos_config.core_clk);
+
+	framedone_timeout = FRAMEDONE_TIMEOUT;
+	if (of_property_present(dev->of_node, "in_emulation")) {
+		framedone_timeout *= 100;
+		dev_info(dev, "%s: in_emulation. framedone_timeout=%u\n", __func__,
+			 framedone_timeout);
+	}
 
 	if (of_property_read_u32(dev->of_node, "boost-fab-freq", &dc->boost_fab_freq))
 		dc->boost_fab_freq = 0;
@@ -1480,8 +1259,11 @@ static int dc_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_link *link = NULL;
 	struct vs_dc *dc;
-	int i, irq, ret;
+	int ret;
 	struct resource *resource = NULL;
+#if IS_ENABLED(CONFIG_GS_PERF_DOMAIN)
+	const char *fab_str;
+#endif
 
 	dc = devm_kzalloc(dev, sizeof(*dc), GFP_KERNEL);
 	if (!dc)
@@ -1509,52 +1291,38 @@ static int dc_probe(struct platform_device *pdev)
 	if (IS_ERR(dc->hw.gpcsr_reg_base))
 		dev_warn(dev, "failed to map dpu gpcsr resource, continue without it\n");
 
-	// TODO(b/240503241): Avoid a bunch of irqs with the same handler when
-	// we have better solution from the interrupt parent. e.g. register by
-	// mask instead of a single bit
-	dc->irq_num = platform_irq_count(pdev);
-	if (dc->irq_num <= 0) {
-		ret = -EINVAL;
+	mutex_init(&dc->hw.secure_lock);
+	spin_lock_init(&dc->hw.histogram_slock);
+	spin_lock_init(&dc->hw.be_irq_slock);
+	spin_lock_init(&dc->hw.output_mux_slock);
+
+	ret = dc_component_parse_irqs(dev, &dc->dc_irq_info, dc_isr);
+	if (ret)
+		goto detach_pd;
+
+#if IS_ENABLED(CONFIG_GS_PERF_DOMAIN)
+	dc->core_devfreq = gs_perf_domain_find_devfreq("dpu", GS_RECOMMENDED_DEVFREQ);
+	if (IS_ERR(dc->core_devfreq)) {
+		ret = PTR_ERR(dc->core_devfreq);
+		if (ret == -ENODEV)
+			dev_err(dev, "failed to get core_devfreq source, ret=%d\n", ret);
 		goto detach_pd;
 	}
-
-	dc->irqs = devm_kmalloc_array(dev, dc->irq_num, sizeof(*dc->irqs), GFP_KERNEL);
-	if (!dc->irqs) {
-		ret = -ENOMEM;
-		goto detach_pd;
-	}
-	dc->irq_depths = devm_kmalloc_array(dev, dc->irq_num, sizeof(*dc->irq_depths),
-					    GFP_KERNEL | __GFP_ZERO);
-	if (!dc->irq_depths) {
-		ret = -ENOMEM;
-		goto detach_pd;
-	}
-
-	for (i = 0; i < dc->irq_num; i++) {
-		irq = platform_get_irq(pdev, i);
-		ret = devm_request_irq(dev, irq, dc_isr, IRQF_NO_AUTOEN, dev_name(dev), dc);
-		if (ret < 0) {
-			dev_err(dev, "Failed to install irq:%u.\n", irq);
-			goto detach_pd;
-		}
-		dc->irqs[i] = irq;
-	}
-
+#else /* CONFIG_GS_PERF_DOMAIN */
 	if (of_property_present(dev->of_node, "devfreq")) {
 		dc->core_devfreq = devfreq_get_devfreq_by_phandle(dev, "devfreq", 0);
 	} else {
-		// TODO(b/349042813): devfreq driver integration
 		dev_warn(dev, "core_devfreq not presented in dts, skip it\n");
 		dc->core_devfreq = NULL;
 	}
 	if (IS_ERR(dc->core_devfreq)) {
 		ret = PTR_ERR(dc->core_devfreq);
+		dev_err(dev, "failed to get core_devfreq source, ret=%d\n", ret);
 		if (ret == -ENODEV)
 			ret = -EPROBE_DEFER;
-		else
-			dev_err(dev, "failed to get core_devfreq source, ret=%d\n", ret);
 		goto detach_pd;
 	}
+#endif /* CONFIG_GS_PERF_DOMAIN */
 
 	if (dc->core_devfreq) {
 		link = device_link_add(dev, dc->core_devfreq->dev.parent,
@@ -1573,21 +1341,56 @@ static int dc_probe(struct platform_device *pdev)
 		goto detach_pd;
 	}
 
-	/* optional configuration, it's for boosting FAB freq */
-	dc->boost_fab_devfreq = devfreq_get_devfreq_by_phandle(dev, "fabrtfreq", 0);
-	if (IS_ERR(dc->boost_fab_devfreq)) {
-		ret = PTR_ERR(dc->boost_fab_devfreq);
-		dev_dbg(dev, "failed to get fabrt_devfreq source for boosting, ret=%d\n", ret);
-		dc->boost_fab_devfreq = NULL;
+	/* optional configuration, it's for boosting fabric and core frequency */
+#if IS_ENABLED(CONFIG_GS_PERF_DOMAIN)
+	ret = of_property_read_string(dev->of_node, "fab-bus-name", &fab_str);
+	if (ret == 0) {
+		dc->boost_fab_devfreq =
+			gs_perf_domain_find_devfreq(fab_str, GS_RECOMMENDED_DEVFREQ);
+		if (IS_ERR(dc->boost_fab_devfreq)) {
+			ret = PTR_ERR(dc->boost_fab_devfreq);
+			if (ret == -ENODEV)
+				dev_err(dev, "failed to get fab_devfreq source, ret=%d\n", ret);
+			goto detach_pd;
+		}
 	}
 
-	/* optional configuration, it's for boosting core freq */
-	dc->boost_core_devfreq = devfreq_get_devfreq_by_phandle(dev, "devfreq", 0);
+	dc->boost_core_devfreq = gs_perf_domain_find_devfreq("dpu", GS_RECOMMENDED_DEVFREQ);
 	if (IS_ERR(dc->boost_core_devfreq)) {
 		ret = PTR_ERR(dc->boost_core_devfreq);
-		dev_dbg(dev, "failed to get core_devfreq source for boosting, ret=%d\n", ret);
+		if (ret == -ENODEV)
+			dev_err(dev, "failed to get core_devfreq source, ret=%d\n", ret);
+		goto detach_pd;
+	}
+#else
+	if (of_property_present(dev->of_node, "fabrtfreq")) {
+		dc->boost_fab_devfreq = devfreq_get_devfreq_by_phandle(dev, "fabrtfreq", 0);
+	} else {
+		dev_dbg(dev, "fab_devfreq not presented in dts, skip it\n");
+		dc->boost_fab_devfreq = NULL;
+	}
+	if (IS_ERR(dc->boost_fab_devfreq)) {
+		ret = PTR_ERR(dc->boost_fab_devfreq);
+		dev_err(dev, "failed to get fab_devfreq source for boosting, ret=%d\n", ret);
+		if (ret == -ENODEV)
+			ret = -EPROBE_DEFER;
+		goto detach_pd;
+	}
+
+	if (of_property_present(dev->of_node, "devfreq")) {
+		dc->boost_core_devfreq = devfreq_get_devfreq_by_phandle(dev, "devfreq", 0);
+	} else {
+		dev_dbg(dev, "core_devfreq not presented in dts, skip it\n");
 		dc->boost_core_devfreq = NULL;
 	}
+	if (IS_ERR(dc->boost_core_devfreq)) {
+		ret = PTR_ERR(dc->boost_core_devfreq);
+		dev_err(dev, "failed to get core_devfreq source for boosting, ret=%d\n", ret);
+		if (ret == -ENODEV)
+			ret = -EPROBE_DEFER;
+		goto detach_pd;
+	}
+#endif
 
 	ret = dc_parse_dt(dev, dc);
 	if (ret) {
@@ -1623,17 +1426,27 @@ static int dc_probe(struct platform_device *pdev)
 		dev_err(dev, "runtime pm enabled but failed to add disable action: %d\n", ret);
 
 	ret = component_add(dev, &dc_component_ops);
-	if (ret)
+	if (ret) {
 		dev_err(dev, "failed to add components: %d\n", ret);
+		goto detach_pd;
+	}
+
+	ret = of_platform_populate(dev->of_node, NULL, NULL, dev);
+	if (ret) {
+		dev_err(dev, "failed to populate platform child devices: %d\n", ret);
+		goto remove_components;
+	}
 
 	return ret;
 
+remove_components:
+	component_del(dev, &dc_component_ops);
 detach_pd:
 	detach_power_domain(dev, dc, dc->num_pds);
 	return ret;
 }
 
-static int dc_remove(struct platform_device *pdev)
+static void dc_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct vs_dc *dc = platform_get_drvdata(pdev);
@@ -1643,8 +1456,6 @@ static int dc_remove(struct platform_device *pdev)
 	detach_power_domain(dev, dc, dc->num_pds);
 
 	dev_set_drvdata(dev, NULL);
-
-	return 0;
 }
 
 struct platform_driver dc_platform_driver = {

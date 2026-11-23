@@ -14453,7 +14453,7 @@ static s32 wl_update_bss_info(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 
 	tim = bcm_parse_tlvs(ie, ie_len, WLAN_EID_TIM);
 	if (tim) {
-		dtim_period = tim->data[1];
+		dtim_period = *(tim->data + 1);
 	} else {
 		/*
 		* active scan was done so we could not get dtim
@@ -23498,8 +23498,8 @@ bool wl_cfg80211_is_dpp_gas_action(void *frame, u32 frame_len)
 	}
 
 	if (ie && (ie->len >= WL_GAS_MIN_LEN) &&
-		(memcmp(&ie->data[WL_GAS_WFA_OFFSET], WFA_OUI, 3) == 0) &&
-		(ie->data[WL_GAS_STYPE_OFFSET] == WL_GAS_WFA_STYPE_DPP)) {
+		(memcmp(ie->data + WL_GAS_WFA_OFFSET, WFA_OUI, 3) == 0) &&
+		(*(ie->data + WL_GAS_STYPE_OFFSET) == WL_GAS_WFA_STYPE_DPP)) {
 		WL_DBG(("DPP GAS FRAME. type:%d\n", act_frm->action));
 		return true;
 	}

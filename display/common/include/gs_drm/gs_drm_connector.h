@@ -19,9 +19,7 @@
 #define MIN_WIN_BLOCK_WIDTH 8
 #define MIN_WIN_BLOCK_HEIGHT 1
 
-#ifndef INVALID_PANEL_ID
-#define INVALID_PANEL_ID 0xFFFFFFFF
-#endif
+#define PANEL_ID_INVALID_VALUE 0xFFFFFFFF
 
 #define PANEL_SERIAL_MAX 40
 
@@ -29,6 +27,23 @@
 #define DISPLAY_PANEL_INDEX_SECONDARY 1
 
 #define MAX_ALLOWED_MIPI_CLOCK_NUM 8
+
+#define GS_HBM_FLAG_GHBM_UPDATE BIT(0)
+#define GS_HBM_FLAG_BL_UPDATE BIT(1)
+#define GS_HBM_FLAG_LHBM_UPDATE BIT(2)
+#define GS_HBM_FLAG_DIMMING_UPDATE BIT(3)
+#define GS_FLAG_OP_RATE_UPDATE BIT(4)
+#define GS_FLAG_MIN_RR_UPDATE BIT(5)
+#define GS_FLAG_INSERT_FRAMES BIT(6)
+#define GS_FLAG_AUTO_FI_UPDATE BIT(7)
+#define GS_FLAG_PWM_MODE_UPDATE BIT(8)
+#define GS_FLAG_POWER_STATE_UPDATE BIT(9)
+#define GS_FLAG_EARLY_EXIT_UPDATE BIT(10)
+
+#define GS_FLAG_REFRESH_CTRL_UPDATE (GS_FLAG_MIN_RR_UPDATE | \
+				     GS_FLAG_INSERT_FRAMES | \
+				     GS_FLAG_AUTO_FI_UPDATE |\
+				     GS_FLAG_EARLY_EXIT_UPDATE)
 
 enum gs_hbm_mode {
 	GS_HBM_OFF = 0,
@@ -187,6 +202,19 @@ enum gs_panel_power_state {
 	GS_PANEL_POWER_STATE_MAX,
 };
 
+/**
+ * enum gs_pmic_err - Errors related to the panel PMIC
+ *
+ * These are designed to be stored in a bitmap that fits within a u64,
+ * such that they are compatible with a drm bitmap property.
+ */
+enum gs_pmic_err {
+	/** @GS_PMIC_ERR_IRQ_TRIGGERED: PMIC IRQ was triggered */
+	GS_PMIC_ERR_IRQ_TRIGGERED = 0,
+	/** @GS_PMIC_ERR_MAX: Max value for enum (or bitmap position) */
+	GS_PMIC_ERR_MAX,
+};
+
 struct gs_drm_connector;
 
 struct gs_drm_connector_properties {
@@ -217,6 +245,7 @@ struct gs_drm_connector_properties {
 	struct drm_property *panel_power_state;
 	struct drm_property *dsi_errors;
 	struct drm_property *panel_errors;
+	struct drm_property *pmic_errors;
 	struct drm_property *irc_support_mode;
 };
 
@@ -378,12 +407,18 @@ struct gs_drm_connector_state {
 	/** @panel_errors: Errors read from the panel DDIC */
 	DECLARE_BITMAP(panel_errors, GS_PANEL_ERR_MAX);
 
+	/** @pmic_errors: Errors related to the panel PMIC */
+	DECLARE_BITMAP(pmic_errors, GS_PMIC_ERR_MAX);
+
 	/**
 	 * @frame_start_ts: the most recent frame transfer's start time
 	 *
 	 * If there is no active frame transfer at this time, the value will be 0
 	 */
 	ktime_t frame_start_ts;
+
+	/** @skip_force_power_on: ignore panel force_power_on flag */
+	bool skip_force_power_on;
 
 	/**
 	 * @trigger_dumps_for_gram_collision: Whether need to trigger the dumps for GRAM
@@ -423,6 +458,15 @@ struct gs_drm_connector_funcs {
 	 * 0 on success, or a negative error code on failure.
 	 */
 	int (*late_register)(struct gs_drm_connector *gs_connector);
+	/**
+	 * @early_unregister:
+	 *
+	 * This optional hook is for unregistering additional userspace interfaces
+	 * for the connector. This is called by the entry in
+	 * `drm_connector_funcs` by the same name, and the default
+	 * implementation disconnects sysfs nodes for the connector.
+	 */
+	void (*early_unregister)(struct gs_drm_connector *gs_connector);
 	/** @get_max_mipi_datarate: passthrough for gs_drm_connector_get_safe_min_mipi_datarate() */
 	int (*get_max_mipi_datarate)(struct gs_drm_connector *gs_connector, bool is_lp);
 	/**
@@ -452,6 +496,10 @@ struct gs_drm_connector_funcs {
 	 *                         with the panel's current state.
 	 */
 	void (*panel_update_dev_stat)(const struct gs_drm_connector *gs_connector, u32 *dev_stat);
+	/**
+	 * @get_panel_id: passthrough for getting panel_id from panel struct
+	 */
+	u32 (*get_panel_id)(const struct gs_drm_connector *gs_connector);
 };
 
 struct gs_drm_connector_helper_funcs {
@@ -505,7 +553,8 @@ struct gs_drm_connector {
 	int panel_index;
 	/**
 	 * @panel_id: panel_id read from bootloader. Parsed by the connector,
-	 * stored here for use by the panel on init
+	 * stored here for use by the panel on init.
+	 * Note: Only stores the cmdline/module param hint, not the live panel_id value.
 	 */
 	u32 panel_id;
 	/**
@@ -532,9 +581,28 @@ struct gs_drm_connector {
 
 #define to_gs_connector(connector) container_of((connector), struct gs_drm_connector, base)
 
+#define gs_connector_has_func(gs_connector, func) \
+	((gs_connector) && ((gs_connector)->funcs) && ((gs_connector)->funcs->func))
+
 #if IS_ENABLED(CONFIG_GS_DRM_PANEL_UNIFIED)
 bool is_gs_drm_connector(const struct drm_connector *connector);
 #define is_gs_drm_connector_state(conn_state) is_gs_drm_connector(conn_state->connector)
+
+/**
+ * of_gs_drm_find_connector() - finds parent connector of panel
+ * @panel_np: device tree node pointer for panel device
+ *
+ * As a practice, the gs_drm_connector device tree node is the parent node to
+ * all possible panels that may be connected to it. As such, given the device
+ * node for one of those panels, the corresponding connector may be found.
+ *
+ * If given the node of the gs_drm_connector itself, will return the handle for
+ * that node's device instead.
+ *
+ * Return: gs_drm_connector handle associated with parent of panel node,
+ *         or NULL if not found or other error.
+ */
+struct gs_drm_connector *of_gs_drm_find_connector(struct device_node *panel_np);
 
 static inline struct gs_drm_connector_state *
 crtc_get_new_gs_connector_state(const struct drm_atomic_state *state,
@@ -630,6 +698,11 @@ static inline bool is_gs_drm_connector(const struct drm_connector *connector)
 }
 #define is_gs_drm_connector_state(conn_state) false
 
+static inline struct gs_drm_connector *of_gs_drm_find_connector(struct device_node *panel_np)
+{
+	return NULL;
+}
+
 static inline struct gs_drm_connector_state *
 crtc_get_gs_connector_state(const struct drm_atomic_state *state,
 			    const struct drm_crtc_state *crtc_state)
@@ -681,6 +754,53 @@ void gs_drm_connector_update_gray_level_callback(struct drm_connector *connector
  *         value on error
  */
 int gs_drm_connector_get_safe_min_mipi_datarate(struct gs_drm_connector *gs_connector, bool is_lp);
+
+/**
+ * gs_drm_connector_check_ddic_errors() - evaluate critical DDIC errors
+ * @state: gs_drm_connector_state to evaluate
+ *
+ * Return: true if a critical pattern of DDIC errors is found, false otherwise
+ */
+bool gs_drm_connector_check_ddic_errors(struct gs_drm_connector_state *state);
+
+/**
+ * gs_drm_connector_check_gram_errors() - evaluate GRAM collision errors
+ * @state: gs_drm_connector_state to evaluate
+ *
+ * Return: true if an unhandled GRAM collision is found, false otherwise
+ */
+bool gs_drm_connector_check_gram_errors(struct gs_drm_connector_state *state);
+
+/**
+ * gs_drm_connector_check_dsi_errors() - evaluate critical DSI errors
+ * @state: gs_drm_connector_state to evaluate
+ *
+ * Return: true if a critical pattern of DSI errors is found, false otherwise
+ */
+bool gs_drm_connector_check_dsi_errors(struct gs_drm_connector_state *state);
+
+/**
+ * gs_drm_connector_check_pmic_errors() - evaluate critical PMIC errors
+ * @state: gs_drm_connector_state to evaluate
+ *
+ * Return: true if a critical pattern of PMIC errors is found, false otherwise
+ */
+bool gs_drm_connector_check_pmic_errors(struct gs_drm_connector_state *state);
+
+/**
+ * gs_drm_connector_get_panel_id(): gets the panel_id from attached panel
+ * @gs_connector: handle for connector
+ *
+ * Passthrough for gs_panel_get_panel_id() function.
+ *
+ * Return: valid panel id if one exists, PANEL_ID_INVALID_VALUE otherwise
+ */
+static inline u32 gs_drm_connector_get_panel_id(const struct gs_drm_connector *gs_connector)
+{
+	if (gs_connector_has_func(gs_connector, get_panel_id))
+		return gs_connector->funcs->get_panel_id(gs_connector);
+	return PANEL_ID_INVALID_VALUE;
+}
 
 /**
  * gs_panel_only_specific_error_detected_in_bitmap() - whether only specific panel error is

@@ -8,8 +8,10 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
-
+#include <linux/ktime.h>
+#if IS_ENABLED(CONFIG_EXYNOS_MODEM_IF)
 #include <soc/google/modem_notifier.h>
+#endif
 
 #include "aoc_alsa.h"
 #include "aoc_alsa_drv.h"
@@ -171,7 +173,7 @@ static int hw_id_to_phone_mic_source(int hw_id)
 static int aoc_audio_stream_type[] = {
 	[0] = MMAPED,  [1] = NORMAL,   [2] = NORMAL,	   [3] = NORMAL,  [4] = NORMAL,
 	[5] = NORMAL,  [6] = COMPRESS, [7] = NORMAL,	   [8] = NORMAL,  [9] = MMAPED,
-	[10] = RAW,    [11] = NORMAL,  [12] = NORMAL,	   [13] = NORMAL, [14] = NORMAL,
+	[10] = RAW,    [11] = NORMAL,  [12] = NORMAL,	   [13] = IAMF,   [14] = NORMAL,
 	[15] = NORMAL, [16] = NORMAL,  [17] = NORMAL,	   [18] = INCALL, [19] = INCALL,
 	[20] = INCALL, [21] = INCALL,  [22] = INCALL,	   [23] = MMAPED, [24] = NORMAL,
 	[25] = HIFI,   [26] = HIFI,    [27] = ANDROID_AEC, [28] = MMAPED, [29] = INCALL,
@@ -200,9 +202,9 @@ static int aoc_audio_control(const char *cmd_channel, const uint8_t *cmd,
 	struct aoc_service_dev *dev;
 	uint8_t *buffer;
 	int buffer_size = 1024;
-	struct timespec64 tv0, tv1;
 	int err, count;
 	unsigned long time_expired;
+	ktime_t start, end;
 
 	if (!cmd_channel || !cmd)
 		return -EINVAL;
@@ -245,16 +247,13 @@ static int aoc_audio_control(const char *cmd_channel, const uint8_t *cmd,
 		pr_debug("%d messages read for previous commands\n", count);
 
 	/* Sending cmd to AoC */
+	start = ktime_get();
 	if ((aoc_service_write(dev, cmd, cmd_size, NONBLOCKING)) != cmd_size) {
 		pr_err(ALSA_AOC_CMD " ERR: ring full - cmd id %#06x\n",
 		       ((struct CMD_HDR *)cmd)->id);
 		err = -EAGAIN;
 		goto exit;
 	}
-
-#ifdef AOC_CMD_DEBUG_ENABLE
-	ktime_get_real_ts64(&tv0);
-#endif /* AOC_CMD_DEBUG_ENABLE */
 
 	/* Getting responses from Aoc for the command just sent */
 	count = 0;
@@ -269,17 +268,11 @@ static int aoc_audio_control(const char *cmd_channel, const uint8_t *cmd,
 	       time_is_after_jiffies(time_expired)) {
 		count++;
 	}
-
+	end = ktime_get();
 #ifdef AOC_CMD_DEBUG_ENABLE
-	ktime_get_real_ts64(&tv1);
-	pr_debug("Elapsed: %lld (usecs)\n",
-		 (tv1.tv_sec - tv0.tv_sec) * USEC_PER_SEC +
-			 (tv1.tv_nsec - tv0.tv_nsec) / NSEC_PER_USEC);
-
 	if (count > 0)
 		pr_debug("%d times tried for response\n", count);
 #endif /* AOC_CMD_DEBUG_ENABLE */
-
 	if (err < 1) {
 		uint16_t cmd_id = ((struct CMD_HDR *)cmd)->id;
 		char reset_reason[40];
@@ -302,7 +295,21 @@ static int aoc_audio_control(const char *cmd_channel, const uint8_t *cmd,
 			 " cmd [%s] id %#06x, reply mesg size %d\n",
 			 CMD_CHANNEL(dev), ((struct CMD_HDR *)cmd)->id, err);
 	}
+#ifndef ALSA_AOC_CMD_LOG_DISABLE
+	ktime_t gap;
+	gap = ktime_to_us(ktime_sub(end, start));
 
+	if (command_id == CMD_AUDIO_OUTPUT_DSP_MODE_SET_ID) {
+		uint32_t mode = ((struct CMD_AUDIO_OUTPUT_DSP_MODE *)cmd)->mode;
+		pr_notice_ratelimited(ALSA_AOC_CMD
+				" cmd [%s] id %#06x, mode %u, response took %lld us\n",
+				CMD_CHANNEL(dev), command_id, mode, gap);
+	} else if (gap > COMMAND_TIME_GAP_US) {
+		pr_notice_ratelimited(ALSA_AOC_CMD
+				" cmd [%s] id %#06x, response took %lld us\n",
+				CMD_CHANNEL(dev), command_id, gap);
+	}
+#endif
 	if (response != NULL)
 		memcpy(response, buffer, cmd_size);
 
@@ -1434,6 +1441,40 @@ static int aoc_raw_capture_trigger(struct aoc_alsa_stream *alsa_stream, int reco
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_AOC_ALSA_IAMF)
+static int aoc_iamf_capture_trigger(struct aoc_alsa_stream *alsa_stream, int record_cmd)
+{
+	int err = 0;
+	int cmd_id;
+	struct CMD_AUDIO_INPUT_IAMF_ENABLE cmd;
+	struct aoc_chip *chip = alsa_stream->chip;
+
+	if (alsa_stream->channels != IAMF_CHANNEL_NUM) {
+		pr_err("ERR: Invalid IAMF channel number %d (only %d is allowed)\n",
+		       alsa_stream->channels, IAMF_CHANNEL_NUM);
+		return -EINVAL;
+	}
+
+	cmd_id = (record_cmd == START) ? CMD_AUDIO_INPUT_MIC_IAMF_ENABLE_ID :
+				CMD_AUDIO_INPUT_MIC_IAMF_DISABLE_ID;
+
+	if (record_cmd == START) {
+		AocCmdHdrSet(&(cmd.parent), cmd_id, sizeof(cmd));
+		cmd.requested_format.chan = alsa_stream->channels;
+		err = aoc_audio_control(CMD_INPUT_CHANNEL,
+			(uint8_t *)&cmd, sizeof(cmd), NULL, chip);
+	} else
+		err = aoc_audio_control_simple_cmd(CMD_INPUT_CHANNEL, cmd_id, chip);
+
+	if (err < 0) {
+		pr_err("ERR:%d in audio iamf capture %s\n", err,
+		       (record_cmd == START) ? "start" : "stop");
+		return err;
+	}
+	return 0;
+}
+#endif
+
 static int aoc_audio_capture_mic_process_mode(struct aoc_chip *chip,
 					      struct aoc_alsa_stream *alsa_stream)
 {
@@ -2103,6 +2144,15 @@ static int aoc_audio_capture_trigger(struct aoc_alsa_stream *alsa_stream, int re
 		if (err < 0)
 			pr_err("ERR:%d in aoc raw capture start/stop\n", err);
 	}
+
+#if IS_ENABLED(CONFIG_AOC_ALSA_IAMF)
+	/* For IAMF capture */
+	if (alsa_stream->stream_type == IAMF) {
+		err = aoc_iamf_capture_trigger(alsa_stream, record_cmd);
+		if (err < 0)
+			pr_err("ERR:%d in aoc iamf capture start/stop\n", err);
+	}
+#endif
 
 exit:
 	if (err < 0)
@@ -3235,17 +3285,20 @@ error:
 int aoc_displayport_service_free(struct aoc_chip *chip)
 {
 	struct aoc_service_dev *dev;
+	bool mutex_locked = true;
+
 	if (!chip)
 		return -ENODEV;
 	if (mutex_lock_interruptible(&chip->audio_cmd_chan_mutex))
-		return -EINTR;
+		mutex_locked = false;
 
 	chip->dp_starting = 0;
 	dev = chip->dp_dev;
 	chip->dp_dev = NULL;
 	if (dev)
 		free_aoc_audio_service(AOC_DISPLAYPORT_SERVICE, dev);
-	mutex_unlock(&chip->audio_cmd_chan_mutex);
+	if (mutex_locked)
+		mutex_unlock(&chip->audio_cmd_chan_mutex);
 	return 0;
 }
 
@@ -3937,6 +3990,22 @@ int teardown_phonecall(struct aoc_alsa_stream *alsa_stream)
 
 	return err;
 }
+
+#if IS_ENABLED(CONFIG_GOOGLE_RADIO_BRIDGE)
+int audio_pcie_control(struct aoc_chip *chip, bool enable)
+{
+	int err;
+	int cmd_id = enable ? CMD_AUDIO_OUTPUT_TELEPHONY_ENABLE_PCIE_ID :
+			      CMD_AUDIO_OUTPUT_TELEPHONY_DISABLE_PCIE_ID;
+	err = aoc_audio_control_simple_cmd(CMD_OUTPUT_CHANNEL, cmd_id, chip);
+
+	if (err < 0)
+		pr_err("ERR:%d Telephony PCIE failed\n", err);
+
+	return err;
+}
+EXPORT_SYMBOL_GPL(audio_pcie_control);
+#endif
 
 int prepare_voipcall(struct aoc_alsa_stream *alsa_stream)
 {

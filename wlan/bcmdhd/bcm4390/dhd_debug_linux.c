@@ -98,7 +98,7 @@ dbg_ring_poll_worker(struct work_struct *work)
 {
 	struct delayed_work *d_work = to_delayed_work(work);
 	bool sched = TRUE;
-	dhd_dbg_ring_t *ring;
+	dhd_dbg_ring_t *ring = NULL;
 	linux_dbgring_info_t *ring_info;
 	dhd_pub_t *dhdp;
 	int ringid;
@@ -126,6 +126,7 @@ dbg_ring_poll_worker(struct work_struct *work)
 	ringid = ring_info->ring_id;
 
 	ring = &dhdp->dbg->dbg_rings[ringid];
+	DHD_DBGIF(("%s: ring_id:%d, name:%s\n", __func__, ringid, ring->name));
 	DHD_DBG_RING_LOCK(ring->lock, flags);
 	dhd_dbg_get_ring_status(dhdp, ringid, &ring_status);
 	DHD_DBG_RING_UNLOCK(ring->lock, flags);
@@ -211,7 +212,7 @@ dbg_ring_poll_worker(struct work_struct *work)
 			 */
 			rlen = dhd_dbg_pull_from_ring(dhdp, ringid, buf_entries,
 				NLMSG_DEFAULT_SIZE - DBG_RING_ENTRY_PACK_SIZE,
-				&pack_hdr->num_entries);
+				&pack_hdr->num_entries, FALSE);
 			if (rlen <= 0) {
 				break;
 			}
@@ -229,12 +230,14 @@ dbg_ring_poll_worker(struct work_struct *work)
 
 	VMFREE(dhdp->osh, buf, alloc_len);
 
+exit:
 	DHD_DBG_RING_LOCK(ring->lock, flags);
-	if (!ring->sched_pull) {
+	/* should recover flag for the next schedule */
+	if (ring && !ring->sched_pull) {
 		ring->sched_pull = TRUE;
 	}
 	DHD_DBG_RING_UNLOCK(ring->lock, flags);
-exit:
+
 	if (sched) {
 		/* retrigger the work at same interval */
 		if ((ring_info->interval)) {
@@ -342,6 +345,52 @@ dhd_os_reset_logging(dhd_pub_t *dhdp)
 	}
 	return ret;
 }
+
+#ifdef DHD_DMPD
+int
+dhd_os_stop_logging(dhd_pub_t *dhdp, int ring_id)
+{
+	int ret = BCME_OK;
+	linux_dbgring_info_t *os_priv, *ring_info;
+
+	if (!VALID_RING(ring_id))
+		return BCME_UNSUPPORTED;
+
+	os_priv = dhd_dbg_get_priv(dhdp);
+
+	ring_info = &os_priv[ring_id];
+	ring_info->log_level = 0;
+	ring_info->interval = 0;
+	ret = dhd_dbg_set_configuration(dhdp, ring_id, 0, 0, 0);
+	if (ret) {
+		DHD_ERROR(("dhd_set_configuration is failed : %d\n", ret));
+		return ret;
+	}
+	dhd_cancel_delayed_work(&ring_info->work);
+	dhd_dbg_ring_reset_buf(dhdp, ring_id);
+
+	return ret;
+}
+
+void
+dhd_dbg_ring_reset_buf(dhd_pub_t *dhdp, int ring_id)
+{
+	dhd_dbg_ring_t *ring;
+	unsigned long flags = 0;
+
+	ring = &dhdp->dbg->dbg_rings[ring_id];
+
+	DHD_DBG_RING_LOCK(ring->lock, flags);
+	if (ring->ring_buf) {
+		memset(ring->ring_buf, 0, ring->ring_size);
+	}
+	ring->wp = ring->rp = 0;
+	ring->rem_len = 0;
+	DHD_DBG_RING_UNLOCK(ring->lock, flags);
+
+	return;
+}
+#endif /* DHD_DMPD */
 
 #define SUPPRESS_LOG_LEVEL 1
 int

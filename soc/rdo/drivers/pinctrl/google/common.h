@@ -7,8 +7,10 @@
 
 #include <linux/interrupt.h>
 #include <linux/gpio/driver.h>
+#include <linux/platform_device.h>
 
 struct pinctrl_pin_desc;
+struct google_pinctrl_irqinfo;
 
 enum PIN_TYPE_ENUM {
 	PIN_TYPE_STANDARD = 0,
@@ -23,18 +25,6 @@ enum REG_TYPE_ENUM {
 	SECONDARY_CONTROLLER_REGS,
 	REG_TYPE_MAX
 };
-
-/* Offset from the base address of a pin */
-#define PARAM_OFFSET	0x00
-#define DMUXSEL_OFFSET	0x04
-#define TXDATA_OFFSET	0x08
-#define RXGATE_OFFSET	0x0C
-#define RXDATA_OFFSET	0x10
-#define ISR_OFFSET	0x14
-#define ISR_OVF_OFFSET	0x18
-#define IER_OFFSET	0x1C
-#define IMR_OFFSET	0x20
-#define ITR_OFFSET	0x24
 
 /* GPIO registers start offset */
 #define GPIO_REGS_OFFSET			0x08
@@ -55,21 +45,9 @@ enum google_pinctrl_register_idx {
 	IER_ID,
 	IMR_ID,
 	ITR_ID,
-	REGS_NUM
-};
-
-/* Take care of alignment/order - X_OFFSET has to be at X index! */
-static const u8 reg2offset[REGS_NUM] = {
-	PARAM_OFFSET,
-	DMUXSEL_OFFSET,
-	TXDATA_OFFSET,
-	RXGATE_OFFSET,
-	RXDATA_OFFSET,
-	ISR_OFFSET,
-	ISR_OVF_OFFSET,
-	IER_OFFSET,
-	IMR_OFFSET,
-	ITR_OFFSET
+	PIP_ID,
+	FIQTS_ID,
+	REGS_NUM,
 };
 
 /* Members in layout should be in the same order as members of google_pinctrl_register_idx enum */
@@ -84,7 +62,9 @@ struct reg_layout {
 	u16 ier : 1;
 	u16 imr : 1;
 	u16 itr : 1;
-	u16 reserved : 6;
+	u16 pip: 1;
+	u16 fiqts: 1;
+	u16 reserved : 4;
 };
 
 struct google_pinctrl_registers_flags {
@@ -276,7 +256,6 @@ struct google_pingroup {
 	static const unsigned int google##num##_pins[] = { num }
 
 #define MAX_NR_FUNCS 9
-#define REG_SIZE 0x1000
 
 #define PIN_GROUP(gnum, gname, f0, f1, f2, f3, f4, f5, f6, f7, f8)             \
 	[gnum] = {                                                             \
@@ -332,6 +311,7 @@ struct google_pin_function {
  * @num_gpios: number of pingroups exposed as gpios
  * @gpio_func: which function number is GPIO (usually 0).
  * @label: gpio chip label.
+ * @common: data that is common for all sswrps in a platform
  * @pins_excl_regs: the list of pins which don't have the full set of registers.
  * @npins_excl_regs: number of entries in @pins_excl_regs.
  */
@@ -349,12 +329,33 @@ struct google_pinctrl_soc_sswrp_info {
 	unsigned int gpio_func;
 
 	const char   *label;
+	const struct platform_common_info *common;
+
+	bool (*should_toggle_irq)(struct google_pinctrl_irqinfo *info);
 
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	const struct google_pinctrl_registers_flags *pins_excl_regs;
 	unsigned int npins_excl_regs;
 #endif
 };
+
+/**
+ * struct platform_common_info - Platform specific configuration for a SSWRP
+ * @regs: array describing which pins are used in a given platform
+ * @num_regs: number of pins in @regs
+ * pin_stride: size of memory reserved for every pin
+ * @dump_regs_header: header used in `dump-registers`
+ */
+struct platform_common_info {
+	const u8     *regs;
+	unsigned int num_regs;
+	size_t       pin_stride;
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+	const char   *dump_regs_header;
+#endif
+};
+
+#define DUMP_REGS_BUF_SIZE 190
 
 extern const struct dev_pm_ops google_pinctrl_pm_ops;
 
@@ -364,6 +365,9 @@ struct google_pinctrl_irqinfo {
 	unsigned int virq;
 	int wakeup_capable;
 	bool is_pad_as_irq;
+	bool requested_by_client;
+	bool enabled_by_client;
+	bool shared_via_irq_routing;
 	struct irq_affinity_notify notifier;
 };
 
@@ -400,6 +404,7 @@ struct google_pinctrl_irqinfo {
  * @system_suspend_count: System suspend counter
  * @system_resume_count: System resume counter
  * @g_pingroups_fops_stats: Contains counters for GPIO API function calls for each pin group
+ * @pins_rpm_stats: Contains runtime power management calls statistics for each pin
  * @de: DebugFs root directory
  */
 struct google_pinctrl {
@@ -439,8 +444,14 @@ struct google_pinctrl {
 	int rpm_suspend_resume_idx;
 
 	bool suspend_dump_enabled;
+	bool resume_dump_enabled;
+	bool set_check_enabled;
 
 	struct fops_stats *g_pingroups_fops_stats;
+
+	struct pin_rpm_stats *pins_rpm_stats;
+	bool pins_rpm_stats_alloc;
+	raw_spinlock_t pins_rpm_stats_lock;
 
 	struct dentry *de;
 #endif
@@ -463,7 +474,7 @@ int google_pinctrl_probe(struct platform_device *pdev,
  * @pdev: platform device that was passed with google_pinctrl_probe().
  * Returns zero on success else returns a negative error code.
  */
-int google_pinctrl_remove(struct platform_device *pdev);
+void google_pinctrl_remove(struct platform_device *pdev);
 
 int google_pinctrl_trylock(struct google_pinctrl *gctl, unsigned long *flags, bool check_aoc_ssr);
 
@@ -474,7 +485,26 @@ void google_writel(unsigned int reg_offset, u32 val, struct google_pinctrl *gctl
 u32 google_readl(unsigned int reg_offset, struct google_pinctrl *gctl,
 		 const struct google_pingroup *g);
 
-int google_pinctrl_get_csr_pd(struct google_pinctrl *gctl);
-void google_pinctrl_put_csr_pd(struct google_pinctrl *gctl);
+int google_pinctrl_get_csr_pd(struct google_pinctrl *gctl, int pin);
+void google_pinctrl_put_csr_pd(struct google_pinctrl *gctl, int pin);
+int get_reg2offset(u8 reg_num);
+bool google_pinctrl_should_toggle_irq(struct google_pinctrl_irqinfo *info);
+
+/**
+ * google_pinctrl_pin_valid - checks if pin can be accessed from the OS
+ *
+ * @gctl: pin control structure for the platform device.
+ * @pin_nr: pin number to check.
+ *
+ * Returns true if the pin can be accessed or false otherwise.
+ */
+static inline bool google_pinctrl_pin_valid(struct google_pinctrl *gctl, unsigned int pin_nr)
+{
+	return !(gctl->chip.valid_mask && !test_bit(pin_nr, gctl->chip.valid_mask));
+}
+
+void google_pinctrl_aoc_ssr_request(bool start);
+
+void google_pinctrl_trace_init(struct platform_device *pdev);
 
 #endif /* _PINCTRL_GOOGLE_COMMON_H_ */

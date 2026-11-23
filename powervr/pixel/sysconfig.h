@@ -20,7 +20,7 @@
 #include "of.h"
 #include "gpu_uevent.h"
 
-#define FW_ABI_VERSION 33
+#define FW_ABI_VERSION 40
 #define PIXEL_PA_RANGE_16K_PAGE_ABI_VERSION 15
 
 struct pixel_gpu_secure;
@@ -116,6 +116,8 @@ struct pixel_gpu_device {
 	struct pixel_fw_info fw_footer;
 
 	struct gpu_uevent_ctx gpu_uevent_ctx;
+
+	u32 scheduling_max_deferral;
 };
 
 unsigned int get_time_multiplier(void);

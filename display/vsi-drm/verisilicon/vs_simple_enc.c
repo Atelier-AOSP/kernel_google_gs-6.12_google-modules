@@ -3,6 +3,7 @@
  * Copyright (C) 2020 VeriSilicon Holdings Co., Ltd.
  */
 #include <linux/component.h>
+#include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/module.h>
 #include <linux/media-bus-format.h>
@@ -65,6 +66,9 @@ static int encoder_atomic_check(struct drm_encoder *encoder, struct drm_crtc_sta
 	struct vs_crtc_state *vs_crtc_state = to_vs_crtc_state(crtc_state);
 	struct drm_connector *connector = conn_state->connector;
 	struct simple_encoder *simple_enc = to_simple_encoder(encoder);
+	struct drm_display_mode *mode = &crtc_state->adjusted_mode;
+	u32 max_with = simple_enc->priv->max_w;
+	u32 max_height = simple_enc->priv->max_h;
 	int ret = 0;
 	struct drm_bridge *first_bridge = drm_bridge_chain_get_first_bridge(encoder);
 	struct drm_bridge_state *bridge_state = ERR_PTR(-EINVAL);
@@ -114,6 +118,13 @@ static int encoder_atomic_check(struct drm_encoder *encoder, struct drm_crtc_sta
 	if (vs_crtc_state->output_fmt == MEDIA_BUS_FMT_FIXED)
 		vs_crtc_state->output_fmt = MEDIA_BUS_FMT_RGB888_1X24;
 
+	if (max_with || max_height) {
+		if (mode->hdisplay > max_with || mode->vdisplay > max_height) {
+			pr_err("%s the encoder_type %d is not support the display size,max_w:%d, max_h:%d.\n",
+			       __func__, encoder->encoder_type, max_with, max_height);
+			ret = -EINVAL;
+		}
+	}
 	return ret;
 }
 
@@ -206,15 +217,13 @@ static int encoder_probe(struct platform_device *pdev)
 	return component_add(dev, &encoder_component_ops);
 }
 
-static int encoder_remove(struct platform_device *pdev)
+static void encoder_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 
 	component_del(dev, &encoder_component_ops);
 
 	dev_set_drvdata(dev, NULL);
-
-	return 0;
 }
 
 struct platform_driver simple_encoder_driver = {

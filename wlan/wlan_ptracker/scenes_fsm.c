@@ -7,6 +7,7 @@
  * Author: Star Chang <starchang@google.com>
  */
 #include <linux/debugfs.h>
+#include <linux/vmalloc.h>
 #include "core.h"
 
 #define fsm_to_core(fsm) (container_of(fsm, struct wlan_ptracker_core, fsm))

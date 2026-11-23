@@ -43,14 +43,28 @@ KEY_DSTPORT = 'DstPort'
 KEY_SRINST = 'SrcInst'
 KEY_IP_NAME = 'INT'
 
+def get_port_from_dstport(dstport, platform_name):
+  if platform_name.upper() == 'LGA':
+    match_spi = re.match(r'spi_(\d+)_(\d+)\[(\d+)', dstport)
+    if match_spi:
+      return match_spi.groups()[2]
+    else:
+      return 'ERROR'
+
+  # MBU logic, which we will assume works for future platforms
+  match_spi = re.match(r'cpuacc_cpuacc_intr_spi\[(\d+)', dstport)
+  if match_spi:
+    return match_spi.groups()[0]
+
+  return 'ERROR'
 
 def main():
   parser = argparse.ArgumentParser()
   parser.add_argument(dest='csv', type=argparse.FileType('r'),
                       help='Path to the interrupt.csv')
-  parser.add_argument(dest='platform_name',
+  parser.add_argument('-s', '--soc', dest='platform_name', default='MBU',
                       help='Name of the platform')
-  parser.add_argument('--copyright_year', default=datetime.date.today().year,
+  parser.add_argument('-c', '--copyright_year', default=datetime.date.today().year,
                       help='Year of the copyright (default: this year)')
   parser.add_argument('-d', dest='debug', action='store_const',
                       const=True, default=False,
@@ -74,8 +88,8 @@ def main():
                   for i, item in enumerate(line.split(',')) if i < len(names)}
     dstport = interrupts.get(KEY_DSTPORT, '')
 
-    match_spi = re.match(r'spi_(\d*)_(\d*)\[(\d*)', dstport)
-    if not match_spi:
+    port = get_port_from_dstport(dstport, args.platform_name)
+    if port == 'ERROR':
       continue
 
     srinst = interrupts.get(KEY_SRINST, None)
@@ -84,11 +98,9 @@ def main():
     ip_name = interrupts.get(KEY_IP_NAME, None)
     assert ip_name, f'cannot find "{KEY_IP_NAME}" for {interrupts} <- {line}'
 
-    start, _, port = match_spi.groups()
-
     int_name = f'{srinst}_{ip_name}'.upper().removeprefix('U_')
-    logging.debug('%s -> %s with IRQ %d', dstport, int_name, int(start) + int(port))
-    int_defs.append((int_name, int(start) + int(port)))
+    logging.debug('%s -> %s with IRQ %d', dstport, int_name, int(port))
+    int_defs.append((int_name, int(port)))
     max_name_len = max(max_name_len, len(int_name))
 
   for name, nr in sorted(int_defs, key=lambda x: x[1]):

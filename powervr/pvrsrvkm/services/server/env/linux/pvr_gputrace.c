@@ -59,7 +59,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pvrsrv_tlstreams.h"
 #include "tlclient.h"
 #include "tlstream.h"
-#include "pvr_debug.h"
 #if defined(PVRSRV_TRACE_ROGUE_EVENTS)
 #define CREATE_TRACE_POINTS
 #include "rogue_trace_events.h"
@@ -446,7 +445,6 @@ void PVRGpuTraceInitIfEnabled(PVRSRV_DEVICE_NODE *psDeviceNode)
 	if (PVRGpuTraceIsEnabled())
 	{
 		IMG_BOOL bEnable = IMG_FALSE;
-
 		PVRSRV_ERROR eError = PVRGpuTraceSetEnabled(psDeviceNode, IMG_TRUE);
 		if (eError != PVRSRV_OK)
 		{
@@ -699,7 +697,7 @@ static PVRSRV_ERROR _GpuTraceDisable(PVRSRV_RGXDEV_INFO *psRgxDevInfo, IMG_BOOL 
 	{
 		if (psFtraceData->psGPUWorkPeriodTimestampHash != NULL)
 		{
-			(void)HASH_Iterate(psFtraceData->psGPUWorkPeriodTimestampHash, (HASH_pfnCallback)_DeleteGPUWorkPeriodHashEntries, NULL);
+			(void)HASH_Iterate(psFtraceData->psGPUWorkPeriodTimestampHash, (HASH_pfnCallback)_DeleteHashEntries, psFtraceData->psGPUWorkPeriodTimestampHash);
 			HASH_Delete(psFtraceData->psGPUWorkPeriodTimestampHash);
 			psFtraceData->psGPUWorkPeriodTimestampHash = NULL;
 		}
@@ -951,6 +949,7 @@ static void _GpuTraceEventsLost(
 #endif /* defined(PVRSRV_TRACE_ROGUE_EVENTS) */
 
 #if defined(PVRSRV_TRACE_ROGUE_EVENTS) || defined(PVRSRV_ANDROID_TRACE_GPU_WORK_PERIOD)
+
 /* Calculate the OS timestamp given an RGX timestamp in the HWPerf event. */
 #if defined(SUPPORT_SOC_TIMER)
 static void CalculateEventSocTimestampDelta(PVRSRV_RGXDEV_INFO *psDevInfo)
@@ -1030,7 +1029,9 @@ static uint64_t CalculateEventTimestamp(
 	uint32_t ui32TimeCorrIndex,
 	RGX_HWPERF_EVENT_TYPE eType,
 	uint64_t ui64EventTimestamp,
-	uint32_t ui32UID)
+	uint32_t ui32UID,
+	uint32_t ui32Ordinal,
+	bool     bApplyTimestampCheck)
 {
 	RGXFWIF_GPU_UTIL_FW *psGpuUtilFW = psDevInfo->psRGXFWIfGpuUtilFW;
 	RGX_HWPERF_FTRACE_DATA *psFtraceData = psDevInfo->pvGpuFtraceData;
@@ -1039,7 +1040,6 @@ static uint64_t CalculateEventTimestamp(
 	uint64_t ui64OSTimeStamp;
 	uint64_t ui64CRDeltaToOSDeltaKNs;
 	uint64_t ui64EventOSTimestamp, deltaRgxTimer, delta_ns;
-	uint64_t ui64LastSampledTimeCorrOSTimeStamp;
 	uint64_t ui64Key;
 
 	ui64Key = ((uint64_t)ui32UID << 32);
@@ -1066,33 +1066,71 @@ static uint64_t CalculateEventTimestamp(
 		PVR_DPF((PVR_DBG_ERROR, "%s can't handle hwperf packet type %d", __func__, eType));
 	}
 
-	RGXFwSharedMemCacheOpValue(psGpuUtilFW->sTimeCorr[ui32TimeCorrIndex], INVALIDATE);
-	psTimeCorr = &psGpuUtilFW->sTimeCorr[ui32TimeCorrIndex];
+	RGXFwSharedMemCacheOpValue(psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(ui32TimeCorrIndex)], INVALIDATE);
+	psTimeCorr = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(ui32TimeCorrIndex)];
+
 	ui64CRTimeStamp = psTimeCorr->ui64CRTimeStamp;
 	/* This is configurable using the AppHint 'SecondaryTimerCorrOSClockSource'
 	 * and can be: sched, mono, mono_raw. */
 	ui64OSTimeStamp = psTimeCorr->ui64OSTimeStamp;
 	ui64CRDeltaToOSDeltaKNs = psTimeCorr->ui64CRDeltaToOSDeltaKNs;
 
-	if (ui32UID != UID_INVALID && psFtraceData->psTimestampHash != NULL)
+	if (ui32UID != UID_INVALID && psFtraceData->psTimestampHash != NULL && bApplyTimestampCheck)
 	{
-		ui64LastSampledTimeCorrOSTimeStamp = HASH_Retrieve(psFtraceData->psTimestampHash, ui64Key);
-
-		if (ui64LastSampledTimeCorrOSTimeStamp > ui64OSTimeStamp)
+		typedef struct {
+			IMG_UINT64 ui64OSTimestamp;
+			IMG_UINT32 ui32Ordinal;
+			IMG_UINT16 ui16Index;
+			IMG_UINT16 ui16Type;
+		} sTimestampHashEntry;
+		sTimestampHashEntry *psTmp;
+		psTmp = (sTimestampHashEntry*)HASH_Remove(psFtraceData->psTimestampHash, ui64Key);
+		if (psTmp == NULL)
 		{
-			/* The previous packet had a time reference (time correlation data) more
-			 * recent than the one in the current packet, it means the timer
-			 * correlation array wrapped too quickly (buffer too small) and in the
-			 * previous call to _GpuTraceUfoEvent we read one of the
-			 * newest timer correlations rather than one of the oldest ones.
-			 */
-			PVR_DPF((PVR_DBG_ERROR, "%s: The timestamps computed so far could be "
-				 "wrong! The time correlation array size should be increased "
-				 "to avoid this.", __func__));
+			psTmp = OSAllocZMem(sizeof(sTimestampHashEntry));
+			if (unlikely(psTmp == NULL))
+			{
+				PVR_DPF((PVR_DBG_ERROR, "Failed to allocate timestamp hash"));
+			}
+		}
+		else
+		{
+			if (psTmp->ui64OSTimestamp > ui64OSTimeStamp)
+			{
+				RGXFWIF_TIME_CORR *psTimeCorr0, *psTimeCorr1, *psTimeCorr2;
+
+				/* The previous packet had a time reference (time correlation data) more
+				 * recent than the one in the current packet, it means the timer
+				 * correlation array wrapped too quickly (buffer too small) and in the
+				 * previous call to _GpuTraceUfoEvent we read one of the
+				 * newest timer correlations rather than one of the oldest ones.
+				 */
+				PVR_DPF((PVR_DBG_ERROR, "%s: The timestamps computed so far could be "
+					"wrong! The time correlation array size should be increased "
+					"to avoid this. OSTimestamps (%llu:%llu) Packet Type (%u:%u) Ordinals (%u:%u) TimeCorrelationIndices (%u:%u)", __func__,
+					psTmp->ui64OSTimestamp, ui64OSTimeStamp,
+					psTmp->ui16Type, eType,
+					psTmp->ui32Ordinal, ui32Ordinal,
+					psTmp->ui16Index, ui32TimeCorrIndex));
+
+				psTimeCorr0 = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(psTmp->ui16Index)];
+				psTimeCorr1 = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(ui32TimeCorrIndex)];
+				psTimeCorr2 = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(psGpuUtilFW->ui32TimeCorrSeqCount)];
+
+				PVR_DPF((PVR_DBG_ERROR, "%s: LastCorrelationIndex         (%u) OSTimestamp (%llu) CRTimestamp (%llu)", __func__, psTmp->ui16Index, psTimeCorr0->ui64OSTimeStamp, psTimeCorr0->ui64CRTimeStamp));
+				PVR_DPF((PVR_DBG_ERROR, "%s: CurrentCorrelationIndex      (%u) OSTimestamp (%llu) CRTimestamp (%llu)", __func__, ui32TimeCorrIndex, psTimeCorr1->ui64OSTimeStamp, psTimeCorr1->ui64CRTimeStamp));
+				PVR_DPF((PVR_DBG_ERROR, "%s: CurrentCorrelationTableEntry (%u) OSTimestamp (%llu) CRTimestamp (%llu)", __func__, psGpuUtilFW->ui32TimeCorrSeqCount, psTimeCorr2->ui64OSTimeStamp, psTimeCorr2->ui64CRTimeStamp));
+			}
 		}
 
-		HASH_Remove(psFtraceData->psTimestampHash, ui64Key);
-		HASH_Insert(psFtraceData->psTimestampHash, ui64Key, ui64OSTimeStamp);
+		if (psTmp)
+		{
+			psTmp->ui64OSTimestamp = ui64OSTimeStamp;
+			psTmp->ui32Ordinal = ui32Ordinal;
+			psTmp->ui16Index = ui32TimeCorrIndex;
+			psTmp->ui16Type = eType;
+			HASH_Insert(psFtraceData->psTimestampHash, ui64Key, (uintptr_t)psTmp);
+		}
 	}
 
 	/* RGX CR timer ticks delta */
@@ -1115,14 +1153,17 @@ static uint64_t CalculateWorkPeriodTimestamp(
 	uint32_t ui32TimeCorrIndex,
 	RGX_HWPERF_EVENT_TYPE eType,
 	uint64_t ui64EventTimestamp,
-	uint32_t ui32UID)
+	uint32_t ui32UID,
+	uint32_t ui32Ordinal,
+	bool     bApplyTimestampCheck)
 {
 #if defined(SUPPORT_SOC_TIMER)
 	return CalculateEventSocTimestamp(psDevInfo, ui32TimeCorrIndex, eType,
-					  ui64EventTimestamp, ui32UID);
+	                                  ui64EventTimestamp, ui32UID);
 #else
 	return CalculateEventTimestamp(psDevInfo, ui32TimeCorrIndex, eType,
-					  ui64EventTimestamp, ui32UID);
+	                               ui64EventTimestamp, ui32UID,
+	                               ui32Ordinal, bApplyTimestampCheck);
 #endif /* defined(SUPPORT_SOC_TIMER) */
 }
 #endif /* defined(PVRSRV_ANDROID_TRACE_GPU_WORK_PERIOD) */
@@ -1228,7 +1269,7 @@ static void _GpuTraceSwitchEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 				psHWPerfPktData->ui32TimeCorrIndex,
 				RGX_HWPERF_GET_TYPE(psHWPerfPkt),
 				psHWPerfPkt->ui64Timestamp,
-				ui32UID);
+				ui32UID, psHWPerfPkt->ui32Ordinal, true);
 
 			_GpuTraceWorkSwitch(ui64Timestamp,
 				psDevInfo->psDeviceNode->sDevId.ui32InternalID,
@@ -1267,7 +1308,7 @@ static void _GpuTraceUfoEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 	}
 
 	ui64Timestamp = CalculateEventTimestamp(psDevInfo, psHWPerfPktData->ui32TimeCorrIndex, RGX_HWPERF_GET_TYPE(psHWPerfPkt),
-											psHWPerfPkt->ui64Timestamp, ui32UID);
+											psHWPerfPkt->ui64Timestamp, ui32UID, psHWPerfPkt->ui32Ordinal, true);
 
 	PVR_DPF((PVR_DBG_VERBOSE, "_GpuTraceUfoEvent: ui32ExtJobRef=%d, "
 	        "ui32IntJobRef=%d", psHWPerfPktData->ui32ExtJobRef,
@@ -1288,7 +1329,7 @@ static void _GpuTraceFirmwareEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 	RGX_HWPERF_FW_DATA *psHWPerfPktData = RGX_HWPERF_GET_PACKET_DATA_BYTES(psHWPerfPkt);
 
 	ui64Timestamp = CalculateEventTimestamp(psDevInfo, psHWPerfPktData->ui32TimeCorrIndex, RGX_HWPERF_GET_TYPE(psHWPerfPkt),
-											psHWPerfPkt->ui64Timestamp, UID_INVALID);
+											psHWPerfPkt->ui64Timestamp, UID_INVALID, psHWPerfPkt->ui32Ordinal, true);
 
 	_GpuTraceFirmware(ui64Timestamp, psDevInfo->psDeviceNode->sDevId.ui32InternalID, pszWorkName,
 	                  eSwType);
@@ -1518,13 +1559,17 @@ static IMG_BOOL ValidAndEmitFTraceEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 	{
 		RGX_HWPERF_GPU_WORK_PERIOD_DATA *psHWPerfPktData;
 		IMG_UINT64 ui64StartTimestamp, ui64EndTimestamp;
-#if defined(FIX_TIMESTAMPS_392109985)
-		RGX_HWPERF_FTRACE_DATA *psFtraceData = psDevInfo->pvGpuFtraceData;
 		RGXFWIF_TIME_CORR *psStartTimeCorr, *psEndTimeCorr;
 		RGXFWIF_GPU_UTIL_FW *psGpuUtilFW;
-		IMG_UINT64 ui64LastDeviceOffHostTimestampNsAdj;
+#if defined(FIX_TIMESTAMPS_392109985)
+		RGX_HWPERF_FTRACE_DATA *psFtraceData = psDevInfo->pvGpuFtraceData;
+		IMG_UINT64 ui64StartTimestampAdj = psDevInfo->psDeviceNode->ui64LastDeviceOffHostTimestampNs;
+		IMG_UINT64 ui64EndTimestampAdj = psDevInfo->psDeviceNode->ui64LastDeviceOffHostTimestampNs;
 #endif
 		psHWPerfPktData = RGX_HWPERF_GET_PACKET_DATA_BYTES(psHWPerfPkt);
+		psGpuUtilFW = psDevInfo->psRGXFWIfGpuUtilFW;
+		psStartTimeCorr = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(psHWPerfPktData->ui32StartTimeCorrIndex)];
+		psEndTimeCorr = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(psHWPerfPktData->ui32TimeCorrIndex)];
 
 #if defined(FIX_TIMESTAMPS_392109985)
 #if (!defined(PVR_ARCH_ROGUE) && defined(SUPPORT_SOC_TIMER))
@@ -1540,47 +1585,69 @@ static IMG_BOOL ValidAndEmitFTraceEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 #endif
 		{
 #if defined(FIX_TIMESTAMPS_392109985)
-			psGpuUtilFW = psDevInfo->psRGXFWIfGpuUtilFW;
-			ui64LastDeviceOffHostTimestampNsAdj = psDevInfo->psDeviceNode->ui64LastDeviceOffHostTimestampNs;
+			if (psStartTimeCorr->ui64CRTimeStamp > psHWPerfPktData->ui64GPUWorkPeriodStartTime)
+			{
+				psStartTimeCorr = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(psHWPerfPktData->ui32StartTimeCorrIndex + RGXFWIF_TIME_CORR_ARRAY_SIZE - 1)];
+				if (psStartTimeCorr->ui64CRTimeStamp != 0 && psStartTimeCorr->ui64CRTimeStamp <= psHWPerfPktData->ui64GPUWorkPeriodStartTime)
+				{
+					psHWPerfPktData->ui32StartTimeCorrIndex = RGXFWIF_TIME_CORR_CURR_INDEX(psHWPerfPktData->ui32StartTimeCorrIndex + RGXFWIF_TIME_CORR_ARRAY_SIZE - 1);
+				}
+				else
+				{
+					psStartTimeCorr = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(psHWPerfPktData->ui32StartTimeCorrIndex)];
+					psHWPerfPktData->ui64GPUWorkPeriodStartTime = psStartTimeCorr->ui64CRTimeStamp;
+				}
+			}
 #endif
 			ui64StartTimestamp = CalculateWorkPeriodTimestamp(psDevInfo,
 					psHWPerfPktData->ui32StartTimeCorrIndex,
 					RGX_HWPERF_TRACE_EVENT_GPU_WORK_PERIOD,
 					psHWPerfPktData->ui64GPUWorkPeriodStartTime,
-					psHWPerfPktData->ui32UID);
+					psHWPerfPktData->ui32UID, psHWPerfPkt->ui32Ordinal, false);
+
+			if (psEndTimeCorr->ui64CRTimeStamp > psHWPerfPkt->ui64Timestamp)
+			{
+				psEndTimeCorr = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(psHWPerfPktData->ui32TimeCorrIndex + RGXFWIF_TIME_CORR_ARRAY_SIZE - 1)];
+				if (psEndTimeCorr->ui64CRTimeStamp != 0 && psEndTimeCorr->ui64CRTimeStamp <= psHWPerfPkt->ui64Timestamp)
+				{
+					psHWPerfPktData->ui32TimeCorrIndex = RGXFWIF_TIME_CORR_CURR_INDEX(psHWPerfPktData->ui32TimeCorrIndex + RGXFWIF_TIME_CORR_ARRAY_SIZE - 1);
+				}
+				else
+				{
+					psEndTimeCorr = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(psHWPerfPktData->ui32TimeCorrIndex)];
+					psHWPerfPkt->ui64Timestamp = psEndTimeCorr->ui64CRTimeStamp;
+				}
+			}
 			ui64EndTimestamp = CalculateWorkPeriodTimestamp(psDevInfo,
 					psHWPerfPktData->ui32TimeCorrIndex,
 					RGX_HWPERF_TRACE_EVENT_GPU_WORK_PERIOD,
 					psHWPerfPkt->ui64Timestamp,
-					psHWPerfPktData->ui32UID);
+					psHWPerfPktData->ui32UID, psHWPerfPkt->ui32Ordinal, false);
 
 #if !defined(FIX_TIMESTAMPS_392109985)
 		PVR_ASSERT(ui64EndTimestamp > ui64StartTimestamp);
 #else
-			ui64StartTimestamp += ui64LastDeviceOffHostTimestampNsAdj;
-			ui64EndTimestamp += ui64LastDeviceOffHostTimestampNsAdj;
+			ui64StartTimestamp += ui64StartTimestampAdj;
+			ui64EndTimestamp += ui64EndTimestampAdj;
 
 			if (ui64EndTimestamp > ui64StartTimestamp)
 			{
 				if (ui64EndTimestamp - ui64StartTimestamp >= ONE_SEC_IN_NSECS &&
 				    psHWPerfPktData->ui32StartTimeCorrIndex != psHWPerfPktData->ui32TimeCorrIndex)
 				{
-					PVR_DPF((PVR_DBG_VERBOSE, "DVFS is detected in the middle of a workload"));
+					PVR_DPF((PVR_DBG_VERBOSE, "End timestamp adjustment for frequency drift causing gpu_work_period larger than 1sec ! (%llu:%llu)", ui64StartTimestamp, ui64EndTimestamp));
 					psHWPerfPktData->ui32TimeCorrIndex = psHWPerfPktData->ui32StartTimeCorrIndex;
 					psEndTimeCorr = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(psHWPerfPktData->ui32TimeCorrIndex)];
 					ui64EndTimestamp = CalculateEventTimestamp(psDevInfo,
 						psHWPerfPktData->ui32TimeCorrIndex,
 						RGX_HWPERF_TRACE_EVENT_GPU_WORK_PERIOD,
 						psHWPerfPkt->ui64Timestamp,
-						psHWPerfPktData->ui32UID);
-					ui64EndTimestamp += ui64LastDeviceOffHostTimestampNsAdj;
+						psHWPerfPktData->ui32UID, psHWPerfPkt->ui32Ordinal, false);
+					ui64EndTimestamp += ui64EndTimestampAdj;
 				}
 			}
 			else
 			{
-				psStartTimeCorr = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(psHWPerfPktData->ui32StartTimeCorrIndex)];
-				psEndTimeCorr = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(psHWPerfPktData->ui32TimeCorrIndex)];
-
 				if (psHWPerfPktData->ui64GPUWorkPeriodStartTime > psHWPerfPkt->ui64Timestamp ||
 				    psStartTimeCorr->ui64CRTimeStamp > psEndTimeCorr->ui64CRTimeStamp)
 				{
@@ -1588,16 +1655,17 @@ static IMG_BOOL ValidAndEmitFTraceEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 					PVR_DPF((PVR_DBG_ERROR, "APM is detected in the middle of a workload!"));
 					psHWPerfPktData->ui32TimeCorrIndex = psHWPerfPktData->ui32StartTimeCorrIndex;
 					psEndTimeCorr = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(psHWPerfPktData->ui32TimeCorrIndex)];
+					psHWPerfPkt->ui64Timestamp += psDevInfo->psDeviceNode->ui64LastDeviceOffTimestamp;
 					ui64EndTimestamp = CalculateEventTimestamp(psDevInfo,
 						psHWPerfPktData->ui32TimeCorrIndex,
 						RGX_HWPERF_TRACE_EVENT_GPU_WORK_PERIOD,
-						psHWPerfPkt->ui64Timestamp + psDevInfo->psDeviceNode->ui64LastDeviceOffTimestamp,
-						psHWPerfPktData->ui32UID);
-					ui64EndTimestamp += ui64LastDeviceOffHostTimestampNsAdj;
+						psHWPerfPkt->ui64Timestamp,
+						psHWPerfPktData->ui32UID, psHWPerfPkt->ui32Ordinal, false);
+					ui64EndTimestampAdj = 0;
 				}
 				else if (psHWPerfPktData->ui32StartTimeCorrIndex != psHWPerfPktData->ui32TimeCorrIndex)
 				{
-					PVR_DPF((PVR_DBG_VERBOSE, "DVFS is detected in the middle of a workload"));
+					PVR_DPF((PVR_DBG_VERBOSE, "End timestamp adjustment for frequency drift !"));
 					/* Adjustment for DVFS in the middle of a workload */
 					psHWPerfPktData->ui32TimeCorrIndex = psHWPerfPktData->ui32StartTimeCorrIndex;
 					psEndTimeCorr = &psGpuUtilFW->sTimeCorr[RGXFWIF_TIME_CORR_CURR_INDEX(psHWPerfPktData->ui32TimeCorrIndex)];
@@ -1605,8 +1673,8 @@ static IMG_BOOL ValidAndEmitFTraceEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 						psHWPerfPktData->ui32TimeCorrIndex,
 						RGX_HWPERF_TRACE_EVENT_GPU_WORK_PERIOD,
 						psHWPerfPkt->ui64Timestamp,
-						psHWPerfPktData->ui32UID);
-					ui64EndTimestamp += ui64LastDeviceOffHostTimestampNsAdj;
+						psHWPerfPktData->ui32UID, psHWPerfPkt->ui32Ordinal, false);
+					ui64EndTimestamp += ui64EndTimestampAdj;
 				}
 				else
 				{
@@ -1615,8 +1683,14 @@ static IMG_BOOL ValidAndEmitFTraceEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 
 				if (ui64EndTimestamp < ui64StartTimestamp)
 				{
-					PVR_DPF((PVR_DBG_ERROR, "Non monotonic gpu_work_period."
-					"(OSTimestamp(%llu:%llu) CRTimsstamp(%llu %llu)) (Correlation entries Index:(%d:%d) OSTimeStamp:(%llu %llu) CRTimestamp:(%llu %llu) Clks:(%u:%u))",
+					PVR_DPF((PVR_DBG_ERROR,
+						"Non monotonic gpu_work_period."
+						" (OSTimestamp(%" IMG_UINT64_FMTSPEC ":%" IMG_UINT64_FMTSPEC ")"
+						" CRTimsstamp(%" IMG_UINT64_FMTSPEC " %" IMG_UINT64_FMTSPEC "))"
+						" (Correlation entries Index:(%d:%d)"
+						" OSTimeStamp:(%" IMG_UINT64_FMTSPEC " %" IMG_UINT64_FMTSPEC ")"
+						" CRTimestamp:(%" IMG_UINT64_FMTSPEC " %" IMG_UINT64_FMTSPEC ")"
+						" Clks:(%u:%u))",
 						ui64StartTimestamp, ui64EndTimestamp,
 						psHWPerfPktData->ui64GPUWorkPeriodStartTime, psHWPerfPkt->ui64Timestamp,
 						psHWPerfPktData->ui32StartTimeCorrIndex, psHWPerfPktData->ui32TimeCorrIndex,
@@ -1625,6 +1699,20 @@ static IMG_BOOL ValidAndEmitFTraceEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 						psStartTimeCorr->ui32CoreClockSpeed, psEndTimeCorr->ui32CoreClockSpeed));
 				}
 			}
+
+			ui64StartTimestamp = CalculateEventTimestamp(psDevInfo,
+					psHWPerfPktData->ui32StartTimeCorrIndex,
+					RGX_HWPERF_TRACE_EVENT_GPU_WORK_PERIOD,
+					psHWPerfPktData->ui64GPUWorkPeriodStartTime,
+					psHWPerfPktData->ui32UID, psHWPerfPkt->ui32Ordinal, true);
+			ui64EndTimestamp = CalculateEventTimestamp(psDevInfo,
+					psHWPerfPktData->ui32TimeCorrIndex,
+					RGX_HWPERF_TRACE_EVENT_GPU_WORK_PERIOD,
+					psHWPerfPkt->ui64Timestamp,
+					psHWPerfPktData->ui32UID, psHWPerfPkt->ui32Ordinal, true);
+
+			ui64StartTimestamp += ui64StartTimestampAdj;
+			ui64EndTimestamp += ui64EndTimestampAdj;
 
 			if (psFtraceData->psGPUWorkPeriodTimestampHash != NULL)
 			{
@@ -1670,8 +1758,14 @@ static IMG_BOOL ValidAndEmitFTraceEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 
 						if (psTmp->ui64LastEndOSTimestamp > ui64StartTimestamp)
 						{
-							PVR_DPF((PVR_DBG_ERROR, "Last end timestamp > Current start timestamp for UID %u "
-								"(OSTimestamp(%llu:%llu) CRTimsstamp(%llu %llu)) (Correlation entries Index:(%d:%d) OSTimeStamp:(%llu %llu) CRTimestamp:(%llu %llu) Clks:(%u:%u))",
+							PVR_DPF((PVR_DBG_ERROR,
+								"Last end timestamp > Current start timestamp for UID %u "
+								"(OSTimestamp(%" IMG_UINT64_FMTSPEC ":%" IMG_UINT64_FMTSPEC ")"
+								" CRTimsstamp(%" IMG_UINT64_FMTSPEC " %" IMG_UINT64_FMTSPEC "))"
+								" (Correlation entries Index:(%d:%d)"
+								" OSTimeStamp:(%" IMG_UINT64_FMTSPEC " %" IMG_UINT64_FMTSPEC ")"
+								" CRTimestamp:(%" IMG_UINT64_FMTSPEC " %" IMG_UINT64_FMTSPEC ")"
+								" Clks:(%u:%u))",
 								psHWPerfPktData->ui32UID,
 								psTmp->ui64LastEndOSTimestamp, ui64StartTimestamp,
 								psTmp->ui64LastEndCRTimestamp, psHWPerfPktData->ui64GPUWorkPeriodStartTime,
@@ -1699,25 +1793,31 @@ static IMG_BOOL ValidAndEmitFTraceEvent(PVRSRV_RGXDEV_INFO *psDevInfo,
 			}
 		}
 
-		if (ui64StartTimestamp == 0 || ui64EndTimestamp == 0 || ui64StartTimestamp >= ui64EndTimestamp)
+		if (ui64StartTimestamp != 0 && ui64EndTimestamp != 0 &&
+			ui64StartTimestamp < ui64EndTimestamp)
 		{
-			PVR_DPF((PVR_DBG_ERROR, "Invalid start %llu, end %llu timestamps", ui64StartTimestamp, ui64EndTimestamp));
-		}
+			do {
+				const IMG_UINT64 ui64RemainingTimestamp =
+					ui64EndTimestamp - ui64StartTimestamp;
+				const IMG_UINT64 ui64ActiveDuration =
+					ui64RemainingTimestamp > ONE_SEC_IN_NSECS ?
+						ONE_SEC_IN_NSECS : ui64RemainingTimestamp;
 
-		for (IMG_UINT64 adj_start = ui64StartTimestamp; adj_start < ui64EndTimestamp; adj_start += ONE_SEC_IN_NSECS)
-		{
-			IMG_UINT64 adj_end = ui64EndTimestamp;
-
-			if ((adj_end - adj_start) > ONE_SEC_IN_NSECS)
-			{
-				adj_end = adj_start + ONE_SEC_IN_NSECS;
-			}
-
-			trace_gpu_work_period(psDevInfo->psDeviceNode->sDevId.ui32InternalID,
+				trace_gpu_work_period(psDevInfo->psDeviceNode->sDevId.ui32InternalID,
 					psHWPerfPktData->ui32UID,
 					ui64StartTimestamp,
-					ui64EndTimestamp,
-					ui64EndTimestamp - ui64StartTimestamp);
+					ui64StartTimestamp + ui64ActiveDuration,
+					ui64ActiveDuration);
+
+				ui64StartTimestamp += ui64ActiveDuration;
+			} while (ui64StartTimestamp < ui64EndTimestamp);
+		}
+		else
+		{
+			PVR_DPF((PVR_DBG_ERROR, "Invalid start %" IMG_UINT64_FMTSPEC
+				", end %" IMG_UINT64_FMTSPEC " timestamps",
+				ui64StartTimestamp, ui64EndTimestamp));
+		}
 #endif /* defined(FIX_TIMESTAMPS_392109985) */
 		}
 #if !defined(FIX_TIMESTAMPS_392109985)

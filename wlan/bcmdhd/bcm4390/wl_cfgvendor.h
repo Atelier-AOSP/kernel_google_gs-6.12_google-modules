@@ -30,6 +30,7 @@
 #define _wl_cfgvendor_h_
 #define OUI_BRCM 0x001018
 #define OUI_GOOGLE 0x001A11
+#define OUI_SYNA 0x90CC24
 #define BRCM_VENDOR_SUBCMD_PRIV_STR 1
 #define ATTRIBUTE_U16_LEN (NLA_HDRLEN + 2)
 #define ATTRIBUTE_U32_LEN (NLA_HDRLEN + 4)
@@ -41,6 +42,8 @@
 #define MAX_CACHED_SCAN_RESULT 20u
 #define WL_SCAN_DBG(x) WL_TRACE(x)
 
+#include <wifi_stats.h>
+
 enum brcm_vendor_attr {
 	BRCM_ATTR_DRIVER_CMD		= 0,
 	BRCM_ATTR_DRIVER_KEY_PMK	= 1,
@@ -48,7 +51,8 @@ enum brcm_vendor_attr {
 	BRCM_ATTR_DRIVER_RAND_MAC	= 3,
 	BRCM_ATTR_SAE_PWE		= 4,
 	BRCM_ATTR_TD_POLICY		= 5,
-	BRCM_ATTR_DRIVER_MAX		= 6
+	BRCM_ATTR_DRIVER_KEY_PMKID	= 6,
+	BRCM_ATTR_DRIVER_MAX		= 7
 };
 
 enum brcm_wlan_vendor_features {
@@ -775,7 +779,10 @@ typedef enum wl_vendor_event {
 	GOOGLE_NAN_EVENT_PAIRING_END = 52,
 	GOOGLE_NAN_EVENT_BOOTSTRAPPING_REQ_IND = 53,
 	GOOGLE_NAN_EVENT_BOOTSTRAPPING_CONFIRM = 54,
-	BRCM_VENDOR_EVENT_LAST
+	SYNA_VENDOR_EVENT_SCHED_PM = 56,
+	SYNA_VENDOR_EVENT_TID_LINK_MAPPING = 57,
+	SYNA_VENDOR_EVENT_CSI_REPORT = 58,
+	VENDOR_EVENT_LAST
 } wl_vendor_event_t;
 
 enum andr_wifi_attr {
@@ -961,6 +968,65 @@ typedef enum {
 	WIFI_UTCTIME_USEC               = 3
 } softap_tsfinfo_attribute;
 #endif /* BCN_TSFINFO */
+
+#ifdef WL_TWT
+typedef enum {
+	WIFI_TWT_EVENT_SETUP	= 1,
+	WIFI_TWT_EVENT_TEARDOWN	= 2,
+	WIFI_TWT_EVENT_INFO_FRM	= 3,
+	WIFI_TWT_EVENT_NOTIFY	= 4
+} wifi_twt_sub_event;
+
+typedef enum {
+	WIFI_TWT_ATTR_NONE		= 0,
+	WIFI_TWT_ATTR_SUB_EVENT		= 1,
+	WIFI_TWT_ATTR_REASON_CODE	= 2,
+	WIFI_TWT_ATTR_STATUS		= 3,
+	WIFI_TWT_ATTR_SETUP_CMD		= 4,
+	WIFI_TWT_ATTR_FLOW_FLAGS	= 5,
+	WIFI_TWT_ATTR_FLOW_ID		= 6,
+	WIFI_TWT_ATTR_CHANNEL		= 7,
+	WIFI_TWT_ATTR_NEGOTIATION_TYPE	= 8,
+	WIFI_TWT_ATTR_WAKETIME_H	= 9,
+	WIFI_TWT_ATTR_WAKETIME_L	= 10,
+	WIFI_TWT_ATTR_WAKE_DURATION	= 11,
+	WIFI_TWT_ATTR_WAKE_INTERVAL	= 12,
+	WIFI_TWT_ATTR_BID		= 13,
+	WIFI_TWT_ATTR_ALLTWT		= 14,
+	WIFI_TWT_ATTR_NEXT_TWT_H	= 15,
+	WIFI_TWT_ATTR_NEXT_TWT_L	= 16,
+	WIFI_TWT_ATTR_CONFIG_ID		= 17,
+	WIFI_TWT_ATTR_NOTIFICATION	= 18,
+	WIFI_TWT_ATTR_FLOW_TYPE		= 19,
+	WIFI_TWT_ATTR_TRIGGER_TYPE	= 20,
+
+	WIFI_TWT_ATTR_MAX
+} wifi_twt_attribute;
+#endif /* WL_TWT */
+
+#ifdef WLSCHED_PM
+typedef enum {
+	WIFI_SCHED_PM_ATTR_NONE		= 0,
+	WIFI_SCHED_PM_ATTR_SUB_EVENT	= 1,
+	WIFI_SCHED_PM_ATTR_REASON_CODE	= 2,
+	WIFI_SCHED_PM_ATTR_STATUS	= 3,
+	WIFI_SCHED_PM_ATTR_EVENT_ID	= 4,
+	WIFI_SCHED_PM_ATTR_MAX
+} wifi_sched_pm_attribute;
+#endif /* WLSCHED_PM */
+
+typedef enum {
+	WIFI_CSI_REPORT_ATTR_VERSION     = 0,
+	WIFI_CSI_REPORT_ATTR_DATA_VER_1  = 1
+} wifi_csi_report_attribute_t;
+
+typedef enum {
+	WIFI_TID_LINK_MAPPING_ATTR_DEFAULT_MAPPING  = 0,
+	WIFI_TID_LINK_MAPPING_ATTR_NUM_LINKS        = 1,
+	WIFI_TID_LINK_MAPPING_ATTR_LINK_ID          = 2,
+	WIFI_TID_LINK_MAPPING_ATTR_STATUS           = 3,
+	WIFI_TID_LINK_MAPPING_ATTR_MAX
+} wifi_tid_link_map_attribute;
 
 typedef enum {
 	/**
@@ -1168,15 +1234,15 @@ extern int wl_cfgvendor_send_supp_advlog(const char *fmt, ...);
 		} \
 	} while (0)
 
-#define COMPAT_MEMCOPY_IFACE(output, total_len, normal_structure, value, wifi_rate_stat)	\
+#define COMPAT_MEMCOPY_IFACE(output, total_len, normal_structure, value)	\
 	do { \
 		if (compat_task_state) {	\
 			memcpy(output, &compat_ ## value, sizeof(compat_ ## normal_structure));	\
-			output += (sizeof(compat_ ## value) - sizeof(wifi_rate_stat));	\
+			output += sizeof(compat_ ## value);	\
 			total_len += sizeof(compat_ ## normal_structure);	\
 		} else { \
 			memcpy(output, &value, sizeof(normal_structure));	\
-			output += (sizeof(value) - sizeof(wifi_rate_stat));	\
+			output += sizeof(value);	\
 			total_len += sizeof(normal_structure);	\
 		} \
 	} while (0)
@@ -1184,10 +1250,10 @@ extern int wl_cfgvendor_send_supp_advlog(const char *fmt, ...);
 #define COMPAT_STRUCT_IFACE(normal_structure, value)	normal_structure value;
 #define COMPAT_BZERO_IFACE(normal_structure, value)	bzero(&value, sizeof(normal_structure));
 #define COMPAT_ASSIGN_VALUE(normal_structure, member, value)	normal_structure.member = value;
-#define COMPAT_MEMCOPY_IFACE(output, total_len, normal_structure, value, rate_stat)	\
+#define COMPAT_MEMCOPY_IFACE(output, total_len, normal_structure, value)	\
 	do { \
 		memcpy(output, &value, sizeof(normal_structure));	\
-		output += (sizeof(value) - sizeof(wifi_rate_stat));	\
+		output += sizeof(value);	\
 		total_len += sizeof(normal_structure);	\
 	} while (0)
 #endif /* CONFIG_COMPAT */
@@ -1247,6 +1313,8 @@ int wl_cfgtwt_session_resume(struct wiphy *wiphy,
 	struct wireless_dev *wdev, const void  *data, int len);
 #endif /* !WL_TWT && WL_TWT_HAL_IF */
 
+extern void fill_chanspec_to_channel_info(chanspec_t cur_chanspec,
+        wifi_channel_info *channel, int *cur_band);
 extern int wl_cfgvendor_multista_set_primary_connection(struct wiphy *wiphy,
 	struct wireless_dev *wdev, const void  *data, int len);
 
@@ -1267,4 +1335,5 @@ typedef enum {
 	ANDR_WIFI_ATTRIBUTE_CACHED_SCAN_RESULTS                 = 5,
 	ANDR_WIFI_ATTRIBUTE_CACHED_SCAN_MAX
 } wifi_cached_scan_attributes;
+
 #endif /* _wl_cfgvendor_h_ */

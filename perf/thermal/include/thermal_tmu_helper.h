@@ -62,6 +62,11 @@ enum tmu_trip_type {
 	TMU_TRIP_TYPE_MAX,
 };
 
+struct tmu_temp_state_st {
+	u32 temp;
+	u32 state;
+};
+
 struct tmu_sensor_data {
 	s32				polling_delay_ms;
 	struct tmu_gradual_param	gradual_param;
@@ -71,6 +76,9 @@ struct tmu_sensor_data {
 	unsigned long			gov_select;
 	struct device_attribute		dev_attr_trip_counter;
 	bool				skip_junction_offset;
+	enum hw_thermal_zone_id		hw_tzid;
+	u32				temp_state_table_len;
+	struct tmu_temp_state_st	*temp_state_table;
 };
 
 /* private functions */
@@ -87,12 +95,12 @@ int __thermal_tmu_gov_gradual_init(struct device *dev, u8 tz_id, struct tmu_sens
 int __thermal_tmu_gov_pi_init(struct device *dev, u8 tz_id, struct tmu_sensor_data *data);
 int __thermal_tmu_gov_early_throttle_init(struct device *dev, u8 tz_id,
 					  struct tmu_sensor_data *data);
+int __thermal_tmu_gov_temp_lut_init(struct device *dev, u8 tz_id,
+				    struct tmu_sensor_data *data);
 int __thermal_tmu_trip_points_init(struct google_sensor_data *sensor);
 int __thermal_tmu_send_init_msg(struct google_sensor_data *sensor);
-int __thermal_tmu_set_trip_temp(struct thermal_zone_device *tzd, int trip_id,
+int __thermal_tmu_set_trip_temp(struct thermal_zone_device *tzd, const struct thermal_trip *trip,
 				int temp);
-int __thermal_tmu_set_trip_hyst(struct thermal_zone_device *tzd, int trip_id,
-				int hyst);
 int __thermal_tmu_offset_enable(bool enable);
 int __thermal_tmu_trip_counter_init(struct device *dev, struct google_sensor_data *sensor);
 int __thermal_tmu_get_trip_counter(struct device_attribute *attr,
@@ -109,15 +117,17 @@ int thermal_tmu_cleanup_sensor(struct google_sensor_data *sensor);
 
 /* thermal zone ops */
 int thermal_tmu_get_temp(struct thermal_zone_device *tzd, int *temp);
-int thermal_tmu_set_trip_temp(struct thermal_zone_device *tzd, int trip_id,
+int thermal_tmu_set_trip_temp(struct thermal_zone_device *tzd, const struct thermal_trip *trip,
 			      int temp);
-int thermal_tmu_set_trip_hyst(struct thermal_zone_device *tzd, int trip_id,
-			      int hyst);
 int thermal_tmu_set_polling_delay_ms(struct google_sensor_data *sensor, u32 val);
 int thermal_tmu_get_polling_delay_ms(struct google_sensor_data *sensor, u32 *val);
 int thermal_tmu_set_junction_offset(struct google_sensor_data *sensor, int offsets[],
 				    int num_offset);
 int thermal_tmu_get_junction_offset(struct google_sensor_data *sensor, int offsets[]);
+int thermal_tmu_set_temp_state_table(struct google_sensor_data *sensor,
+				const struct tmu_temp_state_st *table, int len);
+int thermal_tmu_get_temp_state_table(struct google_sensor_data *sensor,
+				struct tmu_temp_state_st *table, int *len);
 
-/* TODO: config APIs for LUT and MPMM throttling */
+/* TODO: config APIs for MPMM throttling */
 #endif // _THERMAL_TMU_HELPER_H_

@@ -1,3 +1,0 @@
-# SPDX-License-Identifier: GPL-2.0
-
-obj-$(CONFIG_GOOGLE_GPU_PF_STATE) += gpu_pf_state.o

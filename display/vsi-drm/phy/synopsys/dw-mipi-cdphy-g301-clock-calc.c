@@ -61,9 +61,6 @@
 #define HS_TX_12_THSEXIT_DCO_REG	23
 
 #define PS_IN_US	1000000
-#ifndef MAX
-#define MAX(a, b)	((a) > (b) ? (a) : (b))
-#endif
 #define DIV_ROUND DIV_ROUND_CLOSEST
 
 static int debug_log_calc;
@@ -435,7 +432,6 @@ int32_t pll_calc(u32 datarate_mbps, u32 f_clkin_khz, bool ssc, struct pll_config
 
 	if (!pll_cfg)
 		return -EINVAL;
-	memset(pll_cfg, 0, sizeof(*pll_cfg));
 	if (datarate_mbps < MIN_DATA_RATE_Mbps || datarate_mbps > MAX_DATA_RATE_Mbps)
 		return -EINVAL;
 	/* find the N */
@@ -476,6 +472,8 @@ int32_t pll_calc(u32 datarate_mbps, u32 f_clkin_khz, bool ssc, struct pll_config
 		return -EINVAL;
 	}
 
+	memset(pll_cfg, 0, sizeof(*pll_cfg));
+
 	if (!ssc && (f_vco_osc_khz % f_vco_in_khz == 0)) {
 		/* integral mode */
 		m_int = f_vco_osc_khz / f_vco_in_khz;
@@ -485,6 +483,105 @@ int32_t pll_calc(u32 datarate_mbps, u32 f_clkin_khz, bool ssc, struct pll_config
 		pll_cfg->pll_ssc_frac_en = 1;
 		m_int = f_vco_osc_khz * 2 / f_vco_in_khz;
 		m_frac = (f_vco_osc_khz * 2 - f_vco_in_khz * m_int) * (1 << 16) / f_vco_in_khz;
+	}
+
+	/* collect pll config */
+	pll_cfg->pll_n = n - 1;
+	pll_cfg->pll_vco_cntrl_5_3 = log2_p - 1;
+	pll_cfg->charge_pump_cfg = &pll_charge_pump_table[idx_charge_pump].item;
+	if (!pll_cfg->pll_ssc_frac_en) {
+		pll_cfg->pll_m = m_int * 2 - 32;
+	} else {
+		/* it's fine to leave pll_cfg->pll_m as 0 in factional mode */
+		pll_cfg->pll_mint = m_int - 32;
+		pll_cfg->pll_frac_quote = m_frac;
+		pll_cfg->pll_frac_rem = 0;
+		pll_cfg->pll_frac_den = 1;
+		if (ssc) {
+			pll_cfg->pll_ssc_en = 1;
+			pll_cfg->pll_ssc_peak = DIV_ROUND(m_int * F_SSC_MOD_DEPTH_PPM * 65536ULL,
+					2 * 1000000);
+			pll_cfg->pll_ssc_stepsize = DIV_ROUND((u64)F_SSC_MOD_HZ * m_int *
+				F_SSC_MOD_DEPTH_PPM * (1 << 25), (u64)1000000000ULL * f_vco_in_khz);
+		}
+	}
+
+	if (debug_log_calc)
+		dump_pll_cfg(pll_cfg);
+
+	return 0;
+}
+
+int32_t pll_calc_v2(u32 datarate_mbps, u32 f_clkin_khz, bool ssc, struct pll_config *pll_cfg)
+{
+	/*
+	 *          1/n            *m_int.m_frac             1/p             *2
+	 * f_clkin ----> f_vco_in --------------> f_vco_osc ----> f_vco_out ----> datarate
+	 */
+	u32 n;
+	u32 f_vco_in_khz;
+	u32 f_vco_out_khz;
+	u32 f_vco_osc_khz;
+	u32 m_int;
+	u32 m_frac;
+	u32 p;
+	u32 log2_p;
+	int32_t idx_charge_pump;
+
+	if (!pll_cfg)
+		return -EINVAL;
+	if (datarate_mbps < MIN_DATA_RATE_Mbps || datarate_mbps > MAX_DATA_RATE_Mbps)
+		return -EINVAL;
+	/* find the N */
+	if (f_clkin_khz < F_LOOP_COMP_MIN_KHZ) {
+		pr_info("%s: f_clkin %d is too small\n", __func__, f_clkin_khz);
+		return -EINVAL;
+	}
+	n = 1;
+	while (f_clkin_khz % n == 0 && f_clkin_khz / n > F_LOOP_COMP_MAX_KHZ && n <= MAX_N)
+		++n;
+
+	if (f_clkin_khz % n != 0 || f_clkin_khz / n < F_LOOP_COMP_MIN_KHZ || n > MAX_N) {
+		pr_info("%s: no suitable N for f_clkin %d\n", __func__, f_clkin_khz);
+		return -EINVAL;
+	}
+
+	f_vco_in_khz = f_clkin_khz / n;
+	f_vco_out_khz = datarate_mbps * 1000 / 2;
+
+	/* find the P. Note not all candidates have a valid charge pump config */
+	idx_charge_pump = -1;
+	log2_p = MIN_LOG2_P;
+	p = 1 << log2_p;
+	while (log2_p <= MAX_LOG2_P) {
+		f_vco_osc_khz = f_vco_out_khz * p;
+		if (f_vco_osc_khz >= F_VCO_OSC_MIN_KHZ && f_vco_osc_khz <= F_VCO_OSC_MAX_KHZ) {
+			idx_charge_pump = search_charge_pump_cfg(f_vco_out_khz, log2_p - 1);
+			if (idx_charge_pump >= 0)
+				break;
+		}
+		++log2_p;
+		p <<= 1;
+	}
+
+	if (idx_charge_pump < 0) {
+		pr_err("%s: failed to config datarate %d, no charge pump config found\n", __func__,
+				datarate_mbps);
+		return -EINVAL;
+	}
+
+	memset(pll_cfg, 0, sizeof(*pll_cfg));
+
+	if (!ssc && (f_vco_osc_khz % f_vco_in_khz == 0)) {
+		/* integral mode */
+		m_int = f_vco_osc_khz / f_vco_in_khz;
+		m_frac = 0;
+	} else {
+		/* fractional mode, resolution is 0.5 */
+		pll_cfg->pll_ssc_frac_en = 1;
+		m_int = f_vco_osc_khz * 2 / f_vco_in_khz;
+		/* */
+		m_frac = (f_vco_osc_khz * 2 - f_vco_in_khz * m_int) * (1 << 16) / f_vco_in_khz / 2;
 	}
 
 	/* collect pll config */

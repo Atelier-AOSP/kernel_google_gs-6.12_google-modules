@@ -45,7 +45,7 @@ typedef BWL_PRE_PACKED_STRUCT struct {
 	unsigned char version;			/* EAPOL protocol version */
 	unsigned char type;			/* EAPOL type */
 	unsigned short length;			/* Length of body */
-	BCM_DECLARE_FLEX_ARRAY(unsigned char, body);	/* Body (optional) */
+	unsigned char body[BCM_FLEX_ARRAY];	/* Body (optional) */
 } BWL_POST_PACKED_STRUCT eapol_header_t;
 
 #define EAPOL_HEADER_LEN 18
@@ -89,7 +89,7 @@ typedef BWL_PRE_PACKED_STRUCT struct {
 	unsigned char iv[EAPOL_KEY_IV_LEN];		/* Key IV */
 	unsigned char index;				/* Key Flags & Index */
 	unsigned char signature[EAPOL_KEY_SIG_LEN];	/* Key Signature */
-	BCM_DECLARE_FLEX_ARRAY(unsigned char, key);		/* Key (optional) */
+	unsigned char key[BCM_FLEX_ARRAY];		/* Key (optional) */
 } BWL_POST_PACKED_STRUCT eapol_key_header_t;
 
 #define EAPOL_KEY_HEADER_LEN	44u
@@ -234,7 +234,7 @@ typedef BWL_PRE_PACKED_STRUCT struct {
 	uint8 length;
 	uint8 oui[3];
 	uint8 subtype;
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8 data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT eapol_wpa2_encap_data_t;
 
 #define EAPOL_WPA2_ENCAP_DATA_HDR_LEN		6u
@@ -326,7 +326,7 @@ typedef BWL_PRE_PACKED_STRUCT struct {
 typedef BWL_PRE_PACKED_STRUCT struct {
 	uint8	link_info;		/* link_id [0-3], Rxneinfo [4], rsvd [5-7] */
 	uint8	mac[ETHER_ADDR_LEN];
-	BCM_DECLARE_FLEX_ARRAY(uint8, data);
+	uint8	data[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT eapol_wpa2_key_mlo_link_encap_t;
 
 /* STAKey encapsulation */

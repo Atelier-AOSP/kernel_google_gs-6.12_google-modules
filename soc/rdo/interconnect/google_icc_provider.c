@@ -5,12 +5,22 @@
 #include <linux/limits.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
+#include <linux/of_platform.h>
 #include <linux/platform_device.h>
 
 #include "google_icc.h"
-#include "google_icc_internal.h"
+#include "google_icc_provider.h"
+#include "google_icc_vote.h"
 #include "google_irm.h"
+
+#define to_google_provider(_provider) \
+	container_of(_provider, struct google_icc_provider, provider)
+
+struct google_icc_provider {
+	struct icc_provider provider;
+	struct device *dev;
+	struct irm_dev *irm_dev;
+};
 
 #define NUM_VC   5
 
@@ -38,7 +48,7 @@ static void google_icc_pre_aggregate(struct icc_node *node)
 
 	gn = node->data;
 
-	gn->vote.prop = 0;
+	gn->vote.vote_sync_type = 0;
 
 	for (type = ICC_TYPE_GMC; type < NUM_ICC_TYPE; type++) {
 		for (rw = ICC_READ; rw < NUM_ICC_RW; rw++) {
@@ -81,7 +91,7 @@ static void total_bw_latency_calc(struct icc_vote *vote)
 	}
 }
 
-int google_icc_set(struct icc_node *src, struct icc_node *dst)
+static int google_icc_set(struct icc_node *src, struct icc_node *dst)
 {
 	struct google_icc_node *gn_src, *gn_dst;
 	struct google_icc_provider *gp_src;
@@ -100,7 +110,9 @@ int google_icc_set(struct icc_node *src, struct icc_node *dst)
 	case TYPE_GMC:
 		total_bw_latency_calc(&gn_src->vote);
 
-		ret = gp_src->irm_dev->ops->vote(gp_src->irm_dev, gn_src->attr, &gn_src->vote);
+		ret = gp_src->irm_dev->ops->irm_vote(gp_src->irm_dev,
+						     gn_src->attr,
+						     &gn_src->vote);
 		break;
 	case TYPE_QBOX:
 		/* TODO(b/247494866): Qos Box runtime update */
@@ -139,7 +151,7 @@ static int google_icc_aggregate(struct icc_node *node, u32 tag, u32 avg_bw,
 	vote = &gn->vote;
 	path_vote = (struct icc_vote *)addr;
 
-	vote->prop |= path_vote->prop;
+	vote->vote_sync_type |= path_vote->vote_sync_type;
 
 	for (type = ICC_TYPE_GMC; type < NUM_ICC_TYPE; type++) {
 		for (rw = ICC_READ; rw < NUM_ICC_RW; rw++) {
@@ -219,8 +231,8 @@ static int is_valid_irm_dev_ops(struct device *dev, struct irm_dev_ops *ops)
 		return 0;
 	}
 
-	if (!ops->vote) {
-		dev_err(dev, "irm_dev_ops->vote == NULL\n");
+	if (!ops->irm_vote) {
+		dev_err(dev, "irm_dev_ops->irm_vote == NULL\n");
 		return -EINVAL;
 	}
 
@@ -281,6 +293,8 @@ int google_icc_platform_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	data->num_nodes = num_nodes;
+
 	for (i = 0; i < num_nodes; i++) {
 		gn = gnodes[i];
 		if (!gn)
@@ -302,8 +316,6 @@ int google_icc_platform_probe(struct platform_device *pdev)
 		data->nodes[i] = node;
 	}
 
-	data->num_nodes = num_nodes;
-
 	platform_set_drvdata(pdev, gp);
 
 	return 0;
@@ -313,13 +325,12 @@ err:
 	return ret;
 }
 
-int google_icc_platform_remove(struct platform_device *pdev)
+void google_icc_platform_remove(struct platform_device *pdev)
 {
 	struct google_icc_provider *gp = platform_get_drvdata(pdev);
 
 	icc_nodes_remove(&gp->provider);
 	icc_provider_deregister(&gp->provider);
-	return 0;
 }
 
 MODULE_AUTHOR("Google LLC");

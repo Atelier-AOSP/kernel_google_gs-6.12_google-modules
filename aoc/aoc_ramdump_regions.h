@@ -105,10 +105,7 @@ struct aoc_ramdump_header_v2 {
 
 #define RAMDUMP_MAGIC "AOCDUMP"
 
-#define RAMDUMP_HEADER_OFFSET 0x2000000 /* 32 MiB offset from start of DRAM carveout */
-#define RAMDUMP_HEADER_ADDR (0x98000000 + RAMDUMP_HEADER_OFFSET) /* Start of DRAM carveout + offset */
-
-#define RAMDUMP_SECTION_SRAM_OFFSET 0x1000
+#define ABL_SECTION_ADDR 0xBE000000
 
 #define RAMDUMP_SECTION_CRASH_INFO_SIZE 256
 

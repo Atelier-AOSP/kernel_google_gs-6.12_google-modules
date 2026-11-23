@@ -341,6 +341,93 @@ void __iomem *SysDevMapEMURegbank(IMG_UINT64 ui64Base, IMG_UINT64 *pui64Size)
 	                                      PVRSRV_MEMALLOCFLAG_CPU_UNCACHED);
 }
 
+#if defined(RGX_FEATURE_AXI_ACE_BIT_MASK)
+PVRSRV_ERROR SysGetSystemCoherencyMode(PVRSRV_DEVICE_CONFIG *psDevConfig,
+                                               PVRSRV_DEVICE_SNOOP_MODE *peCacheSnoopingMode)
+{
+	PVRSRV_DEVICE_SNOOP_MODE eSystemCoherencyMode;
+#if !defined(NO_HARDWARE)
+	IMG_UINT32 ui32SystemCoherency;
+#endif
+#if !defined(NO_HARDWARE)
+	void *pvRegsBaseKM;
+	IMG_BOOL bPowerDown = IMG_TRUE;
+	PVRSRV_ERROR eError;
+	IMG_CPU_PHYADDR sRegsCpuPBase = psDevConfig->sRegsCpuPBase;
+	IMG_UINT32 ui32RegsSize = psDevConfig->ui32RegsSize;
+
+	if (!sRegsCpuPBase.uiAddr || !ui32RegsSize)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "%s: Invalid RGX register base/size parameters", __func__));
+		return PVRSRV_ERROR_INVALID_PARAMS;
+	}
+
+	pvRegsBaseKM = OSMapPhysToLin(sRegsCpuPBase, ui32RegsSize, PVRSRV_MEMALLOCFLAG_CPU_UNCACHED);
+	if (!pvRegsBaseKM)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "%s: Failed to create RGX register mapping", __func__));
+		return PVRSRV_ERROR_BAD_MAPPING;
+	}
+
+	bPowerDown = ! PVRSRVIsSystemPowered(psDevConfig->psDevNode);
+
+	/* Power-up the device as required to read the registers */
+	if (!PVRSRV_VZ_MODE_IS(GUEST, DEVCFG, psDevConfig) && bPowerDown)
+	{
+		eError = PVRSRVSetSystemPowerState(psDevConfig, PVRSRV_SYS_POWER_STATE_ON);
+		PVR_LOG_RETURN_IF_ERROR(eError, "PVRSRVSetSystemPowerState ON");
+	}
+
+	/* AXI support within the SoC, bitfield COHERENCY_SUPPORT [1 .. 0]
+		value NO_COHERENCY        0x0 {SoC does not support any form of Coherency}
+		value ACE_LITE_COHERENCY  0x1 {SoC supports ACE-Lite or I/O Coherency}
+		value FULL_ACE_COHERENCY  0x2 {SoC supports full ACE or 2-Way Coherency} */
+	ui32SystemCoherency = OSReadHWReg32((void __iomem *)pvRegsBaseKM, RGX_CR_SOC_AXI);
+	PVR_LOG(("AXI system coherency (RGX_CR_SOC_AXI): 0x%x", ui32SystemCoherency));
+#if defined(DEBUG)
+	if (ui32SystemCoherency & ~((IMG_UINT32)RGX_CR_SOC_AXI_MASKFULL))
+	{
+		PVR_DPF((PVR_DBG_ERROR, "%s: Invalid RGX_CR_SOC_AXI value.", __func__));
+		return PVRSRV_ERROR_INVALID_DEVICE;
+	}
+#endif
+	ui32SystemCoherency &= ~((IMG_UINT32)RGX_CR_SOC_AXI_COHERENCY_SUPPORT_CLRMSK);
+	ui32SystemCoherency >>= RGX_CR_SOC_AXI_COHERENCY_SUPPORT_SHIFT;
+
+	if (!PVRSRV_VZ_MODE_IS(GUEST, DEVCFG, psDevConfig) && bPowerDown)
+	{
+		eError = PVRSRVSetSystemPowerState(psDevConfig, PVRSRV_SYS_POWER_STATE_OFF);
+		PVR_LOG_RETURN_IF_ERROR(eError, "PVRSRVSetSystemPowerState OFF");
+	}
+
+	/* UnMap Regs */
+	OSUnMapPhysToLin(pvRegsBaseKM, ui32RegsSize);
+
+	switch (ui32SystemCoherency)
+	{
+	case RGX_CR_SOC_AXI_COHERENCY_SUPPORT_FULL_ACE_COHERENCY:
+		eSystemCoherencyMode = PVRSRV_DEVICE_SNOOP_CROSS;
+		break;
+
+	case RGX_CR_SOC_AXI_COHERENCY_SUPPORT_ACE_LITE_COHERENCY:
+		eSystemCoherencyMode = PVRSRV_DEVICE_SNOOP_CPU_ONLY;
+		break;
+
+	case RGX_CR_SOC_AXI_COHERENCY_SUPPORT_NO_COHERENCY:
+	default:
+		eSystemCoherencyMode = PVRSRV_DEVICE_SNOOP_NONE;
+		break;
+	}
+#else /* !defined(NO_HARDWARE) */
+	eSystemCoherencyMode = PVRSRV_DEVICE_SNOOP_CPU_ONLY;
+#endif /* !defined(NO_HARDWARE) */
+
+
+	*peCacheSnoopingMode = eSystemCoherencyMode;
+	return PVRSRV_OK;
+}
+#endif
+
 /******************************************************************************
  End of file (sysconfig_cmn.c)
 ******************************************************************************/

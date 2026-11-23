@@ -1087,7 +1087,7 @@ static ssize_t mode_store(struct device *dev,
 	unsigned char new_mode;
 
 	mode_name[sizeof(mode_name) - 1] = '\0';
-	strlcpy(mode_name, buf, sizeof(mode_name) - 1);
+	strscpy(mode_name, buf, sizeof(mode_name) - 1);
 	len = strlen(mode_name);
 
 	if (len && mode_name[len - 1] == '\n')

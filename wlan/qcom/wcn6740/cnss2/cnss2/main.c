@@ -10,9 +10,10 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/of_gpio.h>
-#include <linux/pm_wakeup.h>
+#include <linux/device.h>
 #include <linux/reboot.h>
 #include <linux/rwsem.h>
+#include <linux/string.h>
 #include <linux/suspend.h>
 #include <linux/timer.h>
 #include <linux/panic_notifier.h>
@@ -2592,7 +2593,7 @@ static int cnss_init_dump_entry(struct cnss_plat_data *plat_priv)
 	ramdump_info->dump_data.len = ramdump_info->ramdump_size;
 	ramdump_info->dump_data.version = CNSS_DUMP_FORMAT_VER;
 	ramdump_info->dump_data.magic = CNSS_DUMP_MAGIC_VER_V2;
-	strlcpy(ramdump_info->dump_data.name, CNSS_DUMP_NAME,
+	strscpy(ramdump_info->dump_data.name, CNSS_DUMP_NAME,
 		sizeof(ramdump_info->dump_data.name));
 #if IS_ENABLED(CONFIG_WCN_GOOGLE)
 	return 0;
@@ -2717,7 +2718,7 @@ static int cnss_register_ramdump_v2(struct cnss_plat_data *plat_priv)
 	dump_data->version = CNSS_DUMP_FORMAT_VER_V2;
 	dump_data->magic = CNSS_DUMP_MAGIC_VER_V2;
 	dump_data->seg_version = CNSS_DUMP_SEG_VER;
-	strlcpy(dump_data->name, CNSS_DUMP_NAME,
+	strscpy(dump_data->name, CNSS_DUMP_NAME,
 		sizeof(dump_data->name));
 
 #if !IS_ENABLED(CONFIG_WCN_GOOGLE)
@@ -3061,7 +3062,7 @@ static int cnss_register_bus_scale(struct cnss_plat_data *plat_priv)
 static void cnss_unregister_bus_scale(struct cnss_plat_data *plat_priv) {}
 #endif /* CONFIG_INTERCONNECT_QCOM */
 
-void cnss_daemon_connection_update_cb(void *cb_ctx, bool status)
+static void cnss_daemon_connection_update_cb(void *cb_ctx, bool status)
 {
 	struct cnss_plat_data *plat_priv = cb_ctx;
 
@@ -3747,7 +3748,7 @@ out:
 	return ret;
 }
 
-static int cnss_remove(struct platform_device *plat_dev)
+static void cnss_remove(struct platform_device *plat_dev)
 {
 	struct cnss_plat_data *plat_priv = platform_get_drvdata(plat_dev);
 
@@ -3770,8 +3771,6 @@ static int cnss_remove(struct platform_device *plat_dev)
 
 	platform_set_drvdata(plat_dev, NULL);
 	plat_env = NULL;
-
-	return 0;
 }
 
 static struct platform_driver cnss_platform_driver = {

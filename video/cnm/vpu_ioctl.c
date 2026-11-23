@@ -25,7 +25,10 @@
 #include <linux/delay.h>
 #include <linux/units.h>
 #include <uapi/linux/dma-buf.h>
+
+#if IS_ENABLED(CONFIG_GOOGLE_CRASH_DEBUG_DUMP)
 #include <soc/google/google-cdd.h>
+#endif
 
 #include "vpu_common.h"
 #include "vpu_priv.h"
@@ -39,14 +42,13 @@
 #define VPU_DEVCLASS_NAME "vpu_codec"
 #define VPU_CHRDEV_NAME "vpu"
 #define VPU_INIT_WAKELOCK_NAME "vpu_init"
-#define VPU_FW_NAME "seurat.bin"
-/* b/304879706#comment13, 1MB is enough for text + common_data section.
-   Use 2MB for potential separation of text and common data */
-#define VPU_FW_CODE_SIZE (2 * 1024 * 1024)
+/* b/304879706#comment13, 1MB is enough for text + common_data section */
+#define VPU_FW_CODE_SIZE (1 * 1024 * 1024)
 #define VPU_WAKELOCK_TIMEOUT_MS 3000
 
 void vpu_update_system_state(struct vpu_core *core)
 {
+#if IS_ENABLED(CONFIG_GOOGLE_CRASH_DEBUG_DUMP)
 	/*
 	 * vpu_power_status        bit[0:2]
 	 * vpu_power_cycled        bit[3]
@@ -56,6 +58,30 @@ void vpu_update_system_state(struct vpu_core *core)
 						(core->power_status & 0x7) |
 						((core->vpu_power_cycled & 0x1) << 3) |
 						((core->user_idle & 0x1)        << 4));
+#else
+	pr_debug("cdd not enabled for this device\n");
+#endif
+}
+
+void vpu_send_fw_cmd_locked(struct vpu_core *core, const struct vpu_fw_cmd *fw_cmd)
+{
+	if ((fw_cmd->cmd == W6_INIT_VPU) || (fw_cmd->cmd == W6_WAKEUP_VPU)) {
+		WRITE_VPU_REGISTER(core, W6_VPU_CMD_BUSY_STATUS, 1);
+		WRITE_VPU_REGISTER(core, W6_COMMAND, fw_cmd->cmd);
+		WRITE_VPU_REGISTER(core, W6_VPU_REMAP_CORE_START, 1);
+	} else {
+		if (fw_cmd->cmd == W6_CREATE_INSTANCE) {
+			WRITE_VPU_REGISTER(core, W6_CMD_INSTANCE_INFO,
+					   (fw_cmd->codec << 16));
+		} else {
+			WRITE_VPU_REGISTER(core, W6_CMD_INSTANCE_INFO,
+					   (fw_cmd->codec << 16) | (fw_cmd->index & 0xffff));
+		}
+
+		WRITE_VPU_REGISTER(core, W6_VPU_CMD_BUSY_STATUS, 1);
+		WRITE_VPU_REGISTER(core, W6_COMMAND, fw_cmd->cmd);
+		WRITE_VPU_REGISTER(core, W6_VPU_HOST_INT_REQ, 1);
+	}
 }
 
 static int vpu_set_inst(struct vpu_core *core, uint32_t inst_idx,
@@ -323,13 +349,18 @@ static struct vpu_dmabuf_info* vpu_alloc_fw_buf(struct vpu_core *core, uint32_t 
 {
 	struct dma_heap *dma_heap;
 	struct vpu_dmabuf_info *dma_info;
-	const char *heapname = "vpu_fw-secure";
+	const char *heapname;
+
+	if (IS_ENABLED(CONFIG_VPU_SECURITY)) {
+		heapname = "vpu_fw-secure";
+	} else {
+		heapname = "system-uncached";
+		pr_debug("allocate from system-uncached heap\n");
+	}
 
 	dma_info = kzalloc(sizeof(*dma_info), GFP_KERNEL);
-	if (!dma_info) {
-		pr_err("Failed to allocate memory for vpu_dmabuf_info\n");
+	if (!dma_info)
 		return NULL;
-	}
 	INIT_LIST_HEAD(&dma_info->list);
 
 	dma_heap = dma_heap_find(heapname);
@@ -373,7 +404,14 @@ static int vpu_alloc_dma_buf(struct vpu_core *core, struct list_head *alloc_list
 {
 	struct dma_heap *dma_heap;
 	struct vpu_dmabuf_info *dma_info;
-	const char *heapname = dmabuf->heap_name;
+	const char *heapname;
+
+	if (IS_ENABLED(CONFIG_VPU_ANY_HEAP_ALLOC)) {
+		heapname = dmabuf->heap_name;
+	} else {
+		heapname = "system-uncached";
+		pr_debug("allocate from system-uncached heap\n");
+	}
 
 	if (!alloc_list || !dmabuf) {
 		pr_err("alloc list or dmabuf is NULL\n");
@@ -530,39 +568,44 @@ static int vpu_reload_fw(struct vpu_core *core)
 	int rc;
 	const struct firmware *fw_blob;
 
-	rc = request_firmware(&fw_blob, VPU_FW_NAME, core->dev);
+	rc = request_firmware(&fw_blob, core->fw_name, core->dev);
 	if (rc) {
-		dev_err(core->dev, "Failed to request firmware: %s\n", VPU_FW_NAME);
-		goto exit;
-	}
-	/* un-protect fw buffer and clear smmu mapping */
-	rc = vpu_secure_fw_unprot(&core->secure);
-	if (rc) {
-		dev_err(core->dev, "Failed to un-protect firmware %d\n", rc);
+		dev_err(core->dev, "Failed to request firmware: %s\n", core->fw_name);
 		goto exit;
 	}
 
-	if (dma_buf_vmap_unlocked(core->fw_buf->dma_buf, &core->fw_buf->vmap)) {
-		dev_err(core->dev, "Failed to get kernel virtual address\n");
-		rc = -ENOMEM;
-		goto exit;
-	}
-	dma_sync_sgtable_for_cpu(core->dev, core->fw_buf->sgt, DMA_FROM_DEVICE);
-	memcpy(core->fw_buf->vmap.vaddr, fw_blob->data, fw_blob->size);
+	if (IS_ENABLED(CONFIG_VPU_SECURITY)) {
+		/* un-protect fw buffer and clear smmu mapping */
+		rc = vpu_secure_fw_unprot(&core->secure);
+		if (rc) {
+			dev_err(core->dev, "Failed to un-protect firmware %d\n", rc);
+			goto exit;
+		}
 
-	/* cache flush for memcpy by CPU */
-	dma_sync_sgtable_for_device(core->dev, core->fw_buf->sgt, DMA_TO_DEVICE);
-	dev_info(core->dev, "start to prot fw. pa %pad size %zu blob size %zu\n",
-		&core->fw_buf->pa, core->fw_buf->size, fw_blob->size);
+		if (dma_buf_vmap_unlocked(core->fw_buf->dma_buf, &core->fw_buf->vmap)) {
+			dev_err(core->dev, "Failed to get kernel virtual address\n");
+			rc = -ENOMEM;
+			goto exit;
+		}
+		dma_sync_sgtable_for_cpu(core->dev, core->fw_buf->sgt, DMA_FROM_DEVICE);
+		memcpy(core->fw_buf->vmap.vaddr, fw_blob->data, fw_blob->size);
 
-	/* unmap fw buffer to avoid speculative accesses from non-secure */
-	dma_buf_vunmap_unlocked(core->fw_buf->dma_buf, &core->fw_buf->vmap);
+		/* cache flush for memcpy by CPU */
+		dma_sync_sgtable_for_device(core->dev, core->fw_buf->sgt, DMA_TO_DEVICE);
+		dev_info(core->dev, "start to prot fw. pa %pad size %zu blob size %zu\n",
+			&core->fw_buf->pa, core->fw_buf->size, fw_blob->size);
 
-	/* protect fw buffer and create smmu mapping */
-	rc = vpu_secure_fw_prot(&core->secure, core->fw_buf, fw_blob->size);
-	if (rc) {
-		dev_err(core->dev, "Failed to protect firmware %d\n", rc);
-		goto exit;
+		/* unmap fw buffer to avoid speculative accesses from non-secure */
+		dma_buf_vunmap_unlocked(core->fw_buf->dma_buf, &core->fw_buf->vmap);
+
+		/* protect fw buffer and create smmu mapping */
+		rc = vpu_secure_fw_prot(&core->secure, core->fw_buf, fw_blob->size);
+		if (rc) {
+			dev_err(core->dev, "Failed to protect firmware %d\n", rc);
+			goto exit;
+		}
+	} else {
+		memcpy(core->fw_buf->vmap.vaddr, fw_blob->data, fw_blob->size);
 	}
 
 exit:
@@ -577,8 +620,31 @@ static int vpu_unload_fw(struct vpu_core *core)
 	if (!core->fw_buf)
 		return 0;
 
-	/* un-protect fw buffer and clear smmu mapping when disconnecting the tipc channel */
-	vpu_secure_deinit(&core->secure);
+	if (IS_ENABLED(CONFIG_VPU_SECURITY)) {
+		/* un-protect fw buffer and clear smmu mapping when disconnecting the tipc
+		 * channel
+		 */
+		vpu_secure_deinit(&core->secure);
+	} else {
+		struct iommu_domain *domain;
+		size_t size;
+
+		domain = iommu_get_domain_for_dev(core->dev);
+		if (!domain) {
+			pr_err("Failed to get iommu domain\n");
+			rc = -EINVAL;
+			goto err_get_domain;
+		}
+
+		size = iommu_unmap(domain, 0, core->fw_buf->size);
+		if (size != core->fw_buf->size) {
+			pr_err("iommu unmap size %zu != fw size %zu\n",
+				size, core->fw_buf->size);
+			rc = -EINVAL;
+		}
+	}
+
+err_get_domain:
 	_vpu_free_dma_info(core->fw_buf);
 	core->fw_buf = NULL;
 
@@ -590,9 +656,9 @@ static int vpu_load_fw(struct vpu_core *core)
 	int rc = 0;
 	const struct firmware *fw_blob;
 
-	rc = request_firmware(&fw_blob, VPU_FW_NAME, core->dev);
+	rc = request_firmware(&fw_blob, core->fw_name, core->dev);
 	if (rc) {
-		pr_err("Failed to request firmware: %s", VPU_FW_NAME);
+		dev_err(core->dev, "Failed to request firmware: %s", core->fw_name);
 		goto err_req_fw;
 	}
 	if (core->fw_buf) {
@@ -600,38 +666,61 @@ static int vpu_load_fw(struct vpu_core *core)
 	}
 	core->fw_buf = vpu_alloc_fw_buf(core, VPU_FW_CODE_SIZE);
 	if (!core->fw_buf) {
-		pr_err("Failed to allocate buffer of size %zu bytes for firmware",
+		dev_err(core->dev, "Failed to allocate buffer of size %zu bytes for firmware",
 				fw_blob->size);
 		rc = -ENOMEM;
 		goto err_fw_alloc;
 	}
 	memcpy(core->fw_buf->vmap.vaddr, fw_blob->data, fw_blob->size);
 
-	/* unmap fw buffer to avoid speculative accesses from non-secure */
-	dma_buf_vunmap_unlocked(core->fw_buf->dma_buf, &core->fw_buf->vmap);
+	if (IS_ENABLED(CONFIG_VPU_SECURITY)) {
+		/* unmap fw buffer to avoid speculative accesses from non-secure */
+		dma_buf_vunmap_unlocked(core->fw_buf->dma_buf, &core->fw_buf->vmap);
 
-	// cache flush for memcpy by CPU
-	dma_sync_sgtable_for_device(core->dev, core->fw_buf->sgt, DMA_TO_DEVICE);
-	pr_info("start to prot fw. pa %pad size %zu blob size %zu",
-		&core->fw_buf->pa, core->fw_buf->size, fw_blob->size);
+		/* cache flush for memcpy by CPU */
+		dma_sync_sgtable_for_device(core->dev, core->fw_buf->sgt, DMA_TO_DEVICE);
+		dev_info(core->dev, "start to prot fw. pa %pad size %zu blob size %zu",
+			&core->fw_buf->pa, core->fw_buf->size, fw_blob->size);
 
-	/* connect the tipc channel */
-	rc = vpu_secure_init(&core->secure);
-	if (rc) {
-		pr_err("failed to init secure channel\n");
-		goto err_secure_init;
+		/* connect the tipc channel */
+		rc = vpu_secure_init(&core->secure);
+		if (rc) {
+			dev_err(core->dev, "failed to init secure channel rc %d\n", rc);
+			goto err_secure_init;
+		}
+		/* protect fw buffer and create smmu mapping */
+		rc = vpu_secure_fw_prot(&core->secure, core->fw_buf, fw_blob->size);
+		if (rc) {
+			dev_err(core->dev, "Failed to prot fw rc %d\n", rc);
+			goto err_prot_fw;
+		}
+	} else {
+		struct iommu_domain *domain;
+
+		dev_info(core->dev, "start to remap fw. pa %pad size %zu blob size %zu",
+			&core->fw_buf->pa, core->fw_buf->size, fw_blob->size);
+		domain = iommu_get_domain_for_dev(core->dev);
+		if (!domain) {
+			rc = -EINVAL;
+			dev_err(core->dev, "Failed to iommu domain\n");
+			goto err_get_domain;
+		}
+		rc = iommu_map(domain, 0, core->fw_buf->pa, core->fw_buf->size,
+			IOMMU_READ | IOMMU_WRITE, GFP_KERNEL);
+		if (rc) {
+			dev_err(core->dev, "Failed to iommu map pa(%pad), size(%zu) rc %d\n",
+			       &core->fw_buf->pa, core->fw_buf->size, rc);
+			goto err_get_domain;
+		}
 	}
-	/* protect fw buffer and create smmu mapping */
-	rc = vpu_secure_fw_prot(&core->secure, core->fw_buf, fw_blob->size);
-	if (rc) {
-		pr_err("Failed to prot fw\n");
-		goto err_prot_fw;
-	}
+
 	release_firmware(fw_blob);
 	return rc;
+
 err_prot_fw:
 	vpu_secure_deinit(&core->secure);
 err_secure_init:
+err_get_domain:
 	_vpu_free_dma_info(core->fw_buf);
 err_fw_alloc:
 	release_firmware(fw_blob);
@@ -676,8 +765,13 @@ static int vpu_set_clk_rate(struct vpu_core *core, uint32_t clk_rate)
 	int rc;
 
 	if (!core->dev_freq.df) {
-		pr_err("set rate without dev_freq\n");
-		return -EINVAL;
+		if (IS_ENABLED(CONFIG_VPU_DEVFREQ)) {
+			pr_err("set rate without dev_freq\n");
+			return -EINVAL;
+		} else {
+			pr_debug("bypass devfreq\n");
+			return 0;
+		}
 	}
 
 	rc = dev_pm_qos_update_request(&core->dev_freq.qos_req, clk_rate / HZ_PER_KHZ);
@@ -696,20 +790,37 @@ static int vpu_set_clk_rate(struct vpu_core *core, uint32_t clk_rate)
  */
 #define VC_SOFT_REALTIME 1
 
-static int vpu_set_icc_update(struct google_icc_path *icc_path,
+static int vpu_set_icc_update(struct vpu_core *core,
 			      const struct vpu_bandwidth_info *bandwidth_info)
 {
+#if IS_ENABLED(CONFIG_VPU_ICC)
+	struct google_icc_path *icc_path;
 	int rc;
 
+	/**
+	 * On MBU, there are 3 ICC paths: path_vpu, path_jpu, path_codec3p.
+	 * path_vpu = vpu -> sswrp_c3p. path_c3p = sswrp_c3p -> gmc.
+	 * To vote for VPU BW, must update both path_vpu and path_c3p.
+	 * When path_vpu is updated, sswrp_c3p aggregates the votes from
+	 * JPU and VPU.
+	 *
+	 * For more information, see b/343274304#comment2.
+	 */
+
+	if (IS_ENABLED(CONFIG_SOC_MBU))
+		icc_path = core->icc_path.path_vpu;
+	else
+		icc_path = core->icc_path.path_c3p;
+
 	rc = google_icc_set_read_bw_gmc(icc_path, bandwidth_info->read_avg_bw,
-					bandwidth_info->read_peak_bw, 0, VC_SOFT_REALTIME);
+		bandwidth_info->read_peak_bw, 0, VC_SOFT_REALTIME);
 	if (rc) {
 		pr_err("google_icc_set_read_bw_gmc failed %d\n", rc);
 		return rc;
 	}
 
 	rc = google_icc_set_write_bw_gmc(icc_path, bandwidth_info->write_avg_bw,
-					 bandwidth_info->write_peak_bw, 0, VC_SOFT_REALTIME);
+		bandwidth_info->write_peak_bw, 0, VC_SOFT_REALTIME);
 	if (rc) {
 		pr_err("google_icc_set_write_bw_gmc failed %d\n", rc);
 		return rc;
@@ -721,7 +832,19 @@ static int vpu_set_icc_update(struct google_icc_path *icc_path,
 		return rc;
 	}
 
+	if (icc_path != core->icc_path.path_c3p) {
+		rc = google_icc_update_constraint_async(core->icc_path.path_c3p);
+		if (rc) {
+			pr_err("google_icc_update_constraint_async c3p failed %d\n", rc);
+			return rc;
+		}
+	}
+
 	return rc;
+#else
+	pr_debug("bypass icc\n");
+	return 0;
+#endif
 }
 
 static int vpu_set_bandwidth(struct vpu_core *core, const struct vpu_bandwidth_info *bandwidth_info)
@@ -735,18 +858,11 @@ static int vpu_set_bandwidth(struct vpu_core *core, const struct vpu_bandwidth_i
 		bandwidth_info->write_avg_bw,
 		bandwidth_info->write_peak_bw);
 
-	/*
-	* GMC bandwidth means votes go through SSWRP -> fabric -> GSLC -> GMC
-	* GSLC bandwidth means votes go through SSWRP -> fabric -> GSLC
-	*/
-
-	rc = vpu_set_icc_update(core->icc_path.path_gmc, bandwidth_info);
+	rc = vpu_set_icc_update(core, bandwidth_info);
 	if (rc) {
-		dev_err(core->dev, "update icc for gmc fails %d\n", rc);
+		dev_err(core->dev, "update icc fails %d\n", rc);
 		return rc;
 	}
-
-	/* so far no need to vote for path_gslc because we haven't enabled SLC */
 
 	return rc;
 }
@@ -946,7 +1062,7 @@ static long vpu_unlocked_ioctl(struct file *fp, unsigned int cmd,
 				uint32_t num_elements;
 
 				if (copy_from_user(&intr_info, user_desc, sizeof(intr_info))) {
-					pr_err("Failed to copy from user\n");
+					dev_err(core->dev, "Failed to copy from user\n");
 					return -EFAULT;
 				}
 
@@ -955,8 +1071,8 @@ static long vpu_unlocked_ioctl(struct file *fp, unsigned int cmd,
 				} else {
 					inst = vpu_get_inst(core, intr_info.inst_idx);
 					if (!inst) {
-						pr_err("Failed to get inst for index %u\n",
-						       intr_info.inst_idx);
+						dev_err(core->dev, "Failed to get inst for index %u\n",
+							intr_info.inst_idx);
 						return -EINVAL;
 					}
 					intr_queue = &inst->intr_queue;
@@ -965,9 +1081,12 @@ static long vpu_unlocked_ioctl(struct file *fp, unsigned int cmd,
 				ret = wait_event_interruptible_timeout(intr_queue->wq,
 							kfifo_len(&intr_queue->intr_pending_q),
 							msecs_to_jiffies(intr_info.timeout));
-				if (!ret) {
-					pr_info("Either video is paused or timed out waiting on HW.\n");
+				if (ret == 0) {
+					dev_info(core->dev, "Either video is paused or timed out waiting on HW.\n");
 					rc = -ETIMEDOUT;
+				} else if (ret < 0) {
+					dev_dbg(core->dev, "WAIT_INTERRUPT got interrupted %ld\n", ret);
+					rc = ret;
 				} else {
 					num_elements = kfifo_out_spinlocked(&intr_queue->intr_pending_q, &intr_reason,
 							sizeof(u32), &intr_queue->kfifo_lock);
@@ -980,7 +1099,7 @@ static long vpu_unlocked_ioctl(struct file *fp, unsigned int cmd,
 					rc = 0;
 				}
 				if (copy_to_user(user_desc, &intr_info, sizeof(intr_info))) {
-					pr_err("Failed to copy to user\n");
+					dev_err(core->dev, "Failed to copy to user\n");
 					rc = -EFAULT;
 				}
 
@@ -1043,14 +1162,25 @@ static long vpu_unlocked_ioctl(struct file *fp, unsigned int cmd,
 
 				pr_debug("Inside VPU_IOCX_SSCD_COREDUMP\n");
 				if (copy_from_user(&dump_info, user_desc, sizeof(dump_info))) {
-					pr_err("Failed to copy from user\n");
+					dev_err(core->dev, "Failed to copy from user\n");
 					return -EFAULT;
 				}
 
 				dma_buf = dma_buf_get(dump_info.fd);
+				if (IS_ERR(dma_buf)) {
+					dev_err(core->dev, "Failed to get dma_buf: %ld\n", PTR_ERR(dma_buf));
+					return PTR_ERR(dma_buf);
+				}
+
+				if (dump_info.size > dma_buf->size) {
+					dev_err(core->dev, "Coredump size %d exceeds dma_buf size %zu\n",
+						dump_info.size, dma_buf->size);
+					dma_buf_put(dma_buf);
+					return -EINVAL;
+				}
 
 				if (dma_buf_vmap_unlocked(dma_buf, &vmap)) {
-					pr_err("Failed to get kernel virtual address for coredump\n");
+					dev_err(core->dev, "Failed to get kernel virtual address for coredump\n");
 					dma_buf_put(dma_buf);
 					return -ENOMEM;
 				}
@@ -1087,16 +1217,21 @@ static long vpu_unlocked_ioctl(struct file *fp, unsigned int cmd,
 
 				break;
 			}
-		case VPU_IOCX_NOTIFY_WAKELOCK:
-			mutex_lock(&core->lock);
-			if (core->wakelock) {
-				if (arg)
-					__pm_stay_awake(core->wakelock);
-				else
-					__pm_relax(core->wakelock);
+		case VPU_IOCX_SEND_FW_CMD:
+			{
+				struct vpu_fw_cmd fw_cmd;
+
+				if (copy_from_user(&fw_cmd, user_desc, sizeof(fw_cmd))) {
+					pr_err("Failed to copy from user\n");
+					return -EFAULT;
+				}
+				pr_debug("Inside VPU_IOCX_SEND_FW_CMD cmd %d index %d\n",
+					fw_cmd.cmd, fw_cmd.index);
+				mutex_lock(&core->lock);
+				vpu_send_fw_cmd_locked(core, &fw_cmd);
+				mutex_unlock(&core->lock);
+				break;
 			}
-			mutex_unlock(&core->lock);
-			break;
 		default:
 			pr_err("Inside default cmd 0x%x\n", cmd);
 			rc = -EINVAL;
@@ -1142,7 +1277,7 @@ static int vpu_open(struct inode *inode, struct file *file)
 		/* after coredump FW may be corrupted (b/389175194#comment30) */
 		dev_info(core->dev, "reload FW since coredump has been triggered\n");
 		rc = vpu_reload_fw(core);
-		if (rc < 0)
+		if (rc)
 			return rc;
 		core->need_reload_fw = false;
 	}
@@ -1156,12 +1291,14 @@ static int vpu_open(struct inode *inode, struct file *file)
 		vpu_set_clk_rate(core, core->debugfs.fixed_rate);
 	}
 
-	rc = vpu_pt_client_enable(core);
-	if (rc < 0) {
-		pr_err("failed to enable SLC\n");
-		if (vpu_pm_power_off(core) < 0)
-			pr_err("failed to power off\n");
-		return rc;
+	if (IS_ENABLED(CONFIG_SLC_PARTITION_MANAGER)) {
+		rc = vpu_pt_client_enable(core);
+		if (rc < 0) {
+			pr_err("failed to enable SLC\n");
+			if (vpu_pm_power_off(core) < 0)
+				pr_err("failed to power off\n");
+			return rc;
+		}
 	}
 
 	return rc;
@@ -1175,7 +1312,8 @@ static int vpu_release(struct inode *inode, struct file *file)
 	uint32_t inst_idx;
 	struct vpu_bandwidth_info zero_bandwidth = {0};
 
-	vpu_pt_client_disable(core);
+	if (IS_ENABLED(CONFIG_SLC_PARTITION_MANAGER))
+		vpu_pt_client_disable(core);
 
 	core->user_idle = false;
 	if (vpu_pm_power_off(core))
@@ -1423,6 +1561,12 @@ static int vpu_probe(struct platform_device *pdev)
 		goto err_dt_parse;
 	}
 
+	rc = vpu_of_devfreq_init(core);
+	if (rc) {
+		dev_err(&pdev->dev, "Failed to init devfreq\n");
+		goto err_dt_parse;
+	}
+
 	rc = vpu_init_io(core);
 	if (rc < 0) {
 		dev_err(&pdev->dev, "failed to request irq\n");
@@ -1442,15 +1586,17 @@ static int vpu_probe(struct platform_device *pdev)
 	}
 
 	rc = vpu_load_fw(core);
-	if (rc < 0) {
+	if (rc) {
 		dev_err(&pdev->dev, "failed to load fw %d\n", rc);
 		goto err_load_fw;
 	}
 
-	rc = vpu_pt_client_register(pdev->dev.of_node, core);
-	if (rc < 0) {
-		dev_err(&pdev->dev, "failed to register pt client %d\n", rc);
-		goto err_load_fw;
+	if (IS_ENABLED(CONFIG_SLC_PARTITION_MANAGER)) {
+		rc = vpu_pt_client_register(pdev->dev.of_node, core);
+		if (rc < 0) {
+			dev_err(&pdev->dev, "failed to register pt client %d\n", rc);
+			goto err_load_fw;
+		}
 	}
 
 	vpu_init_debugfs(&core->debugfs);
@@ -1471,10 +1617,6 @@ static int vpu_probe(struct platform_device *pdev)
 	if (rc)
 		dev_err(&pdev->dev, "failed to register sscd\n");
 
-	core->wakelock = wakeup_source_register(&pdev->dev, dev_name(&pdev->dev));
-	if (!core->wakelock)
-		dev_err(&pdev->dev, "failed to register wakeup source\n");
-
 	core->init_wakelock = wakeup_source_register(&pdev->dev, VPU_INIT_WAKELOCK_NAME);
 	if (!core->init_wakelock)
 		dev_err(&pdev->dev, "failed to register init wakeup source\n");
@@ -1487,7 +1629,7 @@ err_pm_init:
 err_intr_queue_alloc:
 	vpu_release_io(core);
 err_io:
-	vpu_of_dt_release(core);
+	vpu_of_devfreq_deinit(core);
 err_dt_parse:
 	deinit_chardev(core);
 err_init_chardev:
@@ -1496,24 +1638,23 @@ err:
 	return rc;
 }
 
-static int vpu_remove(struct platform_device *pdev)
+static void vpu_remove(struct platform_device *pdev)
 {
 	struct vpu_core *core = (struct vpu_core *)platform_get_drvdata(pdev);
 
 	wakeup_source_unregister(core->init_wakelock);
-	wakeup_source_unregister(core->wakelock);
 	vpu_sscd_dev_unregister(core);
 
 	vpu_deinit_debugfs(&core->debugfs);
-	vpu_pt_client_unregister(core);
+	if (IS_ENABLED(CONFIG_SLC_PARTITION_MANAGER))
+		vpu_pt_client_unregister(core);
 	vpu_unload_fw(core);
 	vpu_pm_deinit(core);
 	vpu_free_intr_queue(&core->intr_queue);
 	vpu_release_io(core);
-	vpu_of_dt_release(core);
+	vpu_of_devfreq_deinit(core);
 	deinit_chardev(core);
 	platform_set_drvdata(pdev, NULL);
-	return 0;
 }
 
 static const struct dev_pm_ops vpu_pm_ops = {

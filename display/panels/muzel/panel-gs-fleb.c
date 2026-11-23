@@ -19,16 +19,6 @@
 #define FLEB_LUMINANCE_READ_SHORT_LEN 14
 #define FLEB_DEFAULT_VDDD 1100000
 
-#define ERR_FG_ADDR 0x5D
-#define ERR_FG_LEN 1
-#define ERR_FG_CSUM_ERR BIT(1)
-#define ERR_FG_TE_ERR BIT(2)
-#define ERR_FG_DSI_ERR BIT(3)
-#define ERR_DSI_ADDR 0xAB
-#define ERR_DSI_ERR_LEN 2
-#define FLEB_PPS_ADDR 0x91
-#define FLEB_PPS_LEN 48
-
 #define MIPI_DSI_FREQ_MBPS_DEFAULT 756
 #define MIPI_DSI_FREQ_MBPS_ALTERNATIVE 740
 
@@ -1295,84 +1285,6 @@ static int fleb_set_color_data_config(struct gs_panel *ctx, enum color_data_type
 	return 0;
 }
 
-#define BR_LEN 2
-static int fleb_detect_fault(struct gs_panel *ctx)
-{
-	struct device *dev = ctx->dev;
-	struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
-	u8 buf[ERR_FG_LEN] = { 0 };
-	int ret;
-
-	PANEL_ATRACE_BEGIN(__func__);
-
-	bitmap_zero(ctx->panel_errors, GS_PANEL_ERR_MAX);
-	ret = mipi_dsi_dcs_read(dsi, ERR_FG_ADDR, buf, ERR_FG_LEN);
-	if (ret != ERR_FG_LEN) {
-		ctx->ddic_read_fail_cnt++;
-		dev_warn(dev, "Error reading ERR_FG (%pe), cnt=%d\n",
-			ERR_PTR(ret), ctx->ddic_read_fail_cnt);
-		if (ctx->ddic_read_fail_cnt >= MAX_DDIC_READ_FAIL_CNT)
-			set_bit(GS_PANEL_ERR_DSI_READ_FAILURE, ctx->panel_errors);
-		goto end;
-	} else {
-		dev_dbg(dev, "ERR_FG: %02x\n", buf[0]);
-		ctx->ddic_read_fail_cnt = 0;
-	}
-
-	if (buf[0] & ERR_FG_CSUM_ERR)
-		set_bit(GS_PANEL_ERR_CHECKSUM, ctx->panel_errors);
-	if (buf[0] & ERR_FG_TE_ERR)
-		set_bit(GS_PANEL_ERR_TE, ctx->panel_errors);
-	if (buf[0] & ERR_FG_DSI_ERR) {
-		u8 err_buf[ERR_DSI_ERR_LEN] = { 0 };
-
-		ret = mipi_dsi_dcs_read(dsi, ERR_DSI_ADDR, err_buf, ERR_DSI_ERR_LEN);
-		if (ret == ERR_DSI_ERR_LEN) {
-			if (err_buf[0] || err_buf[1]) {
-				bitmap_set_value8(ctx->panel_errors, err_buf[0], 8);
-				bitmap_set_value8(ctx->panel_errors, err_buf[1], 0);
-			} else {
-				dev_dbg(dev, "DSI error flag set, but no specific error");
-			}
-		} else {
-			dev_err(dev, "Error reading DSI error register (%pe)\n", ERR_PTR(ret));
-		}
-	}
-	if (!bitmap_empty(ctx->panel_errors, GS_PANEL_ERR_MAX)) {
-		u8 br_buf[BR_LEN] = { 0 };
-		u8 pps_buf[FLEB_PPS_LEN] = { 0 };
-
-		dev_err(dev, "DDIC error: %*pbl\n", GS_PANEL_ERR_MAX, ctx->panel_errors);
-
-		/* Brightness */
-		ret = mipi_dsi_dcs_read(dsi, MIPI_DCS_GET_DISPLAY_BRIGHTNESS, br_buf, BR_LEN);
-		if (ret == BR_LEN)
-			dev_err(dev, "br: %02x %02x\n", br_buf[0], br_buf[1]);
-		else
-			dev_err(dev, "Error reading brightness (%pe)\n", ERR_PTR(ret));
-
-		/* PPS */
-		ret = mipi_dsi_dcs_read(dsi, FLEB_PPS_ADDR, pps_buf, FLEB_PPS_LEN);
-		if (ret == FLEB_PPS_LEN) {
-			char pps_str[FLEB_PPS_LEN * 2 + 1];
-
-			bin2hex(pps_str, pps_buf, FLEB_PPS_LEN);
-			dev_err(dev, "pps: %s\n", pps_str);
-		} else {
-			dev_err(dev, "Error reading pps (%pe)\n", ERR_PTR(ret));
-		}
-		/* positive return to indicate successful read of extant faults */
-		ret = 1;
-	} else {
-		ret = 0;
-	}
-
-end:
-	PANEL_ATRACE_END(__func__);
-
-	return ret;
-}
-
 static void fleb_debugfs_init(struct drm_panel *panel, struct dentry *root)
 {
 	struct gs_panel *ctx = container_of(panel, struct gs_panel, base);
@@ -1475,7 +1387,7 @@ static const struct gs_panel_funcs fleb_gs_funcs = {
 	.get_color_data = fleb_get_color_data,
 	.set_color_data_config = fleb_set_color_data_config,
 	.run_common_work = fleb_common_work,
-	.detect_fault = fleb_detect_fault,
+	.detect_fault = gs_panel_detect_fault_helper,
 };
 
 static struct gs_panel_brightness_desc fleb_brightness_desc = {
@@ -1514,6 +1426,17 @@ static struct gs_panel_calibration_desc fleb_calibration_desc = {
 	},
 };
 
+static const struct gs_panel_detect_fault_desc fleb_fault_desc = {
+	.errfg_reg = 0x5D,
+	.errfg_len = 1,
+	.dsi_err_reg = 0xAB,
+	.csum_mask = BIT(1),
+	.te_mask = BIT(2),
+	.dsi_err_mask = BIT(3),
+	.detect_interval_ms = 5000,
+	.panel_errors_mask = BIT(GS_PANEL_ERR_DSI_READ_FAILURE),
+};
+
 static struct gs_panel_desc gs_fleb = {
 	.data_lane_cnt = 4,
 	/* supported HDR format bitmask : 1(DOLBY_VISION), 2(HDR10), 3(HLG) */
@@ -1532,8 +1455,7 @@ static struct gs_panel_desc gs_fleb = {
 	.reset_timing_ms = { 1, 1, 20 },
 	.refresh_on_lp = true,
 	.common_work_delay_ms = 60000,
-	.fault_detect_interval_ms = 5000,
-	.panel_errors_mask = BIT(GS_PANEL_ERR_DSI_READ_FAILURE),
+	.fault_desc = &fleb_fault_desc,
 	/* supported IRC mode bitmask : 1(IRC_OFF), 2(IRC_PEAK_LUM) */
 	.irc_support_mode = BIT(1) | BIT(2),
 };

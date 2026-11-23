@@ -28,6 +28,19 @@ struct lwis_otp_config {
 	uint32_t settle_time_us;
 };
 
+enum lwis_i3c_match_type {
+	LWIS_I3C_MATCH_NONE = 0,
+	LWIS_I3C_MATCH_PID,
+	LWIS_I3C_MATCH_DCR,
+	LWIS_I3C_MATCH_BCR
+};
+
+union i3c_match_union {
+	u64 pid;
+	u8 dcr;
+	u8 bcr;
+};
+
 /*
  *  struct lwis_i2c_device
  *  "Derived" lwis_device struct, with added i2c/i3c related elements.
@@ -47,8 +60,10 @@ struct lwis_i2c_device {
 	int device_priority;
 	/* I3C device */
 	struct i3c_device *i3c;
-	int dcr;
+	enum lwis_i3c_match_type match_type;
+	union i3c_match_union match;
 	bool i3c_enabled;
+	bool ibi_enabled;
 	struct lwis_otp_config i3c_otp_config;
 	struct lwis_otp_config i2c_otp_config;
 	struct lwis_i3c_ibi_config ibi_config;

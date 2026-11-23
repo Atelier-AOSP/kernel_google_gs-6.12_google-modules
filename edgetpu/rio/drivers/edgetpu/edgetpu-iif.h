@@ -31,6 +31,9 @@ struct edgetpu_iif {
 	struct edgetpu_mailbox *mbx_hardware;
 	struct gcip_memory cmd_queue_mem;
 	struct mutex cmd_queue_lock;
+	struct gcip_memory resp_queue_mem;
+	spinlock_t resp_queue_lock;
+	unsigned long resp_queue_lock_flags;
 
 	/*
 	 * Fields used to ensure pending signal commands are flushed when firmware resets.
@@ -64,7 +67,7 @@ struct edgetpu_iif {
  * Initializes the IIF mailbox (if supported), obtain references to the system @iif_mgr and
  * @iif_dev, and start @unblocked_work.
  */
-int edgetpu_iif_init(struct edgetpu_mailbox_manager *mgr, struct edgetpu_iif *etiif);
+int edgetpu_iif_init(struct edgetpu_dev *etdev, struct edgetpu_iif *etiif);
 
 /*
  * Releases resources allocated by @etiif.
@@ -82,7 +85,7 @@ void edgetpu_iif_release(struct edgetpu_iif *etiif);
  *
  * If the platform does not support an IIF mailbox, this function returns success immediately.
  */
-int edgetpu_iif_init_mailbox(struct edgetpu_mailbox_manager *mgr, struct edgetpu_iif *etiif);
+int edgetpu_iif_init_mailbox(struct edgetpu_dev *etdev, struct edgetpu_iif *etiif);
 
 /*
  * Releases resources used by the IIF mailbox.

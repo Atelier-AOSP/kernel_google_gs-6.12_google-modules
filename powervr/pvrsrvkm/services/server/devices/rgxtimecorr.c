@@ -48,6 +48,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pvrsrv_apphint.h"
 #include "rgxpower.h"
 
+#if (defined(SUPPORT_LINUX_DVFS) || defined(SUPPORT_PDVFS)) && defined(CONFIG_PM_OPP)
+#include "pvr_dvfs_common.h"
+#endif
+
 /******************************************************************************
  *
  * - A calibration period is started on power-on and after a DVFS transition,
@@ -476,6 +480,14 @@ static void _RGXCheckTimeCorrData(PVRSRV_DEVICE_NODE *psDeviceNode,
 #endif
 }
 
+#if !((defined(SUPPORT_LINUX_DVFS) || defined(SUPPORT_PDVFS)) && defined(CONFIG_PM_OPP))
+static inline IMG_BOOL _RGXFreqIsWithinTolerance(IMG_UINT32 ui32FreqA, IMG_UINT32 ui32FreqB)
+{
+	IMG_UINT32 ui32Diff = (ui32FreqA > ui32FreqB) ? (ui32FreqA - ui32FreqB) : (ui32FreqB - ui32FreqA);
+
+	return (ui32Diff < (ui32FreqA >> 6) + (ui32FreqA >> 7)); // Approx 2.3% using shifts for performance
+}
+
 static inline IMG_UINT32 _RGXGPUFreqGetIndex(RGX_GPU_DVFS_TABLE *psGpuDVFSTable, IMG_UINT32 ui32CoreClockSpeed)
 {
 	IMG_UINT32 *paui32GPUFrequencies = psGpuDVFSTable->aui32GPUFrequency;
@@ -483,7 +495,8 @@ static inline IMG_UINT32 _RGXGPUFreqGetIndex(RGX_GPU_DVFS_TABLE *psGpuDVFSTable,
 
 	for (i = 0; i < RGX_GPU_DVFS_TABLE_SIZE; i++)
 	{
-		if (paui32GPUFrequencies[i] == ui32CoreClockSpeed)
+		/* Use fuzzy matching instead of exact equality to account for calibration jitter */
+		if (paui32GPUFrequencies[i] != 0 && _RGXFreqIsWithinTolerance(paui32GPUFrequencies[i], ui32CoreClockSpeed))
 		{
 			return i;
 		}
@@ -505,12 +518,16 @@ static inline IMG_UINT32 _RGXGPUFreqGetIndex(RGX_GPU_DVFS_TABLE *psGpuDVFSTable,
 
 	return i;
 }
+#endif
 
 static void _RGXGPUFreqCalibrationPeriodStart(PVRSRV_DEVICE_NODE *psDeviceNode, RGX_GPU_DVFS_TABLE *psGpuDVFSTable)
 {
+#if (defined(SUPPORT_LINUX_DVFS) || defined(SUPPORT_PDVFS)) && defined(CONFIG_PM_OPP)
+	PVRSRV_ERROR eError;
+#endif
 	PVRSRV_RGXDEV_INFO *psDevInfo = psDeviceNode->pvDevice;
 	GPU_FREQ_TRACKING_DATA *psTrackingData;
-	IMG_UINT32 ui32CoreClockSpeed, ui32Index;
+	IMG_UINT32 ui32CoreClockSpeed, ui32Index = 0;
 
 	IMG_UINT64 ui64CRTimestamp = RGXReadHWTimerReg(psDevInfo);
 	IMG_UINT64 ui64OSTimestamp = RGXTimeCorrGetClockus64(psDeviceNode);
@@ -523,7 +540,31 @@ static void _RGXGPUFreqCalibrationPeriodStart(PVRSRV_DEVICE_NODE *psDeviceNode, 
 	psGpuDVFSTable->ui64CalibrationOSTimestamp = ui64OSTimestamp;
 
 	ui32CoreClockSpeed = _RGXGetSystemLayerGPUClockSpeed(psDeviceNode);
+
+#if (defined(SUPPORT_LINUX_DVFS) || defined(SUPPORT_PDVFS)) && defined(CONFIG_PM_OPP)
+	eError = PVRSRVFindOPPFreqNearest(psDeviceNode, &ui32Index, &ui32CoreClockSpeed);
+	if (eError == PVRSRV_OK)
+	{
+		PVR_DPF((PVR_DBG_MESSAGE, "%s: Found nearest OPP (level %u), frequency: %u",
+			__func__, ui32Index, ui32CoreClockSpeed));
+
+		if (ui32Index >= RGX_GPU_DVFS_TABLE_SIZE)
+		{
+			PVR_DPF((PVR_DBG_WARNING, "GPU frequency table in the driver is full! "
+				"Table size should be increased!"));
+			ui32Index = 0;
+		}
+	}
+	else
+	{
+		ui32Index = 0;
+	}
+#else
 	ui32Index          = _RGXGPUFreqGetIndex(psGpuDVFSTable, ui32CoreClockSpeed);
+#endif
+
+	PVR_ASSERT(ui32Index < RGX_GPU_DVFS_TABLE_SIZE);
+
 	psTrackingData     = &psGpuDVFSTable->asTrackingData[ui32Index];
 
 	/* Set the time needed to (re)calibrate the GPU frequency */

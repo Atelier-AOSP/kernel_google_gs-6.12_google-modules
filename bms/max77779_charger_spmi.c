@@ -45,7 +45,6 @@ static int max77779_charger_spmi_probe(struct spmi_device *sdev)
 	data->dev = dev;
 	data->dev->init_name = "spmi-max77779-chrg";
 	data->regmap = regmap;
-	data->uc_data.dev = dev;
 	spmi_device_set_drvdata(sdev, data);
 
 	return max77779_charger_init(data);

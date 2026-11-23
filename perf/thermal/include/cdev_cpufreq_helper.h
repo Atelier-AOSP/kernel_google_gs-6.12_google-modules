@@ -13,11 +13,12 @@
 #include <linux/units.h>
 
 #include "cdev_helper.h"
-#include "thermal_cpm_mbox.h"
 
 int cdev_cpufreq_get_opp_count(unsigned int cpu);
 int cdev_cpufreq_update_opp_table(unsigned int cpu,
 				  enum hw_dev_type cdev_id,
 				  struct cdev_opp_table *cdev_table,
 				  unsigned int num_opp);
+struct device *cdev_get_cpu_device(unsigned int cpu);
+unsigned long cdev_dev_pm_opp_get_voltage(struct dev_pm_opp *opp);
 #endif  // _CDEV_CPUFREQ_HELPER_H_

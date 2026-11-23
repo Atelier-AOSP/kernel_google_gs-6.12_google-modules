@@ -28,7 +28,11 @@ u64 __gpc_volt_algo_get_power(struct gpowercap *gpowercap);
 int __gpc_volt_algo_update_power_uw(struct gpowercap *gpowercap);
 int __gpc_volt_algo_evaluate(struct gpowercap *gpowercap);
 void __gpc_volt_algo_release(struct gpowercap *gpowercap);
-struct gpowercap *__gpc_volt_algo_setup(const char *name, struct gpowercap *parent);
+struct gpowercap *__gpc_volt_algo_setup(struct device_node *dn, struct gpowercap *parent);
 
 extern const struct of_device_id powercap_volt_algo_platform_table[];
+extern void gpc_of_node_put(struct device_node *np);
+extern struct device_node *gpc_of_find_node_by_path(const char *path);
+extern const struct of_device_id *gpc_match_of_node(const struct of_device_id *matches,
+					const struct device_node *node);
 #endif  // _POWERCAP_VOLTAGE_ALGO_H_

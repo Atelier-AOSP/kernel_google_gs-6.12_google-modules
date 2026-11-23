@@ -13,7 +13,7 @@
 #include <linux/spinlock.h>
 
 #include <gcip/gcip-mailbox.h>
-#include <trace/events/gxp.h>
+#include <gcip/gcip-memory.h>
 
 #include "gxp-mailbox-driver.h"
 #include "gxp-mailbox-regs.h"
@@ -35,8 +35,6 @@ static irqreturn_t mailbox_irq_handler(int irq, void *arg)
 {
 	struct gxp_mailbox *mailbox = (struct gxp_mailbox *)arg;
 
-	trace_gxp_uci_rsp_start(irq);
-
 	gxp_mailbox_chip_irq_handler(mailbox);
 	return IRQ_HANDLED;
 }
@@ -46,30 +44,29 @@ static void register_irq(struct gxp_mailbox *mailbox)
 	int err;
 	unsigned int virq;
 
-	virq = irq_of_parse_and_map(mailbox->gxp->dev->of_node,
-				    mailbox->core_id);
+	virq = irq_of_parse_and_map(mailbox->gxp->dev->of_node, mailbox->core_id);
 	if (!virq) {
-		pr_err("Unable to parse interrupt for core %d from the DT\n",
-		       mailbox->core_id);
+		dev_err(mailbox->gxp->dev, "Unable to parse interrupt for core %d from the DT\n",
+			mailbox->core_id);
 		return;
 	}
 
-	err = request_irq(virq, mailbox_irq_handler, /*flags=*/0,
-			  "aurora_mbx_irq", (void *)mailbox);
+	err = request_irq(virq, mailbox_irq_handler, /*flags=*/0, "gxp_aurora_mbx_irq",
+			  (void *)mailbox);
 	if (err) {
-		pr_err("Unable to register IRQ num=%d; error=%d\n", virq, err);
+		dev_err(mailbox->gxp->dev, "Unable to register IRQ num=%d; error=%d\n", virq, err);
 		return;
 	}
 
 	mailbox->interrupt_virq = virq;
-	pr_debug("Core %d's mailbox interrupt registered as IRQ %u.\n",
-		 mailbox->core_id, virq);
+	dev_dbg(mailbox->gxp->dev, "Core %d's mailbox interrupt registered as IRQ %u.\n",
+		mailbox->core_id, virq);
 }
 
 static void unregister_irq(struct gxp_mailbox *mailbox)
 {
 	if (mailbox->interrupt_virq) {
-		pr_debug("Freeing IRQ %d\n", mailbox->interrupt_virq);
+		dev_dbg(mailbox->gxp->dev, "Freeing IRQ %d\n", mailbox->interrupt_virq);
 		free_irq(mailbox->interrupt_virq, mailbox);
 		mailbox->interrupt_virq = 0;
 	}
@@ -100,12 +97,12 @@ void gxp_mailbox_driver_disable_interrupts(struct gxp_mailbox *mailbox)
 
 void __iomem *gxp_mailbox_get_csr_base(struct gxp_dev *gxp, uint index)
 {
-	return gxp->mbx[index].vaddr;
+	return gxp->mbx[index].virt_addr;
 }
 
 void __iomem *gxp_mailbox_get_data_base(struct gxp_dev *gxp, uint index)
 {
-	return gxp->mbx[index].vaddr + MBOX_DATA_REG_BASE;
+	return gxp->mbx[index].virt_addr + MBOX_DATA_REG_BASE;
 }
 
 /* gxp-mailbox-driver.h: Data register-based calls */
@@ -322,15 +319,14 @@ int gxp_mailbox_inc_resp_queue_head_locked(struct gxp_mailbox *mailbox, u32 inc,
 	return gxp_mailbox_inc_resp_queue_head_nolock(mailbox, inc, wrap_bit);
 }
 
-u32 gxp_mailbox_gcip_ops_get_cmd_queue_tail(struct gcip_mailbox *mailbox)
+u32 gxp_mailbox_gcip_ops_get_tx_queue_tail(struct gcip_mailbox *mailbox)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 
 	return gxp_mbx->cmd_queue_tail;
 }
 
-void gxp_mailbox_gcip_ops_inc_cmd_queue_tail(struct gcip_mailbox *mailbox,
-					     u32 inc)
+void gxp_mailbox_gcip_ops_inc_tx_queue_tail(struct gcip_mailbox *mailbox, u32 inc)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 
@@ -339,8 +335,7 @@ void gxp_mailbox_gcip_ops_inc_cmd_queue_tail(struct gcip_mailbox *mailbox,
 					      mailbox->queue_wrap_bit);
 }
 
-int gxp_mailbox_gcip_ops_acquire_cmd_queue_lock(struct gcip_mailbox *mailbox,
-						bool try, bool *atomic)
+int gxp_mailbox_gcip_ops_acquire_tx_queue_lock(struct gcip_mailbox *mailbox, bool try, bool *atomic)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 
@@ -348,36 +343,35 @@ int gxp_mailbox_gcip_ops_acquire_cmd_queue_lock(struct gcip_mailbox *mailbox,
 	return 1;
 }
 
-void gxp_mailbox_gcip_ops_release_cmd_queue_lock(struct gcip_mailbox *mailbox)
+void gxp_mailbox_gcip_ops_release_tx_queue_lock(struct gcip_mailbox *mailbox)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 
 	mutex_unlock(&gxp_mbx->cmd_queue_lock);
 }
 
-u32 gxp_mailbox_gcip_ops_get_resp_queue_size(struct gcip_mailbox *mailbox)
+u32 gxp_mailbox_gcip_ops_get_rx_queue_size(struct gcip_mailbox *mailbox)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 
 	return gxp_mbx->resp_queue_size;
 }
 
-u32 gxp_mailbox_gcip_ops_get_resp_queue_head(struct gcip_mailbox *mailbox)
+u32 gxp_mailbox_gcip_ops_get_rx_queue_head(struct gcip_mailbox *mailbox)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 
 	return gxp_mbx->resp_queue_head;
 }
 
-u32 gxp_mailbox_gcip_ops_get_resp_queue_tail(struct gcip_mailbox *mailbox)
+u32 gxp_mailbox_gcip_ops_get_rx_queue_tail(struct gcip_mailbox *mailbox)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 
 	return gxp_mailbox_read_resp_queue_tail(gxp_mbx);
 }
 
-void gxp_mailbox_gcip_ops_inc_resp_queue_head(struct gcip_mailbox *mailbox,
-					       u32 inc)
+void gxp_mailbox_gcip_ops_inc_rx_queue_head(struct gcip_mailbox *mailbox, u32 inc)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 
@@ -386,8 +380,7 @@ void gxp_mailbox_gcip_ops_inc_resp_queue_head(struct gcip_mailbox *mailbox,
 					       mailbox->queue_wrap_bit);
 }
 
-int gxp_mailbox_gcip_ops_acquire_resp_queue_lock(struct gcip_mailbox *mailbox,
-						 bool try, bool *atomic)
+int gxp_mailbox_gcip_ops_acquire_rx_queue_lock(struct gcip_mailbox *mailbox, bool try, bool *atomic)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 	unsigned long flags;
@@ -408,15 +401,14 @@ int gxp_mailbox_gcip_ops_acquire_resp_queue_lock(struct gcip_mailbox *mailbox,
 	return ret;
 }
 
-void gxp_mailbox_gcip_ops_release_resp_queue_lock(struct gcip_mailbox *mailbox)
+void gxp_mailbox_gcip_ops_release_rx_queue_lock(struct gcip_mailbox *mailbox)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 
 	spin_unlock_irqrestore(&gxp_mbx->resp_queue_lock, gxp_mbx->resp_queue_lock_flags);
 }
 
-int gxp_mailbox_gcip_ops_wait_for_cmd_queue_not_full(
-	struct gcip_mailbox *mailbox)
+int gxp_mailbox_gcip_ops_wait_for_tx_queue_not_full(struct gcip_mailbox *mailbox)
 {
 	struct gxp_mailbox *gxp_mbx = mailbox->data;
 	u32 tail = gxp_mbx->cmd_queue_tail;

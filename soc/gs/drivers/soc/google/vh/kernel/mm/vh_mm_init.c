@@ -17,10 +17,12 @@
 #include <trace/hooks/mm.h>
 #include <trace/hooks/vmscan.h>
 #include <uapi/linux/sched/types.h>
-#include <heaps/deferred-free-helper.h>
+#include <linux/sched/rt.h>
 
-#include "../../include/pixel_mm_hint.h"
-#include "../../include/pixel_mm.h"
+#include "pixel_mm_hint.h"
+#include "pixel_mm.h"
+#include "cma.h"
+#include "deferred-free-helper.h"
 
 #define READ_SWAP_CACHE_ASYNC_SPIN_COUNT 8
 #define READ_SWAP_CACHE_ASYNC_DELAY_US 5
@@ -337,16 +339,15 @@ static void vh_swap_writepage(void *data,
 	*sis_flag &= ~SWP_SYNCHRONOUS_IO;
 }
 
-/*
- * For allocations larger than a page, skip direct reclaim to prevent potential
- * latency spikes unless the caller specifies __GFP_RETRY_MAYFAIL. This aligns
- * with the upstream kernel's behavior. See:
- * https://source.corp.google.com/h/android/kernel/common/+/46459154f9979387486fb5f50e4aa425e33a306c
- */
 static void vh_kvmalloc_high_order_skip_direct_reclaim(void *data,
-		size_t size, gfp_t *gfp_flags, bool *use_vmalloc)
+		unsigned int order, gfp_t *gfp_flags)
 {
-	if (size > PAGE_SIZE && !(*gfp_flags & __GFP_RETRY_MAYFAIL))
+	/*
+	 * If the allocation order exceeds the threshold, clear
+	 * __GFP_DIRECT_RECLAIM to prevent potential latency spikes from
+	 * direct reclaim.
+	 */
+	if (order > PAGE_ALLOC_COSTLY_ORDER)
 		*gfp_flags &= ~__GFP_DIRECT_RECLAIM;
 }
 
@@ -499,8 +500,58 @@ static void rvh_read_swap_cache_async_schedule_timeout(void *data, size_t *count
 	usleep_range(READ_SWAP_CACHE_ASYNC_SLEEP_MIN, READ_SWAP_CACHE_ASYNC_SLEEP_MAX);
 }
 
+static bool rt_disallow_wmark_bypass;
+
+static ssize_t rt_disallow_wmark_bypass_show(struct kobject *kobj,
+					     struct kobj_attribute *attr,
+					     char *buf)
+{
+	return sysfs_emit(buf, "%d\n", rt_disallow_wmark_bypass);
+}
+
+static ssize_t rt_disallow_wmark_bypass_store(struct kobject *kobj,
+					      struct kobj_attribute *attr,
+					      const char *buf,
+					      size_t len)
+{
+	bool val;
+
+	if (kstrtobool(buf, &val))
+		return -EINVAL;
+
+	rt_disallow_wmark_bypass = val;
+	return len;
+}
+
+VENDOR_MM_RW(rt_disallow_wmark_bypass);
+
+#ifndef ALLOC_OOM
+#define ALLOC_OOM		0x08
+#endif
+#ifndef ALLOC_NON_BLOCK
+#define ALLOC_NON_BLOCK		0x10
+#endif
+#ifndef ALLOC_MIN_RESERVE
+#define ALLOC_MIN_RESERVE	0x20
+#endif
+#ifndef ALLOC_HIGHATOMIC
+#define ALLOC_HIGHATOMIC	0x200
+#endif
+#ifndef ALLOC_RESERVES
+#define ALLOC_RESERVES		(ALLOC_NON_BLOCK|ALLOC_MIN_RESERVE|ALLOC_HIGHATOMIC|ALLOC_OOM)
+#endif
+
+static void vh_calc_alloc_flags(void *data, gfp_t gfp_mask,
+				unsigned int *alloc_flags, bool *bypass)
+{
+	if (rt_disallow_wmark_bypass && rt_task(current) && in_task() &&
+	    !(current->flags & PF_KTHREAD))
+		*alloc_flags &= ~ALLOC_RESERVES;
+}
+
 static struct attribute *vendor_mm_attrs[] = {
 	&kswapd_cpu_affinity_attr.attr,
+	&rt_disallow_wmark_bypass_attr.attr,
 	&kswapd_uclamp_min_attr.attr,
 	&kswapd_uclamp_max_attr.attr,
 	&kcompactd_cpu_affinity_attr.attr,
@@ -540,8 +591,6 @@ static int init_get_kswapd_kcompactd_tasks(void)
 
 struct kobject *vendor_mm_kobj;
 EXPORT_SYMBOL_GPL(vendor_mm_kobj);
-
-extern int pixel_mm_cma_sysfs(struct kobject *parent);
 
 static int vh_mm_init(void)
 {
@@ -593,7 +642,7 @@ static int vh_mm_init(void)
 	if (ret)
 		goto out_err;
 
-	ret = register_trace_android_vh_kvmalloc_node_use_vmalloc(
+	ret = register_trace_android_vh_adjust_kvmalloc_flags(
 		vh_kvmalloc_high_order_skip_direct_reclaim, NULL);
 	if (ret)
 		goto out_err;
@@ -625,8 +674,28 @@ static int vh_mm_init(void)
 	if (ret)
 		goto out_err;
 
+	ret = register_trace_android_vh_page_cache_readahead_start(
+				vh_page_cache_readahead_start, NULL);
+	if (ret)
+		goto out_err;
+
+	ret = register_trace_android_vh_page_cache_ra_order_bypass(
+				vh_page_cache_ra_order_bypass, NULL);
+	if (ret)
+		goto out_err;
+
+	ret = register_trace_android_vh_ra_alloc_retry(
+				vh_ra_alloc_retry, NULL);
+	if (ret)
+		goto out_err;
+
 	ret = register_trace_android_rvh_read_swap_cache_async_timeout
 			(rvh_read_swap_cache_async_schedule_timeout, NULL);
+	if (ret)
+		goto out_err;
+
+	ret = register_trace_android_vh_calc_alloc_flags(
+				vh_calc_alloc_flags, NULL);
 	if (ret)
 		goto out_err;
 

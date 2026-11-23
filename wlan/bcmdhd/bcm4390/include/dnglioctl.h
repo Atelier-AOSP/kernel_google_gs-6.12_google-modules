@@ -66,8 +66,10 @@
 #define RTE_REAL_D3_D0		0x891F	/* Transition from real D3/D0. */
 #define RTERXCMPLCHAINENABLE	0x8920	/* Chained RxCompletion Enable */
 #define RTEGRADIO_STAT		0x8921	/* Radio Stat */
+#define RTEDEVGETSTATSTYPE	0x8922	/* Get flowring stats type from WL */
+#define RTEDEVGETSTATSBITMAP	0x8923	/* Get flowring stats bitmap from WL */
 /* Ensure last RTE IOCTL define val is assigned to RTEIOCTLEND */
-#define RTEIOCTLEND		0x8920  /* LAST RTE IOCTL value */
+#define RTEIOCTLEND		0x8923  /* LAST RTE IOCTL value */
 
 #define RTE_IOCTL_QUERY		0x00
 #define RTE_IOCTL_SET		0x01
@@ -102,7 +104,8 @@ enum hnd_ioctl_cmd {
 	BUS_M2M_LOW_PRIO_DESCR = 21, /* enable/disable m2m low prio descriptor */
 	BUS_SET_DEV_TRAP_FATAL = 22, /* communicate to host to perform big-hammer */
 	BUS_UPDATE_RX_PKTFETCH_CNT = 23, /* Num of Rx packets fetched from host */
-	BUS_UPDATE_RX_PKTFETCH_FW_CNSMD = 24 /* Num of Rx packets fetched and consumed in FW */
+	BUS_UPDATE_RX_PKTFETCH_FW_CNSMD = 24, /* Num of Rx packets fetched and consumed in FW */
+	BUS_UPDATE_GEN = 25 /* Configure gen */
 };
 
 #define SDPCMDEV_SET_MAXTXPKTGLOM	1
@@ -374,6 +377,153 @@ enum dsec_sboot_xtlv_id {
 	DSEC_OTP_XTLV_SBOOT_OTP_WR_LOCK_ENAB	= 30u,	/* OTP write lock enable bit */
 };
 
+/* SMBM (Shared Memory Bank Manager) IOVAR sub-command IDs for IOVAR "smbm" */
+typedef enum {
+	SMBM_SUBCMD_GETVER = 0,   /* Get SMBM IOVAR version */
+	SMBM_SUBCMD_DUMP = 1u,   /* Dump SMBM diagnostic information */
+	SMBM_SUBCMD_MODE = 2u,   /* SMBM mode - who can use SMB - WLAN/BT/'via arbitration' */
+	SMBM_SUBCMD_POLICY = 3u, /* SMBM policy - The list of SW features that use SMB Memory. */
+	SMBM_SUBCMD_STATUS = 4u, /* SMBM's current Status - if SMB Memory is with WLAN or BT */
+	SMBM_SUBCMD_TEST = 5u	/* For testing only. This will have sub IDs */
+
+} smbm_subcmd_id_t;
+
+#define SMBM_IOVAR_CMD_VER_0    0  /* Version 0 of the SMBM IOVAR SMBM_SUBCMD_VER */
+#define SMBM_IOVAR_CMD_VER      SMBM_IOVAR_CMD_VER_0
+
+#define SMBM_DUMP_VER_0 0
+#define SMBM_DUMP_VER	SMBM_DUMP_VER_0
+/**
+ * @brief Structure for the payload of the 'dump' subcommand response XTLV.
+ */
+typedef struct smbm_dump_info {
+	uint16 ver;		/**< Version of this dump structure (SMBM_DUMP_VER_0) */
+	uint16 len;		/**< Total length of this smbm_dump_info_t structure itself */
+	uint32 total_mem;	/**< Total SMB memory size in bytes */
+	uint32 smb_start_addr;	/**< Start address of SMB memory */
+	uint32 smb_end_addr;	/**< End address of SMB memory */
+	uint8 smb_status;	/**< returns smbm_status_t */
+	uint8 smbm_usr_hndl_cnt; /**< MAX Number of SMBM users. */
+	uint16 reserved;
+	char   val[BCM_FLEX_ARRAY]; /**< For formatted text output */
+} smbm_dump_resp_info_v0_t;
+
+
+/* SMBM Mode */
+typedef enum {
+	SMBM_MODE_BT = 0,			/**<  SMB will not be used by WLAN. */
+	SMBM_MODE_WLAN_BT_ARBITRATION = 1u,	/**< SMB will be used by WLAN when available.
+						  * Via SMBM GCI protocol arbitration.
+						  */
+	SMBM_MODE_WLAN = 2u			/**< SMB will be used by WLAN only. */
+} smbm_mode_value_t;
+
+#define SMBM_MODE_VER_0 0
+#define SMBM_MODE_VER	SMBM_MODE_VER_0
+
+typedef struct smbm_mode {
+	uint16 ver;		/**< Version of smbm_mode_t */
+	uint16 len;		/**< Total length of this smbm_mode_t structure itself */
+	uint8 mode;		/**< smbm_mode_value_t */
+	uint8 reserved;
+	uint16 reserved1;
+} smbm_mode_t;
+
+/* SMBM Policy bitmap. Each set bit from below enable that particular feature. */
+typedef enum {
+	SMBM_POLICY_NONE = 0,				/* No features use SMB Memory. */
+	SMBM_POLICY_ANY_ASSOC = (1u << 0),		/* Use SMB for any association. */
+	SMBM_POLICY_320MHZ_ASSOC_ONLY = (1u << 1u),	/* Use SMB only when 320Mhz assoc */
+	SMBM_POLICY_LOGGING = (1u << 2u)		/* Use SMB for logging */
+} smbm_policy_map_t;
+
+/* SMBM policy operation to set. SET/ADD/REMOVE */
+typedef enum {
+	SMBM_POLICY_SET = 0,	/**< Setting new policy bitmap value. */
+	SMBM_POLICY_ADD = 1u,	/**<  Adds to existing policy bitmap value. */
+	SMBM_POLICY_REMOVE = 2u	/**<  Removes from existing policy bitmap value. */
+} smbm_policy_op_t;
+
+#define SMBM_POLICY_VER_0 0
+#define SMBM_POLICY_VER	SMBM_POLICY_VER_0
+
+/* Structure to set/get SMBM policy. */
+typedef struct {
+	uint16 ver;		/**< Version of smbm_policy_t */
+	uint16 len;		/**< Total length of this smbm_policy_t structure itself */
+	uint32 policy;		/**< Value of smbm_policy_map_t */
+	uint8  policy_op;	/**< Policy operation smbm_policy_op_t. Valid only for set. */
+	uint8  reserved;
+	uint16 reserved1;
+} smbm_policy_t;
+
+/* SMBM Status */
+typedef enum smbm_status_e {
+	SMBM_STATUS_UNKNOWN = 0,	/**< Invalid value. */
+	SMBM_STATUS_BT = 1u,		/**< SMB Memory is with BT */
+	SMBM_STATUS_WLAN = 2u,		/**< SMB Memory is with WLAN */
+} smbm_status_type_t;
+
+#define SMBM_STATUS_VER_0 0
+#define SMBM_STATUS_VER	SMBM_STATUS_VER_0
+
+/* SMBM Status */
+typedef struct smbm_status {
+	uint16 ver;		/**< Version. */
+	uint16 len;		/**< Total length of this structure. */
+	uint8 status;		/* smbm_status_type_t */
+	uint8 reserved;
+	uint16 reserved1;
+} smbm_status_t;
+
+
+typedef smbm_dump_resp_info_v0_t smbm_dump_resp_info_t;
+
+typedef enum {
+	SMBM_TEST_SMBM_USER_REGISTER	= 0, /** Register new SMB memory user. Returns handle */
+	SMBM_TEST_SMBM_MALLOC		= 1u,	/** SMB Malloc using handle from user_register */
+	SMBM_TEST_SMBM_MFREE		= 2u,	/** free SMB Memory using address */
+	SMBM_TEST_SWITCH_TO_WLAN	= 3u,	/** Switch SMB to WLAN */
+	SMBM_TEST_SWITCH_TO_BT		= 4u	/** Switch SMB to BT */
+} smbm_subcmd_test_id_t;
+
+#define SMBM_TEST_VER_0 0
+#define SMBM_TEST_VER	SMBM_TEST_VER_0
+
+typedef struct smbm_test_params {
+	uint16 ver;		/**< Version of this test structure */
+	uint16 len;		/**< Total length structure itself */
+	uint16 test_id;		/**< smbm_subcmd_test_id_t */
+	uint16 reserved;
+	union {
+		struct {
+			uint32 smbm_user_handle;
+			uint32 malloc_size;
+		} smbm_malloc;
+
+		struct {
+			uint32 allocated_address;
+		} smbm_free;
+	} u;
+} smbm_test_params_t;
+
+typedef struct smbm_test_results {
+	uint16 ver;		/**< Version of this test results structure */
+	uint16 len;		/**< Total length structure itself */
+	uint16 test_id;		/**< smbm_subcmd_test_id_t */
+	uint16 reserved;
+	int32  status;		/**< BCME_ error code of test status. */
+	union {
+		struct {
+			uint32 allocated_address;
+		} smbm_malloc;
+
+		struct {
+			uint32 smbm_user_handle;
+		} smbm_user_register;
+	} u;
+} smbm_test_results_t;
+
 /*
  * sub-cmd ids shared between FW and wl. Required to qualify sub-cmd data
  */
@@ -438,6 +588,12 @@ typedef struct epmu_dump_resp {
 	uint16 len;
 	char val[];		/* preformated string of register 'addr: val' pairs */
 } epmu_dump_resp_t;
+
+typedef struct flowring_stats_cfg {
+	uint8 ifindex;
+	uint8 tid;
+	uint8 peer_mac[6]; /* Peer MAC address */
+} flowring_stats_cfg_t;
 
 #define EPMU_DUMP_VER_0		0u
 #define EPMU_DUMP_VER		EPMU_DUMP_VER_0

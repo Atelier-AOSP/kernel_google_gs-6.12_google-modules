@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 filegroup(
     name = "dwc_dptx.kconfig",
     srcs = [
@@ -60,11 +65,6 @@ ddk_module(
     ],
     out = "dwc_dptx.ko",
     conditional_srcs = {
-        "CONFIG_DWC_DPTX_AUDIO": {
-            True: [
-                "dptx_audio/dptx_audio.c",
-            ],
-        },
         "CONFIG_DWC_DPTX_HDCP": {
             True: [
                 "hdcp_auth13.c",
@@ -74,22 +74,32 @@ ddk_module(
                 "hdcp_teeif.c",
             ],
         },
+        "CONFIG_DWC_DPTX_AUDIO": {
+            True: [
+                "dptx_audio/dptx_audio.c",
+            ],
+        },
     },
     copts = [
         "-Wno-unused",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         ":ddk_headers",
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
-        "//private/google-modules/soc/rdo:rdo_soc_module",
-        "//private/google-modules/trusty",
+        "//private/google-modules/soc/rdo/phy:google-usb-phy",
+        "//private/google-modules/trusty:trusty-ipc",
         "//private/google-modules/trusty:trusty_headers",
-    ],
+    ] + select({
+        "//private/devices/google/common:soc_is_malibu": [
+            "//private/google-modules/soc/rdo/aoss-ssr-notifier:aoss_ssr_notifier",
+        ],
+        "//private/devices/google/common:soc_is_laguna": [
+            "//private/google-modules/soc/rdo/aoss-ssr-notifier:aoss_ssr_notifier",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 ddk_module(
@@ -105,9 +115,6 @@ ddk_module(
         "-Wno-unused",
     ],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         ":ddk_headers",
         "//common:all_headers_aarch64",

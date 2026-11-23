@@ -49,12 +49,11 @@ static int google_mba_platform_probe(struct platform_device *pdev)
 	return google_mba_init(mba);
 }
 
-static int google_mba_platform_remove(struct platform_device *pdev)
+static void google_mba_platform_remove(struct platform_device *pdev)
 {
 	struct google_mba *mba = platform_get_drvdata(pdev);
 
 	google_mba_exit(mba);
-	return 0;
 }
 
 static const struct of_device_id google_mba_of_match_table[] = {

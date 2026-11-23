@@ -10,19 +10,29 @@
 #include <kunit/test.h>
 
 #include "thermal_msg_helper.h"
+#include "thermal_msg_mock.h"
 
 static int mock_ret_code;
 static int mock_status_code;
+static int mock_cdev_to_hw_tzid_ret;
 
-static union thermal_cpm_message mock_msg_inp, *mock_resp;
+static union thermal_cpm_message mock_msg_inp, mock_resp;
 
 int mock_cpm_msg_send(union thermal_cpm_message *therm_msg, int *status)
 {
+	if (!therm_msg)
+		return -EINVAL;
+
 	memcpy(&mock_msg_inp, therm_msg, sizeof(mock_msg_inp));
-	if (mock_resp)
-		memcpy(therm_msg, mock_resp, sizeof(*mock_resp));
+	memcpy(therm_msg, &mock_resp, sizeof(mock_resp));
 	*status = mock_status_code;
 	return mock_ret_code;
+}
+
+int mock_msg_cdev_to_hw_tzid(enum hw_dev_type cdev_id, enum hw_thermal_zone_id *hw_tzid)
+{
+	*hw_tzid = (enum hw_thermal_zone_id)cdev_id;
+	return mock_cdev_to_hw_tzid_ret;
 }
 
 static bool verify_req_msg(int ch_id, enum thermal_cpm_mbox_req_type msg_type)
@@ -44,6 +54,8 @@ static int thermal_msg_helper_test_init(struct kunit *test)
 {
 	mock_ret_code = 0;
 	mock_status_code = 0;
+
+	memset(&mock_resp, 0, sizeof(mock_resp));
 
 	return 0;
 }
@@ -136,16 +148,12 @@ static void thermal_cpm_gen_read(struct kunit *test)
 						     NULL),
 			-EINVAL);
 	KUNIT_EXPECT_EQ(test,
-			msg_ntc_channel_generic_read(-7,
-						     THERMAL_SERVICE_COMMAND_NTC_ENABLE,
+			msg_ntc_channel_generic_read(-7, THERMAL_SERVICE_COMMAND_NTC_ENABLE,
 						     &reg_data),
 			-EINVAL);
-	/* Valid response. */
-	mock_resp = kunit_kzalloc(test, sizeof(*mock_resp), GFP_KERNEL);
-	KUNIT_ASSERT_NOT_ERR_OR_NULL(test, mock_resp);
 
 	mock_ret_code = 0;
-	mock_resp->resp.temp = 0x10;
+	mock_resp.resp.temp = 0x10;
 	KUNIT_EXPECT_EQ(test,
 			msg_ntc_channel_generic_read(7,
 						     THERMAL_SERVICE_COMMAND_NTC_ENABLE,
@@ -218,7 +226,7 @@ static void thermal_cpm_read_temp(struct kunit *test)
 {
 	int reg_data;
 
-	mock_resp->resp.temp = 0x10;
+	mock_resp.resp.temp = 0x10;
 	KUNIT_EXPECT_EQ(test, msg_ntc_channel_read_temp(7, &reg_data), mock_ret_code);
 	KUNIT_EXPECT_EQ(test, reg_data, 0x10);
 	KUNIT_EXPECT_TRUE(test, verify_req_msg(7, THERMAL_SERVICE_COMMAND_NTC_READ));
@@ -228,7 +236,7 @@ static void thermal_cpm_read_avg_temp(struct kunit *test)
 {
 	int reg_data;
 
-	mock_resp->resp.temp = 0x10;
+	mock_resp.resp.temp = 0x10;
 	KUNIT_EXPECT_EQ(test, msg_ntc_channel_read_avg_temp(7, &reg_data), mock_ret_code);
 	KUNIT_EXPECT_EQ(test, reg_data, 0x10);
 	KUNIT_EXPECT_TRUE(test, verify_req_msg(7, THERMAL_SERVICE_COMMAND_NTC_READ_AVG));
@@ -238,8 +246,8 @@ static void thermal_cpm_read_irq_status(struct kunit *test)
 {
 	int reg_data[2];
 
-	mock_resp->resp.status = 0xF0;
-	mock_resp->resp.status1 = 0xFA;
+	mock_resp.resp.status = 0xF0;
+	mock_resp.resp.status1 = 0xFA;
 	KUNIT_EXPECT_EQ(test, msg_ntc_channel_read_irq_status(reg_data, 2), mock_ret_code);
 	KUNIT_EXPECT_EQ(test, reg_data[0], 0xF0);
 	KUNIT_EXPECT_EQ(test, reg_data[1], 0xFA);
@@ -258,7 +266,7 @@ static void thermal_tmu_get_temp(struct kunit *test)
 {
 	u8 temperature, mock_tzid = 1;
 
-	mock_resp->resp.temp = 50;
+	mock_resp.resp.temp = 50;
 
 	KUNIT_EXPECT_EQ(test, msg_tmu_get_temp(mock_tzid, &temperature), mock_ret_code);
 	KUNIT_EXPECT_EQ(test, temperature, 50);
@@ -347,22 +355,22 @@ static void thermal_tmu_set_trip(struct kunit *test)
 
 static void thermal_tmu_get_trip_counter_snapshot(struct kunit *test)
 {
-	u8 mock_tzid = HW_THERMAL_ZONE_BIG;
+	enum hw_thermal_zone_id mock_tzid = HW_THERMAL_ZONE_0;
 
 	// success
-	KUNIT_EXPECT_EQ(test, msg_tmu_get_trip_counter_snapshot(mock_tzid), 0);
+	KUNIT_EXPECT_EQ(test, msg_tmu_get_trip_counter_snapshot((u8)mock_tzid), 0);
 
 	// invalid tz_id
 	KUNIT_EXPECT_EQ(test, msg_tmu_get_trip_counter_snapshot(HW_THERMAL_ZONE_MAX), -EINVAL);
 
 	// CPM comm failed
 	mock_ret_code = -ENODEV;
-	KUNIT_EXPECT_EQ(test, msg_tmu_get_trip_counter_snapshot(mock_tzid), -ENODEV);
+	KUNIT_EXPECT_EQ(test, msg_tmu_get_trip_counter_snapshot((u8)mock_tzid), -ENODEV);
 
 	// CPM status error
 	mock_ret_code = 0;
 	mock_status_code = -EOPNOTSUPP;
-	KUNIT_EXPECT_EQ(test, msg_tmu_get_trip_counter_snapshot(mock_tzid), -EOPNOTSUPP);
+	KUNIT_EXPECT_EQ(test, msg_tmu_get_trip_counter_snapshot((u8)mock_tzid), -EOPNOTSUPP);
 }
 
 static void thermal_tmu_set_gov_param(struct kunit *test)
@@ -417,8 +425,10 @@ static void thermal_tmu_set_power_table(struct kunit *test)
 					       THERMAL_SERVICE_COMMAND_SET_POWERTABLE));
 
 	// Invalid cdev.
-	KUNIT_EXPECT_EQ(test, msg_tmu_set_power_table(HW_CDEV_MAX, mock_idx, mock_val),
+	mock_cdev_to_hw_tzid_ret = -EINVAL;
+	KUNIT_EXPECT_EQ(test, msg_tmu_set_power_table(mock_cdevid, mock_idx, mock_val),
 			-EINVAL);
+	mock_cdev_to_hw_tzid_ret = 0;
 
 	// CPM comm failed
 	// ret error code indicates CPM comm errors and should block status code
@@ -436,8 +446,8 @@ static void thermal_tmu_get_power_table(struct kunit *test)
 	u8 mock_cdevid = 1, mock_idx = 2;
 	int mock_val, mock_max_state_idx;
 
-	mock_resp->data[1] = 2000;
-	mock_resp->data[2] = 20;
+	mock_resp.data[1] = 2000;
+	mock_resp.data[2] = 20;
 
 	KUNIT_EXPECT_EQ(test,
 			msg_tmu_get_power_table(mock_cdevid, mock_idx, &mock_val,
@@ -453,9 +463,11 @@ static void thermal_tmu_get_power_table(struct kunit *test)
 			mock_ret_code);
 
 	// Invalid cdev.
-	KUNIT_EXPECT_EQ(test, msg_tmu_get_power_table(HW_CDEV_MAX, mock_idx, &mock_val,
+	mock_cdev_to_hw_tzid_ret = -EINVAL;
+	KUNIT_EXPECT_EQ(test, msg_tmu_get_power_table(mock_cdevid, mock_idx, &mock_val,
 						      &mock_max_state_idx),
 			-EINVAL);
+	mock_cdev_to_hw_tzid_ret = 0;
 
 	// CPM comm failed
 	// ret error code indicates CPM comm errors and should block status code
@@ -490,6 +502,102 @@ static void thermal_tmu_set_polling_delay_ms(struct kunit *test)
 			-EOPNOTSUPP);
 }
 
+#define MOCK_TEMP_LUT_TZID		(0)
+#define MOCK_TEMP_LUT_TEMP		(90)
+#define MOCK_TEMP_LUT_STATE		(1)
+#define MOCK_TEMP_LUT_TEMP_INVALID	(0)
+#define MOCK_TEMP_LUT_STATE_INVALID	(255)
+static void thermal_tmu_set_temp_lut(struct kunit *test)
+{
+	u8 tzid = MOCK_TEMP_LUT_TZID;
+	u8 temp = MOCK_TEMP_LUT_TEMP;
+	u8 cdev_state = MOCK_TEMP_LUT_STATE;
+	bool append = false;
+
+	mock_ret_code = 0;
+	mock_status_code = 0;
+
+	// verify message
+	KUNIT_EXPECT_EQ(test,
+		msg_tmu_set_temp_lut(tzid, temp, cdev_state, append),
+		0);
+	KUNIT_EXPECT_TRUE(test,
+		verify_req_msg(tzid, THERMAL_SERVICE_COMMAND_SET_TEMP_LUT));
+	KUNIT_EXPECT_EQ(test, mock_msg_inp.req.req_rsvd0, temp);
+	KUNIT_EXPECT_EQ(test, mock_msg_inp.req.req_rsvd1, cdev_state);
+	KUNIT_EXPECT_EQ(test, mock_msg_inp.req.req_rsvd2, append);
+
+	// CPM comm failed
+	// ret error code indicates CPM comm errors and should block status code
+	mock_ret_code = -EBUSY;
+	KUNIT_EXPECT_EQ(test,
+		msg_tmu_set_temp_lut(tzid, temp, cdev_state, append),
+		-EBUSY);
+
+	// CPM status error
+	mock_ret_code = 0;
+	mock_status_code = -EPERM;
+	KUNIT_EXPECT_EQ(test,
+		msg_tmu_set_temp_lut(tzid, temp, cdev_state, append),
+		-EPERM);
+}
+
+static void thermal_tmu_get_temp_lut(struct kunit *test)
+{
+	u8 tzid = MOCK_TEMP_LUT_TZID;
+	u8 temp = MOCK_TEMP_LUT_TEMP_INVALID;
+	u8 cdev_state = MOCK_TEMP_LUT_STATE_INVALID;
+
+	mock_resp.resp.temp = MOCK_TEMP_LUT_TEMP;
+	mock_resp.resp.status = MOCK_TEMP_LUT_STATE;
+	mock_ret_code = 0;
+	mock_status_code = 0;
+
+	// verify resp
+	KUNIT_EXPECT_EQ(test,
+		msg_tmu_get_temp_lut(tzid, 0, &temp, &cdev_state),
+		mock_ret_code);
+	KUNIT_EXPECT_EQ(test, temp, MOCK_TEMP_LUT_TEMP);
+	KUNIT_EXPECT_EQ(test, cdev_state, MOCK_TEMP_LUT_STATE);
+	KUNIT_EXPECT_TRUE(test,
+		verify_req_msg(tzid, THERMAL_SERVICE_COMMAND_GET_TEMP_LUT));
+
+	// Invalid Args: null pointer
+	KUNIT_EXPECT_EQ(test,
+		msg_tmu_get_temp_lut(tzid, 0, NULL, &cdev_state), -EINVAL);
+	KUNIT_EXPECT_EQ(test,
+		msg_tmu_get_temp_lut(tzid, 0, &temp, NULL), -EINVAL);
+	KUNIT_EXPECT_EQ(test,
+		msg_tmu_get_temp_lut(tzid, 0, NULL, NULL), -EINVAL);
+	// Invalid Args: index out of bound
+	KUNIT_EXPECT_EQ(test,
+		msg_tmu_get_temp_lut(tzid, THERMAL_TEMP_LUT_MAX_ENTRIES,
+			&temp, &cdev_state), -EINVAL);
+	KUNIT_EXPECT_EQ(test,
+		msg_tmu_get_temp_lut(tzid, THERMAL_TEMP_LUT_MAX_ENTRIES + 1,
+			&temp, &cdev_state), -EINVAL);
+
+	// CPM comm failed
+	// ret error code indicates CPM comm errors and should block status code
+	mock_ret_code = -EBUSY;
+	temp = MOCK_TEMP_LUT_TEMP_INVALID;
+	cdev_state = MOCK_TEMP_LUT_STATE_INVALID;
+	KUNIT_EXPECT_EQ(test,
+		msg_tmu_get_temp_lut(tzid, 0, &temp, &cdev_state),
+		-EBUSY);
+	KUNIT_EXPECT_EQ(test, temp, MOCK_TEMP_LUT_TEMP_INVALID);
+	KUNIT_EXPECT_EQ(test, cdev_state, MOCK_TEMP_LUT_STATE_INVALID);
+
+	// CPM status error
+	mock_ret_code = 0;
+	mock_status_code = -EPERM;
+	KUNIT_EXPECT_EQ(test,
+		msg_tmu_get_temp_lut(tzid, 0, &temp, &cdev_state),
+		-EPERM);
+	KUNIT_EXPECT_EQ(test, temp, MOCK_TEMP_LUT_TEMP_INVALID);
+	KUNIT_EXPECT_EQ(test, cdev_state, MOCK_TEMP_LUT_STATE_INVALID);
+}
+
 static void thermal_sm_get_section_addr(struct kunit *test)
 {
 	u8 mock_section = 1;
@@ -497,10 +605,9 @@ static void thermal_sm_get_section_addr(struct kunit *test)
 
 	mock_ret_code = 0;
 	mock_status_code = 0;
-	mock_resp->resp.ret = 1;
-	mock_resp->data[1] = 0x12345678;
-	mock_resp->data[2] = 20;
-
+	mock_resp.resp.ret = 1;
+	mock_resp.data[1] = 0x12345678;
+	mock_resp.data[2] = 20;
 
 	KUNIT_EXPECT_EQ(test,
 			msg_thermal_sm_get_section_addr(mock_section, &version, &addr, &size),
@@ -608,6 +715,8 @@ static struct kunit_case thermal_msg_helper_test[] = {
 	KUNIT_CASE(thermal_tmu_set_power_table),
 	KUNIT_CASE(thermal_tmu_get_power_table),
 	KUNIT_CASE(thermal_tmu_set_polling_delay_ms),
+	KUNIT_CASE(thermal_tmu_set_temp_lut),
+	KUNIT_CASE(thermal_tmu_get_temp_lut),
 	KUNIT_CASE(thermal_sm_get_section_addr),
 	KUNIT_CASE(thermal_stats_msg_test),
 	{},

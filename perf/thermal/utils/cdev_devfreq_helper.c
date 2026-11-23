@@ -7,10 +7,10 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <kunit/static_stub.h>
 #include <linux/units.h>
 
 #include "cdev_devfreq_helper.h"
-#include "cdev_helper_mock.h"
 
 void __cdev_devfreq_fetch_work(struct work_struct *work)
 {

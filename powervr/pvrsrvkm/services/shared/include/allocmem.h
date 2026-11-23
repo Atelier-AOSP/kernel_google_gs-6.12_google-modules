@@ -98,6 +98,7 @@ extern "C" {
                                  * build option. */
 #endif
 
+/*! Pointer to an empty allocation of size zero */
 #if defined(__linux__) && defined(__KERNEL__)
 	#define IMG_ZERO_SIZE_PTR ZERO_SIZE_PTR
 #else
@@ -114,7 +115,7 @@ extern "C" {
                 NULL pointer will be returned. In debug builds, we assert that
                 uiSize > 0 inside the macro so that the call sight of an invalid
                 OSAllocMem call can easily be found.
-@Input          ui32Size        Size of required allocation (in bytes)
+@Input          uiSize          Size of required allocation (in bytes)
 @Return         Pointer to allocated memory on success. When used in KM and
                 the value of uiSize is zero, IMG_ZERO_SIZE_PTR, else NULL.
  */ /**************************************************************************/
@@ -153,7 +154,7 @@ void *OSAllocMem_noprof(size_t uiSize DEBUG_MEMSTATS_PARAMS);
                 NULL pointer will be returned. In debug builds, we assert that
                 uiSize > 0 inside the macro so that the call sight of an invalid
                 OSAllocZMem call can easily be found.
-@Input          ui32Size        Size of required allocation (in bytes)
+@Input          uiSize          Size of required allocation (in bytes)
 @Return         Pointer to allocated memory on success. When used in KM and
                 the value of uiSize is zero, IMG_ZERO_SIZE_PTR, else NULL.
  */ /**************************************************************************/

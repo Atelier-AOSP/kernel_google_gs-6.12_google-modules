@@ -58,12 +58,21 @@ test_arch_timer_isr() {
   # Record number of arch timer interrupts in the beginning
   execute_adb_command arch_timer_isr_start NO_CHECK NO_DMESG shell "${GREP_ISR_CMD}"
 
+  execute_adb_command num_cpus CHECK NO_DMESG shell "nproc"
+
+  for ((i=0; i<num_cpus; i++)); do
+    local CPU_BITMASK=$((1 << i))
+    local BUSY_LOOP_COMMAND="nohup taskset -a $CPU_BITMASK yes > /dev/null 2>&1 &"
+    execute_adb_command NO_RET CHECK NO_DMESG shell "${BUSY_LOOP_COMMAND}"
+  done
+
   sleep ${arch_timer_isr_sleep_time} # wait for a while to have arch timer interrupts
+
+  execute_adb_command NO_RET CHECK NO_DMESG shell "pkill -f '^yes$' > /dev/null 2>&1"
 
   # Record number of arch timer interrupts in the end
   execute_adb_command arch_timer_isr_end NO_CHECK NO_DMESG shell "${GREP_ISR_CMD}"
 
-  execute_adb_command num_cpus CHECK NO_DMESG shell "nproc"
   extract_isr_number "${arch_timer_isr_start}" "${num_cpus}" arch_timer_isr_array_start
   extract_isr_number "${arch_timer_isr_end}" "${num_cpus}" arch_timer_isr_array_end
 

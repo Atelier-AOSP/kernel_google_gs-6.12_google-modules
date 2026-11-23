@@ -553,39 +553,6 @@ PVRSRVAllocExportableDevMem(const PVRSRV_DEV_CONNECTION *psDevConnection,
                             const IMG_CHAR *pszText,
                             PVRSRV_MEMDESC *hMemDesc);
 
-#if defined(PVRSRV_ENABLE_DEPRECATED_SPARSE_BOTH)
-/*************************************************************************/ /*!
-@Function       PVRSRVChangeSparseDevMem
-@Description    This function alters the underlying memory layout of the given
-                allocation by allocating/removing pages as requested
-                This function also re-writes the GPU & CPU Maps accordingly
-                The specific actions can be controlled by corresponding flags
-
-@Input          psMemDesc           The memory layout that needs to be modified
-@Input          ui32AllocPageCount	New page allocation count
-@Input          pai32AllocIndices   New page allocation indices (page granularity)
-@Input          ui32FreePageCount   Number of pages that need to be freed
-@Input          pai32FreeIndices    Indices of the pages that need to be freed
-@Input          uiFlags             Flags that control the behaviour of the call
-@Return         PVRSRV_OK on success.
-                PVRSRV_ERROR_DEVICEMEM_OUT_OF_RANGE when indices are invalid.
-                PVRSRV_ERROR_OUT_OF_MEM when system memory has been exhausted.
-                PVRSRV_ERROR_PMR_INVALID_MAP_INDEX_ARRAY when an index has been
-                    duplicated.
-                PVRSRV_ERROR_DEVICEMEM_NO_MAPPING when a value in pai32FreeIndices
-                    has already been freed.
-                PVRSRV_ERROR_DEVICEMEM_ALREADY_MAPPED when a value in pai32AllocIndices
-                    has already been allocated.
-*/ /**************************************************************************/
-IMG_EXPORT PVRSRV_ERROR
-PVRSRVChangeSparseDevMem(PVRSRV_MEMDESC psMemDesc,
-                         IMG_UINT32 ui32AllocPageCount,
-                         IMG_UINT32 *pai32AllocIndices,
-                         IMG_UINT32 ui32FreePageCount,
-                         IMG_UINT32 *pai32FreeIndices,
-                         SPARSE_MEM_RESIZE_FLAGS uiFlags);
-#endif
-
 /*************************************************************************/ /*!
 @Function       PVRSRVChangeSparseGrowMem
 @Description    This function alters the underlying memory layout of the given
@@ -621,7 +588,6 @@ PVRSRVChangeSparseGrowMem(PVRSRV_MEMDESC psMemDesc,
 @Input          pai32Indices        New page free indices (page granularity)
 @Return         PVRSRV_OK on success.
                 PVRSRV_ERROR_DEVICEMEM_OUT_OF_RANGE when indices are invalid.
-                PVRSRV_ERROR_OUT_OF_MEM when system memory has been exhausted.
                 PVRSRV_ERROR_PMR_INVALID_MAP_INDEX_ARRAY when an index has been
                     duplicated.
                 PVRSRV_ERROR_DEVICEMEM_NO_MAPPING when a value in pai32FreeIndices

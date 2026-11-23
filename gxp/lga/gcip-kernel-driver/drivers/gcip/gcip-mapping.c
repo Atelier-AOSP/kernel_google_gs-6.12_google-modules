@@ -188,14 +188,15 @@ static int gcip_pin_user_pages(struct device *dev, struct page **pages, unsigned
 			break;
 
 		if (ret >= 0) {
-			dev_err(dev, "Can only pin %u of %u pages requested", ret, num_pages);
+			dev_warn(dev, "try #%d pinned %u of %u pages requested", tried + 1, ret,
+				 num_pages);
 			for (i = 0; i < ret; i++)
 				unpin_user_page(pages[i]);
 		}
 		ret = 0;
 	}
-	if (tried > 0)
-		dev_info(dev, "mapping required %d retries with LRU cache disabled", tried);
+	if (tried > 0 && (ret == num_pages))
+		dev_info(dev, "pinning required %d retries with LRU cache disabled", tried);
 
 	return ret;
 }
@@ -244,7 +245,7 @@ gcip_mapping_alloc_and_pin_user_pages(struct device *dev, u64 host_address, uint
 	if (!(*gup_flags & FOLL_WRITE))
 		goto err_free_pages;
 
-	dev_warn_ratelimited(dev, "pin failed (ret=%d), assuming buffer is read-only", ret);
+	dev_warn_ratelimited(dev, "writeable pin failed (ret=%d), retrying read-only", ret);
 	*gup_flags &= ~FOLL_WRITE;
 	*map_debug_flags |= GCIP_MAP_DEBUG_ASSUME_RDONLY;
 
@@ -997,19 +998,20 @@ static void entry_show_dma_addrs(struct gcip_mapping *mapping, struct seq_file *
 		}
 		seq_puts(s, "]");
 	}
-	seq_puts(s, "\n");
 }
 
 void gcip_mapping_dmabuf_show(struct gcip_mapping *mapping, struct seq_file *s)
 {
 	static const char *dma_dir_tbl[4] = { "rw", "r", "w", "?" };
 	struct gcip_dmabuf_mapping *dmabuf_mapping = to_dmabuf_mapping(mapping);
+	phys_addr_t pa = sg_phys(mapping->sgt->sgl);
 
 	seq_printf(s, "  %pad %lu %s %s %pad", &mapping->device_address,
 		   DIV_ROUND_UP(mapping->size, PAGE_SIZE), dma_dir_tbl[mapping->dir],
 		   dmabuf_mapping->dma_buf->exp_name,
 		   &sg_dma_address(dmabuf_mapping->sgt_default->sgl));
 	entry_show_dma_addrs(mapping, s);
+	seq_printf(s, " %pap\n", &pa);
 }
 
 size_t gcip_mapping_dmabuf_hiorder_size(struct gcip_mapping *mapping)

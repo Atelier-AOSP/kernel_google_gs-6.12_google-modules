@@ -588,6 +588,34 @@ typedef BWL_PRE_PACKED_STRUCT struct wifi_nan_conn_cap_attr_s {
 	uint16	conn_cap_bmp;	/* Connection capability bitmap */
 } BWL_POST_PACKED_STRUCT wifi_nan_conn_cap_attr_t;
 
+/* non-NAN operating channel information field */
+typedef BWL_PRE_PACKED_STRUCT struct wifi_non_nan_op_chan_info_field_s {
+	uint8 opclass;		/* Global operating class */
+	uint8 primary_chan;	/* Primary 20MHz Channel */
+	uint8 secondary_chan;	/* channel center freq of second segment-valid for 80+80, else 0 */
+} BWL_POST_PACKED_STRUCT wifi_non_nan_op_chan_info_field_t;
+
+/* non-NAN operating channel information field */
+typedef BWL_PRE_PACKED_STRUCT struct wifi_non_nan_bcn_info_field_s {
+	uint16 tbtt_offset;	/* TBTT offset with NAN DW0 */
+	uint16 bcn_interval;	/* Beacon interval */
+} BWL_POST_PACKED_STRUCT wifi_non_nan_bcn_info_field_t;
+
+#define NAN_WLAN_INFRA_EXT_ROLE_AP		0x0u
+#define NAN_WLAN_INFRA_EXT_ROLE_STA_CONN	0x1u
+#define NAN_WLAN_INFRA_EXT_ROLE_STA_LISTEN	0x2u
+
+/* NAN Extended WLAN Infrastructure Attribute */
+typedef BWL_PRE_PACKED_STRUCT struct wifi_nan_wlan_infra_ext_attr_s {
+	uint8 id;			/* id - 0x1E */
+	uint16 len;			/* Total length of following IEs */
+	struct ether_addr bssid;	/* Infra connection BSSID */
+	struct ether_addr mac_addr;	/* Infra connection MAC addr */
+	uint8 role;			/* Device role in Infra connection */
+	wifi_non_nan_op_chan_info_field_t chan_info;
+	wifi_non_nan_bcn_info_field_t bcn_info;
+} BWL_POST_PACKED_STRUCT wifi_nan_wlan_infra_ext_attr_t;
+
 /* NAN Element container Attribute */
 typedef BWL_PRE_PACKED_STRUCT struct wifi_nan_container_attr_s {
 	uint8 id;	/* id - 0x20 */

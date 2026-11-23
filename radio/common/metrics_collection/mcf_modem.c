@@ -65,12 +65,14 @@ static ssize_t modem_boot_duration_info_print(const void *data, char *buf,
 				 "  Cumulative fail count: 0x%llx\n"
 				 "  Cumulative duration msec: 0x%llx\n"
 				 "  Average duration msec: 0x%llx\n"
-				 "  Max duration msec: 0x%llx\n",
+				 "  Max duration msec: 0x%llx\n"
+				 "  Last duration msec: 0x%llx\n",
 				 get_boot_type_name(type_idx),
 				 duration->success_count, duration->fail_count,
 				 duration->total_success_duration_ms,
 				 duration->average_success_duration_ms,
-				 duration->max_success_duration_ms);
+				 duration->max_success_duration_ms,
+				 duration->last_success_duration_ms);
 	}
 
 	return len;
@@ -148,6 +150,7 @@ static void modem_boot_duration_record_success(enum modem_boot_type type,
 		boot_item->average_success_duration_ms =
 			temp_total_duration / temp_success_count;
 	}
+	boot_item->last_success_duration_ms = duration;
 
 	spin_unlock_irqrestore(&mgr->info_lock, flags);
 }

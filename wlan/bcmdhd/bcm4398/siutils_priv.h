@@ -1,7 +1,7 @@
 /*
  * Include file private to the SOC Interconnect support files.
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -153,8 +153,7 @@ typedef struct si_cores_info {
 #ifdef SI_INFO_T_COMPAT
 #define RES_PEND_STATS_COUNT	8
 
-typedef struct res_state_info
-{
+typedef struct res_state_info {
 	uint32 low;
 	uint32 low_time;
 	uint32 high;
@@ -259,19 +258,31 @@ typedef struct si_info {
  * Adding SOCI_NCI_BUS to avoid abandons in the branches that use this MACRO.
  */
 #ifdef SOCI_NCI_BUS
-#define INTR_OFF(si, intr_val) \
-	if ((si)->intrsoff_fn && (si_coreid(&(si)->pub) == (si)->dev_coreid)) { \
-		(*(si)->intrsoff_fn)((si)->intr_arg, intr_val); }
-#define INTR_RESTORE(si, intr_val) \
-	if ((si)->intrsrestore_fn && (si_coreid(&(si)->pub) == (si)->dev_coreid)) { \
-		(*(si)->intrsrestore_fn)((si)->intr_arg, intr_val); }
+#define INTR_OFF(si, intr_val) do { \
+		if ((si)->intrsoff_fn && \
+			(si_coreid(&(si)->pub) == (si)->dev_coreid)) { \
+			(*(si)->intrsoff_fn)((si)->intr_arg, intr_val); \
+		} \
+	} while (0)
+#define INTR_RESTORE(si, intr_val) do { \
+		if ((si)->intrsrestore_fn && \
+			(si_coreid(&(si)->pub) == (si)->dev_coreid)) { \
+			(*(si)->intrsrestore_fn)((si)->intr_arg, intr_val); \
+		} \
+	} while (0)
 #else
-#define INTR_OFF(si, intr_val) \
-	if ((si)->intrsoff_fn && (si)->cores_info->coreid[(si)->curidx] == (si)->dev_coreid) { \
-		(*(si)->intrsoff_fn)((si)->intr_arg, intr_val); }
-#define INTR_RESTORE(si, intr_val) \
-	if ((si)->intrsrestore_fn && (si)->cores_info->coreid[(si)->curidx] == (si)->dev_coreid) { \
-		(*(si)->intrsrestore_fn)((si)->intr_arg, intr_val); }
+#define INTR_OFF(si, intr_val) do { \
+		if ((si)->intrsoff_fn && \
+			(si)->cores_info->coreid[(si)->curidx] == (si)->dev_coreid) { \
+			(*(si)->intrsoff_fn)((si)->intr_arg, intr_val); \
+		} \
+	} while (0)
+#define INTR_RESTORE(si, intr_val) do { \
+		if ((si)->intrsrestore_fn && \
+			(si)->cores_info->coreid[(si)->curidx] == (si)->dev_coreid) { \
+			(*(si)->intrsrestore_fn)((si)->intr_arg, intr_val); \
+		} \
+	} while (0)
 #endif /* SOCI_NCI_BUS */
 
 /* dynamic clock control defines */
@@ -300,9 +311,10 @@ extern uint32	wd_msticks;		/**< watchdog timer ticks normalized to ms */
 
 /* AMBA Interconnect exported externs */
 extern si_t *ai_attach(uint pcidev, osl_t *osh, void *regs, uint bustype,
-                       void *sdh, char **vars, uint *varsz);
+	void *sdh, char **vars, uint *varsz);
 extern si_t *ai_kattach(osl_t *osh);
 extern void ai_scan(si_t *sih, void *regs, uint devid);
+extern bool ai_erom_in_oobr(si_info_t *sii, void *regs);
 
 extern uint ai_flag(si_t *sih);
 extern uint ai_flag_alt(const si_t *sih);
@@ -338,10 +350,6 @@ extern uint32 ai_clear_backplane_to(si_t *sih);
 void ai_force_clocks(const si_t *sih, uint clock_state);
 extern uint ai_num_slaveports(const si_t *sih, uint coreidx);
 
-#ifdef BOOKER_NIC400_INF
-extern void ai_core_reset_ext(const si_t *sih, uint32 bits, uint32 resetbits);
-#endif /* BOOKER_NIC400_INF */
-
 #if defined(AXI_TIMEOUTS)
 extern uint32 ai_clear_backplane_to_per_core(si_t *sih, uint coreid, uint coreunit,
 	volatile void *wrap);
@@ -351,7 +359,7 @@ extern uint32 ai_clear_backplane_to_per_core(si_t *sih, uint coreid, uint coreun
 extern void ai_view(const si_t *sih, bool verbose);
 extern void ai_viewall(si_t *sih, bool verbose);
 #endif
-#if defined(BCMDBG) || defined(BCMDBG_DUMP)|| defined(BCMDBG_PHYDUMP)
+#if defined(BCMDBG) || defined(BCMDBG_DUMP) || defined(BCMDBG_PHYDUMP)
 extern void ai_dumpregs(const si_t *sih, struct bcmstrbuf *b);
 #endif /* BCMDBG || BCMDBG_DUMP|| BCMDBG_PHYDUMP */
 
@@ -375,6 +383,7 @@ void ai_force_clocks(const si_t *sih, uint clock_state);
 #ifndef SOCI_NCI_BUS
 #define nci_uninit(a) do {} while (0)
 #define nci_scan(a) (0)
+#define nci_cores_to_ai_cores(a) do {} while (0)
 #define nci_dump_erom(a) do {} while (0)
 #define nci_init(a, b, c) (NULL)
 #define nci_setcore(a, b, c) (NULL)

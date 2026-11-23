@@ -28,15 +28,13 @@
 #ifndef _wl_cfg80211_h_
 #define _wl_cfg80211_h_
 
-#if defined(__linux__) && !defined(DHD_EFI)
-#include <linux/sched/clock.h>
-#endif
-#include <linux/rfkill.h>
 #include <linux/wireless.h>
 #include <typedefs.h>
 #include <ethernet.h>
 #include <wlioctl.h>
+#include <linux/wireless.h>
 #include <net/cfg80211.h>
+#include <linux/rfkill.h>
 #include <osl.h>
 #if defined(BCMDONGLEHOST)
 #include <dngl_stats.h>
@@ -1143,7 +1141,7 @@ struct beacon_proberesp {
 	__le64 timestamp;
 	__le16 beacon_int;
 	__le16 capab_info;
-	u8 variable[];
+	u8 variable[0];
 } __attribute__ ((packed));
 
 /* driver configuration */

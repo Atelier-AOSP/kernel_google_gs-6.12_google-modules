@@ -30,6 +30,19 @@ u64 goog_gtc_ticks_to_ns(u64 gtc_tick);
 u64 goog_gtc_get_time_ns(void);
 
 /*
+ * goog_gtc_ticks_to_us - Convert a GTC counter/tick value into the timestamp in microsecond.
+ * @gtc_tick:			Global Timestamp Counter (GTC) counter/tick value.
+ * Return:			The equivalent GTC timestamp in microsecond.
+ */
+u64 goog_gtc_ticks_to_us(u64 gtc_tick);
+
+/*
+ * goog_gtc_get_time_us - Read the current microsecond-format GTC timestamp.
+ * Return:			The current GTC timestamp in microsecond.
+ */
+u64 goog_gtc_get_time_us(void);
+
+/*
  * goog_gtc_get_freq_hz - Returns the GTC frequency in Hz.
  * Return:			The GTC tick frequency in Hz.
  */
@@ -48,6 +61,16 @@ static inline u64 goog_gtc_ticks_to_ns(u64 gtc_tick)
 }
 
 static inline u64 goog_gtc_get_time_ns(void)
+{
+	return 0;
+}
+
+static inline u64 goog_gtc_ticks_to_us(u64 gtc_tick)
+{
+	return 0;
+}
+
+static inline u64 goog_gtc_get_time_us(void)
 {
 	return 0;
 }

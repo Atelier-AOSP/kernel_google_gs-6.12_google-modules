@@ -62,12 +62,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "rgxinit.h"
 #include "rgxmulticore.h"
 
-#include "rgx_compat_bvnc.h"
-
-#include "osfunc.h"
-
-#include "rgxdefs_km.h"
-
 #if defined(SUPPORT_GPUVIRT_VALIDATION)
 #include "virt_validation_defs.h"
 #endif
@@ -76,7 +70,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "rgxhwperf_common.h"
 
 #include "fwload.h"
-#include "rgxlayer_impl.h"
+#include "rgxhal_driver.h"
 #include "rgxfwimageutils.h"
 #include "rgxfwutils.h"
 #include "rgxpower.h"
@@ -85,10 +79,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "rgxdevice.h"
 
-#include "pvrsrv.h"
-
 #if defined(SUPPORT_TRUSTED_DEVICE)
-#include "rgxdevice.h"
 #include "pvrsrv_device.h"
 #endif
 
@@ -269,12 +260,8 @@ static INLINE void GetApphints(PVRSRV_RGXDEV_INFO *psDevInfo, RGX_INIT_APPHINTS 
 	OSGetAppHintUINT32(psDevInfo->psDeviceNode,  pvAppHintState,    EnableAPM,
 	                     &ui32AppHintDefault,      &ui32ParamTemp);
 	psHints->eRGXActivePMConf = ui32ParamTemp;
-	bAppHintDefault = PVRSRV_APPHINT_ENABLEDMKILLINGRANDMODE;
-	OSGetAppHintBOOL(APPHINT_NO_DEVICE,          pvAppHintState,    EnableGenericDMKillingRandMode,
-	                   &bAppHintDefault,           &psHints->bEnableDMKillRand);
-	bAppHintDefault = PVRSRV_APPHINT_ENABLERANDOMCONTEXTSWITCH;
-	OSGetAppHintBOOL(APPHINT_NO_DEVICE,        pvAppHintState,    EnableRandomContextSwitch,
-	                   &bAppHintDefault,      &psHints->bEnableRandomCsw);
+	psHints->bEnableDMKillRand = PVRSRV_APPHINT_ENABLEDMKILLINGRANDMODE;
+	psHints->bEnableRandomCsw = PVRSRV_APPHINT_ENABLERANDOMCONTEXTSWITCH;
 	bAppHintDefault = PVRSRV_APPHINT_ENABLESOFTRESETCONTEXTSWITCH;
 	OSGetAppHintBOOL(APPHINT_NO_DEVICE,        pvAppHintState,    EnableSoftResetContextSwitch,
 	                   &bAppHintDefault,      &psHints->bEnableSoftResetCsw);
@@ -290,30 +277,20 @@ static INLINE void GetApphints(PVRSRV_RGXDEV_INFO *psDevInfo, RGX_INIT_APPHINTS 
 	OSGetAppHintBOOL(APPHINT_NO_DEVICE,          pvAppHintState,    EnableSPUClockGating,
 	                   &bAppHintDefault,           &psHints->bSPUClockGating);
 #endif
-	ui32AppHintDefault = PVRSRV_APPHINT_FIRMWAREPERF;
-	OSGetAppHintUINT32(APPHINT_NO_DEVICE,      pvAppHintState,    FirmwarePerf,
-	                     &ui32AppHintDefault,    &ui32ParamTemp);
+	ui32ParamTemp = PVRSRV_APPHINT_FIRMWAREPERF;
 	psHints->eFirmwarePerf = ui32ParamTemp;
-	ui32AppHintDefault = PVRSRV_APPHINT_FWCONTEXTSWITCHPROFILE;
-	OSGetAppHintUINT32(APPHINT_NO_DEVICE,      pvAppHintState,    FWContextSwitchProfile,
-	                     &ui32AppHintDefault,    &psHints->ui32FWContextSwitchProfile);
+	psHints->ui32FWContextSwitchProfile = PVRSRV_APPHINT_FWCONTEXTSWITCHPROFILE;
 
 	/*
 	 * HWPerf apphints *
 	 */
-	bAppHintDefault = PVRSRV_APPHINT_HWPERFDISABLECOUNTERFILTER;
-	OSGetAppHintBOOL(APPHINT_NO_DEVICE,          pvAppHintState,    HWPerfDisableCounterFilter,
-	                     &bAppHintDefault,    &psHints->bHWPerfDisableCounterFilter);
-	ui32AppHintDefault = PVRSRV_APPHINT_HWPERFHOSTBUFSIZEINKB;
-	OSGetAppHintUINT32(APPHINT_NO_DEVICE,      pvAppHintState,    HWPerfHostBufSizeInKB,
-	                     &ui32AppHintDefault,    &psHints->ui32HWPerfHostBufSize);
+	psHints->bHWPerfDisableCounterFilter = PVRSRV_APPHINT_HWPERFDISABLECOUNTERFILTER;
+	psHints->ui32HWPerfHostBufSize = PVRSRV_APPHINT_HWPERFHOSTBUFSIZEINKB;
 	ui32AppHintDefault = PVRSRV_APPHINT_HWPERFFWBUFSIZEINKB;
 	OSGetAppHintUINT32(APPHINT_NO_DEVICE,      pvAppHintState,    HWPerfFWBufSizeInKB,
 	                     &ui32AppHintDefault,    &psHints->ui32HWPerfFWBufSize);
 
-	ui32AppHintDefault = PVRSRV_APPHINT_KCCB_SIZE_LOG2;
-	OSGetAppHintUINT32(psDevInfo->psDeviceNode,  pvAppHintState,  KernelCCBSizeLog2,
-	                     &ui32AppHintDefault,    &psHints->ui32KCCBSizeLog2);
+	psHints->ui32KCCBSizeLog2 = PVRSRV_APPHINT_KCCB_SIZE_LOG2;
 
 	if (psHints->ui32KCCBSizeLog2 < PVRSRV_RGX_LOG2_KERNEL_CCB_MIN_SIZE)
 	{
@@ -363,18 +340,14 @@ static INLINE void GetApphints(PVRSRV_RGXDEV_INFO *psDevInfo, RGX_INIT_APPHINTS 
 		if (RGX_IS_ERN_SUPPORTED(psDevInfo, 42290) && RGX_IS_FEATURE_SUPPORTED(psDevInfo, TPU_FILTERING_MODE_CONTROL))
 #endif
 		{
-			bAppHintDefault = PVRSRV_APPHINT_NEWFILTERINGMODE;
-			OSGetAppHintBOOL(APPHINT_NO_DEVICE,    pvAppHintState,  NewFilteringMode,
-			                   &bAppHintDefault,  &bFilteringMode);
+			bFilteringMode = PVRSRV_APPHINT_NEWFILTERINGMODE;
 		}
 
 #if defined(HW_ERN_42606_BIT_MASK)
 		if (RGX_IS_ERN_SUPPORTED(psDevInfo, 42606))
 #endif
 		{
-			ui32AppHintDefault = PVRSRV_APPHINT_TRUNCATEMODE;
-			OSGetAppHintUINT32(APPHINT_NO_DEVICE,  pvAppHintState,  TruncateMode,
-			                     &ui32AppHintDefault,  &ui32TruncateMode);
+			ui32TruncateMode = PVRSRV_APPHINT_TRUNCATEMODE;
 		}
 
 		psHints->ui32FilterFlags = GetFilterFlags(bFilteringMode, ui32TruncateMode);
@@ -1081,10 +1054,13 @@ static PVRSRV_ERROR InitFirmware(PVRSRV_DEVICE_NODE *psDeviceNode)
 		uFWParams.sMeta.sFWDataDevVAddr = psDevInfo->sFWDataDevVAddrBase;
 		uFWParams.sMeta.sFWRoDataDevVAddr = psDevInfo->sFWRoDataDevVAddrBase;
 		uFWParams.sMeta.sFWCorememCodeDevVAddr = psDevInfo->sFWCorememCodeDevVAddrBase;
-		uFWParams.sMeta.sFWCorememCodeFWAddr = psDevInfo->sFWCorememCodeFWAddr;
 		uFWParams.sMeta.uiFWCorememCodeSize = uiFWCorememCodeAllocSize;
 		uFWParams.sMeta.sFWCorememDataDevVAddr = psDevInfo->sFWCorememDataStoreDevVAddrBase;
-		uFWParams.sMeta.sFWCorememDataFWAddr = psDevInfo->sFWCorememDataStoreFWAddr;
+#if defined(SUPPORT_TRUSTED_DEVICE) && defined(RGX_PREMAP_FW_HEAPS)
+		/* for backwards compatibility with older fw loading routine:
+		 * previous implementations expect this word to be non-zero */
+		uFWParams.sMeta.ui32Unused1 = 0xFFFFFFFF;
+#endif
 #if defined(RGXFW_META_SUPPORT_2ND_THREAD)
 		uFWParams.sMeta.ui32NumThreads = 2;
 #else
@@ -1113,11 +1089,9 @@ static PVRSRV_ERROR InitFirmware(PVRSRV_DEVICE_NODE *psDeviceNode)
 		uFWParams.sRISCV.sFWRoDataDevVAddr = psDevInfo->sFWRoDataDevVAddrBase;
 
 		uFWParams.sRISCV.sFWCorememCodeDevVAddr = psDevInfo->sFWCorememCodeDevVAddrBase;
-		uFWParams.sRISCV.sFWCorememCodeFWAddr   = psDevInfo->sFWCorememCodeFWAddr;
 		uFWParams.sRISCV.uiFWCorememCodeSize    = uiFWCorememCodeAllocSize;
 
 		uFWParams.sRISCV.sFWCorememDataDevVAddr = psDevInfo->sFWCorememDataStoreDevVAddrBase;
-		uFWParams.sRISCV.sFWCorememDataFWAddr   = psDevInfo->sFWCorememDataStoreFWAddr;
 		uFWParams.sRISCV.uiFWCorememDataSize    = uiFWCorememDataAllocSize;
 	}
 
@@ -1582,8 +1556,10 @@ static PVRSRV_ERROR RGXValidateTDHeaps(PVRSRV_DEVICE_NODE *psDeviceNode)
 		PVR_LOG_RETURN_IF_ERROR(eError, "RGXValidateTDHeap:FW_CODE");
 	}
 
+#if !defined(PVR_ANDROID_GRALLOC_ALLOC_SECURE) || !defined(PVR_ANDROID_HAS_DMA_HEAP_FIND)
 	eError = RGXValidateTDHeap(psDeviceNode, PVRSRV_PHYS_HEAP_GPU_SECURE, PHYS_HEAP_USAGE_GPU_SECURE);
 	PVR_LOG_RETURN_IF_ERROR(eError, "RGXValidateTDHeap:GPU_SECURE");
+#endif
 
 	return PVRSRV_OK;
 }
@@ -1728,6 +1704,16 @@ PVRSRV_ERROR RGXInit(PVRSRV_DEVICE_NODE *psDeviceNode)
 		         __func__, eError));
 		goto cleanup;
 	}
+
+#if defined(RGX_FEATURE_ERYX_TOP_INFRASTRUCTURE)
+	eError = RGXInitCreateUVBSpillMemContext(psDeviceNode);
+	if (eError != PVRSRV_OK)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "%s: Failed to create UVB Spill memory context (%u)",
+		         __func__, eError));
+		goto cleanup;
+	}
+#endif
 
 	if (!PVRSRV_VZ_MODE_IS(GUEST, DEVNODE, psDeviceNode))
 	{

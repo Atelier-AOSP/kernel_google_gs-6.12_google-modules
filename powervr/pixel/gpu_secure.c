@@ -18,7 +18,7 @@
 /* PowerVR */
 #include <pvrsrvkm/services/shared/include/devicemem_utils.h>
 #include <pvrsrvkm/services/server/include/pmr.h>
-#include <pvrsrvkm/services/server/devices/rgxfwimageutils.h>
+#include <pvrsrvkm/services/server/devices/hal/rgx/rgxfwimageutils.h>
 #include <pvrsrvkm/services/server/devices/rgxfwutils.h>
 #include <pvrsrvkm/services/server/devices/volcanic/rgxdevice.h>
 
@@ -51,7 +51,7 @@ static void gpu_secure_on_event(void *data, int event)
 	/* Map the event to a connection result */
 	switch (event) {
 	case TIPC_CHANNEL_CONNECTED:
-		dev_dbg(pixel_dev->dev, "IPC channel connected");
+		PVR_DPF((PVR_DBG_CUSTOMER, "IPC channel connected"));
 		self->result = PVRSRV_OK;
 		break;
 
@@ -98,8 +98,8 @@ static struct tipc_msg_buf *gpu_secure_on_msg(void *data,
 	/* Copy it out, as we can't guarantee alignment */
 	memcpy(&rsp, mb_get_data(rxbuf, sizeof(rsp)), sizeof(rsp));
 
-	dev_dbg(pixel_dev->dev, "IPC command %d completed with result %d",
-			rsp.command, rsp.result);
+	PVR_DPF((PVR_DBG_CUSTOMER, "IPC command %d completed with result %d",
+			rsp.command, rsp.result));
 
 	uint32_t active_req_command = self->command;
 
@@ -346,7 +346,7 @@ PVRSRV_ERROR gpu_secure_start(IMG_HANDLE hSysData)
 		.a0 = 0xFFFFFFFF,
 	};
 
-	dev_dbg(pixel_dev->dev, "Sending START to TF-A...");
+	PVR_DPF((PVR_DBG_CUSTOMER, "Sending START to TF-A..."));
 	arm_smccc_1_2_smc(&args, &res);
 
 	if (unlikely(res.a0)) {
@@ -355,7 +355,7 @@ PVRSRV_ERROR gpu_secure_start(IMG_HANDLE hSysData)
 	}
 #else
 	gpu_secure_req_base_t req = { .command = GPU_SECURE_REQ_START };
-	dev_dbg(pixel_dev->dev, "Sending IPC: START to trusty app...");
+	PVR_DPF((PVR_DBG_CUSTOMER, "Sending IPC: START to trusty app..."));
 	err = gpu_secure_call(pixel_dev, &req, sizeof(req));
 #endif
 
@@ -381,7 +381,7 @@ PVRSRV_ERROR gpu_secure_stop(IMG_HANDLE hSysData)
 		.a0 = 0xFFFFFFFF,
 	};
 
-	dev_dbg(pixel_dev->dev, "Sending STOP to TF-A...");
+	PVR_DPF((PVR_DBG_CUSTOMER, "Sending STOP to TF-A..."));
 	arm_smccc_1_2_smc(&args, &res);
 
 	if (unlikely(res.a0)) {
@@ -390,7 +390,7 @@ PVRSRV_ERROR gpu_secure_stop(IMG_HANDLE hSysData)
 	}
 #else
 	gpu_secure_req_base_t req = { .command = GPU_SECURE_REQ_STOP };
-	dev_dbg(pixel_dev->dev, "Sending IPC: STOP to trusty app...");
+	PVR_DPF((PVR_DBG_CUSTOMER, "Sending IPC: STOP to trusty app..."));
 	err = gpu_secure_call(pixel_dev, &req, sizeof(req));
 #endif
 
@@ -414,54 +414,98 @@ void gpu_secure_fault(IMG_HANDLE hSysData)
 	};
 
 	dev_info(pixel_dev->dev, "Dumping additional fault data for session %u in TEE\n", req.session_counter);
-	dev_dbg(pixel_dev->dev, "Sending IPC: FAULT to trusty app...");\
+	PVR_DPF((PVR_DBG_CUSTOMER, "Sending IPC: FAULT to trusty app..."));
 
 	(void)gpu_secure_call(pixel_dev, &req.base, sizeof(req));
 }
 
-#define PIXEL_SIGNATURE_SIZE         0x1000
-#define PIXEL_SIGNATURE_MAGIC_OFFSET 0x0400
-#define PIXEL_SIGNATURE_MAGIC_OFFSET_RDO_FORMAT 0x0864
-#define PIXEL_SIGNATURE_MAGIC_VALUE  0x46555047 /* GPUF */
+#define GPU_FW_IMAGE_HEADER_MAGIC 0x46555047 /* "GPUF" */
+
+// Old pre-RDO format that we still use for signing local builds.
+#define WHI_IMAGE_HEADER_SIZE         0x1000
+#define WHI_IMAGE_HEADER_MAGIC_OFFSET 0x0400
+
+#define LGA_IMAGE_HEADER_VERSION      1
+#define LGA_IMAGE_HEADER_SIZE         0x1000
+#define LGA_IMAGE_HEADER_MAGIC_OFFSET 0x0864
+
+#define MBU_IMAGE_HEADER_VERSION      2
+#define MBU_IMAGE_HEADER_SIZE         0x5000
+#define MBU_IMAGE_HEADER_MAGIC_OFFSET 0x463C
+
+static uint32_t get_image_header_size(struct pixel_gpu_device *pixel_dev, const void *fw,
+	uint32_t fw_size)
+{
+	const uint8_t *img_hdr = (const uint8_t *)fw;
+	uint32_t magic = 0;
+	uint32_t version = 0;
+
+	if (fw_size < WHI_IMAGE_HEADER_SIZE) {
+		dev_info(pixel_dev->dev, "Firmware image signature: unexpected image size");
+		return 0;
+	}
+
+	memcpy(&magic, img_hdr + WHI_IMAGE_HEADER_MAGIC_OFFSET, sizeof(magic));
+	if (magic == GPU_FW_IMAGE_HEADER_MAGIC) {
+		dev_info(pixel_dev->dev, "Firmware image signature found with Whitechapel format");
+		return WHI_IMAGE_HEADER_SIZE;
+	}
+
+	memcpy(&version, img_hdr, sizeof(version));
+	switch (version) {
+
+	case LGA_IMAGE_HEADER_VERSION:
+		if (fw_size >= LGA_IMAGE_HEADER_SIZE) {
+			memcpy(&magic, img_hdr + LGA_IMAGE_HEADER_MAGIC_OFFSET, sizeof(magic));
+			if (magic == GPU_FW_IMAGE_HEADER_MAGIC) {
+				dev_info(pixel_dev->dev, "Firmware image signature found with LGA format");
+				return LGA_IMAGE_HEADER_SIZE;
+			}
+		}
+		dev_info(pixel_dev->dev, "Firmware image signature: unexpected magic %d", magic);
+		return 0;
+
+	case MBU_IMAGE_HEADER_VERSION:
+		if (fw_size >= MBU_IMAGE_HEADER_SIZE) {
+			memcpy(&magic, img_hdr + MBU_IMAGE_HEADER_MAGIC_OFFSET, sizeof(magic));
+			if (magic == GPU_FW_IMAGE_HEADER_MAGIC) {
+				dev_info(pixel_dev->dev, "Firmware image signature found");
+				return MBU_IMAGE_HEADER_SIZE;
+			}
+			dev_info(pixel_dev->dev, "Firmware image signature: unexpected magic %d",
+				magic);
+		}
+		dev_info(pixel_dev->dev, "Firmware image signature: unexpected image size");
+		return 0;
+
+	default:
+		dev_info(pixel_dev->dev, "Firmware image signature format not recognized (version=%d)",
+			version);
+		return 0;
+	}
+}
 
 PVRSRV_ERROR gpu_secure_prepare_firmware_image(IMG_HANDLE hSysData,
 		PVRSRV_FW_PARAMS *psFWParams)
 {
 	struct pixel_gpu_device *pixel_dev = (struct pixel_gpu_device *)hSysData;
-	const uint8_t *image_ptr = (const uint8_t *)psFWParams->pvFirmware;
-	uint32_t magic_val;
+
+	uint32_t size = get_image_header_size(pixel_dev, psFWParams->pvFirmware,
+		psFWParams->ui32FirmwareSize);
 
 	/* Check if the image is large enough to contain a header */
-	if (psFWParams->ui32FirmwareSize <= PIXEL_SIGNATURE_SIZE) {
+	if (size == 0) {
 		dev_info(pixel_dev->dev, "Firmware image is NOT SIGNED");
 		return PVRSRV_OK;
 	}
 
-	/* Check the magic value in the header */
-	memcpy(&magic_val, &image_ptr[PIXEL_SIGNATURE_MAGIC_OFFSET],
-			sizeof(magic_val));
-	if (PIXEL_SIGNATURE_MAGIC_VALUE != magic_val) {
-		/* Check the magic value in the header */
-		memcpy(&magic_val, &image_ptr[PIXEL_SIGNATURE_MAGIC_OFFSET_RDO_FORMAT],
-				sizeof(magic_val));
-
-		if (PIXEL_SIGNATURE_MAGIC_VALUE != magic_val) {
-			dev_info(pixel_dev->dev, "Firmware image is NOT SIGNED (0x%x)",
-					magic_val);
-
-			return PVRSRV_OK;
-		}
-	}
-
-	dev_info(pixel_dev->dev, "Firmware image is signed");
-
 	/* The header comes first */
 	psFWParams->pvSignature = psFWParams->pvFirmware;
-	psFWParams->ui32SignatureSize = PIXEL_SIGNATURE_SIZE;
+	psFWParams->ui32SignatureSize = size;
 
 	/* The firmware proper is after the header */
-	psFWParams->pvFirmware = &image_ptr[PIXEL_SIGNATURE_SIZE];
-	psFWParams->ui32FirmwareSize -= PIXEL_SIGNATURE_SIZE;
+	psFWParams->pvFirmware = (const uint8_t *)psFWParams->pvFirmware + size;
+	psFWParams->ui32FirmwareSize -= size;
 
 	return PVRSRV_OK;
 }
@@ -553,9 +597,9 @@ static PVRSRV_ERROR gpu_secure_prepare_firmware_section(
 	section->fw_va  = fw_va ? fw_va->ui32Addr : 0;
 	section->size   = (uint32_t)size;
 
-	dev_dbg(pixel_dev->dev,
+	PVR_DPF((PVR_DBG_CUSTOMER,
 			"GPU FW section of %u bytes (PA: 0x%llx FW VA: 0x%x)",
-			section->size, section->pa, section->fw_va);
+			section->size, section->pa, section->fw_va));
 
 done:
 	return err;
@@ -705,11 +749,46 @@ PVRSRV_ERROR gpu_secure_send_firmware_image(IMG_HANDLE hSysData,
 			goto done;
 	}
 
+	/* Prepare FW section: RODATA */
+	if (psDevInfo->psRGXFWRoDataMemDesc) {
+		err = gpu_secure_prepare_firmware_section(pixel_dev,
+				psDevInfo->psRGXFWRoDataMemDesc,
+				NULL,
+				&req.section[GPU_SECURE_SECTION_RODATA]);
+		if (PVRSRV_OK != err)
+			goto done;
+	}
+
+	//FW VA Addresses are now derived from device VA. CL6896907 and CL6897137
+	//Hack for 26.1 RISCV FW:
+	#define RGXRISCVFW_REGION_SIZE_LOG2				IMG_UINT32_C(28)
+	#define RGXRISCVFW_GET_REGION_BASE(r)			((r) << RGXRISCVFW_REGION_SIZE_LOG2)
+	#define RGXRISCVFW_SHARED_CACHED_DATA0_REGION	(0xCUL)
+	#define RGXRISCVFW_SHARED_CACHED_DATA0_BASE		(RGXRISCVFW_GET_REGION_BASE(RGXRISCVFW_SHARED_CACHED_DATA0_REGION))
+	#define RGXFW_FW_HEAP_BASE_CACHED				(RGXRISCVFW_SHARED_CACHED_DATA0_BASE)
+
+	IMG_UINT32 ui32FwCodeHeapBase = RGXFW_FW_HEAP_BASE_CACHED;
+	IMG_UINT32 ui32FwDataHeapBase = RGXFW_FW_HEAP_BASE_CACHED;
+#if defined(RGX_FEATURE_META_MAX_VALUE_IDX)
+	if (RGX_IS_FEATURE_VALUE_SUPPORTED(psDevInfo, META)) {
+		ui32FwCodeHeapBase = RGXFW_SEGMMU_DATA_BASE_ADDRESS;
+		ui32FwDataHeapBase = RGXFW_SEGMMU_DATA_BASE_ADDRESS;
+	}
+#endif
+
+	RGXFWIF_DEV_VIRTADDR sCorememCodeAddr;
+	sCorememCodeAddr.ui32Addr = (IMG_UINT32)(ui32FwCodeHeapBase +
+											((uintptr_t)(psDevInfo->sFWCorememCodeDevVAddrBase.uiAddr ^ RGX_FIRMWARE_RAW_HEAP_BASE)));
+
+	RGXFWIF_DEV_VIRTADDR sCorememDataAddr;
+	sCorememDataAddr.ui32Addr = (IMG_UINT32)(ui32FwDataHeapBase +
+											((uintptr_t)(psDevInfo->sFWCorememDataStoreDevVAddrBase.uiAddr ^ RGX_FIRMWARE_RAW_HEAP_BASE)));
+
 	/* Prepare FW section: COREMEM_CODE */
 	if (psDevInfo->psRGXFWCorememCodeMemDesc) {
 		err = gpu_secure_prepare_firmware_section(pixel_dev,
 				psDevInfo->psRGXFWCorememCodeMemDesc,
-				&psDevInfo->sFWCorememCodeFWAddr,
+				&sCorememCodeAddr,
 				&req.section[GPU_SECURE_SECTION_COREMEM_CODE]);
 		if (PVRSRV_OK != err)
 			goto done;
@@ -719,7 +798,7 @@ PVRSRV_ERROR gpu_secure_send_firmware_image(IMG_HANDLE hSysData,
 	if (psDevInfo->psRGXFWIfCorememDataStoreMemDesc) {
 		err = gpu_secure_prepare_firmware_section(pixel_dev,
 				psDevInfo->psRGXFWIfCorememDataStoreMemDesc,
-				&psDevInfo->sFWCorememDataStoreFWAddr,
+				&sCorememDataAddr,
 				&req.section[GPU_SECURE_SECTION_COREMEM_DATA]);
 		if (PVRSRV_OK != err)
 			goto done;

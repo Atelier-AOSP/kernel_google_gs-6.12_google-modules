@@ -196,13 +196,8 @@ static void update_pogo_transport(struct kthread_work *work)
 		}
 		data_alt_path_active(chip, true);
 		if (chip->data_active) {
-			ret = extcon_set_state_sync(chip->extcon,
-						    chip->active_data_role == TYPEC_HOST ?
-						    EXTCON_USB_HOST : EXTCON_USB, 0);
-
-			logbuffer_log(chip->log, "%s turning off %s",
-				      ret < 0 ? "Failed" : "Succeeded",
-				      chip->active_data_role == TYPEC_HOST ? "Host" : "Device");
+			// to-do: b441212858: redirect old extcon usage to role switch driver.
+			// turn off host or device
 			chip->data_active = false;
 		}
 
@@ -215,16 +210,14 @@ static void update_pogo_transport(struct kthread_work *work)
 		gpio_set_value(pogo_transport->pogo_data_mux_gpio, 1);
 		logbuffer_log(pogo_transport->log, "POGO: data-mux:%d",
 			      gpio_get_value(pogo_transport->pogo_data_mux_gpio));
-		ret = extcon_set_state_sync(chip->extcon, EXTCON_USB_HOST, 1);
-		logbuffer_log(chip->log, "%s: %s turning on host for Pogo", __func__, ret < 0 ?
-			      "Failed" : "Succeeded");
+		// to-do: b441212858: redirect old extcon usage to role switch driver
+		// turn off host
 		pogo_transport->pogo_usb_active = true;
 	} else if ((!pogo_transport->pogo_usb_capable ||
 		    event->event_type == EVENT_MOVE_DATA_TO_USB) &&
 		   pogo_transport->pogo_usb_active) {
-		ret = extcon_set_state_sync(chip->extcon, EXTCON_USB_HOST, 0);
-		logbuffer_log(chip->log, "%s: %s turning off host for Pogo", __func__, ret < 0 ?
-			      "Failed" : "Succeeded");
+		// to-do: b441212858: redirect old extcon usage to role switch driver
+		// turn on host
 		pogo_transport->pogo_usb_active = false;
 
 		ret = pinctrl_select_state(pogo_transport->pinctrl, pogo_transport->susp_usb_state);
@@ -466,7 +459,7 @@ static int pogo_transport_probe(struct platform_device *pdev)
 			goto put_client;
 		}
 	} else {
-		sdev = spmi_device_from_of(dev->of_node);
+		sdev = spmi_find_device_by_of_node(dev->of_node);
 		if (sdev) {
 			chip = spmi_device_get_drvdata(sdev);
 			if (!chip) {
@@ -564,7 +557,7 @@ free_np:
 	return ret;
 }
 
-static int pogo_transport_remove(struct platform_device *pdev)
+static void pogo_transport_remove(struct platform_device *pdev)
 {
 	struct pogo_transport *pogo_transport = platform_get_drvdata(pdev);
 
@@ -573,8 +566,6 @@ static int pogo_transport_remove(struct platform_device *pdev)
 	power_supply_put(pogo_transport->pogo_psy);
 	kthread_destroy_worker(pogo_transport->wq);
 	logbuffer_unregister(pogo_transport->log);
-
-	return 0;
 }
 
 #define POGO_TRANSPORT_RO_ATTR(_name)                                                           \

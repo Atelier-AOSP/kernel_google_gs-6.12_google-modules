@@ -14,6 +14,7 @@
 
 #include <linux/regmap.h>
 #include <linux/mutex.h>
+#include <linux/platform_device.h>
 #include <linux/spinlock.h>
 
 #include <drm/drm_mipi_dsi.h>
@@ -37,7 +38,7 @@
 #define DW_DSI2H_VERSION			0x4
 #define DW_DSI2H_PWR_UP				0xc
 #define DW_DSI2H_SOFT_RESET			0x10
-#define DW_DSI2H_INT_ST_MAIN			0x14
+#define DW_DSI2H_INT_ST_MAIN			0x400
 #define DW_DSI2H_MODE_CTRL			0x18
 #define DW_DSI2H_MODE_STATUS			0x1c
 #define DW_DSI2H_CORE_STATUS			0x20
@@ -103,6 +104,7 @@
 #define DW_DSI2H_DSI_VID_TX_CFG			0x20c
 #define DW_DSI2H_DSI_MAX_RPS_CFG		0x210
 #define DW_DSI2H_DSI_TEAR_EFFECT_CFG		0x214
+#define DW_DSI2H_DSI_DS_TX_CFG			0x218
 #define DW_DSI2H_CRI_TX_HDR			0x2c0
 #define CMD_TX_MODE				BIT(24)
 #define CMD_HDR_RD				BIT(28)
@@ -138,24 +140,24 @@
 #define DW_DSI2H_IPI_PIX_PKT_CFG		0x344
 #define DW_DSI2H_IPI_HIBERNATE_CFG		0x348
 /* INT registers */
-#define DW_DSI2H_INT_ST_PHY			0x400
-#define DW_DSI2H_INT_MASK_PHY			0x404
-#define DW_DSI2H_INT_FORCE_PHY			0x408
-#define DW_DSI2H_INT_ST_TO			0x410
-#define DW_DSI2H_INT_MASK_TO			0x414
-#define DW_DSI2H_INT_FORCE_TO			0x418
-#define DW_DSI2H_INT_ST_ACK			0x420
-#define DW_DSI2H_INT_MASK_ACK			0x424
-#define DW_DSI2H_INT_FORCE_ACK			0x428
-#define DW_DSI2H_INT_ST_IPI			0x430
-#define DW_DSI2H_INT_MASK_IPI			0x434
-#define DW_DSI2H_INT_FORCE_IPI			0x438
-#define DW_DSI2H_INT_ST_PRI			0x440
-#define DW_DSI2H_INT_MASK_PRI			0x444
-#define DW_DSI2H_INT_FORCE_PRI			0x448
-#define DW_DSI2H_INT_ST_CRI			0x450
-#define DW_DSI2H_INT_MASK_CRI			0x454
-#define DW_DSI2H_INT_FORCE_CRI			0x458
+#define DW_DSI2H_INT_ST_PHY			0x420
+#define DW_DSI2H_INT_MASK_PHY			0x460
+#define DW_DSI2H_INT_FORCE_PHY			0x4a0
+#define DW_DSI2H_INT_ST_TO			0x424
+#define DW_DSI2H_INT_MASK_TO			0x464
+#define DW_DSI2H_INT_FORCE_TO			0x4a4
+#define DW_DSI2H_INT_ST_ACK			0x428
+#define DW_DSI2H_INT_MASK_ACK			0x468
+#define DW_DSI2H_INT_FORCE_ACK			0x4a8
+#define DW_DSI2H_INT_ST_IPI			0x42c
+#define DW_DSI2H_INT_MASK_IPI			0x46c
+#define DW_DSI2H_INT_FORCE_IPI			0x4ac
+#define DW_DSI2H_INT_ST_PRI			0x430
+#define DW_DSI2H_INT_MASK_PRI			0x470
+#define DW_DSI2H_INT_FORCE_PRI			0x4b0
+#define DW_DSI2H_INT_ST_CRI			0x434
+#define DW_DSI2H_INT_MASK_CRI			0x474
+#define DW_DSI2H_INT_FORCE_CRI			0x4b4
 
 #define DRM_FORMAT_RGB121212 fourcc_code('R', 'G', '1', '2')
 #define DRM_FORMAT_YCC422_24BIT	fourcc_code('Y', '2', '0', '8')
@@ -378,6 +380,7 @@ struct dw_mipi_dsi2h {
 	u32 clk_type;
 	u32 mode_ctrl;
 	bool auto_calc_off;
+	bool hs_link_enable;
 	u32 ppi_width;
 	u32 high_speed;
 	u32 bta;
@@ -417,9 +420,13 @@ struct dw_mipi_dsi2h {
 	/** @rstn: Bitmask of reset behavior recommended */
 	u64 rstn;
 
+	const struct regmap_access_table *reg_table;
+
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	struct dentry *debugfs;
 	struct dw_debugfs_hwv *debugfs_hwv;
+	u32 reg_dump_offset;
+	u32 reg_dump_size;
 #endif /* CONFIG_DEBUG_FS */
 	struct dw_dsi2h_int_cntrs int_cntrs;
 

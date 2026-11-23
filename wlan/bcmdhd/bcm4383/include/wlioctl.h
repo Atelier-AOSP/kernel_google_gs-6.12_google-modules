@@ -1188,7 +1188,9 @@ typedef struct wl_scan_params_v4 {
 					 * WL_SCANFLAGS_XXX
 					 */
 	uint32 scan_type_ext;		/**< flags, 0 use default, and flags specified in
-					 * WL_SCANFLAGS_EXT_XXX
+					 * WL_SCANFLAGS_EXT_XXX. Set WL_SCANFLAGS_EXT_USE_HOST_MAC
+					 * together with WL_SCANFLAGS_LISTEN in scan_type to
+					 * activate the listen mode.
 					 */
 	int32 nprobes;			/**< -1 use default, number of probes per channel */
 	int32 active_time;		/**< -1 use default, dwell time per channel for
@@ -11124,6 +11126,7 @@ enum wl_nan_sub_cmd_xtlv_id {
 	WL_NAN_CMD_NAN_PLUS_EXT_SCHED_INFO = NAN_CMD(WL_NAN_CMD_NAN_PLUS_COMP_ID, 0x02),
 	WL_NAN_CMD_NAN_PLUS_EXT_ADV_DISC_INFO = NAN_CMD(WL_NAN_CMD_NAN_PLUS_COMP_ID, 0x03),
 	WL_NAN_CMD_NAN_PLUS_EHT_OP_MODE = NAN_CMD(WL_NAN_CMD_NAN_PLUS_COMP_ID, 0x04),
+	WL_NAN_CMD_NAN_PLUS_EXT_ADAP_SCHED_INFO = NAN_CMD(WL_NAN_CMD_NAN_PLUS_COMP_ID, 0x05),
 
 	/* Add submodules below, and update WL_NAN_CMD_MAX */
 
@@ -11710,9 +11713,11 @@ enum wl_nan_cfg_ctrl2_flags2 {
 	 * when infra is associated in non-soc channel.
 	 */
 	WL_NAN_CTRL2_FLAG2_AUTODAM_DISABLE_INFRA_SCC		=	(1u << 5u), /* bit 5 */
-	WL_NAN_CTRL2_FLAG2_ENABLE_MCAST_RATE_HIST		=	(1u << 6u) /* bit 6 */
+	WL_NAN_CTRL2_FLAG2_ENABLE_MCAST_RATE_HIST		=	(1u << 6u), /* bit 6 */
+	WL_NAN_CTRL2_FLAG2_DISABLE_2G_FAW			= 	(1u << 7u), /* bit 7 */
+	WL_NAN_CTRL2_FLAG2_ENABLE_EARLY_DW_TERM			=	(1u << 8u)  /* bit 8 */
 };
-#define WL_NAN_CTRL2_FLAGS2_MASK	0x0000007f
+#define WL_NAN_CTRL2_FLAGS2_MASK	0x000001ff
 
 /*
  * WL_NAN_CMD_CFG_BAND, WL_NAN_CMD_CFG_RSSI_THRESHOLD(Get only)
@@ -13002,21 +13007,10 @@ typedef uint16 wl_nan_pairing_sid_t;
 #define	WL_NAN_EXT_SYNC_INFO_FLAG_TSF_OFFSET		(1u << 1)
 #define	WL_NAN_EXT_SYNC_INFO_FLAG_TRACK_DISC_BCN	(1u << 2)
 #define	WL_NAN_EXT_SYNC_INFO_FLAG_TRACK_SYNC_BCN	(1u << 3)
+#define WL_NAN_EXT_SYNC_INFO_FLAG_AP_SYNC		(1u << 4)
 
 /* Value when all host-configurable bits set */
-#define WL_NAN_EXT_SYNC_INFO_FLAG_MAX_MASK	0xF
-
-/* Last 16-bits are firmware controlled bits.
- * Bit 31:
- * If set - indicates that NAN cluster merge is disabled
- * Bit 30:
- * If set - indicates that NAN role change is disabled
- * NOTE: These are only ready-only bits for host.
- * All sets to these bits from host are masked off
- */
-#define NAN_EXT_SYNC_INFO_FLAG_FW_BITS	16
-#define NAN_EXT_SYNC_INFO_FLAG_CLUSTER_MERGE_DISABLE	(1u << 31)
-#define NAN_EXT_SYNC_INFO_FLAG_ROLE_CHANGE_DISABLE	(1u << 30)
+#define WL_NAN_EXT_SYNC_INFO_FLAG_MAX_MASK	0x1F
 
 typedef uint32 wl_nan_ext_sync_info_flags_t;
 
@@ -13028,31 +13022,65 @@ typedef struct wl_nan_ext_sync_info {
 	uint8				sync_channel_number;
 } wl_nan_ext_sync_info_t;
 
+/* Following three flags will be removed after committing src changes */
 #define	WL_NAN_EXT_SCHED_INFO_FLAG_POWER_SAVE		(1u << 0)
-#define	WL_NAN_EXT_SCHED_INFO_FLAG_EN_2G_DISC_BCN	(1u << 1)
-#define	WL_NAN_EXT_SCHED_INFO_FLAG_EN_5G_DISC_BCN	(1u << 2)
-#define	WL_NAN_EXT_SCHED_INFO_FLAG_EN_6G_DISC_BCN	(1u << 3)
 #define WL_NAN_EXT_SCHED_INFO_FLAG_FR_POWER_SAVE_ENAB	(1u << 4)
 #define WL_NAN_EXT_SCHED_INFO_FLAG_FR_POWER_SAVE_DISAB	(1u << 5)
 
-/* Value when all host-configurable bits set */
-#define WL_NAN_EXT_SCHED_INFO_FLAG_MAX_MASK	0x3F
-/* Last 16-bits are firmware controlled bits.
- * NOTE: These are only ready-only bits for host.
- * All sets to these bits from host are masked off
- */
-#define NAN_EXT_SCHED_INFO_FLAG_FW_BITS		16
+/* flags for adaptive nan sched feature */
+#define WL_NAN_EXT_SCHED_INFO_FLAG_ADAPTIVE_NAN_SCHED	(1u << 0)
 
-#define NAN_EXT_SCHED_INFO_FLAG_STATUS_SUSPENDED	(1u << 31)
+#define	WL_NAN_EXT_SCHED_INFO_FLAG_PS_CFG_PRESENT		(1u << 0)
+#define	WL_NAN_EXT_SCHED_INFO_FLAG_PS_CFG_SET			(1u << 1)
+#define	WL_NAN_EXT_SCHED_INFO_FLAG_EN_2G_DISC_BCN		(1u << 2)
+#define	WL_NAN_EXT_SCHED_INFO_FLAG_EN_5G_DISC_BCN		(1u << 3)
+#define	WL_NAN_EXT_SCHED_INFO_FLAG_EN_6G_DISC_BCN		(1u << 4)
+#define WL_NAN_EXT_SCHED_INFO_FLAG_FR_PS_CFG_PRESENT		(1u << 5)
+#define WL_NAN_EXT_SCHED_INFO_FLAG_FR_PS_CFG_SET		(1u << 6)
+#define	WL_NAN_EXT_SCHED_INFO_FLAG_5G_DW_INDEX_USED		(1u << 7)
+#define	WL_NAN_EXT_SCHED_INFO_FLAG_ADTNL_DW			(1u << 8)
+#define	WL_NAN_EXT_SCHED_INFO_FLAG_EN_ADTNL_DW_DISC_BCN		(1u << 9)
+#define WL_NAN_EXT_SCHED_INFO_FLAG_AP_NAN_SYNC_NEEDED		(1u << 10)
+
+/* Value when all host-configurable bits set */
+#define WL_NAN_EXT_SCHED_INFO_FLAG_MAX_MASK	0x7FF
+
+/* disable DW if value is awake_dw is 0xF */
+#define WL_NAN_EXT_SCHED_INFO_AWAKE_DW_DISABLE	(0xFu)
+
+#define WL_NAN_EXT_IS_AWAKE_DW_DISABLE(awake_dw) \
+	((awake_dw) == WL_NAN_EXT_SCHED_INFO_AWAKE_DW_DISABLE)
+
+#define WL_NAN_EXT_SCHED_INFO_IS_DISC_BCN_ENABLED_IN_2G(flags) \
+	(((flags) & WL_NAN_EXT_SCHED_INFO_FLAG_EN_2G_DISC_BCN) == \
+	WL_NAN_EXT_SCHED_INFO_FLAG_EN_2G_DISC_BCN)
+#define WL_NAN_EXT_SCHED_INFO_IS_DISC_BCN_ENABLED_IN_5G(flags) \
+	(((flags) & WL_NAN_EXT_SCHED_INFO_FLAG_EN_5G_DISC_BCN) == \
+	WL_NAN_EXT_SCHED_INFO_FLAG_EN_5G_DISC_BCN)
+#define WL_NAN_EXT_SCHED_INFO_IS_DISC_BCN_ENABLED_IN_6G(flags) \
+	(((flags) & WL_NAN_EXT_SCHED_INFO_FLAG_EN_6G_DISC_BCN) == \
+	WL_NAN_EXT_SCHED_INFO_FLAG_EN_6G_DISC_BCN)
+
+#define WL_NAN_EXT_SCHED_INFO_FLAG_DISC_BCN_IS_ENABLED_IN_BAND(flags, band_info) \
+	(((band_info) == WLC_BAND_INFO_2G_IDX) ? \
+	WL_NAN_EXT_SCHED_INFO_IS_DISC_BCN_ENABLED_IN_2G(flags) : \
+	((band_info) == WLC_BAND_INFO_5G_IDX) ? \
+	WL_NAN_EXT_SCHED_INFO_IS_DISC_BCN_ENABLED_IN_5G(flags) : \
+	WL_NAN_EXT_SCHED_INFO_IS_DISC_BCN_ENABLED_IN_6G(flags))
 
 typedef uint32 wl_nan_ext_sched_info_flags_t;
 
 typedef struct wl_nan_ext_sched_info {
 	wl_nan_ext_sched_info_flags_t	flags;
 	uint8				awake_dw[NAN_PLUS_MAX_BANDS];
-	uint8				start_offset_dw[NAN_PLUS_MAX_BANDS];
+	uint16				start_offset_dw[NAN_PLUS_MAX_BANDS];
 	uint16				channel_num[NAN_PLUS_MAX_BANDS];
 	struct ether_addr		peer_addr;
+	uint8				scheduling_method;
+	uint8				usage;
+	uint8				PAD[2];
+	uint32				schedule_category;
+	struct ether_addr		related_peer_nmi;
 } wl_nan_ext_sched_info_t;
 
 #define NAN_SYNC_PS_EXIT_REASON_AP_LOSS		3u
@@ -13073,7 +13101,39 @@ typedef struct wl_nan_evt_sched_ps {
 	uint8	ps_reason_code;		/* sched power save enter/exit reason code */
 	uint8	exp_scan_time_sec;	/* expected scan completion time */
 	uint8	awake_dws[MAXBANDS];	/* current nan awake dws */
+	uint8  scheduling_method;   /* 2 bits: scheduling method */
+	uint8  usage;               /* 4 bits: use case */
+	uint8	PAD[2];			/* align schedule_category to 32-bit */
+	uint32 schedule_category;   /* 32 bits: schedule category */
+	struct ether_addr peer_nmi; /* Peer NMI related to this event */
 } wl_nan_evt_sched_ps_t;
+
+#define NAN_SCHED_FR_CONFIRM_GIVEN_SCHED	3u
+#define NAN_SCHED_FR_CONFIRM_DIFFERENT_SCHED	4u
+
+typedef struct wl_nan_evt_fr_sched {
+	uint8			reason_code;
+	struct ether_addr	peer_nmi;
+	uint8			scheduling_method;   /* 2 bits: scheduling method */
+	uint8			usage;               /* 4 bits: use case */
+	uint8			PAD[2];              /* align schedule_category to 32-bit */
+	uint32			schedule_category;   /* 32 bits: schedule category */
+} wl_nan_evt_fr_sched_t;
+
+#define NAN_SCHED_REASON_FW_SCAN_START		0u
+#define NAN_SCHED_REASON_HOST_SCAN_START	1u
+#define NAN_SCHED_REASON_NAN_SCAN_START		2u
+#define NAN_SCHED_REASON_NAN_SCHED_NEG_NDP	3u
+#define NAN_SCHED_REASON_NAN_SCHED_NEG_OTHER	4u
+#define NAN_SCHED_REASON_UNKNOWN		5u
+#define NAN_SCHED_REASON_LEGACY_NAN_API		6u
+#define NAN_SCHED_REASON_FW_SCAN_FINISHED	7u
+
+typedef struct wl_nan_evt_sched_change {
+	uint8	reason_code;
+	uint8	exp_scan_time_sec;
+	struct ether_addr peer_nmi;
+} wl_nan_evt_sched_change_t;
 
 #define NPLUS_EHT_REASON_SUCCESS_EHT_CAPABLE		1
 #define	NPLUS_EHT_REASON_SUCCESS_OP_MODE_CHANGED	2
@@ -13130,11 +13190,11 @@ enum wl_nan_adv_disc_status_code {
 };
 
 typedef struct wl_nan_ev_adv_disc {
-	uint8   rqst_ID;		/* Request ID */
-	uint8   status;                 /* 00: Success, 10: Fail, 01:Sucess_but_changed */
-	uint8   rsn_code;               /* 00: Success, others: Fail */
-	uint8   PAD;
-	uint32  sched_cat;		/* USD/SD, 2.4/5/6 GHZ	*/
+	uint8   rqst_ID;            /* Request ID */
+	uint8   status;             /* 00: Success, 10: Fail, 01:Success_but_changed */
+	uint8   rsn_code;           /* 00: Success, others: Fail */
+	uint8   scheduling_method;  /* 2 bits: scheduling method, 6 bits reserved */
+	uint32  sched_cat;          /* USD/SD, 2.4/5/6 GHz */
 	uint8   sched_entry[];
 } wl_nan_ev_adv_disc_data_t;
 
@@ -13194,6 +13254,21 @@ typedef BWL_PRE_PACKED_STRUCT struct wl_nan_ext_adv_disc_info {
 	uint8				pad[3];
 	wl_nan_ext_adv_disc_sched_entry_info_t sched_entry_info[];
 } BWL_POST_PACKED_STRUCT wl_nan_ext_adv_disc_info_t;
+
+typedef BWL_PRE_PACKED_STRUCT struct wl_nan_ext_adap_schedentry_info {
+	uint32                          bitmap;
+	uint8                           category;
+	uint8                           operation;
+	uint8                           channel;
+	uint8				pad;
+} BWL_POST_PACKED_STRUCT wl_nan_ext_adap_sched_entry_info_t;
+
+typedef uint32 wl_nan_ext_adap_sched_info_flags_t;
+typedef BWL_PRE_PACKED_STRUCT struct wl_nan_ext_adap_sched_info {
+	wl_nan_ext_adap_sched_info_flags_t	flags;
+	struct ether_addr               	peer_addr;
+	wl_nan_ext_adap_sched_entry_info_t 	sched_entry_info[];
+} BWL_POST_PACKED_STRUCT wl_nan_ext_adap_sched_info_t;
 
 #include <packed_section_end.h>
 
@@ -16050,6 +16125,8 @@ enum {
 	WL_PROXD_REQUEST_ACKED		= 0x0020,	/* FTM request was acked */
 	WL_PROXD_LTFSEQ_STARTED		= 0x0040,	/* LTF sequence started */
 	WL_PROXD_RESULT_SIGNED		= 0x0080,	/* RTT result is negative */
+	WL_PROXD_RESULT_CORE0_MIN	= 0x0100,	/* RTT result is core0 min */
+	WL_PROXD_RESULT_CORE1_MIN	= 0x0200,	/* RTT result is core1 min */
 	WL_PROXD_RESULT_FLAG_ALL	= 0xffff
 };
 typedef int16 wl_proxd_result_flags_t;
@@ -28604,6 +28681,11 @@ typedef struct wl_mpf_scan_config_v1 {
 #define WL_D11FRAMETX_IOV_VERSION_0		0u
 #define	WL_D11FRAMETX_FLAGS_FIXD_RATESPEC_MASK		(1u << 0)
 #define	WL_D11FRAMETX_FLAGS_FORCED_RADAR_TX_MASK	(1u << 1)
+#define WL_D11FRAMETX_FLAGS_RAND_SA_MASK                (1u << 2) /* SA in frame header is a
+								   * host-supplied random MAC;
+								   * use dynamic AMT slot, not
+								   * AMT_IDX_MAC (slot 63).
+								   */
 #define WLC_D11FRAMETX_MAX_PKT_LEN	1500u
 typedef struct wl_d11txframe_v0 {
 	uint16  version;
@@ -28899,13 +28981,13 @@ typedef struct wl_csi_monitor_config {
 	uint16 NS_mask;          /* bit mask of spatial steam IDs to capture */
 	uint16 frame_type;       /* wlan frame type */
 	uint16 N_mac_addrs;      /* Number of devices to monitor for passive, 1 for active */
-	uint16 mac_addrs[WL_CSI_MONITOR_MAX_DEVICES][6u]; /* list of devices' MAC address */
 	uint16 csi_type;         /* legacy CSI or generational specific CSI */
 	uint16 duration;         /* Session in sec, 0: run indefinitely until manual stop */
 	uint16 request_interval; /* For active : interval in ms between two csi requests */
 	uint16 report_interval;	 /* interval in ms of the csi report */
 	uint16 start_after_n;	 /* start csi collection after N secs. 0:start immediately */
 	uint16 stop_after_m;	 /* stop csi collection after M secs. 0:stop immediately */
+	struct ether_addr mac_addrs[WL_CSI_MONITOR_MAX_DEVICES]; /* list of devices' MAC address */
 } wl_csi_monitor_config_t;
 
 typedef struct wl_csi_monitor_hdr_report {
@@ -28925,4 +29007,100 @@ typedef struct wl_csi_monitor_hdr_report {
 	uint8 csi_type;          /* csi type: legacy or above */
 } wl_csi_monitor_hdr_report_t;
 
+enum wl_ini_index {
+	CI_CON_NON_HINT_TARGET_MIN_RSSI         = 0,
+	CI_ROAM_COMMON_MIN_ROAM_DELTA           = 1,
+	CI_ROAM_COMMON_DELTA                    = 2,
+	CI_ROAM_COMMON_MLO_TP_PREFER            = 3,
+	CI_ROAM_SCAN_FIRST_TIMER                = 4,
+	CI_ROAM_SCAN_INACTIVE_TIMER             = 5,
+	CI_ROAM_SCAN_INACTIVE_COUNT             = 6,
+	CI_ROAM_SCAN_STEP_RSSI                  = 7,
+	CI_ROAM_SCAN_PERIOD                     = 8,
+	CI_ROAM_RSSI_TRIGGER                    = 9,
+	CI_ROAM_CU_TRIGGER                      = 10,
+	CI_ROAM_CU_MONITOR_TIME                 = 11,
+	CI_ROAM_CU_24G_RSSI_RANGE               = 12,
+	CI_ROAM_CU_5G_RSSI_RANGE                = 13,
+	CI_ROAM_CU_6G_RSSI_RANGE                = 14,
+	CI_ROAM_CU_24_DEFAULT_CU                = 15,
+	CI_ROAM_CU_5_DEFAULT_CU                 = 16,
+	CI_ROAM_CU_6_DEFAULT_CU                 = 17,
+	CI_ROAM_IDLE_TRIGGER_BAND               = 18,
+	CI_ROAM_IDLE_INACTIVE_TIME              = 19,
+	CI_ROAM_IDLE_MIN_RSSI                   = 20,
+	CI_ROAM_IDLE_RSSI_VARIATION             = 21,
+	CI_ROAM_IDLE_INACTIVE_PACKET_COUNT      = 22,
+	CI_ROAM_IDLE_DELTA                      = 23,
+	CI_ROAM_BEACON_LOSS_TARGET_MIN_RSSI     = 24,
+	CI_ROAM_EMERGENCY_TARGET_MIN_RSSI       = 25,
+	CI_ROAM_BTM_DELTA                       = 26,
+	CI_ROAM_WTC_SCAN_MODE                   = 27,
+	CI_ROAM_WTC_HANDLING_RSSI_THRESHOLD     = 28,
+	CI_ROAM_WTC_24G_CANDI_RSSI_THRESHOLD    = 29,
+	CI_ROAM_WTC_5G_CANDI_RSSI_THRESHOLD     = 30,
+	CI_ROAM_WTC_6G_CANDI_RSSI_THRESHOLD     = 31,
+	CI_ROAM_BT_COEX_SCORE_WEIGHT            = 32,
+	CI_ROAM_BT_COEX_ETP_WEIGHT              = 33,
+	CI_ROAM_BT_COEX_TARGET_MIN_RSSI         = 34,
+	CI_ROAM_BT_COEX_DELTA                   = 35,
+	CI_ROAM_BT_COEX_THRESHOLD_TIME          = 36,
+	CI_ROAM_AP_SCORE_RSSI_WEIGHT            = 37,
+	CI_ROAM_AP_SCORE_CU_WEIGHT              = 38,
+	CI_ROAM_AP_SCORE_2G_WEIGHT              = 39,
+	CI_ROAM_AP_SCORE_5G_WEIGHT              = 40,
+	CI_ROAM_AP_SCORE_6G_WEIGHT              = 41,
+	CI_ROAM_AP_SCORE_BAND1_RSSI_VALUE1      = 42,
+	CI_ROAM_AP_SCORE_BAND1_RSSI_VALUE2      = 43,
+	CI_ROAM_AP_SCORE_BAND1_RSSI_VALUE3      = 44,
+	CI_ROAM_AP_SCORE_BAND1_RSSI_VALUE4      = 45,
+	CI_ROAM_AP_SCORE_BAND1_RSSI_VALUE5      = 46,
+	CI_ROAM_AP_SCORE_BAND1_RSSI_SCORE1      = 47,
+	CI_ROAM_AP_SCORE_BAND1_RSSI_SCORE2      = 48,
+	CI_ROAM_AP_SCORE_BAND1_RSSI_SCORE3      = 49,
+	CI_ROAM_AP_SCORE_BAND1_RSSI_SCORE4      = 50,
+	CI_ROAM_AP_SCORE_BAND1_RSSI_SCORE5      = 51,
+	CI_ROAM_AP_SCORE_BAND2_RSSI_VALUE1      = 52,
+	CI_ROAM_AP_SCORE_BAND2_RSSI_VALUE2      = 53,
+	CI_ROAM_AP_SCORE_BAND2_RSSI_VALUE3      = 54,
+	CI_ROAM_AP_SCORE_BAND2_RSSI_VALUE4      = 55,
+	CI_ROAM_AP_SCORE_BAND2_RSSI_VALUE5      = 56,
+	CI_ROAM_AP_SCORE_BAND2_RSSI_SCORE1      = 57,
+	CI_ROAM_AP_SCORE_BAND2_RSSI_SCORE2      = 58,
+	CI_ROAM_AP_SCORE_BAND2_RSSI_SCORE3      = 59,
+	CI_ROAM_AP_SCORE_BAND2_RSSI_SCORE4      = 60,
+	CI_ROAM_AP_SCORE_BAND2_RSSI_SCORE5      = 61,
+	CI_ROAM_AP_SCORE_BAND3_RSSI_VALUE1      = 62,
+	CI_ROAM_AP_SCORE_BAND3_RSSI_VALUE2      = 63,
+	CI_ROAM_AP_SCORE_BAND3_RSSI_VALUE3      = 64,
+	CI_ROAM_AP_SCORE_BAND3_RSSI_VALUE4      = 65,
+	CI_ROAM_AP_SCORE_BAND3_RSSI_SCORE1      = 66,
+	CI_ROAM_AP_SCORE_BAND3_RSSI_SCORE2      = 67,
+	CI_ROAM_AP_SCORE_BAND3_RSSI_SCORE3      = 68,
+	CI_ROAM_AP_SCORE_BAND3_RSSI_SCORE4      = 69,
+	CI_ROAM_AP_SCORE_BAND1_CU_VALUE1        = 70,
+	CI_ROAM_AP_SCORE_BAND1_CU_VALUE2        = 71,
+	CI_ROAM_AP_SCORE_BAND1_CU_SCORE1        = 72,
+	CI_ROAM_AP_SCORE_BAND1_CU_SCORE2        = 73,
+	CI_ROAM_AP_SCORE_BAND2_CU_VALUE1        = 74,
+	CI_ROAM_AP_SCORE_BAND2_CU_VALUE2        = 75,
+	CI_ROAM_AP_SCORE_BAND2_CU_SCORE1        = 76,
+	CI_ROAM_AP_SCORE_BAND2_CU_SCORE2        = 77,
+	CI_ROAM_AP_SCORE_BAND3_CU_VALUE1        = 78,
+	CI_ROAM_AP_SCORE_BAND3_CU_VALUE2        = 79,
+	CI_ROAM_AP_SCORE_BAND3_CU_SCORE1        = 80,
+	CI_ROAM_AP_SCORE_BAND3_CU_SCORE2        = 81,
+	CI_AGGR_ROAM_COMMON_MIN_ROAM_DELTA      = 82,
+	CI_AGGR_ROAM_COMMON_DELTA               = 83,
+	CI_AGGR_ROAM_SCAN_STEP_RSSI             = 84,
+	CI_AGGR_ROAM_RSSI_TRIGGER               = 85,
+	CI_MAX_COUNT                            = 86
+};
+
+#define INI_ARGS_V1		(1)
+typedef struct wl_ini_args_v1 {
+	uint16 ver;
+	uint16 len;
+	int32 val[CI_MAX_COUNT];
+} wl_ini_args_v1_t;
 #endif /* _wlioctl_h_ */

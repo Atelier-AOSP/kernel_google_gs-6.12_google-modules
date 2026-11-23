@@ -90,6 +90,21 @@ static void google_cdd_set_core_panic_stat(unsigned int val, unsigned int cpu)
 		__raw_writel(val, header + CDD_OFFSET_PANIC_STAT + cpu * 4);
 }
 
+static void google_cdd_set_wdt_pet_time_stat(u64 mono_raw_ns, u64 gtc_ns)
+{
+	static atomic_t cdd_wdt_pet_time_idx = ATOMIC_INIT(0);
+	void __iomem *header = google_cdd_get_header_vaddr();
+	int i;
+
+	if (!header)
+		return;
+
+	i = atomic_fetch_inc(&cdd_wdt_pet_time_idx) % CDD_WDT_PET_TIME_STAT_NUM;
+	__raw_writeq(mono_raw_ns, header + CDD_OFFSET_WDT_PET_TIME_STAT(i));
+	__raw_writeq(gtc_ns, header + CDD_OFFSET_WDT_PET_TIME_STAT(i) + sizeof(mono_raw_ns));
+	__raw_writel(i, header + CDD_OFFSET_WDT_PET_TIME_IDX);
+}
+
 void google_cdd_set_core_cflush_stat(unsigned int val)
 {
 	void __iomem *header = google_cdd_get_header_vaddr();
@@ -218,22 +233,12 @@ static unsigned int google_cdd_get_reason(void)
 
 static void google_cdd_set_apc_wdt_sub_reason(struct device *dev, unsigned int val)
 {
-	void __iomem *header, *apc_wdt_sub_reason;
-	struct platform_device *pdev = to_platform_device(dev);
-	int ret;
-
-	header = google_cdd_get_header_vaddr();
-	if (header)
-		__raw_writel(val, header + CDD_OFFSET_APC_WDT_SUB_REASON);
-
-	apc_wdt_sub_reason = devm_platform_ioremap_resource_byname(pdev, "apc_wdt_sub_reason");
-	ret = IS_ERR(apc_wdt_sub_reason);
-	if (ret) {
-		dev_err(dev, "unable to remap apc_wdt_sub_reason(%d)\n", ret);
+	if (!cdd_ctx.apc_wdt_sub_reason) {
+		dev_err(dev, "cdd_ctx.apc_wdt_sub_reason is null\n");
 		return;
 	}
 
-	__raw_writel(val, apc_wdt_sub_reason);
+	__raw_writel(val, cdd_ctx.apc_wdt_sub_reason);
 }
 
 static void google_cdd_set_reboot_mode(enum reboot_mode mode)
@@ -299,7 +304,7 @@ int google_cdd_emergency_reboot(const char *str)
 }
 EXPORT_SYMBOL_GPL(google_cdd_emergency_reboot);
 
-static void google_cdd_dump_one_task_info(struct task_struct *tsk, bool is_main)
+static void google_cdd_dump_one_task_info(struct task_struct *tsk)
 {
 	char state_array[] = {'R', 'S', 'D', 'T', 't', 'X',
 			'Z', 'P', 'x', 'K', 'W', 'I', 'N'};
@@ -328,20 +333,15 @@ static void google_cdd_dump_one_task_info(struct task_struct *tsk, bool is_main)
 	pr_info("%8d %16llu %16llu %16llu %c(%u) %3d %16pK %16pK %c %16s\n",
 		tsk->pid, tsk->utime, tsk->stime,
 		tsk->se.exec_start, state_array[idx], (tsk->__state),
-		task_cpu(tsk), (void *) pc, tsk, is_main ? '*' : ' ', tsk->comm);
+		task_cpu(tsk), (void *) pc, tsk,
+		thread_group_leader(tsk) ? '*' : ' ', tsk->comm);
 
 	sched_show_task(tsk);
 }
 
-static inline struct task_struct *get_next_thread(struct task_struct *tsk)
-{
-	return container_of(tsk->thread_group.next, struct task_struct, thread_group);
-}
-
 static void google_cdd_dump_task_info(void)
 {
-	struct task_struct *frst_tsk, *curr_tsk;
-	struct task_struct *frst_thr, *curr_thr;
+	struct task_struct *p, *t;
 
 	pr_info("\n");
 	pr_info(" current proc : %d %s\n",
@@ -352,29 +352,10 @@ static void google_cdd_dump_task_info(void)
 			"user_pc", "task_struct", "comm");
 	pr_info("------------------------------------------------------------------------------\n");
 
-	/* processes */
-	frst_tsk = &init_task;
-	curr_tsk = frst_tsk;
-	while (curr_tsk) {
-		google_cdd_dump_one_task_info(curr_tsk,  true);
-		/* threads */
-		if (curr_tsk->thread_group.next != NULL) {
-			frst_thr = get_next_thread(curr_tsk);
-			curr_thr = frst_thr;
-			if (frst_thr != curr_tsk) {
-				while (curr_thr != NULL) {
-					google_cdd_dump_one_task_info(curr_thr, false);
-					curr_thr = get_next_thread(curr_thr);
-					if (curr_thr == curr_tsk)
-						break;
-				}
-			}
-		}
-		curr_tsk = container_of(curr_tsk->tasks.next,
-					struct task_struct, tasks);
-		if (curr_tsk == frst_tsk)
-			break;
-	}
+	rcu_read_lock();
+	for_each_process_thread(p, t)
+		google_cdd_dump_one_task_info(t);
+	rcu_read_unlock();
 	pr_info("------------------------------------------------------------------------------\n");
 }
 
@@ -763,6 +744,8 @@ void google_cdd_init_utils(struct device *dev)
 
 	/* Sign it from CDD_SIGN_WATCHDOG_APC_EARLY to CDD_SIGN_WATCHDOG_APC */
 	google_cdd_set_apc_wdt_sub_reason(dev, CDD_SIGN_WATCHDOG_APC);
+
+	google_wdt_register_pet_timestamp_callback(google_cdd_set_wdt_pet_time_stat);
 
 	cdd_wdd = google_wdt_wdd_get(dev);
 	if (IS_ERR(cdd_wdd)) {

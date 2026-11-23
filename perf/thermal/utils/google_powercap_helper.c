@@ -7,31 +7,114 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <kunit/static_stub.h>
+#include <linux/platform_device.h>
+
+#include "google_thermal_odpm_helper.h"
 #include "google_powercap_helper.h"
-#include "google_powercap_helper_mock.h"
+#include "google_powercap_stats.h"
+
+struct powercap_zone *
+gpc_powercap_register_zone(struct powercap_zone *power_zone,
+			   struct powercap_control_type *control_type, const char *name,
+			   struct powercap_zone *parent, const struct powercap_zone_ops *ops,
+			   int nr_constraints, const struct powercap_zone_constraint_ops *const_ops)
+{
+	KUNIT_STATIC_STUB_REDIRECT(gpc_powercap_register_zone, power_zone, control_type, name,
+				   parent, ops, nr_constraints, const_ops);
+	return powercap_register_zone(power_zone, control_type, name, parent, ops, nr_constraints,
+				      const_ops);
+}
+
+int gpc_device_create_file(struct device *device, const struct device_attribute *entry)
+{
+	KUNIT_STATIC_STUB_REDIRECT(gpc_device_create_file, device, entry);
+	return device_create_file(device, entry);
+}
+
+void gpc_device_remove_file(struct device *device, const struct device_attribute *entry)
+{
+	KUNIT_STATIC_STUB_REDIRECT(gpc_device_remove_file, device, entry);
+	device_remove_file(device, entry);
+}
+
+int gpc_powercap_unregister_control_type(struct powercap_control_type *control_type)
+{
+	KUNIT_STATIC_STUB_REDIRECT(gpc_powercap_unregister_control_type, control_type);
+	return powercap_unregister_control_type(control_type);
+}
+
+struct powercap_control_type *
+gpc_powercap_register_control_type(struct powercap_control_type *control_type, const char *name,
+				   const struct powercap_control_type_ops *ops)
+{
+	KUNIT_STATIC_STUB_REDIRECT(gpc_powercap_register_control_type, control_type, name, ops);
+	return powercap_register_control_type(control_type, name, ops);
+}
+
+int gpc_powercap_unregister_zone(struct powercap_control_type *control_type,
+				 struct powercap_zone *power_zone)
+{
+	KUNIT_STATIC_STUB_REDIRECT(gpc_powercap_unregister_zone, control_type, power_zone);
+	return powercap_unregister_zone(control_type, power_zone);
+}
+
+struct device_node *gpc_of_parse_phandle(const struct device_node *np, const char *phandle_name,
+					 int index)
+{
+	KUNIT_STATIC_STUB_REDIRECT(gpc_of_parse_phandle, np, phandle_name, index);
+	return of_parse_phandle(np, phandle_name, index);
+}
+
+int gpc_of_property_read_u32(const struct device_node *np, const char *propname, u32 *out_value)
+{
+	KUNIT_STATIC_STUB_REDIRECT(gpc_of_property_read_u32, np, propname, out_value);
+	return of_property_read_u32(np, propname, out_value);
+}
+
+int gpc_google_thermal_odpm_register_client(const char *rail_name,
+					  struct notifier_block *nb,
+					  unsigned int polling_interval_ms)
+{
+	KUNIT_STATIC_STUB_REDIRECT(gpc_google_thermal_odpm_register_client, rail_name, nb,
+				   polling_interval_ms);
+	return google_thermal_odpm_register_client(rail_name, nb, polling_interval_ms);
+}
+
+int gpc_google_thermal_odpm_unregister_client(const char *rail_name,
+					  struct notifier_block *nb,
+					  unsigned int polling_interval_ms)
+{
+	KUNIT_STATIC_STUB_REDIRECT(gpc_google_thermal_odpm_unregister_client, rail_name, nb,
+				   polling_interval_ms);
+	return google_thermal_odpm_unregister_client(rail_name, nb, polling_interval_ms);
+}
 
 static DEFINE_MUTEX(gpowercap_lock);
 static struct powercap_control_type *pct;
 static struct gpowercap *root;
 
-static const char *constraint_name[] = {
-	"Instantaneous",
-};
-
-struct gpowercap_subsys_ops gpc_test_device_ops = {
-	.name = "powercap_test_ops",
-	.setup = gpc_test_setup_dt,
-	.exit = gpc_test_exit,
+static const char * const constraint_name[] = {
+	"Average",
 };
 
 static int get_time_window_us(struct powercap_zone *pcz, int cid, u64 *window)
 {
-	return -ENOSYS;
+	struct gpowercap *gpowercap = to_gpowercap(pcz);
+
+	*window = gpowercap->time_window_us;
+
+	return 0;
 }
 
 static int set_time_window_us(struct powercap_zone *pcz, int cid, u64 window)
 {
-	return -ENOSYS;
+	struct gpowercap *gpowercap = to_gpowercap(pcz);
+
+	if (gpowercap->ops && gpowercap->ops->set_time_window_us)
+		return gpowercap->ops->set_time_window_us(gpowercap, window);
+
+	return -EOPNOTSUPP;
 }
 
 static int get_max_power_range_uw(struct powercap_zone *pcz, u64 *max_power_uw)
@@ -78,10 +161,9 @@ int gpowercap_release_zone(struct powercap_zone *pcz)
 	return __gpowercap_release_zone(pcz);
 }
 
-static int get_power_limit_uw(struct powercap_zone *pcz,
-			      int cid, u64 *power_limit)
+static int get_power_limit_uw(struct powercap_zone *pcz, int cid, u64 *power_limit)
 {
-	*power_limit = to_gpowercap(pcz)->power_limit;
+	*power_limit = to_gpowercap(pcz)->userspace_power_limit;
 
 	return 0;
 }
@@ -152,11 +234,13 @@ void __gpowercap_sub_power(struct gpowercap *gpowercap)
 	struct gpowercap *parent = gpowercap->parent;
 
 	while (parent) {
-		parent->power_min -= gpowercap->power_min;
 		parent->power_max -= gpowercap->power_max;
 		parent->power_limit -= gpowercap->power_limit;
+		parent->power_min = 0;
 		if (parent->ops && parent->ops->evaluate)
 			parent->ops->evaluate(parent);
+
+		gpc_stats_init(parent);
 		parent = parent->parent;
 	}
 }
@@ -166,11 +250,13 @@ void __gpowercap_add_power(struct gpowercap *gpowercap)
 	struct gpowercap *parent = gpowercap->parent;
 
 	while (parent) {
-		parent->power_min += gpowercap->power_min;
 		parent->power_max += gpowercap->power_max;
 		parent->power_limit += gpowercap->power_limit;
+		parent->power_min = 0;
 		if (parent->ops && parent->ops->evaluate)
 			parent->ops->evaluate(parent);
+
+		gpc_stats_init(parent);
 		parent = parent->parent;
 	}
 }
@@ -183,11 +269,23 @@ int __gpowercap_update_power(struct gpowercap *gpowercap)
 
 	ret = gpowercap->ops->update_power_uw(gpowercap);
 	if (ret)
-		pr_err("Failed to update power for '%s': %d\n",
-		       gpowercap->zone.name, ret);
+		pr_err("Failed to update power for '%s': %d\n", gpowercap->zone.name, ret);
 
-	if (!test_bit(GPOWERCAP_POWER_LIMIT_FLAG, &gpowercap->flags))
-		gpowercap->power_limit = gpowercap->power_max;
+	gpc_stats_init(gpowercap);
+
+	if (!test_bit(GPOWERCAP_USERSPACE_LIMIT_FLAG, &gpowercap->flags))
+		gpowercap->userspace_power_limit = gpowercap->power_max;
+
+	if (!test_bit(GPOWERCAP_PARENT_LIMIT_FLAG, &gpowercap->flags))
+		gpowercap->parent_power_limit = gpowercap->power_max;
+
+	gpowercap->power_limit = min(gpowercap->userspace_power_limit,
+				     gpowercap->parent_power_limit);
+
+	if (gpowercap->power_limit >= gpowercap->power_max)
+		clear_bit(GPOWERCAP_POWER_LIMIT_FLAG, &gpowercap->flags);
+	else
+		set_bit(GPOWERCAP_POWER_LIMIT_FLAG, &gpowercap->flags);
 
 	__gpowercap_add_power(gpowercap);
 
@@ -207,10 +305,36 @@ int __gpowercap_release_zone(struct powercap_zone *pcz)
 
 	__gpowercap_sub_power(gpowercap);
 
+	gpc_stats_exit(gpowercap);
+
 	if (gpowercap->ops)
 		gpowercap->ops->release(gpowercap);
 	else
 		kfree(gpowercap);
+
+	return 0;
+}
+
+static int __gpowercap_apply_power_limit(struct gpowercap *gpowercap)
+{
+	u64 power_limit;
+
+	power_limit = min(gpowercap->userspace_power_limit, gpowercap->parent_power_limit);
+
+	/*
+	 * A max power limitation means we remove the power limit,
+	 * otherwise we set a constraint and flag the gpowercap node.
+	 */
+	if (power_limit >= gpowercap->power_max)
+		clear_bit(GPOWERCAP_POWER_LIMIT_FLAG, &gpowercap->flags);
+	else
+		set_bit(GPOWERCAP_POWER_LIMIT_FLAG, &gpowercap->flags);
+
+	if (test_bit(GPOWERCAP_POWER_LIMIT_BYPASS_FLAG, &gpowercap->flags))
+		gpowercap->power_limit = power_limit;
+	else
+		gpowercap->power_limit = gpowercap->ops->set_power_uw(gpowercap, power_limit);
+	gpc_stats_update(gpowercap, GPC_STAT_POWER_LIMIT, gpowercap->power_limit);
 
 	return 0;
 }
@@ -232,38 +356,67 @@ int __set_power_limit_uw(struct gpowercap *gpowercap, u64 power_limit)
 	power_limit = clamp_val(power_limit, gpowercap->power_min, gpowercap->power_max);
 
 	mutex_lock(&gpowercap->lock);
-	/*
-	 * A max power limitation means we remove the power limit,
-	 * otherwise we set a constraint and flag the gpowercap node.
-	 */
-	if (power_limit == gpowercap->power_max)
-		clear_bit(GPOWERCAP_POWER_LIMIT_FLAG, &gpowercap->flags);
-	else
-		set_bit(GPOWERCAP_POWER_LIMIT_FLAG, &gpowercap->flags);
 
-	if (test_bit(GPOWERCAP_POWER_LIMIT_BYPASS_FLAG, &gpowercap->flags))
-		gpowercap->power_limit = power_limit;
-	else
-		gpowercap->power_limit = gpowercap->ops->set_power_uw(gpowercap, power_limit);
+	if (power_limit >= gpowercap->power_max) {
+		clear_bit(GPOWERCAP_USERSPACE_LIMIT_FLAG, &gpowercap->flags);
+		gpowercap->userspace_power_limit = gpowercap->power_max;
+	} else {
+		set_bit(GPOWERCAP_USERSPACE_LIMIT_FLAG, &gpowercap->flags);
+		gpowercap->userspace_power_limit = power_limit;
+	}
 
-	pr_debug("%s: power limit: %llu uW, power max: %llu uW\n",
-		 gpowercap->zone.name, gpowercap->power_limit, gpowercap->power_max);
+	pr_debug("Node[%s]: userspace_power_limit:%llu\n", gpowercap->zone.name,
+		 gpowercap->userspace_power_limit);
+
+	__gpowercap_apply_power_limit(gpowercap);
 
 	mutex_unlock(&gpowercap->lock);
 
 	return 0;
 }
 
-void __power_limit_bypass_clear_work(struct work_struct *work)
+int gpowercap_set_parent_power_limit(struct gpowercap *gpowercap, u64 power_limit)
 {
-	struct gpowercap *gpowercap = container_of(work, struct gpowercap,
-						   bypass_work.work);
+	// Intermediate nodes will be a NOP for set power for now.
+	if (!gpowercap->ops)
+		return 0;
+
+	// Opps not initialized yet.
+	if (!gpowercap->num_opps)
+		return -EAGAIN;
+
+	/*
+	 * Don't allow values outside of the power range previously
+	 * set when initializing the power numbers.
+	 */
+	power_limit = clamp_val(power_limit, gpowercap->power_min, gpowercap->power_max);
+
+	mutex_lock(&gpowercap->lock);
+
+	if (power_limit >= gpowercap->power_max) {
+		clear_bit(GPOWERCAP_PARENT_LIMIT_FLAG, &gpowercap->flags);
+		gpowercap->parent_power_limit = gpowercap->power_max;
+	} else {
+		set_bit(GPOWERCAP_PARENT_LIMIT_FLAG, &gpowercap->flags);
+		gpowercap->parent_power_limit = power_limit;
+	}
+
+	__gpowercap_apply_power_limit(gpowercap);
+
+	mutex_unlock(&gpowercap->lock);
+
+	return 0;
+}
+
+static void __power_limit_bypass_clear_work(struct work_struct *work)
+{
+	struct gpowercap *gpowercap = container_of(work, struct gpowercap, bypass_work.work);
 
 	mutex_lock(&gpowercap->lock);
 	clear_bit(GPOWERCAP_POWER_LIMIT_BYPASS_FLAG, &gpowercap->flags);
 	if (test_bit(GPOWERCAP_POWER_LIMIT_FLAG, &gpowercap->flags)) {
-		gpowercap->power_limit = gpowercap->ops->set_power_uw(gpowercap,
-								      gpowercap->power_limit);
+		gpowercap->power_limit =
+			gpowercap->ops->set_power_uw(gpowercap, gpowercap->power_limit);
 		pr_info("%s: Power limit bypass cleared. limit:%llu uW applied\n",
 			gpowercap->zone.name, gpowercap->power_limit);
 	}
@@ -280,8 +433,8 @@ int __power_limit_bypass(struct gpowercap *gpowercap, int time_ms)
 	set_bit(GPOWERCAP_POWER_LIMIT_BYPASS_FLAG, &gpowercap->flags);
 	if (test_bit(GPOWERCAP_POWER_LIMIT_FLAG, &gpowercap->flags) && bypass_time_msec) {
 		gpowercap->ops->set_power_uw(gpowercap, gpowercap->power_max);
-		pr_info("%s: Power limit bypass for %d milli-seconds\n",
-			gpowercap->zone.name, bypass_time_msec);
+		pr_info("%s: Power limit bypass for %d milli-seconds\n", gpowercap->zone.name,
+			bypass_time_msec);
 	}
 	mutex_unlock(&gpowercap->lock);
 
@@ -292,7 +445,7 @@ int __power_limit_bypass(struct gpowercap *gpowercap, int time_ms)
 }
 
 static ssize_t power_limit_bypass_msec_store(struct device *dev, struct device_attribute *attr,
-				      const char *buf, size_t count)
+					     const char *buf, size_t count)
 {
 	struct gpowercap *gpowercap;
 	struct powercap_zone *pcz = to_powercap_zone(dev);
@@ -324,15 +477,13 @@ ssize_t __power_levels_uw_show(struct gpowercap *gpowercap, char *buf)
 		return -EAGAIN;
 
 	for (i = (gpowercap->num_opps - 1); i >= 0; i--)
-		buf_ct += sysfs_emit_at(buf, buf_ct, "%u ",
-					gpowercap->opp_table[i].power);
+		buf_ct += sysfs_emit_at(buf, buf_ct, "%u ", gpowercap->opp_table[i].power);
 	buf_ct += sysfs_emit_at(buf, buf_ct, "\n");
 
 	return buf_ct;
 }
 
-ssize_t
-power_levels_uw_show(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t power_levels_uw_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct gpowercap *gpowercap;
 	struct powercap_zone *pcz = to_powercap_zone(dev);
@@ -348,6 +499,18 @@ power_levels_uw_show(struct device *dev, struct device_attribute *attr, char *bu
 }
 
 static DEVICE_ATTR_RO(power_levels_uw);
+
+static ssize_t stats_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return gpc_stats_show(dev, attr, buf);
+}
+static DEVICE_ATTR_RO(stats);
+
+static ssize_t stats_avail_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return gpc_stats_avail_show(dev, attr, buf);
+}
+static DEVICE_ATTR_RO(stats_avail);
 
 int __gpowercap_register(const char *name, struct gpowercap *gpowercap, struct gpowercap *parent)
 {
@@ -366,14 +529,13 @@ int __gpowercap_register(const char *name, struct gpowercap *gpowercap, struct g
 	if (!gpowercap)
 		return -EINVAL;
 
-	if (gpowercap->ops && !(gpowercap->ops->set_power_uw &&
-			   gpowercap->ops->get_power_uw &&
-			   gpowercap->ops->update_power_uw &&
-			   gpowercap->ops->release))
+	if (gpowercap->ops && !(gpowercap->ops->set_power_uw && gpowercap->ops->get_power_uw &&
+				gpowercap->ops->update_power_uw && gpowercap->ops->release))
 		return -EINVAL;
 
-	pcz = register_zone(&gpowercap->zone, pct, name, parent ? &parent->zone : NULL,
-			    &zone_ops, MAX_GOOGLE_POWERCAP_CONSTRAINTS, &constraint_ops);
+	pcz = gpc_powercap_register_zone(&gpowercap->zone, pct, name, parent ? &parent->zone : NULL,
+					 &zone_ops, MAX_GOOGLE_POWERCAP_CONSTRAINTS,
+					 &constraint_ops);
 	if (IS_ERR(pcz))
 		return PTR_ERR(pcz);
 
@@ -384,215 +546,41 @@ int __gpowercap_register(const char *name, struct gpowercap *gpowercap, struct g
 		root = gpowercap;
 	}
 
+	gpowercap->flags = 0;
 	if (gpowercap->ops && !gpowercap->ops->update_power_uw(gpowercap)) {
-		__gpowercap_add_power(gpowercap);
+		gpowercap->userspace_power_limit = gpowercap->power_max;
+		gpowercap->parent_power_limit = gpowercap->power_max;
 		gpowercap->power_limit = gpowercap->power_max;
+		__gpowercap_add_power(gpowercap);
 	}
+
+	gpc_stats_init(gpowercap);
 
 	if (gpowercap->ops) {
 		pr_debug("power cap zone:%s create power_level\n", gpowercap->zone.name);
-		ret = dev_create_file(&gpowercap->zone.dev, &dev_attr_power_levels_uw);
+		ret = gpc_device_create_file(&gpowercap->zone.dev, &dev_attr_power_levels_uw);
 		if (ret)
 			pr_warn("Power cap zone:%s power level sysfs creation err:%d\n",
 				gpowercap->zone.name, ret);
-		ret = dev_create_file(&gpowercap->zone.dev, &dev_attr_power_limit_bypass_msec);
+		ret = gpc_device_create_file(&gpowercap->zone.dev,
+					     &dev_attr_power_limit_bypass_msec);
 		if (ret)
 			pr_warn("Power cap zone:%s power level sysfs creation err:%d\n",
 				gpowercap->zone.name, ret);
-	}
-
-	pr_debug("Registered gpowercap node '%s' / %llu-%llu uW, \n",
-		 gpowercap->zone.name, gpowercap->power_min, gpowercap->power_max);
-
-	return 0;
-}
-
-struct gpowercap *__gpowercap_setup_virtual(const struct gpowercap_node *hierarchy,
-					    struct gpowercap *parent)
-{
-	struct gpowercap *gpowercap;
-	int ret = 0;
-
-	if (hierarchy->type != GPOWERCAP_NODE_VIRTUAL &&
-		hierarchy->type != GPOWERCAP_NODE_TEST_VIRTUAL) {
-		if (hierarchy->type >= ARRAY_SIZE(gpc_device_ops)) {
-			pr_err("Missing ops for type:%d\n", hierarchy->type);
-			return ERR_PTR(-ENODEV);
-		}
-		if (!gpc_device_ops[hierarchy->type] ||
-		    !gpc_device_ops[hierarchy->type]->algo_setup) {
-			pr_err("Missing setup for type:%d\n", hierarchy->type);
-			return ERR_PTR(-ENODEV);
-		}
-		return gpc_device_ops[hierarchy->type]->algo_setup(hierarchy->name, parent);
-	}
-
-	gpowercap = kzalloc(sizeof(*gpowercap), GFP_KERNEL);
-	if (!gpowercap)
-		return ERR_PTR(-ENOMEM);
-	gpowercap_init(gpowercap, NULL);
-
-	ret = __gpowercap_register(hierarchy->name, gpowercap, parent);
-	if (ret) {
-		pr_err("Failed to register gpowercap node '%s': %d\n",
-		       hierarchy->name, ret);
-		kfree(gpowercap);
-		return ERR_PTR(ret);
-	}
-
-	return gpowercap;
-}
-
-struct gpowercap *__gpowercap_setup_leaf(const struct gpowercap_node *hierarchy,
-					 struct gpowercap *parent)
-{
-	struct device_node *np;
-	int ret = 0;
-
-	if (hierarchy->type >= ARRAY_SIZE(gpc_device_ops)) {
-		pr_err("Missing ops for type:%d\n", hierarchy->type);
-		return ERR_PTR(-ENODEV);
-	}
-	if (!gpc_device_ops[hierarchy->type] ||
-	    !gpc_device_ops[hierarchy->type]->setup) {
-		pr_err("Missing setup for type:%d\n", hierarchy->type);
-		return ERR_PTR(-ENODEV);
-	}
-
-	if (hierarchy->cdev_id >= HW_CDEV_MAX) {
-		pr_err("Invalid cdev ID:%d for type:%s\n",
-		       hierarchy->cdev_id, hierarchy->name);
-		return ERR_PTR(-EINVAL);
-	}
-
-	np = of_find_node_by_path(hierarchy->name);
-	if (!np) {
-		pr_err("Failed to find '%s'\n", hierarchy->name);
-		return ERR_PTR(-ENXIO);
-	}
-
-	ret = gpc_device_ops[hierarchy->type]->setup(parent, np, hierarchy->cdev_id);
-	if (ret) {
-		pr_err("Failed to setup '%s': %d\n", gpc_device_ops[hierarchy->type]->name, ret);
-		of_node_put(np);
-		return ERR_PTR(ret);
-	}
-
-	of_node_put(np);
-
-	/*
-	 * By returning a NULL pointer, we let know the caller there
-	 * is no child for us as we are a leaf of the tree
-	 */
-	return NULL;
-}
-
-/**
- * __for_each_powercap_child - traverse the input array and create powercap
- * nodes.
- *
- * Traverse the array recursively and create individual nodes and their
- * childrens. Based on node type, their corresponding setup callback will
- * be called and the children list, siblings list and parent pointer will
- * be initialized.
- *
- * Return: 0 on success,
- * Error returned by the individual setup functions.
- */
-int __for_each_powercap_child(const struct gpowercap_node *hierarchy,
-			    const struct gpowercap_node *it, struct gpowercap *parent)
-{
-	struct gpowercap *gpowercap;
-	int i, ret = 0;
-
-	for (i = 0; hierarchy[i].name; i++) {
-
-		if (hierarchy[i].parent != it)
-			continue;
-
-		if (hierarchy[i].type == GPOWERCAP_NODE_TEST_VIRTUAL)
-			gpowercap = gpc_test_setup(&hierarchy[i], parent);
-		else if (hierarchy[i].type >= GPOWERCAP_NODE_VIRTUAL)
-			gpowercap = __gpowercap_setup_virtual(&hierarchy[i], parent);
-		else
-			gpowercap = __gpowercap_setup_leaf(&hierarchy[i], parent);
-
-		/*
-		 * A NULL pointer means there is no children, hence we
-		 * continue without going deeper in the recursivity.
-		 */
-		if (!gpowercap)
-			continue;
-
-		if (IS_ERR(gpowercap)) {
-			pr_warn("Failed to create '%s' in the hierarchy\n",
-				hierarchy[i].name);
-			continue;
-		}
-
-		ret = __for_each_powercap_child(hierarchy, &hierarchy[i], gpowercap);
+		ret = gpc_device_create_file(&gpowercap->zone.dev, &dev_attr_stats);
 		if (ret)
-			return ret;
+			pr_warn("Power cap zone:%s stats sysfs creation err:%d\n",
+				gpowercap->zone.name, ret);
+		ret = gpc_device_create_file(&gpowercap->zone.dev, &dev_attr_stats_avail);
+		if (ret)
+			pr_warn("Power cap zone:%s stats_avail sysfs creation err:%d\n",
+				gpowercap->zone.name, ret);
 	}
+
+	pr_debug("Registered gpowercap node '%s' / %llu-%llu uW.\n", gpowercap->zone.name,
+		 gpowercap->power_min, gpowercap->power_max);
 
 	return 0;
-}
-
-int __gpowercap_create_hierarchy(struct of_device_id *gpowercap_match_table)
-{
-	const struct of_device_id *match;
-	const struct gpowercap_node *hierarchy;
-	struct device_node *np;
-	int ret = 0;
-
-	mutex_lock(&gpowercap_lock);
-
-	if (pct) {
-		ret = -EBUSY;
-		goto out_unlock;
-	}
-
-	pct = register_control_type(NULL, GPOWERCAP_CONTROL_TYPE, NULL);
-	if (IS_ERR(pct)) {
-		pr_err("Failed to register control type\n");
-		ret = PTR_ERR(pct);
-		goto out_pct;
-	}
-
-	ret = -ENODEV;
-	np = of_find_node_by_path("/");
-	if (!np)
-		goto out_err;
-
-	match = match_of_node(gpowercap_match_table, np);
-
-	of_node_put(np);
-
-	if (!match)
-		goto out_err;
-
-	hierarchy = match->data;
-	if (!hierarchy) {
-		ret = -EFAULT;
-		goto out_err;
-	}
-
-	ret = __for_each_powercap_child(hierarchy, NULL, NULL);
-	if (ret)
-		goto out_err;
-
-	mutex_unlock(&gpowercap_lock);
-
-	return 0;
-
-out_err:
-	unregister_control_type(pct);
-out_pct:
-	pct = NULL;
-out_unlock:
-	mutex_unlock(&gpowercap_lock);
-
-	return ret;
 }
 
 void __gpowercap_destroy_tree_recursive(struct gpowercap *gpowercap)
@@ -620,17 +608,164 @@ void __gpowercap_destroy_hierarchy(void)
 		__gpowercap_destroy_tree_recursive(root);
 
 	for (i = 0; i < ARRAY_SIZE(gpc_device_ops); i++) {
-
 		if (!gpc_device_ops[i] || !gpc_device_ops[i]->exit)
 			continue;
 
 		gpc_device_ops[i]->exit();
 	}
-	unregister_control_type(pct);
+	gpc_powercap_unregister_control_type(pct);
 	pct = NULL;
 	root = NULL;
 out_unlock:
 	mutex_unlock(&gpowercap_lock);
+}
+
+static int gpowercap_dt_parse_nodes(struct device *dev, struct device_node *parent_dn,
+				    struct gpowercap *parent_gpc)
+{
+	struct device_node *child_dn;
+	int ret = 0;
+
+	for_each_child_of_node(parent_dn, child_dn) {
+		struct device_node *dev_dn = NULL;
+		struct gpowercap *child_gpc = NULL;
+		const char *odpm_rail_name = NULL;
+		u32 type;
+		u32 cdev_id = 0;
+		u32 polling_interval_ms = 0;
+
+		if (gpc_of_property_read_u32(child_dn, "google,node-type", &type)) {
+			dev_err(dev, "missing 'google,node-type' for %s\n", child_dn->name);
+			ret = -EINVAL;
+			break;
+		}
+		of_property_read_string(child_dn, "odpm-rail-name", &odpm_rail_name);
+		gpc_of_property_read_u32(child_dn, "polling-interval-ms", &polling_interval_ms);
+
+		switch (type) {
+		case GPOWERCAP_NODE_VIRTUAL:
+			child_gpc = kzalloc(sizeof(*child_gpc), GFP_KERNEL);
+			if (!child_gpc) {
+				ret = -ENOMEM;
+				break;
+			}
+			gpowercap_init(child_gpc, NULL);
+
+			ret = gpowercap_register(child_dn->name, child_gpc, parent_gpc);
+			if (ret) {
+				dev_err(dev, "Failed to register gpowercap node '%s': %d\n",
+					child_dn->name, ret);
+				kfree(child_gpc);
+				child_gpc = NULL;
+			}
+			break;
+		case GPOWERCAP_NODE_VIRTUAL_VOLTAGE:
+		case GPOWERCAP_NODE_VIRTUAL_WEIGHTS:
+			child_gpc = gpc_device_ops[type]->algo_setup(child_dn, parent_gpc);
+			if (IS_ERR(child_gpc)) {
+				ret = PTR_ERR(child_gpc);
+				dev_err(dev,
+					"Failed to allocate gpowercap voltage node '%s'. err:%d\n",
+					child_dn->name, ret);
+				child_gpc = NULL;
+			}
+			break;
+		case GPOWERCAP_NODE_CPU:
+		case GPOWERCAP_NODE_DEVFREQ:
+			dev_dn = gpc_of_parse_phandle(child_dn, "google,device-phandle", 0);
+			if (!dev_dn) {
+				dev_err(dev, "missing 'google,device-phandle' for %s\n",
+					child_dn->name);
+				ret = -ENODEV;
+				break;
+			}
+
+			if (gpc_of_property_read_u32(child_dn, "google,cdev-id", &cdev_id)) {
+				dev_err(dev, "missing 'google,cdev-id' for %s\n", child_dn->name);
+				ret = -EINVAL;
+			} else if (cdev_id >= HW_CDEV_MAX) {
+				dev_err(dev, "Invalid cdev ID:%u for node %s\n", cdev_id,
+					child_dn->name);
+				ret = -EINVAL;
+			} else if (type >= ARRAY_SIZE(gpc_device_ops) ||
+				   !gpc_device_ops[type]->setup) {
+				dev_err(dev, "Missing setup for type:%d\n", type);
+				ret = -ENODEV;
+			} else {
+				ret = gpc_device_ops[type]->setup(parent_gpc, dev_dn, cdev_id,
+								   odpm_rail_name,
+								   polling_interval_ms);
+				if (ret)
+					dev_err(dev, "Failed to setup leaf node for %s\n",
+						child_dn->name);
+			}
+			of_node_put(dev_dn);
+			child_gpc = NULL;
+			break;
+		default:
+			dev_err(dev, "invalid 'google,node-type' for %s\n", child_dn->name);
+			ret = -EINVAL;
+			break;
+		}
+
+		if (ret)
+			break;
+
+		if (child_gpc) {
+			ret = gpowercap_dt_parse_nodes(dev, child_dn, child_gpc);
+			if (ret)
+				break;
+		}
+	}
+	return ret;
+}
+
+#if IS_ENABLED(CONFIG_KUNIT)
+void __gpc_init_pct_test(void)
+{
+	pct = gpc_powercap_register_control_type(NULL, GPOWERCAP_CONTROL_TYPE, NULL);
+}
+#endif
+
+int gpowercap_dt_probe(struct platform_device *pdev)
+{
+	struct device_node *np = pdev->dev.of_node;
+	int ret;
+
+	if (!np)
+		return -ENODEV;
+
+	mutex_lock(&gpowercap_lock);
+
+	if (pct) {
+		mutex_unlock(&gpowercap_lock);
+		return -EBUSY;
+	}
+
+	pct = gpc_powercap_register_control_type(NULL, GPOWERCAP_CONTROL_TYPE, NULL);
+	if (IS_ERR(pct)) {
+		dev_err(&pdev->dev, "Failed to register control type\n");
+		ret = PTR_ERR(pct);
+		pct = NULL;
+		mutex_unlock(&gpowercap_lock);
+		return ret;
+	}
+
+	ret = gpowercap_dt_parse_nodes(&pdev->dev, np, NULL);
+	if (ret) {
+		dev_err(&pdev->dev, "failed to create hierarchy from DT: %d\n", ret);
+		mutex_unlock(&gpowercap_lock);
+		__gpowercap_destroy_hierarchy();
+		return ret;
+	}
+
+	mutex_unlock(&gpowercap_lock);
+	return 0;
+}
+
+void gpowercap_dt_remove(struct platform_device *pdev)
+{
+	__gpowercap_destroy_hierarchy();
 }
 
 /**
@@ -657,6 +792,7 @@ out_unlock:
  */
 int gpowercap_register(const char *name, struct gpowercap *gpowercap, struct gpowercap *parent)
 {
+	KUNIT_STATIC_STUB_REDIRECT(gpowercap_register, name, gpowercap, parent);
 	return __gpowercap_register(name, gpowercap, parent);
 }
 
@@ -669,45 +805,68 @@ int gpowercap_register(const char *name, struct gpowercap *gpowercap, struct gpo
  */
 void gpowercap_unregister(struct gpowercap *gpowercap)
 {
-	pr_info("Unregistered gpowercap node '%s'\n", gpowercap->zone.name);
+	pr_debug("Unregistered gpowercap node '%s'\n", gpowercap->zone.name);
 	cancel_delayed_work_sync(&gpowercap->bypass_work);
-	unregister_zone(pct, &gpowercap->zone);
-}
-
-/**
- * gpowercap_create_hierarchy - Create the gpowercap hierarchy
- * @hierarchy: An array of struct gpowercap_node describing the hierarchy
- *
- * The function is called by the platform specific code with the
- * description of the different node in the hierarchy. It creates the
- * tree in the sysfs filesystem under the powercap gpowercap entry.
- *
- * The expected tree has the format:
- *
- * struct gpowercap_node hierarchy[] = {
- *	[0] { .name = "topmost", type =  GPOWERCAP_NODE_VIRTUAL },
- *	[1] { .name = "package", .type = GPOWERCAP_NODE_VIRTUAL, .parent = &hierarchy[0] },
- *	[2] { .name = "/cpus/cpu0", .type = GPOWERCAP_NODE_CPU, .parent = &hierarchy[1] },
- *	[3] { .name = "/cpus/cpu1", .type = GPOWERCAP_NODE_CPU, .parent = &hierarchy[1] },
- *	[4] { .name = "/cpus/cpu2", .type = GPOWERCAP_NODE_CPU, .parent = &hierarchy[1] },
- *	[5] { .name = "/cpus/cpu3", .type = GPOWERCAP_NODE_CPU, .parent = &hierarchy[1] },
- *	[6] { }
- * };
- *
- * The last element is always an empty one and marks the end of the
- * array.
- *
- * Return: zero on success, a negative value in case of error. Errors
- * are reported back from the underlying functions.
- */
-int gpowercap_create_hierarchy(struct of_device_id *gpowercap_match_table)
-{
-	return __gpowercap_create_hierarchy(gpowercap_match_table);
+	gpc_powercap_unregister_zone(pct, &gpowercap->zone);
 }
 
 void gpowercap_destroy_hierarchy(void)
 {
 	return __gpowercap_destroy_hierarchy();
+}
+
+/**
+ * gpowercap_report_power_uw - Report power for the gpowercap
+ * @gpowercap: a pointer to a gpowercap structure to update
+ * @power_uw: current power in uw
+ *
+ * Function to update the current power values of the gpowercap node specified in
+ * parameter. This will trigger rebalance of the tree.
+ *
+ * Return: true on success, false if the values are inconsistent
+ */
+bool gpowercap_report_power_uw(struct gpowercap *gpowercap, u64 power_uw)
+{
+	KUNIT_STATIC_STUB_REDIRECT(gpowercap_report_power_uw, gpowercap, power_uw);
+
+	struct gpowercap *parent = gpowercap->parent;
+	struct gpowercap *child;
+	bool all_updated = true;
+	u64 total_power = 0;
+	bool parent_rebalanced = false;
+
+	gpowercap->current_power_uw = power_uw;
+	gpowercap->power_updated = true;
+
+	if (!parent)
+		return false;
+
+	mutex_lock(&parent->lock);
+	list_for_each_entry(child, &parent->children, siblings) {
+		if (!child->power_updated) {
+			all_updated = false;
+			break;
+		}
+		total_power += child->current_power_uw;
+	}
+
+	if (all_updated) {
+		list_for_each_entry(child, &parent->children, siblings) {
+			child->power_updated = false;
+		}
+		mutex_unlock(&parent->lock);
+
+		parent_rebalanced = gpowercap_report_power_uw(parent, total_power);
+
+		if (!parent_rebalanced && parent->ops && parent->ops->rebalance) {
+			parent->ops->rebalance(parent);
+			return true;
+		}
+		return parent_rebalanced;
+	}
+	mutex_unlock(&parent->lock);
+
+	return false;
 }
 
 /**
@@ -723,7 +882,6 @@ void gpowercap_init(struct gpowercap *gpowercap, struct gpowercap_ops *ops)
 		INIT_LIST_HEAD(&gpowercap->siblings);
 		gpowercap->ops = ops;
 		mutex_init(&gpowercap->lock);
-		INIT_DEFERRABLE_WORK(&gpowercap->bypass_work,
-				     __power_limit_bypass_clear_work);
+		INIT_DEFERRABLE_WORK(&gpowercap->bypass_work, __power_limit_bypass_clear_work);
 	}
 }

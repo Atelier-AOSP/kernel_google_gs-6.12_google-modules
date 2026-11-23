@@ -72,7 +72,6 @@
 #define WL_CFG_WBTEXT_BSSID_LIST_SYNC_LOCK(lock, flags)   (flags) = osl_spin_lock(lock)
 #define WL_CFG_WBTEXT_BSSID_LIST_SYNC_UNLOCK(lock, flags) osl_spin_unlock((lock), (flags))
 
-
 #include <wifi_stats.h>
 #include <wl_cfgp2p.h>
 #ifdef WL_NAN
@@ -752,7 +751,7 @@ do {									\
 #ifdef WL_MLO
 #define IFACE_MAX_CNT				7u
 #else
-#define IFACE_MAX_CNT				5u
+#define IFACE_MAX_CNT				6u
 #endif /* WL_MLO */
 #define WL_SCAN_CONNECT_DWELL_TIME_MS		100u
 #define WL_SCAN_JOIN_PROBE_INTERVAL_MS		20u
@@ -1016,6 +1015,33 @@ typedef struct wl_dpp_pub_act_frame wl_dpp_pa_frame_t;
 /* Advertisement Protocol IE ID */
 #define WL_PUB_AF_GAS_AD_EID  0x6c
 
+enum nan_de_service_type {
+	NAN_DE_PUBLISH,
+	NAN_DE_SUBSCRIBE
+};
+
+#define NAN_SERVICE_ID_LEN 6
+#define NAN_ATTR_SDA 0x03u /* Service Descriptor attribute */
+#define SDA_OFFSET 3u
+#define NAN_SRV_CTRL_TYPE_MASK (BIT(0) | BIT(1))
+struct  nan_svc_desc_attr {
+	uint8 sda;
+	uint16 sda_len;
+	uint8 service_id[NAN_SERVICE_ID_LEN];
+	uint8 inst_id; /* Instance ID */
+	uint8 req_inst_id; /* Requestor Instance ID */
+	uint8 ctrl;
+} __attribute__ ((packed));
+typedef struct nan_svc_desc_attr nan_svc_desc_attr_t;
+
+/* The PASN Authentication Transaction Sequence Number. */
+enum {
+	PASN_AUTH_NONE  = 0,
+	PASN_AUTH_1     = 1,
+	PASN_AUTH_2     = 2,
+	PASN_AUTH_3     = 3
+};
+
 typedef wifi_p2psd_gas_pub_act_frame_t wl_dpp_gas_af_t;
 
 #define DEFAULT_ASSOC_LISTEN 0xau
@@ -1081,6 +1107,11 @@ enum wl_status {
 	WL_STATUS_AUTHORIZED,
 	WL_STATUS_ROAMING,
 	WL_STATUS_CSA_ACTIVE,
+	WL_STATUS_SENDING_D11_FRM,
+	WL_STATUS_WAITING_NEXT_D11_FRM,
+	WL_STATUS_D11_TX_COMPLETED,
+	WL_STATUS_D11_TX_NOACK,
+	WL_STATUS_USD_PUB_ACTIVE
 };
 
 #ifdef WL_MLO
@@ -1102,6 +1133,9 @@ typedef enum wl_iftype {
 	WL_IF_TYPE_MLO_STA_LINK = 11,
 	WL_IF_TYPE_MLO_AP_LINK = 12,
 	WL_IF_TYPE_ART = 13,
+#ifdef WL_PMSR
+	WL_IF_TYPE_PD = 14,
+#endif /* WL_PMSR */
 	WL_IF_TYPE_MAX
 } wl_iftype_t;
 
@@ -1660,6 +1694,27 @@ struct afx_hdl {
 	bool is_listen;
 	bool ack_recv;
 	bool is_active;
+	uint32 usd_pub_tx_cookie;
+	bool usd_pub_tx_active;
+	const u8 *usd_frm_p;
+	uint32 usd_frm_len;
+	struct ieee80211_channel channel;
+};
+
+#define WL_ACT_FRAME_FLAG_NAN_PUB_USD     0x1u
+struct mgmt_tx_ctx {
+	wl_af_params_v1_t *af_params;
+	s32 bssidx;
+	const u8 *sa;
+	bool is_act_frm;
+	uint8 flags;
+	const u8 *buf;
+	size_t len;
+	bool ack;
+};
+
+struct d11_ctx {
+	const struct ieee80211_mgmt *mgmt;
 };
 
 struct parsed_ies {
@@ -2121,6 +2176,31 @@ typedef enum cfg80211_feature_list {
 #define CFG80211_FEAT_MAX_LEN			ROUNDUP(CFG80211_FEAT_LAST, NBBY)/NBBY
 
 
+struct d11_frm_hdl {
+	bool need_wait_d11rx;
+	u8 next_d11frame_subtype;
+	u32 d11_sent_channel;	/* channel d11 frame is sent */
+	uint32 d11frm_fail_cnt;
+	bool auth_recvd;
+	struct ether_addr tx_dst_addr;
+};
+
+#ifdef WL_PMSR
+enum pd_state {
+	PD_IDLE,
+	PD_WAITING_FOR_RESP,
+	PD_SUCCESS,
+	PD_FAIL
+};
+#define MAX_NUM_PEERS 1
+typedef struct wl_pmsr_info {
+	struct cfg80211_pmsr_request *pmsr_req;
+	struct delayed_work pmsr_timeout_work;
+	u16 session_id[MAX_NUM_PEERS];
+	bool pmsr_complete;
+} wl_pmsr_info_t;
+#endif /* WL_PMSR */
+
 /* private data of cfg80211 interface */
 struct bcm_cfg80211 {
 	struct wireless_dev *wdev;	/* representing cfg cfg80211 device */
@@ -2142,6 +2222,11 @@ struct bcm_cfg80211 {
 	struct mutex usr_sync;	/* maily for up/down synchronization */
 	struct mutex if_sync;	/* maily for iface op synchronization */
 	struct mutex scan_sync;	/* scan sync from different scan contexts  */
+#ifdef WL_PMSR
+	struct wireless_dev *pd_wdev;	/* representing cfg cfg80211 device for PD */
+	struct mutex pmsr_sync; /* pmsr sync for different contexts */
+	u8 pd_state;
+#endif /* WL_PMSR */
 	wl_scan_results_v109_t *bss_list;
 	wl_scan_results_v109_t *scan_results;
 
@@ -2462,6 +2547,10 @@ struct bcm_cfg80211 {
 	uint32 actfrm_fail_cnt;
 	u8 feature_mask[CFG80211_FEAT_MAX_LEN];
 	bool feature_mask_init_done;
+	struct d11_frm_hdl d11_frm_hdl;
+#ifdef WL_PMSR
+	wl_pmsr_info_t pmsr_info;
+#endif /* WL_PMSR */
 };
 
 typedef struct wl_multink_config {
@@ -3594,6 +3683,8 @@ extern s32 wl_set_tx_power(struct net_device *dev,
 extern s32 wl_get_tx_power(struct net_device *dev, s32 *dbm);
 extern s32 wl_add_remove_eventmsg(struct net_device *ndev, u16 event, bool add);
 extern void wl_stop_wait_next_action_frame(struct bcm_cfg80211 *cfg, struct net_device *ndev,
+	u8 bsscfgidx);
+extern void wl_stop_wait_next_d11_frame(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 	u8 bsscfgidx);
 #ifdef WL_HOST_BAND_MGMT
 extern s32 wl_cfg80211_set_band(struct net_device *ndev, int band);

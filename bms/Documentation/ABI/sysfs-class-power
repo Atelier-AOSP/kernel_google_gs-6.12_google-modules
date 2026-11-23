@@ -1,3 +1,27 @@
+What:		/sys/class/power_supply/battery/priority_charging_info
+Date:		Dec 2025
+Contact:	"Adam Solawa" <solawaa@google.com>
+Description:
+		Provides estimation of delta SOC for priority charging
+
+Users:		Google Battery HAL
+
+What:		/sys/class/power_supply/battery/priority_charging_time
+Date:		Dec 2025
+Contact:	"Adam Solawa" <solawaa@google.com>
+Description:
+		Time interval argument used to calculate delta SOC for priority charging
+
+Users:		Google Battery HAL
+
+What:		/sys/class/power_supply/battery/priority_charging_enable
+Date:		Dec 2025
+Contact:	"Adam Solawa" <solawaa@google.com>
+Description:
+		Enable priority charging policy
+
+Users:		Google Battery HAL
+
 What:		/sys/class/power_supply/battery/ttx_from_soc
 Date:		Nov 2025
 Contact:	"Adam Solawa" <solawaa@google.com>

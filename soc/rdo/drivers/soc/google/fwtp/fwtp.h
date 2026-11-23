@@ -44,11 +44,14 @@ struct fwtp_dev_svc {
  * @root_debugfs: Root device debugfs directory.
  * @memio_ring: Tracepoint ring with mem I/O access (may be NULL).
  * @printer_ctx: Tracepoint printer context.
+ * @decoder: Optional tracepoint decoder.
  * @printer_data_buffer: Buffer used for tracepoint data items.
  * @printer_buffer: Buffer used for printing tracepoints. It should be big
  *                  enough to hold one line of output.
  * @log_enabled: If true, tracepoints will be published to the kernel log.
  * @ftrace_enabled: If true, tracepoints will be published to ftrace.
+ * @notify_byte_count: Threshold byte count for notification.
+ * @prev_boottime_timestamp: Previous timestamp for monotonic boottime.
  */
 struct fwtp_dev {
 	struct list_head list_entry;
@@ -58,10 +61,13 @@ struct fwtp_dev {
 	struct dentry *root_debugfs;
 	struct tracepoint_ring *memio_ring;
 	struct fwtp_printer_ctx printer_ctx;
+	struct fwtp_decoder *decoder;
 	u8 printer_data_buffer[FWTP_PRINTER_DATA_BUFFER_SIZE];
 	char printer_buffer[FWTP_PRINTER_BUFFER_SIZE];
 	bool log_enabled;
 	bool ftrace_enabled;
+	u32 notify_byte_count;
+	u64 prev_boottime_timestamp;
 };
 
 int fwtp_dev_init(struct fwtp_dev *fwtp_dev);

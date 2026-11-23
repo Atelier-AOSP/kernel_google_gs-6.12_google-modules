@@ -16,12 +16,19 @@
 #define TCA_INTR_STS_OFFSET	 0x8
 #define TCA_GCFG_OFFSET		0x10
 #define TCA_TCPC_OFFSET		 0x14
+#define TCA_CTRLSYNCMODE_CFG0_OFFSET	0x20
 #define TCA_CTRLSYNCMODE_DBG0_OFFSET	0x28
 #define TCA_CTRLSYNCMODE_DBG1_OFFSET	0x2c
 #define TCA_CTRLSYNCMODE_DBG2_OFFSET	0x30
+#define CTRL_IF_OVVRD_SS_RXDET_DISABLE BIT(3)
+#define CTRL_IF_OVVRD_USB31_CTRL_CONNECTED BIT(9)
 #define TCA_PSTATE_0_OFFSET		0x50
 #define TCA_PSTATE_1_OFFSET		0x54
 #define TCA_PSTATE_2_OFFSET		0x58
+#define TCA_PSTATE_POWERDOWN_P0		0x0
+#define TCA_PSTATE_POWERDOWN_P2		0x2
+#define TCA_PSTATE_POWERDOWN_P3		0x3
+#define TCA_PSTATE_POWERDOWN_P4		0xc
 #define TCPC_MUX_NO_CONN		0x0
 #define TCPC_MUX_USB_ONLY		0x1
 #define TCPC_MUX_DP_ONLY		0x2
@@ -37,6 +44,8 @@
 #define DP_TOP_CSR_PHY_POWER_CONFIG_REG1_OFFSET 0x48U
 #define DP_TOP_CSR_DP_CONFIG_OFFSET		0x10
 #define DP_TOP_CSR_AUX_CTRL_OFFSET		0x24
+#define DP_TOP_CSR_TCA_OVERRIDE_REG0_OFFSET	0x54
+#define DP_TOP_CSR_UPCS_PIPE_CONFIG_OFFSET 0xb0
 
 /* HSIO_N_DWC_DPTX block */
 #define PHYIF_CTRL_OFFSET	0xA00
@@ -44,7 +53,11 @@
 
 /* HSIO_N DWC_DPTX_PHY block */
 #define SUP_DIG_LVL_OVRD_IN				0x52
+#define SUP_DIG_MPLLA_MPLL_PWR_CTL_MPLL_TUNE_VAL_OFFSET	0x10e
+#define SUP_DIG_MPLLA_MPLL_PWR_CTL_MPLL_PWR_FSM_CFG_0_OFFSET	0x112
 #define RAWCMN_DIG_CONFIG_MASTER_VERSION		0x224
+#define RAWCMN_DIG_AON_MPLLA_CAL_BANK_SEL		0x2cc
+#define RAWCMN_DIG_AON_MPLLA_TUNE_DONE			0x2ce
 #define RAWCMN_DIG_AON_FW_VERSION_0			0x332
 #define RAWCMN_DIG_AON_FW_VERSION_1			0x334
 #define LANE0_DIG_ASIC_TX_ASIC_OUT			0x201C
@@ -64,6 +77,10 @@
 
 #define LANEN_TX_ACK_MASK	     BIT(0)
 #define LANEN_RX_ACK_MASK	     BIT(0)
+
+#define SUP_DIG_MPLLA_OVRD_IN_0		0x12
+
+#define SUP_DIG_ASIC_OUT_0		0x98
 
 #define LANEN_DIG_ASIC_TX_ASIC_IN_1(_x_)			(0x2016 + ((_x_) * 0x400))
 #define TX_MAIN_CURSOR_MASK					0x7f00
@@ -100,6 +117,13 @@
 #define UPCSLANE_PIPE_LPC_PHY_HDP_VDR_POST_OVRD_OFFSET		0xD92
 #define TX_EQ_OVRD_MASK						0x3f
 #define TX_EQ_OVRD_VAL(_x_)					((_x_) << 0)
+
+/* HSIO_N_USB2_SS_BLOCK */
+#define USB2SS_CTRL1_OFFSET 0x10
+#define USB2SS_CTRL4_OFFSET 0x1c
+
+/* HSIO_N_DP_TOP_CSR_AUX_U2PHY_CFG BLOCK */
+#define DP_TOP_CSR_AUX_U2PHY_CFG_OFFSET 0x0
 
 /* LANEN_DIG_ASIC_TX_ASIC_OUT */
 typedef union {
@@ -206,6 +230,43 @@ typedef union {
 	} bf;
 	u16 reg_value;
 } SUP_DIG_MPLLA_MPLL_PWR_CTL_STAT;
+
+union SUP_DIG_MPLLA_MPLL_PWR_CTL_MPLL_PWR_FSM_CFG_0 {
+	struct {
+		u16 coarse_start_0 : 8;
+		u16 coarse_limit_0 : 8;
+	} bf;
+	u16 reg_value;
+};
+
+union SUP_DIG_MPLLA_MPLL_PWR_CTL_MPLL_TUNE_VAL {
+	struct {
+		u16 mpll_coarse_tune_val : 8;
+		u16 mpll_fine_tune_val : 4;
+		u16 reserved_15_12 : 4;
+	} bf;
+	u16 reg_value;
+};
+
+/* SUP_DIG_MPLLA_OVRD_IN_0_REG */
+union SUP_DIG_MPLLA_OVRD_IN_0_REG {
+	struct {
+		u16  mplla_en_orvd_val : 1;
+		u16  mplla_en_orvd_en : 1;
+		u16  reserved : 14;
+	} bf;
+	u16 reg_value;
+};
+
+/* SUP_DIG_ASIC_OUT_0_REG */
+union SUP_DIG_ASIC_OUT_0_REG {
+	struct {
+		u16  reserved_0 : 1;
+		u16  mplla_state : 1;
+		u16  reserved : 14;
+	} bf;
+	u16 reg_value;
+};
 
 /* LANEN_DIG_RX_VCOCAL_RX_VCO_STAT_0 */
 typedef union {
@@ -359,45 +420,55 @@ union USBCS_PHY_CFG3 {
 	u32 reg_value;
 };
 
+typedef union {
+	struct {
+		u16 resv0 : 6;
+		u16 volatile tx_vboost_lvl : 3;
+		u16 volatile tx_vboost_lvl_ovrd_en : 1;
+		u16 resv10 : 6;
+	} bf;
+	u16 reg_value;
+} LVL_OVRD_IN;
+
 /*  USBCS_PHY_CFG4 DESCRIPTION :USB 3.2 PHY Protocol config registers */
-union USBCS_PHY_CFG4 {
+typedef union {
 	struct {
 		u32 resv0 : 5;
-		u32 protocol1_ext_tx_eq_main_g1_lane0 : 6;
-		u32 protocol1_ext_tx_eq_main_g1_lane1 : 6;
-		u32 protocol1_ext_tx_eq_main_g2_lane0 : 6;
-		u32 protocol1_ext_tx_eq_main_g2_lane1 : 6;
+		u32 volatile protocol1_ext_tx_eq_main_g1_lane0 : 6;
+		u32 volatile protocol1_ext_tx_eq_main_g1_lane1 : 6;
+		u32 volatile protocol1_ext_tx_eq_main_g2_lane0 : 6;
+		u32 volatile protocol1_ext_tx_eq_main_g2_lane1 : 6;
 		u32 resv29 : 3;
 	} bf;
 	u32 reg_value;
-};
+} USBCS_PHY_CFG4;
 
 /*  USBCS_PHY_CFG5 DESCRIPTION :USB 3.2 PHY Protocol config registers */
-union USBCS_PHY_CFG5 {
+typedef union {
 	struct {
-		u32 protocol1_ext_tx_eq_ovrd_g1 : 2;
-		u32 protocol1_ext_tx_eq_ovrd_g2 : 2;
-		u32 protocol1_ext_tx_eq_post_g1_lane0 : 6;
-		u32 protocol1_ext_tx_eq_post_g1_lane1 : 6;
-		u32 protocol1_ext_tx_eq_post_g2_lane0 : 6;
-		u32 protocol1_ext_tx_eq_post_g2_lane1 : 6;
+		u32 volatile protocol1_ext_tx_eq_ovrd_g1 : 2;
+		u32 volatile protocol1_ext_tx_eq_ovrd_g2 : 2;
+		u32 volatile protocol1_ext_tx_eq_post_g1_lane0 : 6;
+		u32 volatile protocol1_ext_tx_eq_post_g1_lane1 : 6;
+		u32 volatile protocol1_ext_tx_eq_post_g2_lane0 : 6;
+		u32 volatile protocol1_ext_tx_eq_post_g2_lane1 : 6;
 		u32 resv28 : 4;
 	} bf;
 	u32 reg_value;
-};
+} USBCS_PHY_CFG5;
 
 /*  USBCS_PHY_CFG6 DESCRIPTION :USB 3.2 PHY Protocol config registers */
-union USBCS_PHY_CFG6 {
+typedef union {
 	struct {
-		u32 protocol1_ext_tx_eq_pre_g1_lane0 : 6;
-		u32 protocol1_ext_tx_eq_pre_g1_lane1 : 6;
+		u32 volatile protocol1_ext_tx_eq_pre_g1_lane0 : 6;
+		u32 volatile protocol1_ext_tx_eq_pre_g1_lane1 : 6;
 		u32 resv12 : 4;
-		u32 protocol1_ext_tx_eq_pre_g2_lane0 : 6;
-		u32 protocol1_ext_tx_eq_pre_g2_lane1 : 6;
+		u32 volatile protocol1_ext_tx_eq_pre_g2_lane0 : 6;
+		u32 volatile protocol1_ext_tx_eq_pre_g2_lane1 : 6;
 		u32 resv28 : 4;
 	} bf;
 	u32 reg_value;
-};
+} USBCS_PHY_CFG6;
 
 /*  USBCS_USB2PHY_CFG19 DESCRIPTION :USB 2.0 PHY Pin configurations */
 typedef union {
@@ -509,6 +580,41 @@ typedef union {
 	u32 reg_value;
 } TCA_TCPC;
 
+union TCA_CTRLSYNCMODE_CFG0 {
+	struct {
+		u32 force_block_ss_op : 1;
+		u32 auto_block_ss_op_en : 3;
+		u32 ss_hdshk_req : 1;
+		u32 dp_hdshk_req : 1;
+		u32 usb4_hdshk_req : 1;
+		u32 const reserved_7 : 1;
+		u32 usb_p2_switch_en : 1;
+		u32 dp_p2_switch_en : 1;
+		u32 usb4_p2_switch_en : 1;
+		u32 const reserved_11 : 1;
+		u32 usb_reset_ack_check_bypass_en : 1;
+		u32 dp_reset_ack_check_bypass_en : 1;
+		u32 usb4_reset_ack_check_bypass_en : 1;
+		u32 const reserved_15 : 1;
+		u32 auto_safe_state : 1;
+		u32 sstx_detrx_req_block_en : 1;
+		u32 const reserved_21_18 : 4;
+		u32 usb4_flip_disable : 1;
+		u32 const reserved_31_23 : 9;
+	} bf;
+	u32 reg_value;
+};
+
+union TCA_CTRLSYNCMODE_DBG2 {
+	struct {
+		u32 ctrl_if_ovrrd_en : 12;
+		u32 const reserved_15_12 : 4;
+		u32 ctrl_if_ovrrd_val : 12;
+		u32 const reserved_31_28 : 4;
+	} bf;
+	u32 reg_value;
+};
+
 typedef union {
 	struct {
 		u32 volatile phy0_mplla_force_en : 1;
@@ -583,7 +689,54 @@ typedef union {
 		u32 volatile pg_mode_en : 1;
 		u32 volatile tca_dp4_por : 1;
 		u32 resv3 : 11;
+		// This field is only in LGA and reserved in MBU
 		u32 volatile upcs_pipe_config : 18;
 	} bf;
 	u32 reg_value;
 } PHY_power_config_reg1;
+
+// MBU AUX controller software structures
+typedef union {
+	struct {
+		u32 volatile usb2phy_phy_cfg_pll_gmp_cntrl : 2;
+		u32 volatile usb2phy_phy_cfg_pll_fb_div : 12;
+		u32 volatile usb2phy_phy_cfg_pll_cpbias_cntrl : 7;
+		u32 volatile usb2phy_phy_cfg_cr_clk_sel : 1;
+		u32 volatile usb2phy_phy_cfg_rcal_offset : 4;
+		u32 resv5 : 6;
+	} bf;
+	u32 reg_value;
+} USB2_SS_CTRL_1;
+
+typedef union {
+	struct {
+		u32 volatile utmi_txbitstuffen : 1;
+		u32 volatile utmi_clk_force_en : 1;
+		u32 volatile usb2phy_vbus_valid_ext : 1;
+		u32 volatile usb2phy_ref_freq_sel : 3;
+		u32 volatile usb2phy_phy_cfg_tx_rise_tune : 2;
+		u32 volatile usb2phy_phy_cfg_tx_res_tune : 2;
+		u32 resv6 : 22;
+	} bf;
+	u32 reg_value;
+} USB2_SS_CTRL_4;
+
+typedef union {
+	struct {
+		u32 volatile usb2phy_phy_enable : 1;
+		u32 volatile usb2phy_pll_ovrd_en : 1;
+		u32 volatile usb2phy_phy_autoresume_enable : 1;
+		u32 volatile usb2phy_phy_tx_dig_bypass_sel : 1;
+	} bf;
+	u32 reg_value;
+} AUX_USB2_PHY_CFG;
+
+union TCA_OVERRIDE_REG0 {
+	struct {
+		u32 reg_dpalt_disable_ack : 1;
+		u32 reg_ss_rxdet_disable : 1;
+		u32 reg_ss_rxdet_disable_ack : 1;
+		u32 resv29 : 29;
+	} bf;
+	u32 reg_value;
+};

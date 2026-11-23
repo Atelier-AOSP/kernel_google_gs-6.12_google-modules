@@ -17,6 +17,7 @@ enum apc_common_mba_service_id {
 	APC_COMMON_SERVICE_ID_PF_STATE_CPM = 0x6,
 	APC_COMMON_SERVICE_ID_POWER_CONTROLLER = 0x7,
 	APC_COMMON_SERVICE_ID_MIPM = 0x8,
+	APC_COMMON_SERVICE_ID_SSR = 0x9,
 	APC_COMMON_SERVICE_LAST = 0x37,
 };
 
@@ -66,6 +67,10 @@ enum cpm_common_mba_service_id {
 	CPM_COMMON_THERMAL_V2_SERVICE = 0x15,
 	// Pixel firmware tracepoint service
 	CPM_COMMON_FWTP_SERVICE = 0x17,
+	// Subsystem Reset service
+	CPM_COMMON_SSR_SERVICE = 0x18,
+	// Pixel firmware metrics service
+	CPM_COMMON_FWMT_SERVICE = 0x1A,
 	CPM_COMMON_SERVICE_LAST = 0x37,
 };
 

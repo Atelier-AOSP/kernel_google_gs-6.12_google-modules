@@ -138,8 +138,8 @@ static void syna_print_serial_number(struct syna_tcm *tcm, struct tcm_serial_num
 	LOGI("wafer lot: %*ph\n", (int) sizeof(sn_data->wafer_lot), sn_data->wafer_lot);
 	LOGI("x coordinate: %*ph\n", (int) sizeof(sn_data->x_coordinate), sn_data->x_coordinate);
 	LOGI("y coordinate: %*ph\n", (int) sizeof(sn_data->y_coordinate), sn_data->y_coordinate);
-	LOGI("wafer id: %*ph\n", (int) sizeof(sn_data->wafer_id), sn_data->wafer_id);
-	LOGI("date code: %*ph\n", (int) sizeof(sn_data->date_code), sn_data->date_code);
+	LOGI("{date[4] + wafer id[2]&no[2]} or {wafer id[4] + date[4]}: %*ph\n",
+		(int) sizeof(sn_data->date_wafer_code), sn_data->date_wafer_code);
 }
 
 /**
@@ -2148,12 +2148,10 @@ static ssize_t syna_testing_pt_serial_number_show(struct kobject *kobj,
 	count += scnprintf(buf + count, PAGE_SIZE - count, "y coordinate: ");
 	count += scnprintf(buf + count, PAGE_SIZE - count, "%*ph\n",
 			(int) sizeof(sn_data.y_coordinate), sn_data.y_coordinate);
-	count += scnprintf(buf + count, PAGE_SIZE - count, "wafer id: ");
+	count += scnprintf(buf + count, PAGE_SIZE - count,
+			"{date[4] + wafer id[2]&no[2]} or {wafer id[4] + date[4]}: ");
 	count += scnprintf(buf + count, PAGE_SIZE - count, "%*ph\n",
-			(int) sizeof(sn_data.wafer_id), sn_data.wafer_id);
-	count += scnprintf(buf + count, PAGE_SIZE - count, "date code: ");
-	count += scnprintf(buf + count, PAGE_SIZE - count, "%*ph\n",
-			(int) sizeof(sn_data.date_code), sn_data.date_code);
+			(int) sizeof(sn_data.date_wafer_code), sn_data.date_wafer_code);
 
 free_tcm_buffer:
 	syna_tcm_buf_release(&test_data);

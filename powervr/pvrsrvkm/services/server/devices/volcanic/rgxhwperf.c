@@ -396,6 +396,7 @@ PVRSRV_ERROR PVRSRVRGXConfigureHWPerfBlocksKM(
 	sKccbCmd.uCmdData.sHWPerfCfgEnableBlks.ui32NumBlocks = ui32ArrayLen;
 
 	/* used for passing counters config to the Firmware, write-only for the CPU */
+	PDUMPCOMMENT(psDeviceNode, "Allocate FwHWPerfCountersConfigBlock");
 	eError = DevmemFwAllocate(psDevice,
 	                          sizeof(RGX_HWPERF_CONFIG_CNTBLK) * ui32ArrayLen,
 	                          PVRSRV_MEMALLOCFLAG_DEVICE_FLAG(PMMETA_PROTECT) |
@@ -610,16 +611,23 @@ PVRSRV_ERROR PVRSRVRGXGetEnabledHWPerfBlocks(PVRSRV_DEVICE_NODE *psDevNode,
 	PVR_RETURN_IF_FALSE(psDevNode != NULL, PVRSRV_ERROR_INVALID_PARAMS);
 	PVR_RETURN_IF_FALSE(psHWPerfCtl != NULL, PVRSRV_ERROR_INVALID_PARAMS);
 
+	/* Ensure device is accessible so that we can check configured data */
+	PVRSRVPowerLockRead(psDevNode);
+
+	PVR_ASSERT(PVRSRVIsDevicePowered(psDevNode));
+
+	if (ui32ArrayLen > psHWPerfCtl->ui32BlocksNumRangeCheckBeforeUse)
+	{
+		PVR_GOTO_WITH_ERROR(eError, PVRSRV_ERROR_BRIDGE_ARRAY_SIZE_TOO_BIG,
+		                    Error);
+	}
+
 	*pui32BlockCount = 0;
 
 	if (ui32ArrayLen > 0 && pui32EnabledBlockIDs == NULL)
 	{
 		PVR_DPF((PVR_DBG_WARNING, "ui32ArrayLen is greater than 0 but pui32EnabledBlockIDs is NULL"));
 	}
-
-	PVRSRVPowerLockRead(psDevNode);
-
-	PVR_ASSERT(PVRSRVIsDevicePowered(psDevNode));
 
 	for (i = 0; i < psHWPerfCtl->ui32BlocksNumRangeCheckBeforeUse; i++)
 	{

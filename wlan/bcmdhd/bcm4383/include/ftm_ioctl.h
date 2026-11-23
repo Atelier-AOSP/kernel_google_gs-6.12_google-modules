@@ -41,6 +41,7 @@ enum wl_ftm_type {
 	WL_FTM_TYPE_MC		= 1, /* Legacy MC ftm */
 	WL_FTM_TYPE_TB		= 2, /* 11az Trigger based */
 	WL_FTM_TYPE_NTB		= 3, /* 11az Non-trigger based */
+	WL_FTM_TYPE_PMSR_NTB	= 4, /* PMSR 11az Non-trigger based */
 	WL_FTM_TYPE_MAX
 };
 typedef uint8 wl_ftm_type_t;
@@ -147,6 +148,8 @@ typedef uint32	wl_ftm_flags_t;
 #define WL_FTM_SESSION_FLAG_USE_ANT_DIVERSITY	0x0020000000000000llu	/* Use antenna diversity
 									 * for ranging operation
 									 */
+#define WL_FTM_SESSION_FLAG_PMSR		0x0040000000000000llu
+#define	WL_FTM_SESSION_FLAG_BYPASS_INIT_NEG	0x0080000000000000llu
 #define WL_FTM_SESSION_FLAG_ALL			0xffffffffffffffffllu
 typedef uint64 wl_ftm_session_flags_t;
 
@@ -169,7 +172,9 @@ typedef uint64 wl_ftm_session_flags_t;
 	| WL_FTM_SESSION_FLAG_NO_TSF_SYNC \
 	| WL_FTM_SESSION_FLAG_CONT_ON_BURST_ERR \
 	| WL_FTM_SESSION_FLAG_DONT_USE_SCAN_CACHE \
-	| WL_FTM_SESSION_FLAG_DONT_SCAN)
+	| WL_FTM_SESSION_FLAG_DONT_SCAN \
+	| WL_FTM_SESSION_FLAG_PMSR \
+	| WL_FTM_SESSION_FLAG_BYPASS_INIT_NEG)
 
 /* flags relevant to MC sessions */
 #define FTM_MC_CONFIG_MASK \
@@ -241,6 +246,7 @@ typedef struct wl_ftm_intvl {
 	uint8	pad[2];
 } wl_ftm_intvl_t;
 
+
 /** commands that can apply to proxd, method or a session */
 enum wl_ftm_cmd {
 	WL_FTM_CMD_NONE			= 0,
@@ -267,6 +273,9 @@ enum wl_ftm_cmd {
 	WL_FTM_CMD_IS_TLV_SUPPORTED	= 21,
 	WL_FTM_CMD_TEST_MODE		= 22,	/* for test mode (i.e. WFA CTT) */
 	WL_FTM_CMD_DBG_EVENT_CHECK	= 23,	/* for debugging */
+	WL_FTM_CMD_START_PMSR_RANGING	= 24,	/* start PMSR ranging */
+	WL_FTM_CMD_STOP_PMSR_RANGING	= 25,	/* stop PMSR ranging */
+	WL_FTM_CMD_SET_RANGING_TK	= 26,	/* set host-provided TK/LTF keyseed for ranging */
 
 	WL_FTM_CMD_MAX
 };
@@ -300,7 +309,10 @@ enum wl_ftm_event_type {
 	WL_FTM_EVENT_CSI_DUMP			= 22,	/* dump RAW CSI data for debug */
 	WL_FTM_EVENT_SESSION_STOPPING		= 23,
 	WL_FTM_EVENT_LMR_FRAME			= 24,
-	WL_FTM_EVENT_TIMESTAMP_DUMP		= 25
+	WL_FTM_EVENT_TIMESTAMP_DUMP		= 25,
+	WL_FTM_EVENT_INIT_NEG_DONE		= 26,
+	WL_FTM_EVENT_PMSR_RESULT		= 27,
+	WL_FTM_EVENT_PMSR_AW_MEAS_DONE		= 28
 };
 typedef uint16 wl_ftm_event_type_t;
 
@@ -403,7 +415,10 @@ typedef enum {
 	WL_FTM_TLV_ID_SECURITY_PASSPHRASE	= 59, /* ftm security passphrase */
 	WL_FTM_TLV_ID_SECURITY_PASSPHRASE_LEN	= 60, /* ftm security passphrase len */
 	WL_FTM_TLV_ID_SECURITY_CIPHER_TYPE	= 61, /* ftm security cipher type */
-	WL_FTM_TLV_ID_SECURITY_LTF_REQD		= 62,	/* ftm security, secure ltf needed */
+	WL_FTM_TLV_ID_SECURITY_LTF_REQD		= 62, /* ftm security, secure ltf needed */
+
+	WL_FTM_TLV_ID_PMSR_REQ_V1		= 63, /* pmsr request params */
+	WL_FTM_TLV_ID_NOMINAL_TIME		= 64, /* nominal time for pmsr request */
 
 	/* Extra common TLV IDs */
 	WL_FTM_TLV_ID_TYPE_FLAGS		= 128,
@@ -427,6 +442,7 @@ typedef enum {
 	WL_FTM_TLV_ID_AZ_COUNTERS_V2		= 527,	/* wl_ftm_az_counters_v2_t */
 	WL_FTM_TLV_ID_AZ_RTT_RESULT_V2		= 528,	/* wl_ftm_az_rtt_result_v2_t */
 	WL_FTM_TLV_ID_AZ_RTT_RESULT_V3		= 529,	/* wl_ftm_az_rtt_result_v3_t */
+	WL_FTM_TLV_ID_PMSR_RESULT_V1		= 530,	/* wl_ftm_pmsr_result_v1_t */
 
 	/* debug tlvs can be added starting 1024 */
 	WL_FTM_TLV_ID_DEBUG_MASK		= 1024,
@@ -682,6 +698,7 @@ enum wl_ftm_az_rtt_result_flags {
 	WL_FTM_AZ_RTT_RESULT_FLAG_SLTF		= 0x00000004u, /* Secure LTF */
 	WL_FTM_AZ_RTT_RESULT_FLAG_SIGNED_RTT	= 0x00000008u, /* RTT result is negative */
 	WL_FTM_AZ_RTT_RESULT_FLAG_SECURE_SN	= 0x00000010u, /* RNG MFP enabled */
+	WL_FTM_AZ_RTT_RESULT_FLAG_PMSR_COMPLETE = 0x00000020u, /* PMSR Ranging completed */
 	/* add new flag here */
 	WL_FTM_AZ_RTT_RESULT_FLAG_ALL		= 0xffffffffu
 };
@@ -878,5 +895,114 @@ typedef struct wl_ftm_timestamp_dump_v1 {
 	uint16 pad;
 	wl_ftm_timestamps_t timestamps_list[];	/* list of timestamps for each list entry */
 } wl_ftm_timestamp_dump_v1_t;
+
+enum pmsr_ftm_preamble {
+	PMSR_PREAMBLE_LEGACY,
+	PMSR_PREAMBLE_HT,
+	PMSR_PREAMBLE_VHT,
+	PMSR_PREAMBLE_DMG,
+	PMSR_PREAMBLE_HE
+};
+typedef uint16 pmsr_ftm_preamble_t;
+
+#define WL_RSTA_INIT_DELAY_MS 200
+
+enum wl_pmsr_flags {
+	WL_PMSR_FLAG_NONE		= (0u << 0u),
+	WL_PMSR_FTM_REQ			= (1u << 0u),
+	WL_PMSR_ASAP			= (1u << 1u),
+	WL_PMSR_REQ_LCI			= (1u << 2u),
+	WL_PMSR_REQ_CIVICLOC		= (1u << 3u),
+	WL_PMSR_TRIGGER_BASED		= (1u << 4u),
+	WL_PMSR_NON_TRIGGER_BASED	= (1u << 5u),
+	WL_PMSR_LMR_FEEDBACK		= (1u << 6u),
+	WL_PMSR_RSTA			= (1u << 7u),
+	WL_PMSR_FLAGS_ALL		= 0xff
+};
+typedef uint8 wl_pmsr_flags_t;
+
+typedef struct wl_ftm_pmsr_peer_req_v1 {
+	uint64 ingress_dist_mm;
+	uint64 egress_dist_mm;
+	uint32 min_delta_in_100us; /* units in 100 microseconds */
+	uint32 max_delta_in_10ms; /* units in 10 miliseconds */
+	uint32 nominal_time_ms; /* nominal time in ms */
+	pmsr_ftm_preamble_t preamble;
+	wl_ftm_session_id_t sid;
+	chanspec_t chanspec;
+	wl_ftm_ranging_format_bw_t format_bw;
+	struct ether_addr peer_addr;
+	wl_pmsr_flags_t	flags;
+	uint8 num_bursts_exp;
+	uint8 burst_dur_ms;
+	uint8 ftms_per_burst;
+	uint8 ftmr_retries;
+	uint8 bss_color;
+	uint8 aw_dur_ms; /* availability_window in ms */
+	uint8 num_meas; /* measurements per aw */
+} wl_ftm_pmsr_peer_req_v1_t;
+
+typedef struct wl_ftm_pmsr_req_v1 {
+	uint32 timeout_ms; /* use timeout (in milliseconds) */
+	uint32 init_delay_ms; /* init delay in milliseconds */
+	struct ether_addr source_addr;
+	uint8 n_peers; /* the max num of peers we support is 8 */
+	wl_ftm_pmsr_peer_req_v1_t pmsr_peer_reqs[];
+} wl_ftm_pmsr_req_v1_t;
+
+typedef struct wl_ftm_pmsr_result_v1 {
+	int64 dist_avg_mm; /* in mm */
+	int64 dist_sd_mm;
+	int64 dist_spread_mm;
+	uint32 num_ftmr_attempts;
+	uint8 lci_len;
+	uint8 civicloc_len;
+	int32 rssi_avg;
+	ratespec_t tx_ratespec;
+	ratespec_t rx_ratespec;
+	wl_ftm_az_rtt_result_flags_t flags;
+	uint32 rtt_avg_ps; /* average RTT (s64, picoseconds) */
+	uint32 rtt_sd_ps;
+	uint32 rtt_spread_ps;
+	uint32 min_delta_in_100us; /* units in 100 microseconds */
+	uint32 max_delta_in_10ms; /* units in 10 miliseconds */
+	uint32 nominal_time_ms;
+	pmsr_ftm_preamble_t preamble;
+	wl_ftm_ranging_format_bw_t format_bw;
+	chanspec_t chanspec;
+	wl_ftm_session_id_t sid;
+	int32 status;
+	uint8 tx_ltf_rep_cnt;
+	uint8 rx_ltf_rep_cnt;
+	uint8 num_tx_ss;
+	uint8 num_rx_ss;
+	uint8 aw_dur_ms; /* availability_window in ms */
+	uint8 num_meas; /* measurements per aw */
+	uint8 pad[2];
+	uint8 lci_civic_data[];
+} wl_ftm_pmsr_result_v1_t;
+
+/**
+ * wl_ftm_ranging_tk_t - host-provided TK and LTF key seed for proximity ranging.
+ *
+ * Supplied via WL_FTM_CMD_SET_RANGING_TK.  Stores the TK and LTF key seed
+ * directly in the PTK cache (identified with WL_PASN_KEY_DB_FLAG_HOST_TK)
+ * so that a PASN handshake is not required when ranging starts for PMSR.
+ *
+ * 'data' layout: tk[tk_len] followed by ltf_keyseed[ltf_keyseed_len]
+ */
+#define WL_FTM_RANGING_TK_VERSION	1u
+
+typedef struct wl_ftm_ranging_tk {
+	uint16 version;
+	uint16 length;		/* total length of this struct including data[] */
+	uint16 cipher;
+	struct ether_addr peer_addr;	/* peer MAC address */
+	uint8 tk_len;		/* temporal key length in data[] */
+	uint8 ltf_keyseed_len; /* LTF key seed length in data[] */
+	uint8 data[BCM_FLEX_ARRAY];
+} wl_ftm_ranging_tk_t;
+
+#define WL_FTM_RANGING_TK_FIXED_LEN	OFFSETOF(wl_ftm_ranging_tk_t, data)
 
 #endif /* _ftm_ioctl_h */

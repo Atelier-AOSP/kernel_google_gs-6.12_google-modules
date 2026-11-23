@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: GPL-2.0-only
-#include <cpufreq/thermal_pressure.h>
 #include <dvfs-helper/google_dvfs_helper.h>
 #include <linux/cpu.h>
 #include <linux/cpufreq.h>
@@ -8,7 +7,6 @@
 #include <linux/platform_device.h>
 #include <linux/pm_opp.h>
 #include <linux/regmap.h>
-#include <linux/version.h>
 #include <perf/core/google_pm_qos.h>
 #include <perf/core/google_vote_manager.h>
 #include <soc/google/google-cdd.h>
@@ -17,9 +15,6 @@
 #include "cpufreq_trace.h"
 
 #define CPU_DVFS_CLKDOMAIN_PERF_STATE_VOTE_ADDR(X) (0x8 * (X))
-
-static DEFINE_SPINLOCK(thermal_pressure_lock);
-static LIST_HEAD(thermal_pressure_data_list);
 
 struct em_data {
 	unsigned long freq;
@@ -58,14 +53,6 @@ struct cpufreq_data {
 	u8 *clk_domain;
 };
 
-struct thermal_pressure_cpu_data {
-	unsigned int cpu;
-	cpumask_t related_cpus;
-	struct list_head list;
-	unsigned long capped_freq;
-	unsigned long freq_cap_req[THERMAL_PRESSURE_TYPE_MAX];
-};
-
 static const struct regmap_config google_cpufreq_regmap_cfg = {
 	.reg_bits = 32,
 	.reg_stride = 4,
@@ -78,95 +65,6 @@ static int google_get_asv_bin(void)
 {
 	return DEFAULT_ASV_BIN;
 }
-
-static int thermal_pressure_cpu_init(struct device *dev,
-				     struct cpufreq_policy *policy)
-{
-	struct thermal_pressure_cpu_data *data;
-	int ret = 0;
-
-	data = devm_kzalloc(dev, sizeof(*data), GFP_KERNEL);
-	if (!data) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	data->cpu = policy->cpu;
-	cpumask_copy(&data->related_cpus, policy->related_cpus);
-
-	/* Initialize capped frequency to maximum, indicating no thermal pressure */
-	data->capped_freq = policy->cpuinfo.max_freq;
-	for (int i = 0; i < THERMAL_PRESSURE_TYPE_MAX; i++)
-		data->freq_cap_req[i] = policy->cpuinfo.max_freq;
-
-	list_add_tail(&data->list, &thermal_pressure_data_list);
-out:
-	return ret;
-}
-
-static int thermal_pressure_cpu_deinit(struct device *dev,
-				       struct cpufreq_policy *policy)
-{
-	struct thermal_pressure_cpu_data *data, *tmp;
-
-	spin_lock(&thermal_pressure_lock);
-	list_for_each_entry_safe(data, tmp, &thermal_pressure_data_list, list) {
-		if (data->cpu == policy->cpu) {
-			list_del(&data->list);
-			devm_kfree(dev, data);
-			break;
-		}
-	}
-	spin_unlock(&thermal_pressure_lock);
-
-	return 0;
-}
-
-int apply_thermal_pressure(const cpumask_t cpus,
-			   const unsigned long frequency_cap,
-			   enum thermal_pressure_type type)
-{
-	struct thermal_pressure_cpu_data *data;
-	unsigned long capped_freq = frequency_cap;
-	bool found_matching_cpu = false;
-	int ret = 0;
-
-	if (type >= THERMAL_PRESSURE_TYPE_MAX)
-		return -EINVAL;
-
-	spin_lock(&thermal_pressure_lock);
-	list_for_each_entry(data, &thermal_pressure_data_list, list) {
-		if (cpumask_test_cpu(data->cpu, &cpus)) {
-			found_matching_cpu = true;
-			break;
-		}
-	}
-
-	if (found_matching_cpu == false) {
-		ret = -EINVAL;
-		goto out;
-	}
-
-	data->freq_cap_req[type] = frequency_cap;
-	for (int i = 0; i < THERMAL_PRESSURE_TYPE_MAX; i++)
-		capped_freq = min(capped_freq, data->freq_cap_req[i]);
-
-	if (data->capped_freq != capped_freq) {
-		data->capped_freq = capped_freq;
-#if KERNEL_VERSION(6, 12, 0) <= LINUX_VERSION_CODE
-		arch_update_hw_pressure(&data->related_cpus,
-					     data->capped_freq);
-#else
-		arch_update_thermal_pressure(&data->related_cpus,
-					     data->capped_freq);
-#endif
-	}
-
-out:
-	spin_unlock(&thermal_pressure_lock);
-	return ret;
-}
-EXPORT_SYMBOL(apply_thermal_pressure);
 
 static inline unsigned long google_cpufreq_find_freq(struct cpufreq_cpu_data *cpufreq_cpu_data,
 						     unsigned int pf_state)
@@ -207,15 +105,13 @@ static int google_cpufreq_cpu_init(struct cpufreq_policy *policy)
 	return 0;
 }
 
-static int google_cpufreq_cpu_exit(struct cpufreq_policy *policy)
+static void google_cpufreq_cpu_exit(struct cpufreq_policy *policy)
 {
 	/*
 	 * policy->driver_data free in google_cpufreq_data_exit
 	 * policy->freq_table free in dev_pm_opp_free_cpufreq_table
 	 */
 	policy->fast_switch_possible = false;
-
-	return 0;
 }
 
 static unsigned int google_cpufreq_get(unsigned int cpu)
@@ -244,6 +140,9 @@ static int google_cpufreq_set_target(struct cpufreq_policy *policy, unsigned int
 	unsigned long freq = policy->freq_table[index].frequency;
 	unsigned int pf_state = policy->freq_table[index].driver_data;
 
+	if (!cpufreq_cpu_data->dvfs_enabled)
+		return -EPERM;
+
 	dev_dbg(cpufreq_cpu_data->cpu_dev, "Set cpu (%u) freq to (%lu)\n",
 		policy->cpu, freq);
 	cpufreq_cpu_data->old_freq = cpufreq_cpu_data->freq;
@@ -261,6 +160,9 @@ static unsigned int google_cpufreq_fast_switch(struct cpufreq_policy *policy,
 	struct cpufreq_data *cpufreq_data = cpufreq_get_driver_data();
 	struct cpufreq_cpu_data *cpufreq_cpu_data = policy->driver_data;
 	unsigned int index, pf_state;
+
+	if (!cpufreq_cpu_data->dvfs_enabled)
+		return 0;
 
 	dev_dbg(cpufreq_cpu_data->cpu_dev, "Set cpu (%u) freq to (%u)\n",
 		policy->cpu, target_freq);
@@ -381,6 +283,7 @@ static int init_cpufreq_em_table(struct device *dev,
 		asv_bin_value = 0;
 	}
 
+	/* TODO(b/389783082): remove 'case:6' when new cpufreq implementation is available */
 	switch (cpumask_first(cpufreq_cpu_data->cpus)) {
 	case 0:
 		cluster_num = 0;
@@ -395,6 +298,11 @@ static int init_cpufreq_em_table(struct device *dev,
 	case 5:
 		cluster_num = 2;
 		google_cdd_freq(CDD_FREQ_DOMAIN_APC_MID1, &cpufreq_cpu_data->old_freq,
+					    &cpufreq_cpu_data->freq);
+		break;
+	case 6:
+		cluster_num = 2;
+		google_cdd_freq(CDD_FREQ_DOMAIN_APC_BIG, &cpufreq_cpu_data->old_freq,
 					    &cpufreq_cpu_data->freq);
 		break;
 	case 7:
@@ -486,7 +394,7 @@ put_em_data_node:
 }
 
 /* Modified from dev_pm_opp_init_cpufreq_table, but assign opp-level to driver data */
-int google_init_cpufreq_table(struct cpufreq_cpu_data *cpufreq_cpu_data)
+static int google_init_cpufreq_table(struct cpufreq_cpu_data *cpufreq_cpu_data)
 {
 	struct dev_pm_opp *opp;
 	struct device *dev = cpufreq_cpu_data->cpu_dev;
@@ -635,21 +543,6 @@ static void google_cpufreq_data_exit_all(struct cpufreq_data *cpufreq_data)
 		cpufreq_data_exit(cpufreq_data, i);
 }
 
-static void unregister_thermal_pressure(struct device *dev)
-{
-	struct cpufreq_policy *policy;
-
-	for (int i = 0; i < nr_cpu_ids; ++i) {
-		policy = cpufreq_cpu_get(i);
-		if (i != policy->cpu) {
-			cpufreq_cpu_put(policy);
-			continue;
-		}
-		thermal_pressure_cpu_deinit(dev, policy);
-		cpufreq_cpu_put(policy);
-	}
-}
-
 static void unregister_vote_track(void)
 {
 	struct cpufreq_policy *policy;
@@ -751,12 +644,6 @@ static int google_cpufreq_platform_probe(struct platform_device *pdev)
 			goto remove_vote_track;
 		}
 
-		ret = thermal_pressure_cpu_init(dev, policy);
-		if (ret < 0) {
-			cpufreq_cpu_put(policy);
-			goto remove_thermal_pressure;
-		}
-
 		cpufreq_cpu_data = cpufreq_data->cpu_data_arr[i];
 
 		cpufreq_cpu_put(policy);
@@ -766,8 +653,6 @@ static int google_cpufreq_platform_probe(struct platform_device *pdev)
 
 	return 0;
 
-remove_thermal_pressure:
-	unregister_thermal_pressure(dev);
 remove_vote_track:
 	unregister_vote_track();
 	cpufreq_unregister_driver(&google_cpufreq_driver);
@@ -776,18 +661,15 @@ err:
 	return ret;
 }
 
-static int google_cpufreq_platform_remove(struct platform_device *pdev)
+static void google_cpufreq_platform_remove(struct platform_device *pdev)
 {
 	struct cpufreq_data *cpufreq_data = platform_get_drvdata(pdev);
 
-	unregister_thermal_pressure(&pdev->dev);
 	unregister_vote_track();
 	cpufreq_unregister_driver(&google_cpufreq_driver);
 	google_cpufreq_driver.driver_data = NULL;
 
 	google_cpufreq_data_exit_all(cpufreq_data);
-
-	return 0;
 }
 
 static const struct of_device_id google_cpufreq_of_match_table[] = {

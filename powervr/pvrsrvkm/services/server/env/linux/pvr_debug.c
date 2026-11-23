@@ -169,6 +169,9 @@ static IMG_UINT32 PVRDebugLevel =
 #if defined(PVR_DPF_ADHOC_DEBUG_ON)
 	 | DBGPRIV_DEBUG
 #endif /* defined(PVR_DPF_ADHOC_DEBUG_ON) */
+#if defined(PVR_DPF_CUSTOMER_DEBUG_ON)
+	 | DBGPRIV_CUSTOMER
+#endif /* defined(PVR_DPF_CUSTOMER_DEBUG_ON) */
 	);
 
 module_param(PVRDebugLevel, uint, 0644);
@@ -381,6 +384,7 @@ static void PVRSRVDebugPrintfVArgs(IMG_UINT32 ui32DebugLevel,
 			break;
 		}
 		case DBGPRIV_DEBUG:
+		case DBGPRIV_CUSTOMER:
 		{
 			OSStringSafeCopy(pszBuf, "PVR_K:(Debug): ", ui32BufSiz);
 			break;

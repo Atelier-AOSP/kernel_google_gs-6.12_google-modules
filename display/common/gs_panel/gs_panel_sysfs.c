@@ -18,6 +18,12 @@
 #include "gs_panel/gs_panel.h"
 #include "trace/panel_trace.h"
 
+#define DEV_WARN_PANEL_NOT_ENABLED(ctx) \
+	dev_warn((ctx)->dev, "%s: panel is not enabled\n", __func__)
+
+#define DEV_ERR_PANEL_NOT_ENABLED(ctx) \
+	dev_err((ctx)->dev, "%s: panel is not enabled\n", __func__)
+
 /* panel name constants */
 static const char primary_panel_name[] = "primary-panel";
 static const char secondary_panel_name[] = "secondary-panel";
@@ -36,7 +42,7 @@ const char *gs_panel_get_sysfs_name(struct gs_panel *ctx)
 	}
 }
 
-int gs_panel_get_te_freq(struct gs_panel *ctx)
+static int gs_panel_get_te_freq(struct gs_panel *ctx)
 {
 	int freq;
 
@@ -60,7 +66,7 @@ int gs_panel_get_te_freq(struct gs_panel *ctx)
 	return freq;
 }
 
-int gs_panel_set_te2_freq(struct gs_panel *ctx, u32 freq_hz)
+static int gs_panel_set_te2_freq(struct gs_panel *ctx, u32 freq_hz)
 {
 	if (!gs_panel_has_func(ctx, set_te2_freq))
 		return -EOPNOTSUPP;
@@ -93,7 +99,7 @@ int gs_panel_set_te2_freq(struct gs_panel *ctx, u32 freq_hz)
 	return 0;
 }
 
-int gs_panel_get_te2_freq(struct gs_panel *ctx)
+static int gs_panel_get_te2_freq(struct gs_panel *ctx)
 {
 	int freq;
 
@@ -102,7 +108,7 @@ int gs_panel_get_te2_freq(struct gs_panel *ctx)
 	 * the rate during the transition to active.
 	 */
 	if (!gs_is_panel_active(ctx))
-		dev_warn(ctx->dev, "%s: panel is not enabled, may show previous freq\n", __func__);
+		DEV_WARN_PANEL_NOT_ENABLED(ctx);
 
 	mutex_lock(&ctx->mode_lock);
 	if (gs_panel_has_func(ctx, get_te2_freq)) {
@@ -139,7 +145,7 @@ static ssize_t serial_number_show(struct device *dev, struct device_attribute *a
 	 * Either initialization (with power on) needs to have happened,
 	 * or need to have valid ID passed from bootloader
 	 */
-	if (!ctx->initialized && ctx->gs_connector->panel_id == INVALID_PANEL_ID)
+	if (!ctx->initialized && ctx->gs_connector->panel_id == PANEL_ID_INVALID_VALUE)
 		return -EPERM;
 
 	if (!strcmp(ctx->panel_serial_number, ""))
@@ -153,10 +159,10 @@ static ssize_t panel_extinfo_show(struct device *dev, struct device_attribute *a
 	const struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
 	const struct gs_panel *ctx = mipi_dsi_get_drvdata(dsi);
 
-	if (ctx->panel_extinfo[0] == '\0')
+	if (ctx->panel_id == PANEL_ID_INVALID_VALUE)
 		return -EPERM;
 
-	return sysfs_emit(buf, "%s\n", ctx->panel_extinfo);
+	return sysfs_emit(buf, "%08x\n", swab32(ctx->panel_id));
 }
 
 static ssize_t panel_name_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -300,6 +306,7 @@ static ssize_t op_hz_show(struct device *dev, struct device_attribute *attr, cha
 {
 	struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
 	struct gs_panel *ctx = mipi_dsi_get_drvdata(dsi);
+	u32 op_hz;
 
 	if (!gs_is_panel_initialized(ctx))
 		return -EAGAIN;
@@ -307,7 +314,11 @@ static ssize_t op_hz_show(struct device *dev, struct device_attribute *attr, cha
 	if (!gs_panel_has_func(ctx, set_op_hz))
 		return -EINVAL;
 
-	return sysfs_emit(buf, "%u\n", ctx->op_hz);
+	mutex_lock(&ctx->mode_lock);
+	op_hz = ctx->op_hz;
+	mutex_unlock(&ctx->mode_lock);
+
+	return sysfs_emit(buf, "%u\n", op_hz);
 }
 
 static ssize_t refresh_rate_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -690,7 +701,7 @@ static ssize_t te2_option_store(struct device *dev, struct device_attribute *att
 	u32 option;
 
 	if (!gs_panel_has_func(ctx, set_te2_option))
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 
 	ret = kstrtou32(buf, 0, &option);
 	if (ret) {
@@ -717,10 +728,10 @@ static ssize_t te2_option_show(struct device *dev, struct device_attribute *attr
 	enum gs_panel_tex_opt option;
 
 	if (!gs_panel_has_func(ctx, get_te2_option))
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 
 	if (!gs_is_panel_active(ctx)) {
-		dev_warn(ctx->dev, "%s: panel is not enabled\n", __func__);
+		DEV_WARN_PANEL_NOT_ENABLED(ctx);
 		return -EPERM;
 	}
 
@@ -919,7 +930,7 @@ static ssize_t power_mode_show(struct device *dev, struct device_attribute *attr
 	u8 power_mode;
 
 	if (!gs_is_panel_active(ctx)) {
-		dev_warn(dev, "%s: panel is not enabled\n", __func__);
+		DEV_WARN_PANEL_NOT_ENABLED(ctx);
 		return -EPERM;
 	}
 
@@ -955,7 +966,7 @@ static ssize_t frame_rate_store(struct device *dev, struct device_attribute *att
 	}
 
 	if (!gs_is_panel_active(ctx)) {
-		dev_warn(ctx->dev, "%s: panel is not enabled\n", __func__);
+		DEV_WARN_PANEL_NOT_ENABLED(ctx);
 		return -EPERM;
 	}
 
@@ -1067,16 +1078,13 @@ static ssize_t pwm_mode_show(struct device *dev, struct device_attribute *attr, 
 {
 	const struct mipi_dsi_device *dsi = to_mipi_dsi_device(dev);
 	struct gs_panel *ctx = mipi_dsi_get_drvdata(dsi);
-	int ret;
+	enum gs_pwm_mode mode;
 
 	if (!gs_panel_has_func(ctx, set_pwm_mode))
 		return -EOPNOTSUPP;
 
-	mutex_lock(&ctx->mode_lock);
-	ret = sysfs_emit(buf, "%d\n", ctx->pwm_mode);
-	mutex_unlock(&ctx->mode_lock);
-
-	return ret;
+	mode = gs_panel_get_pwm_mode(ctx);
+	return sysfs_emit(buf, "%d\n", mode);
 }
 
 static ssize_t te_freq_hz_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -1412,14 +1420,14 @@ static ssize_t hbm_mode_store(struct device *dev, struct device_attribute *attr,
 
 	if (!gs_panel_has_func(ctx, set_hbm_mode)) {
 		dev_err(ctx->dev, "HBM is not supported\n");
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 	}
 
 	mutex_lock(&ctx->mode_lock); /*TODO(b/267170999): MODE*/
 	pmode = ctx->current_mode;
 
 	if (!gs_is_panel_active(ctx) || !pmode) {
-		dev_err(ctx->dev, "panel is not enabled\n");
+		DEV_ERR_PANEL_NOT_ENABLED(ctx);
 		ret = -EPERM;
 		goto unlock;
 	}
@@ -1464,7 +1472,7 @@ static ssize_t dimming_on_store(struct device *dev, struct device_attribute *att
 	int ret;
 
 	if (!gs_is_panel_active(ctx)) {
-		dev_err(ctx->dev, "panel is not enabled\n");
+		DEV_ERR_PANEL_NOT_ENABLED(ctx);
 		return -EPERM;
 	}
 
@@ -1497,13 +1505,13 @@ static ssize_t local_hbm_mode_store(struct device *dev, struct device_attribute 
 	struct drm_crtc *crtc = get_gs_panel_connector_crtc(ctx);
 
 	if (!gs_is_panel_active(ctx)) {
-		dev_err(ctx->dev, "panel is not enabled\n");
+		DEV_ERR_PANEL_NOT_ENABLED(ctx);
 		return -EPERM;
 	}
 
 	if (!gs_panel_has_func(ctx, set_local_hbm_mode)) {
 		dev_err(ctx->dev, "Local HBM is not supported\n");
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 	}
 
 	ret = kstrtobool(buf, &local_hbm_en);
@@ -1643,13 +1651,13 @@ static ssize_t acl_mode_store(struct device *dev,
 	u32 acl_mode;
 
 	if (!gs_is_panel_active(ctx)) {
-		dev_err(ctx->dev, "panel is not enabled\n");
+		DEV_ERR_PANEL_NOT_ENABLED(ctx);
 		return -EAGAIN;
 	}
 
 	if (!gs_panel_has_func(ctx, set_acl_mode)) {
 		dev_err(ctx->dev, "ACL is not supported\n");
-		return -ENOTSUPP;
+		return -EOPNOTSUPP;
 	}
 
 	ret = kstrtouint(buf, 0, &acl_mode);
@@ -1673,7 +1681,7 @@ static ssize_t acl_mode_show(struct device *dev,
 	struct gs_panel *ctx = mipi_dsi_get_drvdata(dsi);
 
 	if (!gs_is_panel_active(ctx)) {
-		dev_err(ctx->dev, "panel is not enabled\n");
+		DEV_ERR_PANEL_NOT_ENABLED(ctx);
 		return -EAGAIN;
 	}
 
@@ -1690,7 +1698,7 @@ static ssize_t ssc_en_store(struct device *dev,
 	bool ssc_en;
 
 	if (!gs_is_panel_active(ctx)) {
-		dev_err(ctx->dev, "panel is not enabled\n");
+		DEV_ERR_PANEL_NOT_ENABLED(ctx);
 		return -EAGAIN;
 	}
 
@@ -1714,7 +1722,7 @@ static ssize_t ssc_en_show(struct device *dev,
 	struct gs_panel *ctx = mipi_dsi_get_drvdata(dsi);
 
 	if (!gs_is_panel_active(ctx)) {
-		dev_err(ctx->dev, "panel is not enabled\n");
+		DEV_ERR_PANEL_NOT_ENABLED(ctx);
 		return -EAGAIN;
 	}
 
@@ -1798,7 +1806,7 @@ static ssize_t cabc_mode_store(struct device *dev, struct device_attribute *attr
 	}
 
 	if (!gs_is_panel_active(ctx)) {
-		dev_err(ctx->dev, "panel is not enabled\n");
+		DEV_ERR_PANEL_NOT_ENABLED(ctx);
 		return -EAGAIN;
 	}
 

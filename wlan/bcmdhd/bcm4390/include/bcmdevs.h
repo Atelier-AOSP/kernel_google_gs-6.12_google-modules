@@ -27,6 +27,7 @@
 /* PCI vendor IDs */
 #define	VENDOR_EPIGRAM		0xfeda
 #define	VENDOR_BROADCOM		0x14e4
+#define	VENDOR_SYNAPTICS	0x1e01
 #define	VENDOR_3COM		0x10b7
 #define	VENDOR_NETGEAR		0x1385
 #define	VENDOR_DIAMOND		0x1092
@@ -115,6 +116,7 @@
 
 /* Chip IDs */
 // Please leave this UNRELEASEDCHIP MOG wrapper in place even if there is nothing inside it
+#define BCM4381_CHIP_ID		0x4381          /* 4381 chipcommon chipid */
 #define BCM4383_CHIP_ID		0x4383          /* 4383 chipcommon chipid */
 #define BCM4384_CHIP_ID		0x4384          /* 4384 chipcommon chipid */
 #define BCM4387_CHIP_ID		0x4387          /* 4387 chipcommon chipid */

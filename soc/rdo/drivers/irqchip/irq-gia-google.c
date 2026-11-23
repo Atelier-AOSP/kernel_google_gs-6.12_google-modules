@@ -30,21 +30,6 @@ static const struct gia_type_data wide_level_gia_data = {
 	.wide_gia = true,
 };
 
-static const struct gia_type_data wide_level_sgia_data = {
-	/* Offsets */
-	.status_offset = 0,
-	.status_overflow_offset = -1,
-	.enable_offset = 8,
-	.mask_offset = 12,
-	.trigger_offset = 16,
-	.hybrid_offset = 20,
-
-	/* Features */
-	.clear_status_reg = false,
-	.check_overflow_reg = false,
-	.wide_gia = true,
-};
-
 static const struct gia_type_data level_gia_data = {
 	/* Offsets */
 	.status_offset = 0,
@@ -94,7 +79,6 @@ static const struct gia_type_data pulse_gia_data = {
 
 static const struct of_device_id irq_gia_google_of_match[] = {
 	{ .compatible = "google,wide-level-gia", .data = &wide_level_gia_data },
-	{ .compatible = "google,wide-level-sgia", .data = &wide_level_sgia_data },
 	{ .compatible = "google,level-gia", .data = &level_gia_data },
 	{ .compatible = "google,level-sgia", .data = &level_sgia_data },
 	{ .compatible = "google,pulse-gia", .data = &pulse_gia_data },
@@ -211,15 +195,13 @@ static int irq_gia_google_probe(struct platform_device *pdev)
 	return gia_init(gdd);
 }
 
-static int irq_gia_google_remove(struct platform_device *pdev)
+static void irq_gia_google_remove(struct platform_device *pdev)
 {
 	struct gia_device_data *gdd = dev_get_drvdata(&pdev->dev);
 
 	gia_exit(gdd);
 	for (int i = 0; i < gdd->nr_out_irq; i++)
 		irq_dispose_mapping(gdd->virqs[i]);
-
-	return 0;
 }
 
 static struct platform_driver irq_gia_google_driver = {

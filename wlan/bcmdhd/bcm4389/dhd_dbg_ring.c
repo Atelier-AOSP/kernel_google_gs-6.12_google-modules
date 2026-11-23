@@ -31,6 +31,7 @@
 #include <dhd_dbg.h>
 #include <dhd_dbg_ring.h>
 #include <dhd_debug.h>
+#include <bcmstdlib_s.h>
 
 dhd_dbg_ring_t *
 dhd_dbg_ring_alloc_init(dhd_pub_t *dhd, uint16 ring_id,

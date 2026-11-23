@@ -608,7 +608,7 @@ static int set_protection(struct dpp_device *dpp, uint64_t modifier)
 		return -EINVAL;
 	}
 
-        /* Forward some register update to el3 if transit to protection mode */
+	/* Forward some register update to el3 if transit to protection mode */
 
 	if (protection)
 		res_protection_changed = update_resource_protection(dpp, true);
@@ -1481,7 +1481,7 @@ fail:
 	return ret;
 }
 
-static int dpp_remove(struct platform_device *pdev)
+static void dpp_remove(struct platform_device *pdev)
 {
 	struct dpp_device *dpp = platform_get_drvdata(pdev);
 
@@ -1497,8 +1497,6 @@ static int dpp_remove(struct platform_device *pdev)
 	if (test_bit(DPP_ATTR_HDR_COMM, &dpp->attr))
 		iounmap(dpp->regs.hdr_comm_base_regs);
 	iounmap(dpp->regs.dma_base_regs);
-
-	return 0;
 }
 
 struct platform_driver dpp_driver = {

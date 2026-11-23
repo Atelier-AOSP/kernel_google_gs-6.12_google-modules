@@ -73,7 +73,6 @@ static IMG_UINT64 gui64SysTBQOSLatencyRd            = 0;
 static IMG_UINT64 gui64SysTBQOSLatencyWr            = 0;
 
 #if defined(__linux__)
-#include <linux/module.h>
 #include <linux/dma-mapping.h>
 module_param_named(sys_tb_bandwidth_drop,            gui32SysTBBWDropN,                 uint,   S_IRUGO | S_IWUSR);
 module_param_named(sys_tb_bandwidth_period,          gui32SysTBBWPeriod,                uint,   S_IRUGO | S_IWUSR);

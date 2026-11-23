@@ -155,8 +155,10 @@ typedef struct
 {
 	IMG_UINT64 ui64CorememCodeDevVAddr;
 	IMG_UINT64 ui64CorememDataDevVAddr;
-	IMG_UINT32 ui32CorememCodeFWAddr;
-	IMG_UINT32 ui32CorememDataFWAddr;
+#if defined(SUPPORT_TRUSTED_DEVICE) && defined(RGX_PREMAP_FW_HEAPS)
+	IMG_UINT32 ui32Unused1;
+	IMG_UINT32 ui32Unused2;
+#endif
 	IMG_UINT32 ui32CorememCodeSize;
 	IMG_UINT32 ui32CorememDataSize;
 	IMG_UINT32 ui32Flags;

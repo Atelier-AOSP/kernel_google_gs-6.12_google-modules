@@ -248,7 +248,6 @@ static const struct apphint_init_data init_data_debuginfo[] = {
 #define X(a, b, c, d, e, f) \
 	{APPHINT_ID_ ## a, APPHINT_CLASS_ ## c, #a, {.b=d}, APPHINT_RT_CLASS_ ## f },
 	APPHINT_LIST_DEBUGINFO_COMMON
-	APPHINT_LIST_DEBUGINFO
 #undef X
 };
 
@@ -263,7 +262,6 @@ static const struct apphint_init_data init_data_debuginfo_device[] = {
 static const struct apphint_init_data_mapping init_data_debuginfo_device_to_modparams[] = {
 #define X(a, b) \
 	{APPHINT_ID_ ## a, APPHINT_ID_ ## b},
-	APPHINT_LIST_DEBUIGINFO_DEVICE_X_MODPARAM_INIT_COMMON
 	APPHINT_LIST_DEBUIGINFO_DEVICE_X_MODPARAM_INIT
 #undef X
 };
@@ -684,7 +682,7 @@ static PVRSRV_ERROR get_apphint_value_from_action(const struct apphint_action * 
 		}
 	} else {
 		if (action->device == APPHINT_OF_DRIVER_NO_DEVICE) {
-			if (psDevNode != action->device) {
+			if (psDevNode != apphint.devices[0]) {
 				return PVRSRV_ERROR_INVALID_DEVICE;
 			}
 			psDevice = psDevNode;

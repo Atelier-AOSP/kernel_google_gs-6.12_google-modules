@@ -2,7 +2,7 @@
 /*
  * Support for Inter-IP fences.
  *
- * Copyright (C) 2025 Google LLC
+ * Copyright (C) 2025-2026 Google LLC
  */
 
 #include <linux/list.h>
@@ -329,13 +329,10 @@ static void gxp_iif_release_rx_queue_lock(struct gcip_mailbox *mb)
 {
 	/* Not Implemented */
 }
+
 static u64 gxp_iif_get_resp_elem_seq(struct gcip_mailbox *mb, void *resp)
 {
 	return 0;
-}
-static void gxp_iif_set_resp_elem_seq(struct gcip_mailbox *mb, void *resp, u64 seq)
-{
-	/* Not Implemented */
 }
 
 const struct gcip_mailbox_ops gxp_iif_gcip_mbx_ops = {
@@ -352,7 +349,6 @@ const struct gcip_mailbox_ops gxp_iif_gcip_mbx_ops = {
 	.acquire_rx_queue_lock = gxp_iif_acquire_rx_queue_lock,
 	.release_rx_queue_lock = gxp_iif_release_rx_queue_lock,
 	.get_resp_elem_seq = gxp_iif_get_resp_elem_seq,
-	.set_resp_elem_seq = gxp_iif_set_resp_elem_seq,
 	.wait_for_tx_queue_not_full = gxp_iif_wait_for_tx_queue_not_full,
 	.after_enqueue_cmd = gxp_mailbox_gcip_ops_after_enqueue_cmd,
 };
@@ -421,6 +417,7 @@ static int gxp_iif_mailbox_init(struct gxp_iif *giif)
 {
 	struct gxp_mailbox_args mbx_args = {
 		.type = GXP_MBOX_TYPE_GENERAL,
+		.mode = GXP_MBOX_TX_SIMPLEX,
 		.ops = &gxp_iif_mbx_ops,
 		.queue_wrap_bit = IIF_CIRCULAR_QUEUE_WRAP_BIT,
 		.cmd_elem_size = sizeof(struct gxp_uci_command),
@@ -551,7 +548,7 @@ void gxp_iif_send_unblock_notification(struct gxp_iif *giif, int iif_id)
 	cmd.type = IIF_UNBLOCK_COMMAND;
 	cmd.iif_id = iif_id;
 
-	ret = gxp_mailbox_send_cmd(giif->mbx, &cmd, NULL, GCIP_MAILBOX_CMD_FLAGS_SKIP_ASSIGN_SEQ);
+	ret = gxp_mailbox_send_cmd(giif->mbx, &cmd, NULL);
 	if (ret)
 		dev_warn(giif->mcu->gxp->dev, "Failed to notify the IIF unblock: id=%d, ret=%d",
 			 iif_id, ret);

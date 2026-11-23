@@ -42,6 +42,14 @@ config VERISILICON_PLANE_RCD
 	  Choose this option to enable plane based rounded corner implementation
 	  for devices that support it.
 
+config VERISILICON_DC9400_0x20000005
+	bool "VeriSilicon Chip Id 0x20000005"
+	depends on VERISILICON_CHIP_9x00
+	default y
+	help
+	  Choose this option if you want to get VeriSilicon display info of
+	  9400_0x20000005.
+
 config VERISILICON_MIPI_DSI2H
 	bool "Integration with Synopsis MIPI DSI2 Host driver"
 	select DRM_DW_MIPI_DSI2H

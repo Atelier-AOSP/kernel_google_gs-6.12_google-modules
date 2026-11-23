@@ -9,6 +9,13 @@ config GOOGLE_DVFS_HELPER
 	  It provides APIs for other drivers like cpufreq to query this
 	  information.
 
+config GOOGLE_DVFS_TARGET_FRONTEND
+	tristate "Google DVFS target frontend"
+	help
+	  This driver talks to the hardware components for direct frequency
+	  setting, and exposes atomic-safe APIs to drivers for frequency
+	  setting and query.
+
 config GOOGLE_GDMC_DHUB
 	tristate "Google Debug and UART Hub driver"
 	depends on GOOGLE_MBA_GDMC_INTERFACE
@@ -18,6 +25,18 @@ config GOOGLE_GDMC_DHUB
 	  single packetized data stream between device and host.
 	  The driver allows configuring this UART channels through its sysfs.
 	  The host configures DHUB behaviour over the GDMC mailbox channel.
+	  Select Y if you have such device.
+	  If unsure select "N".
+
+config GOOGLE_GDMC_DHUB_TEST
+	tristate "KUnit test for Google DHUB driver" if !KUNIT_ALL_TESTS
+	default KUNIT_ALL_TESTS
+	depends on ARCH_GOOGLE
+	depends on KUNIT
+	help
+	  This option enables the KUnit test module for the Google DHUB Driver.
+	  The tests verify buisness logic of sysfs interfaces provided to user.
+
 	  Select Y if you have such device.
 	  If unsure select "N".
 
@@ -41,6 +60,15 @@ config GOOGLE_LPM_PM_DOMAINS
 	  going through CPM. It can turn on/off subdomains, but it
 	  cannot turn on/off the SSWRP-level top domains. This driver
 	  is expected to be used on platforms where CPM is missing.
+
+config GOOGLE_MBA_DOORBELL_INTERFACE
+	depends on GOOGLE_MBA_CTRL
+	tristate "Google MBA doorbell interface"
+	help
+	  Enable this module to provide mailbox doorbell libarary. This library
+	  provides APIs to manage mailbox channels which execute in doorbell mode.
+	  Select Y if you have such device.
+	  If unsure select "N".
 
 config GOOGLE_MBA_AGGREGATOR
 	tristate "Google MBA service aggregator"
@@ -92,6 +120,17 @@ config GOOGLE_MBA_CPM_INTERFACE_TEST
 	 APIs. This module will create debugfs to export some CPM functions to be trigger by
 	 userspace to help integrating with testing framework.
          If unsure select "N".
+
+config GOOGLE_MBA_EBU_INTERFACE
+	tristate "Google EBU mailbox interface"
+	depends on GOOGLE_MBA_AGGREGATOR
+	help
+	  Enable this module to enable EBU mailbox interface APIs.
+	  "EBU interface" service module provides EBU services APIs.
+	  This module provides EBU mailbox services APIs to the client and route the
+	  mailbox requests to available EBU mailbox channels.
+	  Select Y if you have such device.
+	  If unsure select "N".
 
 config GOOGLE_CHIP_INFO
        tristate "Google chip info driver"
@@ -159,7 +198,20 @@ config POWER_STATE_BLOCKERS_SECTION
 	  It will enable additional sysfs nodes related to state blockers.
 	  If unsure select "N".
 
-source "$(KCONFIG_SOC_RDO_PREFIX)drivers/soc/google/cdd/Kconfig"
-source "$(KCONFIG_SOC_RDO_PREFIX)drivers/soc/google/cdd-cpu/Kconfig"
-source "$(KCONFIG_SOC_RDO_PREFIX)drivers/soc/google/debug/Kconfig"
-source "$(KCONFIG_SOC_RDO_PREFIX)drivers/soc/google/vdu/Kconfig"
+config GOOGLE_DPA
+	tristate "Google DPA driver"
+	depends on ARCH_GOOGLE
+	default n
+	help
+	  Support for DPA (NOA) device.
+	  DPA (Data Path Accelerator) device provides network offloading
+	  features. This driver provides features like booting DPA firmware,
+	  and managing DPA device states.
+
+config GOOGLE_AOSS_WDT_HANDLER
+    tristate "Google AOSS Watchdog Handler"
+    help
+	  This driver marks IRQ sent from CPM as a wakeup source.
+	  When AONSS or AMBSS Watchdog is fired in Ambient modes,
+	  this driver is supposed to mark the resume reason as expected
+	  and caused by AOSS (Always-on Subsystem) Watchdog handling process.

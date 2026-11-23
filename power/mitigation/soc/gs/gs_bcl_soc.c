@@ -8,12 +8,11 @@
 
 #include <linux/cpu.h>
 #include <linux/cpu_pm.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_gpio.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 
@@ -55,6 +54,34 @@ static unsigned int subsys_to_pmu(enum SUBSYSTEM_SOURCE subsys_src)
 		return PMU_ALIVE_TPU_STATES;
 	case GPU:
 		return PMU_ALIVE_GPU_STATES;
+	default:
+		return -EINVAL;
+	}
+}
+
+static enum CPU_CLUSTER get_cluster_by_source_idx(enum SUBSYSTEM_SOURCE subsys_src)
+{
+	switch (subsys_src) {
+	case CPU0:
+		return LITTLE_CLUSTER;
+	case CPU1:
+		return MID_CLUSTER;
+	case CPU2:
+		return BIG_CLUSTER;
+	default:
+		return -EINVAL;
+	}
+}
+
+static enum SUBSYSTEM_SOURCE get_source_by_cluster(enum CPU_CLUSTER cluster_src)
+{
+	switch (cluster_src) {
+	case LITTLE_CLUSTER:
+		return CPU0;
+	case MID_CLUSTER:
+		return CPU1;
+	case BIG_CLUSTER:
+		return CPU2;
 	default:
 		return -EINVAL;
 	}
@@ -208,6 +235,14 @@ void google_bcl_parse_clk_div_dtree(struct bcl_device *bcl_dev)
 	bcl_dev->core_conf[GPU].con_heavy = ret ? 0 : val;
 	ret = of_property_read_u32(np, "gpu_con_light", &val);
 	bcl_dev->core_conf[GPU].con_light = ret ? 0 : val;
+	ret = of_property_read_u32(np, "cpu2_con_heavy", &val);
+	bcl_dev->core_conf[CPU2].con_heavy = ret ? 0 : val;
+	ret = of_property_read_u32(np, "cpu2_con_light", &val);
+	bcl_dev->core_conf[CPU2].con_light = ret ? 0 : val;
+	ret = of_property_read_u32(np, "cpu1_con_heavy", &val);
+	bcl_dev->core_conf[CPU1].con_heavy = ret ? 0 : val;
+	ret = of_property_read_u32(np, "cpu1_con_light", &val);
+	bcl_dev->core_conf[CPU1].con_light = ret ? 0 : val;
 	ret = of_property_read_u32(np, "gpu_clkdivstep", &val);
 	bcl_dev->core_conf[GPU].clkdivstep = ret ? 0 : val;
 	ret = of_property_read_u32(np, "tpu_clkdivstep", &val);
@@ -220,8 +255,6 @@ void google_bcl_parse_clk_div_dtree(struct bcl_device *bcl_dev)
 	bcl_dev->core_conf[CPU1].clkdivstep = ret ? 0 : val;
 	ret = of_property_read_u32(np, "cpu0_clkdivstep", &val);
 	bcl_dev->core_conf[CPU0].clkdivstep = ret ? 0 : val;
-	bcl_dev->vdroop1_pin = of_get_named_gpio(np, "gpios", 0);
-	bcl_dev->vdroop2_pin = of_get_named_gpio(np, "gpios", 1);
 	ret = of_property_read_u32(np, "rffe_channel", &val);
 	bcl_dev->rffe_channel = ret ? 11 : val;
 	ret = of_property_read_u32(np, "cpu0_cluster", &val);
@@ -241,7 +274,7 @@ static int bcl_dev_cpu_notifier(struct notifier_block *nfb, unsigned long action
 	int cpu = raw_smp_processor_id();
 	struct bcl_device *bcl_dev;
 	unsigned int i, bit_mask;
-	int cpu_ind;
+	int cpu_ind, system_source_idx;
 
 	if (action != CPU_PM_EXIT)
 		return NOTIFY_OK;
@@ -262,6 +295,12 @@ static int bcl_dev_cpu_notifier(struct notifier_block *nfb, unsigned long action
 	else
 		cpu_ind = BIG_CLUSTER;
 
+	system_source_idx = get_source_by_cluster(cpu_ind);
+	if (system_source_idx < 0) {
+		dev_err(bcl_dev->device, "invalid system source from cpu cluster");
+		return NOTIFY_OK;
+	}
+
 	if (bcl_dev->cpu_buff_conf[cpu_ind].wr_update_rqd == 0 &&
 	    bcl_dev->cpu_buff_conf[cpu_ind].rd_update_rqd == 0)
 		return NOTIFY_OK;
@@ -270,13 +309,13 @@ static int bcl_dev_cpu_notifier(struct notifier_block *nfb, unsigned long action
 		bit_mask = BIT(i);
 		if (bcl_dev->cpu_buff_conf[cpu_ind].wr_update_rqd & bit_mask) {
 			__raw_writel(bcl_dev->cpu_buff_conf[cpu_ind].buff[i],
-				     bcl_dev->core_conf[CPU0 + cpu_ind].base_mem +
+				     bcl_dev->core_conf[system_source_idx].base_mem +
 				     bcl_dev->cpu_buff_conf[cpu_ind].addr[i]);
 			bcl_dev->cpu_buff_conf[cpu_ind].wr_update_rqd &= ~bit_mask;
 		}
 		if (bcl_dev->cpu_buff_conf[cpu_ind].rd_update_rqd & bit_mask) {
 			bcl_dev->cpu_buff_conf[cpu_ind].buff[i] =
-				__raw_readl(bcl_dev->core_conf[CPU0 + cpu_ind].base_mem +
+				__raw_readl(bcl_dev->core_conf[system_source_idx].base_mem +
 					    bcl_dev->cpu_buff_conf[cpu_ind].addr[i]);
 			bcl_dev->cpu_buff_conf[cpu_ind].rd_update_rqd &= ~bit_mask;
 		}
@@ -285,14 +324,19 @@ static int bcl_dev_cpu_notifier(struct notifier_block *nfb, unsigned long action
 	return NOTIFY_OK;
 }
 
-int cpu_buff_read(struct bcl_device *bcl_dev, int cluster, unsigned int type, unsigned int *reg)
+int cpu_buff_read(struct bcl_device *bcl_dev, int idx, unsigned int type, unsigned int *reg)
 {
-	if (cluster < CPU0 || cluster > CPU2)
+	const enum CPU_CLUSTER cluster = get_cluster_by_source_idx(idx);
+
+	if (cluster < LITTLE_CLUSTER || cluster >= CPU_CLUSTER_MAX)
 		return -EINVAL;
 
-	if (cluster == CPU0) {
-		*reg = __raw_readl(bcl_dev->core_conf[CPU0].base_mem +
-				   bcl_dev->cpu_buff_conf[LITTLE_CLUSTER].addr[type]);
+	if (type < CPU_BUFF_CON_HEAVY || type >= CPU_BUFF_VALS_MAX)
+		return -EINVAL;
+
+	if (cluster == LITTLE_CLUSTER) {
+		*reg = __raw_readl(bcl_dev->core_conf[idx].base_mem +
+				   bcl_dev->cpu_buff_conf[cluster].addr[type]);
 		return 0;
 	}
 
@@ -301,14 +345,19 @@ int cpu_buff_read(struct bcl_device *bcl_dev, int cluster, unsigned int type, un
 	return 0;
 }
 
-int cpu_buff_write(struct bcl_device *bcl_dev, int cluster, unsigned int type, unsigned int val)
+int cpu_buff_write(struct bcl_device *bcl_dev, int idx, unsigned int type, unsigned int val)
 {
-	if (cluster < CPU0 || cluster > CPU2)
+	const enum CPU_CLUSTER cluster = get_cluster_by_source_idx(idx);
+
+	if (cluster < LITTLE_CLUSTER || cluster >= CPU_CLUSTER_MAX)
 		return -EINVAL;
 
-	if (cluster == CPU0) {
-		__raw_writel(val, bcl_dev->core_conf[CPU0].base_mem +
-			     bcl_dev->cpu_buff_conf[LITTLE_CLUSTER].addr[type]);
+	if (type < CPU_BUFF_CON_HEAVY || type >= CPU_BUFF_VALS_MAX)
+		return -EINVAL;
+
+	if (cluster == LITTLE_CLUSTER) {
+		__raw_writel(val, bcl_dev->core_conf[idx].base_mem +
+			     bcl_dev->cpu_buff_conf[cluster].addr[type]);
 		return 0;
 	}
 
@@ -384,31 +433,31 @@ bool bcl_is_subsystem_on(struct bcl_device *bcl_dev, enum SUBSYSTEM_SOURCE subsy
 	return false;
 }
 
-bool bcl_disable_power(struct bcl_device *bcl_dev, int cluster)
+bool bcl_disable_power(struct bcl_device *bcl_dev, int system_src)
 {
 	if (IS_ENABLED(CONFIG_REGULATOR_S2MPG14) || IS_ENABLED(CONFIG_REGULATOR_S2MPG12)) {
 		int i;
 
-		if (cluster == CPU1)
+		if (system_src == CPU1)
 			for (i = bcl_dev->cpu_cluster[QOS_CPU1];
 			     i < bcl_dev->cpu_cluster[QOS_CPU2]; i++)
 				disable_power_mode(i, POWERMODE_TYPE_CLUSTER);
-		else if (cluster == CPU2)
+		else if (system_src == CPU2)
 			disable_power_mode(bcl_dev->cpu_cluster[QOS_CPU2], POWERMODE_TYPE_CLUSTER);
 	}
 	return true;
 }
 
-bool bcl_enable_power(struct bcl_device *bcl_dev, int cluster)
+bool bcl_enable_power(struct bcl_device *bcl_dev, int system_src)
 {
 	if (IS_ENABLED(CONFIG_REGULATOR_S2MPG14) || IS_ENABLED(CONFIG_REGULATOR_S2MPG12)) {
 		int i;
 
-		if (cluster == CPU1)
+		if (system_src == CPU1)
 			for (i = bcl_dev->cpu_cluster[QOS_CPU1];
 			     i < bcl_dev->cpu_cluster[QOS_CPU2]; i++)
 				enable_power_mode(i, POWERMODE_TYPE_CLUSTER);
-		else if (cluster == CPU2)
+		else if (system_src == CPU2)
 			enable_power_mode(bcl_dev->cpu_cluster[QOS_CPU2], POWERMODE_TYPE_CLUSTER);
 	}
 	return true;
@@ -439,9 +488,24 @@ int google_init_ratio(struct bcl_device *data, enum SUBSYSTEM_SOURCE idx)
 {
 	void __iomem *addr;
 
+	if (idx >= ARRAY_SIZE(clk_stats_offset) ||
+	    idx >= ARRAY_SIZE(subsystem_pmu))
+		return -EINVAL;
+
 	/* Ensure BCL driver is initialized */
 	if (!smp_load_acquire(&data->initialized))
 		return -EINVAL;
+
+	if (idx == CPU1 || idx == CPU2) {
+		if (data->core_conf[idx].con_heavy > 0)
+			cpu_buff_write(data, idx, CPU_BUFF_CON_HEAVY,
+						   data->core_conf[idx].con_heavy);
+		if (data->core_conf[idx].con_light > 0)
+			cpu_buff_write(data, idx, CPU_BUFF_CON_LIGHT,
+						   data->core_conf[idx].con_light);
+
+		return 0;
+	}
 
 	if (!bcl_is_subsystem_on(data, subsystem_pmu[idx]))
 		return -EIO;
@@ -457,6 +521,7 @@ int google_init_ratio(struct bcl_device *data, enum SUBSYSTEM_SOURCE idx)
 		addr = data->core_conf[idx].base_mem + VDROOP_FLT;
 		__raw_writel(data->core_conf[idx].vdroop_flt, addr);
 	}
+
 	addr = data->core_conf[idx].base_mem + CLKDIVSTEP;
 	__raw_writel(data->core_conf[idx].clkdivstep, addr);
 	addr = data->core_conf[idx].base_mem + CLKOUT;
@@ -740,4 +805,9 @@ ssize_t set_sw_mitigation(struct bcl_device *bcl_dev, const char *buf, size_t si
 				disable_irq(bcl_dev->zone[i]->bcl_irq);
 	}
 	return size;
+}
+
+int google_init_vd_soc(struct bcl_device *bcl_dev)
+{
+	return 0;
 }

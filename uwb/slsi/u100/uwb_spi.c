@@ -13,6 +13,8 @@
 #include <linux/slab.h>
 #include <linux/spi/spi.h>
 #include <linux/string.h>
+#include <linux/delay.h>
+#include <linux/errno.h>
 
 #include "include/uwb_spi.h"
 
@@ -121,6 +123,9 @@ int uwb_spi_send(struct u100_ctx *u100_ctx, char *buff, unsigned int size, char 
 		atomic_inc(&u100_ctx->num_spi_slow_txs);
 	mutex_unlock(&u100_ctx->lock);
 
+	if (ret < 0)
+		usleep_range(5000, 10000);
+
 	return ret;
 }
 
@@ -140,6 +145,10 @@ int uwb_spi_recv(struct u100_ctx *u100_ctx, char *buff, unsigned int size)
 	rx.speed_hz = spi_speed;
 
 	rx.tx_buf = kmalloc(size, GFP_KERNEL);
+	if (!rx.tx_buf) {
+		mutex_unlock(&u100_ctx->lock);
+		return -ENOMEM;
+	}
 	memset((void *)rx.tx_buf, 0xff, size);
 
 	spi_message_init(&msg);
@@ -164,11 +173,15 @@ int uwb_spi_recv(struct u100_ctx *u100_ctx, char *buff, unsigned int size)
 	if (elapsed_time > (spi_slow_tx_limit + spi_slow_tx_ms))
 		atomic_inc(&u100_ctx->num_spi_slow_txs);
 	mutex_unlock(&u100_ctx->lock);
-	if (dump_spi_payload) {
+	if (ret == 0 && dump_spi_payload) {
 		UWB_INFO("Receive len: %d, data:\n", size);
 		uwb_spi_data(buff, size);
 	}
 
 	kfree(rx.tx_buf);
+
+	if (ret < 0)
+		usleep_range(5000, 10000);
+
 	return ret;
 }

@@ -16,6 +16,9 @@
 #include "lwis_io_buffer.h"
 #include "lwis_util.h"
 
+bool lwis_io_buffer_debug;
+module_param(lwis_io_buffer_debug, bool, 0644);
+
 struct pdma_buffer {
 	struct iosys_map io_sys_map;
 	struct dma_buf *dma_buf;
@@ -31,6 +34,9 @@ int lwis_io_buffer_map(struct lwis_device *lwis_dev, struct lwis_io_entry *entry
 	pdma_buffer = kmalloc(sizeof(struct pdma_buffer), GFP_KERNEL);
 	if (!pdma_buffer)
 		return -ENOMEM;
+
+	if (lwis_io_buffer_debug)
+		dev_info(lwis_dev->dev, "write_to_buffer.fd = %d\n", entry->write_to_buffer.fd);
 
 	k_data_to_write = kmalloc(entry->write_to_buffer.size_in_bytes, GFP_KERNEL);
 	if (!k_data_to_write) {
@@ -114,6 +120,16 @@ int lwis_io_buffer_write(struct lwis_device *lwis_dev, struct lwis_io_entry *ent
 		kernel_address = pdma_buffer->io_sys_map.vaddr_iomem;
 	else
 		kernel_address = pdma_buffer->io_sys_map.vaddr;
+
+	if (lwis_io_buffer_debug) {
+		dev_info(lwis_dev->dev, "kernel_address %p offset %llu size_in_bytes %llu\n",
+			 kernel_address, entry->write_to_buffer.offset,
+			 (unsigned long long)entry->write_to_buffer.size_in_bytes);
+
+		print_hex_dump_bytes("data dump: ", DUMP_PREFIX_NONE,
+				     entry->write_to_buffer.bytes,
+				     min_t(size_t, entry->write_to_buffer.size_in_bytes, 16));
+	}
 
 	memcpy(kernel_address + entry->write_to_buffer.offset, entry->write_to_buffer.bytes,
 	       entry->write_to_buffer.size_in_bytes);

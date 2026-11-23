@@ -80,19 +80,21 @@ static inline bool qdf_str_eq(const char *left, const char *right)
 }
 
 /**
- * qdf_str_lcopy - Bounded copy from one string to another
+ * qdf_str_scopy - Copy a C-string into a sized buffer
  * @dest: destination string
  * @src: source string
  * @dest_size: max number of bytes to copy (incl. null terminator)
  *
- * If the return value is >= @dest_size, @dest has been truncated.
+ * If the return value is -E2BIG, @dest has been truncated or @dest_size is 0.
  *
- * Return: length of @src
+ * Return:
+ *     >=0 - length of @src (without null terminator)
+ *      <0 - @dest has been truncated or @dest_size is 0
  */
-static inline qdf_size_t
-qdf_str_lcopy(char *dest, const char *src, uint32_t dest_size)
+static inline qdf_ssize_t
+qdf_str_scopy(char *dest, const char *src, qdf_size_t dest_size)
 {
-	return __qdf_str_lcopy(dest, src, dest_size);
+	return __qdf_str_scopy(dest, src, dest_size);
 }
 
 /**

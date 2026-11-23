@@ -251,6 +251,7 @@ typedef union bcm_event_msg_u {
 #define WLC_E_AUTHORIZED	136	/* a STA been authroized for traffic */
 #define WLC_E_PROBREQ_MSG_RX	137 /* probe req with wl_event_rx_frame_data_t header */
 #define WLC_E_PFN_SCAN_COMPLETE	138	/* PFN completed scan of network list */
+/* TODO: remove obsolete RELMCAST code once no branches have them. */
 #define WLC_E_RMC_EVENT		139	/* RMC Event */
 #define WLC_E_DPSTA_INTF_IND	140	/* DPSTA interface indication */
 #define WLC_E_RRM		141	/* RRM Event */
@@ -329,9 +330,23 @@ typedef union bcm_event_msg_u {
 						 */
 #define WLC_E_AIRIQ_EVENT		214	/* AIRIQ driver event */
 #define WLC_E_VLPTPC			215	/* Very Low Power (VLP) TPC */
+
 #define WLC_E_SBI_SC_EVENT		216	/* SBI SC event */
-#define WLC_E_SSID_MITIGATION           217     /* SSID mitigation event */
-#define WLC_E_LAST			218	/* highest val + 1 for range checking */
+#define WLC_E_SSID_MITIGATION		217	/* SSID mitigation event */
+#define WLC_E_REQUEST_CLM		218	/* Request CLM reload */
+
+/* New events should be added below */
+#define	WLC_E_SET2_BUCKET_START			 400	/* Offset to allow brcm events */
+#define	WLC_E_D11FRAME				 401	/* Send frame Rx */
+#define	WLC_E_D11FRAME_RX			 402	/* Send frame Rx with event data header */
+#define WLC_E_D11FRAME_COMPLETE			 403	/* Send frame Tx complete */
+#define WLC_E_D11FRAME_OFF_CHAN_COMPLETE	 404	/* Send frame off channel complete */
+#define WLC_E_D11FRAME_OFF_CHAN_DWELL_COMPLETE	 405	/* Send frame off channel dwell complete */
+#define WLC_E_SCHED_PM				 406	/* Scheduled PM Event */
+#define WLC_E_LEAKY_AP_DETECT			 407	/* Leaky AP Detection Event */
+/* Add here */
+#define WLC_E_SET2_BUCKET_END			 408
+#define WLC_E_LAST		WLC_E_SET2_BUCKET_END + 1 /* highest val + 1 for range checking */
 
 /* define an API for getting the string name of an event */
 extern const char *bcmevent_get_name(uint event_type);
@@ -460,6 +475,7 @@ typedef enum wlc_roam_cache_update_reason {
 #define WLC_E_STATUS_CHANNELSWITCH	24	/* scan aborted due to CSA event */
 #define WLC_E_STATUS_PREF_LINK_SWAP_FAIL	25	/* Failure happened during pref link swap */
 #define WLC_E_STATUS_MLO_ROAM_FAIL	26	/* Fall back handling when AP sends deuath */
+#define WLC_E_STATUS_NON_MLO_AUTH	27	/* non-ML auth handling for WPA3-SAE */
 #define WLC_E_STATUS_INVALID 0xff  /* Invalid status code to init variables. */
 
 /* 4-way handshake event type */
@@ -892,11 +908,6 @@ enum {
 }
 #endif /* WLTDLS */
 
-/* reason codes for WLC_E_RMC_EVENT event */
-#define WLC_E_REASON_RMC_NONE		0
-#define WLC_E_REASON_RMC_AR_LOST		1
-#define WLC_E_REASON_RMC_AR_NO_ACK		2
-
 #ifdef WLTDLS
 /* TDLS Action Category code */
 #define TDLS_AF_CATEGORY		12
@@ -1136,6 +1147,11 @@ typedef enum wl_nan_events {
 	WL_NAN_EVENT_UNENCRYPTED_AF_RECV	= 59,	/* Unencrypted Rx on secured link */
 	WL_NAN_EVENT_AUTH_RX			= 60,	/* NAN auth rx for Host based nan pairing */
 	WL_NAN_EVENT_GROUP_PN_ROLLOVER		= 61,	/* PN rollover event */
+
+	/* NAN PLUS events */
+	WL_NAN_EVENT_SYNC_PS_IND		= 62,
+	WL_NAN_EVENT_SCHED_PS_IND		= 63,
+	WL_NAN_EVENT_ADSDC_IND			= 64,
 	/* keep WL_NAN_EVENT_INVALID as the last element */
 	WL_NAN_EVENT_INVALID				/* delimiter for max value */
 } nan_app_events_e;
@@ -1278,6 +1294,55 @@ typedef struct {
 	uint8 data[];	/* type specific data; could be empty */
 } wl_event_fbt_t;
 
+/* WLC_E_SCHED_PM Event */
+#define WL_SCHED_PM_EVENT_HDR_LEN (SIZE_OF(wl_sched_pm_event_t, version) +\
+		SIZE_OF(wl_sched_pm_event_t, length))
+#define WL_SCHED_PM_EVENT_BASE_LEN	sizeof(wl_sched_pm_event_t)
+
+#define WL_SCHED_PM_EVENT_VER	0u
+typedef enum wl_sched_pm_event_type {
+	WL_SCHED_PM_EVENT_TEARDOWN		= 1u,	/* Teardown Event */
+	WL_SCHED_PM_EVENT_LEAKY_AP_DETECTION	= 2u,	/* Leaky AP detection Event */
+} wl_sched_pm_event_type_t;
+
+/* WLC_E_SCHED_PM_TEARDOWN Event Body */
+typedef struct wl_sched_pm_event {
+	uint16 version;
+	uint16 length;		/* the byte count of fields from 'event_type' onwards */
+	uint8 event_type;	/* See sub event types in wl_twt_event_type_t */
+	uint8 event_info[];
+} wl_sched_pm_event_t;
+
+/* Sched_PM teardown Reason code */
+typedef enum wl_sched_pm_td_rc {
+	WL_SCHED_PM_TD_RC_ROAM	= 0u,	/* Teardown triggered by Host */
+	WL_SCHED_PM_TD_RC_CSA	= 1u,	/* Teardown triggered by Host */
+	WL_SCHED_PM_TD_RC_MCNX	= 2u,	/* Teardown triggered by Host */
+	WL_SCHED_PM_TD_RC_PMOFF	= 3u,	/* Teardown triggered by Host */
+	WL_SCHED_PM_TD_RC_MLO	= 4u,	/* Teardown triggered by Host */
+	WL_SCHED_PM_TD_RC_ERROR	= 255u,	/* Generic Error cases */
+} wl_sched_pm_td_rc_t;
+
+
+#define WL_SCHED_PM_TEARDOWN_EVENT_VER	0u
+
+/* Sched_PM Teardown complete event data */
+typedef struct wl_sched_pm_teardown_cplt {
+	uint16 version;
+	uint16 length;		/* the byte count of fields from 'reason_code' onwards */
+	uint8 reason_code;	/* reason codes for teardown - wl_sched_pm_td_rc */
+	uint8 event_id;		/* Event ID */
+	uint8 pad[2];
+	int32 status;
+} wl_sched_pm_teardown_cplt_t;
+
+/* Sched_PM Leaky AP detection event data */
+typedef struct wl_sched_pm_leaky_ap_detection {
+	uint16 version;
+	uint16 length;
+	uint8 event_id;		/* Event ID */
+} wl_sched_pm_leaky_ap_detection_t;
+
 #define WL_TWT_EVENT_HDR_LEN (SIZE_OF(wl_twt_event_t, version) + SIZE_OF(wl_twt_event_t, length))
 #define WL_TWT_EVENT_BASE_LEN	sizeof(wl_twt_event_t)
 typedef enum wl_twt_event_type {
@@ -1344,9 +1409,13 @@ typedef enum wl_twt_td_rc {
 	WL_TWT_TD_RC_CSA	= 4u,	/* Teardown due to CSA */
 	WL_TWT_TD_RC_BTCX	= 5u,	/* Teardown due to BTCX */
 	WL_TWT_TD_RC_SETUP_FAIL	= 6u, /* Setup fail midway. Teardown all connections */
-	WL_TWT_TD_RC_SCHED	= 7u,	/* Teardown by TWT Scheduler */
-	WL_TWT_TD_RC_TIMEOUT	= 8u,	/* NoAck/Ack timeout for Teardown */
-	WL_TWT_TD_RC_PM_OFF	= 9u,	/* Teardown due to PM Mode 0 */
+	WL_TWT_TD_RC_PM_OFF	= 7u,	/* Teardown due to PM Mode 0 */
+	WL_TWT_TD_RC_SCAN	= 8u,	/* Teardown due to Scan Triggered */
+
+	/* Add additional reason codes below this */
+	WL_TWT_TD_RC_SCHED	= 9u,	/* Teardown by TWT Scheduler */
+	WL_TWT_TD_RC_TIMEOUT	= 10u,	/* NoAck/Ack timeout for Teardown */
+	WL_TWT_TD_RC_DISCONNECT	= 11u,	/* Teardown due to STA Disconnection/ROAM */
 	/* Any new reason code add before this */
 	WL_TWT_TD_RC_ERROR	= 255u,	/* Generic Error cases */
 } wl_twt_td_rc_t;

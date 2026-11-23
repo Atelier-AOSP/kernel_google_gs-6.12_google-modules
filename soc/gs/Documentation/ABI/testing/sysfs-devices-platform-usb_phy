@@ -1,4 +1,4 @@
-What:		/sys/devices/platform/*.usb_phy/dp_tune/<rate>/vs_<vs>/pe_<pe>/<coeff>
+What:		/sys/devices/platform/*.usb*_phy/dp_tune/<rate>/vs_<vs>/pe_<pe>/<coeff>
 Date:		April, 2025
 Contact:	"RD Babiera" <rdbabiera@google.com>
 Description:
@@ -14,7 +14,7 @@ Description:
         and should be performed prior to establishing the link. The values are
         only applied if dp_tune_ovrd_en is enabled.
 
-What:		/sys/kernel/debug/google_usb_phy/tx_eq/lane*/<coeff>
+What:		/sys/kernel/debug/*.usb*_phy/tx_eq/lane*/<coeff>
 Date:		April, 2025
 Contact:	"RD Babiera" <rdbabiera@google.com>
 Description:

@@ -11,6 +11,10 @@
 #include "lga/ufs-platform.h"
 #endif
 
+#if IS_ENABLED(CONFIG_SOC_MBU)
+#include "mbu/ufs-platform.h"
+#endif
+
 /* UNIPRO DME attributes */
 #define UNIPRO_DME_LAYER_EN 0xd000
 #define UNIPRO_DME_MPHY_CFG_UPD 0xd085
@@ -39,6 +43,7 @@
 #define MPHY_G5_RX_FSM_STATE_OFFSET 0xC1U
 #define MPHY_G5_TX_EQ_MAIN_DE_0P0_LA 0x8014
 #define MPHY_G5_TX_EQ_PRE_DE_0P0_LA 0x8016
+#define TXLINERSTCFGLSB 0x800A
 
 /* Ref: DWC_mipi_unipro_databook ver 1.60a, Table 2-1*/
 #define MPHY_TX_LANE1 UIC_ARG_MPHY_TX_GEN_SEL_INDEX(0)
@@ -57,6 +62,11 @@
 #define RAWLANEANONN_DIG_RX_STARTUP_CAL_ALGO_CTL_1_LANE1 0x3301
 #define RAWLANEANONN_DIG_RX_CONT_ALGO_CTL_LANE0 0x3103
 #define RAWLANEANONN_DIG_RX_CONT_ALGO_CTL_LANE1 0x3303
+
+/* Assymetric power mode change software workaround registers */
+#define LANE1_DIG_RX_CDR_CDR_CTL_6 0x10FC
+#define LANE2_DIG_RX_CDR_CDR_CTL_6 0x12FC
+#define SUP_DIG_ANA_XF_BG_OVRD_OUT 0xC4
 
 /**
  * [Mandatory] Set google platform ops. Need to be implemented in <platform>/ufs-platform.c
@@ -95,6 +105,31 @@ static inline int ufs_plat_poll_phy_ready(struct ufs_google_host *host)
 	if (host->gops->poll_phy_ready)
 		return host->gops->poll_phy_ready(host);
 	return -EINVAL;
+}
+
+/**
+ * ufs_plat_set_refclk_control - Enable or disable UFS QCH voting
+ * @host: google host instance
+ * @on: true to enable, false to disable
+ */
+static inline void ufs_plat_set_refclk_control(struct ufs_google_host *host,
+					       bool on)
+{
+	if (host->gops->set_refclk_control)
+		host->gops->set_refclk_control(host, on);
+}
+
+static inline int ufs_plat_config_cpm(struct ufs_google_host *host)
+{
+	if (host->gops->config_cpm)
+		return host->gops->config_cpm(host);
+	return -EINVAL;
+}
+
+static inline void ufs_plat_config_vs(struct ufs_google_host *host)
+{
+	if (host->gops->config_vs)
+		host->gops->config_vs(host);
 }
 
 #endif /* _UFS_GOOGLE_PLATFORM_H_ */

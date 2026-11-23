@@ -45,7 +45,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "img_defs.h"
 
-#include "srvcore.h"
 #include "info_page.h"
 #include "proc_stats.h"
 #include "rgx_fwif_alignchecks.h"
@@ -531,8 +530,8 @@ PVRSRVBridgeAlignmentCheck(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psAlignmentCheckIN->ui32AlignChecksSize * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32AlignChecksInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32AlignChecksInt,
 		     (const void __user *)psAlignmentCheckIN->pui32AlignChecks,
 		     psAlignmentCheckIN->ui32AlignChecksSize * sizeof(IMG_UINT32)) != PVRSRV_OK)
 		{
@@ -677,8 +676,9 @@ PVRSRVBridgeGetMultiCoreInfo(IMG_UINT32 ui32DispatchTableEntry,
 	if ((pui64CapsInt) && ((psGetMultiCoreInfoIN->ui32CapsSize * sizeof(IMG_UINT64)) > 0))
 	{
 		if (unlikely
-		    (OSCopyToUser
-		     (NULL, (void __user *)psGetMultiCoreInfoOUT->pui64Caps, pui64CapsInt,
+		    (CopyToUserWrapper
+		     (NULL, ui32DispatchTableEntry, (void __user *)psGetMultiCoreInfoOUT->pui64Caps,
+		      pui64CapsInt,
 		      (psGetMultiCoreInfoIN->ui32CapsSize * sizeof(IMG_UINT64))) != PVRSRV_OK))
 		{
 			psGetMultiCoreInfoOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -861,8 +861,9 @@ PVRSRVBridgeFindProcessMemStats(IMG_UINT32 ui32DispatchTableEntry,
 	    ((psFindProcessMemStatsIN->ui32ArrSize * sizeof(IMG_UINT64)) > 0))
 	{
 		if (unlikely
-		    (OSCopyToUser
-		     (NULL, (void __user *)psFindProcessMemStatsOUT->pui64MemStatsArray,
+		    (CopyToUserWrapper
+		     (NULL, ui32DispatchTableEntry,
+		      (void __user *)psFindProcessMemStatsOUT->pui64MemStatsArray,
 		      pui64MemStatsArrayInt,
 		      (psFindProcessMemStatsIN->ui32ArrSize * sizeof(IMG_UINT64))) != PVRSRV_OK))
 		{

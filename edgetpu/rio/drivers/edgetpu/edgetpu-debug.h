@@ -16,8 +16,7 @@
 
 struct edgetpu_dev;
 
-/* Firmware debug service buffer IOVA and size. */
-/* TODO(b/333625284): reserve firmware debug buffer IOVA range from DMA window used by DMA API */
+/* Firmware debug service buffer IOVA (after FW remap region) and size. */
 #define FW_DEBUG_BUFFER_IOVA	0x18000000
 #define FW_DEBUG_BUFFER_SIZE	(13 * SZ_1M)
 
@@ -56,7 +55,7 @@ enum edgetpu_dump_type_bit_position {
 
 enum edgetpu_dump_reason {
 	DUMP_REASON_DEFAULT = 0,
-	/* Host request reasons */
+	/* Via debugfs attr */
 	DUMP_REASON_REQ_BY_USER = 1,
 
 	/* FW side dump reasons */
@@ -66,7 +65,8 @@ enum edgetpu_dump_reason {
 	DUMP_REASON_NON_FATAL_CRASH = 5,
 	DUMP_REASON_SW_WATCHDOG_TIMEOUT = 6,
 
-	DUMP_REASON_NUM = 7
+	/* Zombie client holding TPU powered */
+	DUMP_REASON_CLIENT_ZOMBIE = 7,
 };
 
 struct edgetpu_crash_reason {

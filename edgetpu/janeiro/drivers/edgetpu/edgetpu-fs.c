@@ -223,7 +223,7 @@ static int edgetpu_ioctl_join_group(struct edgetpu_client *client,
 				    u64 leader_fd)
 {
 	struct fd f = fdget(leader_fd);
-	struct file *file = f.file;
+	struct file *file = fd_file(f);
 	struct edgetpu_client *leader;
 	int ret;
 	struct edgetpu_device_group *group;
@@ -294,7 +294,7 @@ static int edgetpu_ioctl_map_buffer(struct edgetpu_client *client,
 	/*
 	 * Don't hold @client->group_lock on purpose since
 	 * 1. We don't care whether @client still belongs to @group.
-	 * 2. get_user_pages_fast called by edgetpu_device_group_map() will hold
+	 * 2. get_user_pages called by edgetpu_device_group_map() will hold
 	 *    mm->mmap_sem, we need to prevent our locks being held around it.
 	 */
 	UNLOCK(client);
@@ -1154,7 +1154,6 @@ static const struct attribute_group edgetpu_attr_group = {
 
 const struct file_operations edgetpu_fops = {
 	.owner = THIS_MODULE,
-	.llseek = no_llseek,
 	.mmap = edgetpu_fs_mmap,
 	.open = edgetpu_fs_open,
 	.release = edgetpu_fs_release,

@@ -54,6 +54,28 @@ static struct pm_qos_request exynos_int_qos;
 
 static struct bts_device *btsdev;
 
+/**
+ * @BTS_HIST_BIN: Number of bins of the histogram.
+ * @bw_trip:      The trip points for each histogram bin.
+ *
+ * The trip points are based on log-scale and in the unit
+ * of KB/s.
+ */
+static const unsigned int bw_trip[BTS_HIST_BIN - 1] = {
+	10000,
+	17800,
+	31600,
+	56200,
+	100000,
+	178000,
+	316000,
+	562000,
+	1000000,
+	1780000,
+	3160000,
+	5620000,
+};
+
 static unsigned int bus1_to_int_freq(unsigned int freq)
 {
 	unsigned int i;
@@ -170,6 +192,7 @@ static void bts_calc_bw(void)
 	btsdev->peak_bw = 0;
 	btsdev->total_bw = 0;
 
+	spin_lock(&btsdev->lock);
 	for (i = 0; i < btsdev->num_bts; i++) {
 #if !IS_ENABLED(CONFIG_SOC_ZUMA)
 		if (btsdev->peak_bw < btsdev->bts_bw[i].peak)
@@ -182,7 +205,7 @@ static void bts_calc_bw(void)
 		total_read += btsdev->bts_bw[i].read;
 		total_write += btsdev->bts_bw[i].write;
 	}
-
+	spin_unlock(&btsdev->lock);
 	btsdev->total_bw = total_read + total_write;
 	if (btsdev->peak_bw < (total_read / NUM_CHANNEL))
 		btsdev->peak_bw = (total_read / NUM_CHANNEL);
@@ -1699,7 +1722,7 @@ static int bts_parse_setting(struct device_node *np, struct bts_stat *stat)
 static int bts_parse_nocl_data_index(struct device_node *np, struct bts_device *data,
 				     int index, const char *nocl_name)
 {
-	struct device_node *child_np, *nocl_np = NULL;
+	struct device_node *nocl_np = NULL;
 	int i = 0;
 
 	if (!np)
@@ -1723,7 +1746,7 @@ static int bts_parse_nocl_data_index(struct device_node *np, struct bts_device *
 			   "Unable to allocate memory for %s ip\n", nocl_name);
 		return -ENOMEM;
 	}
-	for_each_child_of_node(nocl_np, child_np) {
+	for_each_child_of_node_scoped(nocl_np, child_np) {
 		if (!child_np->name)
 			return -EINVAL;
 		data->nocl_infos[index].nocl_ips[i].ip_name = child_np->name;
@@ -1743,8 +1766,6 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 {
 	struct bts_scen *scen;
 	struct bts_info *info;
-	struct device_node *child_np = NULL;
-	struct device_node *snp = NULL;
 	struct resource res;
 	int i, j, map_cnt, count;
 	int of_data_int_array[OF_DATA_NUM_MAX];
@@ -1905,7 +1926,7 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 
 	i = 0;
 
-	for_each_child_of_node(np, child_np) {
+	for_each_child_of_node_scoped(np, child_np) {
 #if IS_ENABLED(CONFIG_SOC_ZUMA)
 		if (of_property_read_bool(child_np, "nocl_node"))
 			continue;
@@ -1993,7 +2014,7 @@ static int bts_parse_data(struct device_node *np, struct bts_device *data)
 		for (j = 0; j < data->num_scen; j++)
 			info[i].stat[j].stat_on = 0;
 
-		for_each_child_of_node(child_np, snp) {
+		for_each_child_of_node_scoped(child_np, snp) {
 			for (j = 0; j < data->num_scen; j++) {
 				if (strcmp(snp->name, scen[j].name))
 					continue;
@@ -2114,12 +2135,10 @@ static int bts_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int bts_remove(struct platform_device *pdev)
+static void bts_remove(struct platform_device *pdev)
 {
 	devm_kfree(&pdev->dev, btsdev);
 	platform_set_drvdata(pdev, NULL);
-
-	return 0;
 }
 
 /* Device tree compatible information */

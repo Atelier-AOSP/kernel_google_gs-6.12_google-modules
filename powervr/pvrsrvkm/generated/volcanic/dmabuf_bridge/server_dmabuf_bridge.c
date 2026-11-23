@@ -148,8 +148,9 @@ PVRSRVBridgePhysmemImportDmaBuf(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psPhysmemImportDmaBufIN->ui32NameSize * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiNameInt, (const void __user *)psPhysmemImportDmaBufIN->puiName,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiNameInt,
+		     (const void __user *)psPhysmemImportDmaBufIN->puiName,
 		     psPhysmemImportDmaBufIN->ui32NameSize * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psPhysmemImportDmaBufOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -434,8 +435,8 @@ PVRSRVBridgePhysmemImportSparseDmaBuf(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psPhysmemImportSparseDmaBufIN->ui32NumPhysChunks * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32MappingTableInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32MappingTableInt,
 		     (const void __user *)psPhysmemImportSparseDmaBufIN->pui32MappingTable,
 		     psPhysmemImportSparseDmaBufIN->ui32NumPhysChunks * sizeof(IMG_UINT32)) !=
 		    PVRSRV_OK)
@@ -454,8 +455,9 @@ PVRSRVBridgePhysmemImportSparseDmaBuf(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psPhysmemImportSparseDmaBufIN->ui32NameSize * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiNameInt, (const void __user *)psPhysmemImportSparseDmaBufIN->puiName,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiNameInt,
+		     (const void __user *)psPhysmemImportSparseDmaBufIN->puiName,
 		     psPhysmemImportSparseDmaBufIN->ui32NameSize * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psPhysmemImportSparseDmaBufOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;

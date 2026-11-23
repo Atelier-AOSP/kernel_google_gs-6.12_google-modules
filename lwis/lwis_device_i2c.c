@@ -46,10 +46,9 @@ static struct mutex group_i2c_lock[MAX_I2C_LOCK_NUM];
 static int lwis_i2c_device_enable(struct lwis_device *lwis_dev);
 static int lwis_i2c_device_disable(struct lwis_device *lwis_dev);
 static int lwis_i2c_device_resume(struct lwis_device *lwis_dev);
-static int lwis_i2c_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
-				int access_size);
+static int lwis_i2c_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entry);
 static int lwis_i2c_batch_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entries,
-				      int access_size, int batch_size);
+				      int batch_size);
 
 struct lwis_device_subclass_operations i2c_vops = {
 	.register_io = lwis_i2c_register_io,
@@ -188,8 +187,7 @@ static int lwis_i2c_device_resume(struct lwis_device *lwis_dev)
 	return 0;
 }
 
-static int lwis_i2c_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
-				int access_size)
+static int lwis_i2c_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entry)
 {
 	struct lwis_i2c_device *i2c_dev;
 
@@ -199,7 +197,7 @@ static int lwis_i2c_register_io(struct lwis_device *lwis_dev, struct lwis_io_ent
 	if (in_interrupt())
 		return -EAGAIN;
 
-	lwis_save_register_io_info(lwis_dev, entry, access_size);
+	lwis_save_register_io_info(lwis_dev, entry);
 
 	if (entry->type == LWIS_IO_ENTRY_MODIFY)
 		return lwis_i2c_io_entry_mod(i2c_dev, entry);
@@ -208,7 +206,7 @@ static int lwis_i2c_register_io(struct lwis_device *lwis_dev, struct lwis_io_ent
 }
 
 static int lwis_i2c_batch_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entries,
-				      int access_size, int batch_size)
+				      int batch_size)
 {
 	struct lwis_i2c_device *i2c_dev;
 
@@ -327,17 +325,13 @@ static int lwis_i2c_device_probe(struct platform_device *plat_dev)
 
 	i2c_dev->base_dev.type = DEVICE_TYPE_I2C;
 	i2c_dev->base_dev.vops = i2c_vops;
-	if (lwis_platform_is_batch_register_io_supported())
-		i2c_dev->base_dev.vops.batch_register_io = lwis_i2c_batch_register_io;
-	else
-		i2c_dev->base_dev.vops.batch_register_io = NULL;
 	i2c_dev->base_dev.plat_dev = plat_dev;
 	i2c_dev->base_dev.k_dev = &plat_dev->dev;
 
 	/* Call the base device probe function */
 	ret = lwis_base_probe(&i2c_dev->base_dev);
 	if (ret) {
-		dev_err(dev, "Error in lwis base probe\n");
+		dev_err_probe(dev, ret, "Error in lwis base probe\n");
 		return ret;
 	}
 	platform_set_drvdata(plat_dev, &i2c_dev->base_dev);
@@ -349,6 +343,17 @@ static int lwis_i2c_device_probe(struct platform_device *plat_dev)
 		lwis_base_unprobe(&i2c_dev->base_dev);
 		return ret;
 	}
+
+	/* Remove resume callback if not needed */
+	if (!i2c_dev->is_i2c_otp) {
+		dev_info(i2c_dev->base_dev.dev,
+			 "is_i2c_otp is false, setting device_resume to NULL\n");
+		i2c_dev->base_dev.vops.device_resume = NULL;
+	}
+
+	if (!lwis_platform_is_batch_register_io_supported() ||
+	    of_property_read_bool(i2c_dev->base_dev.k_dev->of_node, "lwis,disable-group-transfer"))
+		i2c_dev->base_dev.vops.batch_register_io = NULL;
 
 	ret = lwis_bus_manager_create(&i2c_dev->base_dev);
 	if (ret) {

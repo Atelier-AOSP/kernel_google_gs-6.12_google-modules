@@ -326,20 +326,20 @@ enum dhd_maclist_xtlv_type {
 typedef struct _dhd_maclist_t {
 	uint16 version;			/* Version */
 	uint16 bytes_len;		/* Total bytes length of lists, XTLV headers and paddings */
-	BCM_DECLARE_FLEX_ARRAY(uint8, plist);	/* Pointer to the first list */
+	uint8 plist[BCM_FLEX_ARRAY];	/* Pointer to the first list */
 } dhd_maclist_t;
 
 typedef struct _dhd_pd11regs_param {
 	uint16 start_idx;
 	uint8 verbose;
 	uint8 pad;
-	BCM_DECLARE_FLEX_ARRAY(uint8, plist);
+	uint8 plist[BCM_FLEX_ARRAY];
 } dhd_pd11regs_param;
 
 typedef struct _dhd_pd11regs_buf {
 	uint16 idx;
 	uint8 pad[2];
-	BCM_DECLARE_FLEX_ARRAY(uint8, pbuf);
+	uint8 pbuf[BCM_FLEX_ARRAY];
 } dhd_pd11regs_buf;
 
 /* BT logging and memory dump */

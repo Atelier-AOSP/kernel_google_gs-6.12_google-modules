@@ -190,7 +190,8 @@ static int i2c_dw_init_master(struct dw_i2c_dev *dev)
 		return ret;
 
 	/* Disable the adapter */
-	__i2c_dw_disable(dev);
+	if (__i2c_dw_disable(dev))
+		return -EIO;
 
 	/* Write standard speed timing parameters */
 	regmap_write(dev->map, DW_IC_SS_SCL_HCNT, dev->ss_hcnt);
@@ -216,7 +217,7 @@ static int i2c_dw_init_master(struct dw_i2c_dev *dev)
 	return 0;
 }
 
-static void i2c_dw_xfer_init(struct dw_i2c_dev *dev)
+static int i2c_dw_xfer_init(struct dw_i2c_dev *dev)
 {
 	struct i2c_msg *msgs = dev->msgs;
 	u32 ic_con = 0, ic_tar = 0;
@@ -225,7 +226,8 @@ static void i2c_dw_xfer_init(struct dw_i2c_dev *dev)
 	trace_i2c_dw_xfer_init(dev);
 
 	/* Disable the adapter */
-	__i2c_dw_disable(dev);
+	if (__i2c_dw_disable(dev))
+		return -EIO;
 
 	/* If the slave address is ten bit address, enable 10BITADDR */
 	if (msgs[dev->msg_write_idx].flags & I2C_M_TEN) {
@@ -267,6 +269,7 @@ static void i2c_dw_xfer_init(struct dw_i2c_dev *dev)
 	/* Clear and enable interrupts */
 	regmap_read(dev->map, DW_IC_CLR_INTR, &dummy);
 	regmap_write(dev->map, DW_IC_INTR_MASK, DW_IC_INTR_MASTER_MASK);
+	return 0;
 }
 
 static int i2c_dw_check_stopbit(struct dw_i2c_dev *dev)
@@ -317,7 +320,10 @@ static int amd_i2c_dw_xfer_quirk(struct i2c_adapter *adap, struct i2c_msg *msgs,
 
 	dev->msgs = msgs;
 	dev->msgs_num = num_msgs;
-	i2c_dw_xfer_init(dev);
+	status = i2c_dw_xfer_init(dev);
+	if (status)
+		return status;
+
 	regmap_write(dev->map, DW_IC_INTR_MASK, 0);
 
 	/* Initiate messages read/write transaction */
@@ -403,7 +409,10 @@ static int txgbe_i2c_dw_xfer_quirk(struct i2c_adapter *adap, struct i2c_msg *msg
 
 	dev->msgs = msgs;
 	dev->msgs_num = num_msgs;
-	i2c_dw_xfer_init(dev);
+	ret = i2c_dw_xfer_init(dev);
+	if (ret)
+		return ret;
+
 	regmap_write(dev->map, DW_IC_INTR_MASK, 0);
 
 	for (msg_idx = 0; msg_idx < num_msgs; msg_idx++) {
@@ -720,8 +729,8 @@ static bool i2c_dw_wait_for_xfer_completion(struct dw_i2c_dev *dev, bool busy_wa
 
 static void irq_state_show(struct dw_i2c_dev *dev)
 {
-	struct irq_desc *desc = container_of(&dev->dev->kobj, struct irq_desc, kobj);
-	ssize_t ret_masked, ret_active, ret_pending;
+	struct irq_desc *desc = irq_to_desc(dev->irq);
+	int ret_masked, ret_active, ret_pending;
 	bool masked, active, pending;
 
 	ret_pending = irq_get_irqchip_state(dev->irq, IRQCHIP_STATE_PENDING, &pending);
@@ -733,7 +742,7 @@ static void irq_state_show(struct dw_i2c_dev *dev)
 		ret_masked ? "NA" : (masked ? "MASKED" : "UNMASKED"),
 		ret_active ? "NA" : (active ? "ACTIVE" : "INACTIVE"),
 		ret_pending ? "NA" : (pending ? "PENDING" : "CLEARED"),
-		desc->depth);
+		(desc ? desc->depth : -1));
 }
 
 /*
@@ -794,7 +803,9 @@ i2c_dw_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 		goto done;
 
 	/* Start the transfers */
-	i2c_dw_xfer_init(dev);
+	ret = i2c_dw_xfer_init(dev);
+	if (ret)
+		goto done;
 
 	/* Wait for tx to complete */
 	if (i2c_dw_wait_for_xfer_completion(dev, busy_wait_mode)) {
@@ -815,7 +826,7 @@ i2c_dw_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 		regmap_read(dev->map, DW_IC_INTR_STAT, &irstat_reg);
 
 		if (tar_reg == 0)
-			panic("i2c controller timed out. Registers not accessible.\n");
+			dev_err(dev->dev, "i2c controller timed out. Registers not accessible.\n");
 
 		if (imr_reg == DW_IC_INTR_MASTER_MASK &&
 		    rawint_reg == DW_IC_INTR_TX_EMPTY &&

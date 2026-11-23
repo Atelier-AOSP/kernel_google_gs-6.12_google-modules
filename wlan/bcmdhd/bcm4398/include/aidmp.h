@@ -1,7 +1,7 @@
 /*
  * Broadcom AMBA Interconnect definitions.
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -107,6 +107,9 @@
 #define	SD_SZ_MASK		0xfffff000u
 #define	SD_SG32			0x00000008u
 #define	SD_SZ_ALIGN		0x00000fffu
+
+/* 0:Booker 1:IDM 1-0xf:Reserved */
+#define ID_NODETYPE_MASK	0x00000007u
 
 #define WRAPPER_TIMEOUT_CONFIG	0x4u
 

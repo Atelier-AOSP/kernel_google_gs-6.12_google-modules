@@ -276,7 +276,7 @@ PVRSRVBridgeDevmemIntAcquireRemoteCtx(IMG_UINT32 ui32DispatchTableEntry,
 	    PVRSRVAllocHandleUnlocked(psConnection->psHandleBase,
 				      &psDevmemIntAcquireRemoteCtxOUT->hContext,
 				      (void *)psContextInt, PVRSRV_HANDLE_TYPE_DEVMEMINT_CTX,
-				      PVRSRV_HANDLE_ALLOC_FLAG_NONE,
+				      PVRSRV_HANDLE_ALLOC_FLAG_MULTI,
 				      (PFN_HANDLE_RELEASE) &
 				      _DevmemIntAcquireRemoteCtxpsContextIntRelease);
 	if (unlikely(psDevmemIntAcquireRemoteCtxOUT->eError != PVRSRV_OK))
@@ -289,7 +289,7 @@ PVRSRVBridgeDevmemIntAcquireRemoteCtx(IMG_UINT32 ui32DispatchTableEntry,
 	    PVRSRVAllocSubHandleUnlocked(psConnection->psHandleBase,
 					 &psDevmemIntAcquireRemoteCtxOUT->hPrivData,
 					 (void *)hPrivDataInt, PVRSRV_HANDLE_TYPE_DEV_PRIV_DATA,
-					 PVRSRV_HANDLE_ALLOC_FLAG_NONE,
+					 PVRSRV_HANDLE_ALLOC_FLAG_MULTI,
 					 psDevmemIntAcquireRemoteCtxOUT->hContext);
 	if (unlikely(psDevmemIntAcquireRemoteCtxOUT->eError != PVRSRV_OK))
 	{

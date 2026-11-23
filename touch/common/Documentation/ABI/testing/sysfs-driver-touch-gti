@@ -112,6 +112,31 @@ Description:
 			"lptw_motion_boundary"
 			"gesture_type"
 
+What:		/sys/class/goog_touch_interface/gti.0/int2_mode
+Date:		July 2025
+Contact:	leonardian@google.com
+Description:
+		Get/set the modes for INT2
+
+		Access: Read, Write
+
+		Valid values: Represented as an enum
+			0: Keep low
+			1: Keep high
+			2: Auto
+
+What:		/sys/class/goog_touch_interface/gti.0/int2_status
+Date:		August 2025
+Contact:	blackbearchou@google.com
+Description:
+		Get the statusfor INT2
+
+		Access: Read
+
+		Valid values: Represented as an enum
+			0: Low
+			1: High
+
 What:		/sys/class/goog_touch_interface/gti.0/irq_enabled
 Date:		June 2022
 Contact:	supercjliu@google.com
@@ -301,3 +326,12 @@ Description:
 		The value of resample latency in microseconds.
 
 		Access: Read, Write
+
+What:		/sys/class/goog_touch_interface/gti.0/vsync_hsync_frequency
+Date:		Dec 2025
+Contact:	leonardian@google.com
+Description:
+		The value of the vsync and hsync frequency rates in Hertz and kilohertz
+		respectively.
+
+		Access: Read

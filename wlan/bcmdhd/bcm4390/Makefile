@@ -47,6 +47,11 @@ ifneq ($(KERNEL_SRC),)
   EXTRA_CFLAGS+="-Wno-missing-prototypes"
 endif
 
+NOA_SYMBOL_PATH := $(COMMON_OUT_DIR)/private/google-modules/noa/common/Module.symvers
+ifneq ($(wildcard $(NOA_SYMBOL_PATH)),)
+  EXTRA_SYMBOLS += $(NOA_SYMBOL_PATH)
+endif
+
 # Define and "all" target, which isn't really needed but doesn't hurt.
 all: modules
 

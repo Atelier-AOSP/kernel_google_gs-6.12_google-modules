@@ -117,10 +117,8 @@ static int manual_lpcm_probe(struct platform_device *pdev)
 
 }
 
-static int manual_lpcm_remove(struct platform_device *pdev)
+static void manual_lpcm_remove(struct platform_device *pdev)
 {
-	/* Nothing to do here. */
-	return 0;
 }
 
 static const struct of_device_id manual_lpcm_of_match_table[] = {

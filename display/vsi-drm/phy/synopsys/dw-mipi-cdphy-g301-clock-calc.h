@@ -71,5 +71,6 @@ struct pll_config {
 int32_t cphy_regs_calc(u32 datarate_mbps, struct cphy_hs_regs *regs);
 int32_t dphy_regs_calc(u32 datarate_mbps, struct dphy_hs_regs *regs);
 int32_t pll_calc(u32 datarate_mbps, u32 f_clkin_khz, bool ssc, struct pll_config *pll_cfg);
+int32_t pll_calc_v2(u32 datarate_mbps, u32 f_clkin_khz, bool ssc, struct pll_config *pll_cfg);
 
 #endif

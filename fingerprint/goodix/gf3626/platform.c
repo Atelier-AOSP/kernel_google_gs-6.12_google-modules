@@ -43,7 +43,7 @@ int gf_parse_dts(struct gf_dev *gf_dev)
 		pr_err("failed to request reset gpio, rc = %d\n", rc);
 		return rc;
 	}
-	gpio_direction_output(gf_dev->reset_gpio, 1);
+	gpio_direction_output(gf_dev->reset_gpio, 0);
 
 	gf_dev->irq_gpio = of_get_named_gpio(np, "fp-gpio-irq", 0);
 	if (gf_dev->irq_gpio < 0) {
@@ -57,6 +57,13 @@ int gf_parse_dts(struct gf_dev *gf_dev)
 		return rc;
 	}
 	gpio_direction_input(gf_dev->irq_gpio);
+
+	gf_dev->vdd_io = devm_regulator_get(dev, "vdd_io");
+	if (IS_ERR(gf_dev->vdd_io)) {
+		pr_err("failed to get vdd_io regulator, rc = %ld\n",
+		       PTR_ERR(gf_dev->vdd_io));
+		return PTR_ERR(gf_dev->vdd_io);
+	}
 
 	if (IS_ENABLED(USE_PLATFORM_BUS)) {
 		pinctrl_np = of_parse_phandle(np, "spi-gpio-provider", 0);
@@ -80,7 +87,10 @@ int gf_power_on(struct gf_dev *gf_dev)
 {
 	int rc = 0;
 
-	/* TODO: add your power control here */
+	rc = regulator_enable(gf_dev->vdd_io);
+	if (rc)
+		pr_err("failed to enable vdd_io regulator, rc = %d\n", rc);
+
 	return rc;
 }
 
@@ -88,7 +98,13 @@ int gf_power_off(struct gf_dev *gf_dev)
 {
 	int rc = 0;
 
-	/* TODO: add your power control here */
+	// Make sure reset pin is low before turning off power
+	gpio_direction_output(gf_dev->reset_gpio, 0);
+	mdelay(10);
+
+	rc = regulator_disable(gf_dev->vdd_io);
+	if (rc)
+		pr_err("failed to disable vdd_io regulator, rc = %d\n", rc);
 
 	return rc;
 }
@@ -99,7 +115,7 @@ int gf_hw_reset(struct gf_dev *gf_dev, unsigned int delay_ms)
 		pr_info("Input buff is NULL.\n");
 		return -EINVAL;
 	}
-	gpio_direction_output(gf_dev->reset_gpio, 1);
+	gpio_direction_output(gf_dev->reset_gpio, 0);
 	gpio_set_value(gf_dev->reset_gpio, 0);
 	mdelay(delay_ms);
 	gpio_set_value(gf_dev->reset_gpio, 1);

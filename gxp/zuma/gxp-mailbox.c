@@ -148,6 +148,7 @@ static struct gxp_mailbox *create_mailbox(struct gxp_mailbox_manager *mgr,
 	mailbox->csr_reg_base = mgr->get_mailbox_csr_base(mgr->gxp, core_id);
 	mailbox->data_reg_base = mgr->get_mailbox_data_base(mgr->gxp, core_id);
 	mailbox->type = args->type;
+	mailbox->mode = args->mode;
 	mailbox->queue_wrap_bit = args->queue_wrap_bit;
 	mailbox->cmd_elem_size = args->cmd_elem_size;
 	mailbox->resp_elem_size = args->resp_elem_size;
@@ -333,7 +334,10 @@ static int enable_mailbox(struct gxp_mailbox *mailbox)
 	kthread_init_work(&mailbox->response_work,
 			  gxp_mailbox_consume_responses_work);
 
-	gxp_mailbox_driver_register_interrupts(mailbox);
+	/* Skip registering the client->AP interrupt for Tx simplex communication. */
+	if (mailbox->mode != GXP_MBOX_TX_SIMPLEX)
+		gxp_mailbox_driver_register_interrupts(mailbox);
+
 	return 0;
 }
 
@@ -499,12 +503,14 @@ int gxp_mailbox_unregister_interrupt_handler(struct gxp_mailbox *mailbox,
 	return 0;
 }
 
-int gxp_mailbox_send_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp,
-			 gcip_mailbox_cmd_flags_t flags)
+int gxp_mailbox_send_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp)
 {
 	switch (mailbox->type) {
 	case GXP_MBOX_TYPE_GENERAL:
-		return gcip_mailbox_send_cmd(mailbox->mbx_impl.gcip_mbx, cmd, resp, flags);
+		if (resp)
+			return gcip_mailbox_send_cmd(mailbox->mbx_impl.gcip_mbx, cmd, resp);
+		else
+			return gcip_mailbox_send_cmd_no_rsp(mailbox->mbx_impl.gcip_mbx, cmd);
 #if GXP_HAS_MCU
 	case GXP_MBOX_TYPE_KCI:
 		return gcip_kci_send_cmd(mailbox->mbx_impl.gcip_kci, cmd);
@@ -514,16 +520,13 @@ int gxp_mailbox_send_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp,
 	}
 }
 
-struct gcip_mailbox_resp_awaiter *gxp_mailbox_put_cmd(struct gxp_mailbox *mailbox, void *cmd,
-						      void *resp, void *data,
-						      gcip_mailbox_cmd_flags_t flags)
+int gxp_mailbox_put_cmd(struct gxp_mailbox *mailbox, void *cmd,
+			struct gcip_mailbox_awaiter *awaiter)
 {
 	switch (mailbox->type) {
 	case GXP_MBOX_TYPE_GENERAL:
-		return gcip_mailbox_put_cmd_flags(mailbox->mbx_impl.gcip_mbx, cmd, resp, data,
-						  flags);
+		return gcip_mailbox_send_cmd_async(mailbox->mbx_impl.gcip_mbx, cmd, awaiter);
 	default:
-		break;
+		return -EOPNOTSUPP;
 	}
-	return ERR_PTR(-EOPNOTSUPP);
 }

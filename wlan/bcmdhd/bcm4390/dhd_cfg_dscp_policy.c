@@ -125,6 +125,7 @@ dhd_dscp_policy_attach(struct bcm_cfg80211 *cfg)
 
 	/* Setup policy spin lock */
 	policy_info->dscp_policy_lock = osl_spin_lock_init(cfg->osh);
+	OSL_LOCK_CLASS_SET(policy_info->dscp_policy_lock);
 	if (policy_info->dscp_policy_lock == NULL) {
 		ret_val = BCME_ERROR;
 		goto done;
@@ -750,7 +751,7 @@ dhd_dscp_policy_send_query(struct net_device *ndev, uint32 query_val, uint8 *dn,
 	struct bcm_cfg80211 *cfg;
 	dscp_policy_info_t *policy_info;
 	unsigned long flags;
-	uint16 dn_attr_len = 0;
+	uint8 dn_attr_len = 0;
 
 	/* Allow only 0 or 1 for now.
 	 * 0 means reject all policies from the DSCP request following DSCP query
@@ -780,12 +781,6 @@ dhd_dscp_policy_send_query(struct net_device *ndev, uint32 query_val, uint8 *dn,
 	}
 
 	if ((query_val == 1) && (dn_len != 0) && (dn != NULL)) {
-		/* Validate dn_len to avoid overflow in attribute length */
-		if (dn_len > (DOMAIN_NAME_SIZE_MAX - DSCP_POLICY_DOMAIN_NAME_ATTR_SIZE)) {
-			ret_val = BCME_BADARG;
-			goto done;
-		}
-
 		dn_attr_len = DSCP_POLICY_DOMAIN_NAME_ATTR_SIZE + dn_len;
 		buf_len += (QOS_MGMT_IE_HDR_SIZE + dn_attr_len);
 	}
@@ -892,14 +887,23 @@ dhd_dscp_policy_send_af(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 	wl_af_params_v1_t *af_params = NULL;
 	wl_action_frame_v1_t *action_frame;
 	struct ether_addr tmp_bssid;
-	struct channel_info ci;
 	uint8 *smbuf  = NULL;
-	int tmp_channel = 0;
 	int ret_val;
 	wl_af_params_v2_t *af_params_v2_p = NULL;
 	u8 *af_params_iov_p = NULL;
 	s32 af_params_iov_len = 0;
 	uint16 wl_af_params_size = 0;
+	uint8 *bi_buf = NULL;
+	uint32 bi_buf_len = WLC_IOCTL_MAXLEN;
+	wl_bss_info_v109_t *bss;
+
+	/* Allocate bss info buf */
+	bi_buf = (uint8 *) MALLOCZ(cfg->osh, bi_buf_len);
+	if (bi_buf == NULL) {
+		ret_val = BCME_NOMEM;
+		DHD_ERROR(("*** dhd_dscp_policy_send_response: unable to allocate bi_info\n"));
+		goto done;
+	}
 
 	/* fill up af_params */
 	af_params = (wl_af_params_v1_t *)MALLOCZ(cfg->osh, WL_WIFI_AF_PARAMS_SIZE_V1);
@@ -917,17 +921,17 @@ dhd_dscp_policy_send_af(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 		goto done;
 	}
 
-	bzero(&ci, sizeof(ci));
-	ret_val = wldev_ioctl_get(ndev, WLC_GET_CHANNEL, &ci, sizeof(ci));
+	/* Get BSS information */
+	*(u32 *) bi_buf = htod32(bi_buf_len);
+	ret_val = wldev_ioctl_get(ndev, WLC_GET_BSS_INFO, (void *)bi_buf, bi_buf_len);
 	if (ret_val != BCME_OK) {
 		DHD_ERROR(("wldev_ioctl_get has failed to get channel,"
 		           " ret_val = %d\n", ret_val));
 		goto done;
 	}
 
-	tmp_channel = ci.hw_channel;
-
-	af_params->channel = tmp_channel;
+	bss = (wl_bss_info_v109_t *)(bi_buf + sizeof(bi_buf_len));
+	af_params->channel = bss->chanspec;
 	af_params->dwell_time = DSCP_AF_DEFAULT_DWELL_TIME;
 	eacopy(tmp_bssid.octet, af_params->BSSID.octet);
 	action_frame = &af_params->action_frame;
@@ -981,6 +985,9 @@ dhd_dscp_policy_send_af(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 		DHD_INFO(("*** sending DSCP response action frame is a success \n"));
 	}
 done:
+	if (bi_buf) {
+		MFREE(cfg->osh, bi_buf, bi_buf_len);
+	}
 
 	if (af_params_v2_p) {
 		MFREE(cfg->osh, af_params_v2_p, wl_af_params_size);

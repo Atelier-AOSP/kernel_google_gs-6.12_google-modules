@@ -35,6 +35,10 @@
 #include <dt-bindings/pci/pci.h>
 #include <misc/sbbm.h>
 
+#if IS_ENABLED(CONFIG_GOOGLE_LOGBUFFER)
+#include <misc/logbuffer.h>
+#endif
+
 #include "modem_prj.h"
 #include "modem_utils.h"
 #include "modem_ctrl.h"
@@ -1179,7 +1183,8 @@ static int register_pcie(struct link_device *ld)
 		return -EINVAL;
 	}
 
-	mc->s2mpu = s2mpu_fwnode_to_info(&s2mpu_dn->fwnode);
+	mc->s2mpu = s2mpu_fwnode_to_info(of_fwnode_handle(s2mpu_dn));
+	of_node_put(s2mpu_dn);
 	if (!mc->s2mpu) {
 		mif_err("Failed to get S2MPU\n");
 		return -EPROBE_DEFER;

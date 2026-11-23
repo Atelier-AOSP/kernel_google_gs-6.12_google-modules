@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 filegroup(
     name = "edgetpu.kconfig",
     srcs = [
@@ -60,18 +65,16 @@ ddk_module(
         "CONFIG_JANEIRO",
         "CONFIG_EDGETPU_TELEMETRY_TRACE",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/gxp:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
-    ],
     deps = [
         ":internal_headers",
         "//common:all_headers_aarch64",
         "//private/google-modules/power/mitigation:google_bcl",
         "//private/google-modules/power/mitigation:headers",
-        "//private/google-modules/soc/gs:gs_soc_module",
         "//private/google-modules/soc/gs:headers",
+        "//private/google-modules/soc/gs/drivers/bts",
+        "//private/google-modules/soc/gs/drivers/soc/google:exynos_pm_qos",
+        "//private/google-modules/soc/gs/drivers/soc/google/cal-if:cmupmucal",
         "//private/google-modules/soc/gs/drivers/soc/google/gsa:gsa_ko",
+        "//private/google-modules/soc/gs/drivers/thermal/samsung:gs_thermal",
     ],
 )

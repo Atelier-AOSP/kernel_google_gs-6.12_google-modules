@@ -1,7 +1,26 @@
 # SPDX-License-Identifier: MIT
 load(
     "@kleaf//build/kernel/kleaf:kernel.bzl",
+    "ddk_headers",
     "ddk_module",
+)
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
+ddk_headers(
+    name = "headers",
+    hdrs = glob([
+        "include/**/*.h",
+    ]),
+    includes = ["include"],
+    visibility = [
+        "//private/devices/google:__subpackages__",
+        "//private/google-modules/perf:__subpackages__",
+        "//private/google-modules/soc/rdo:__subpackages__",
+    ],
 )
 
 ddk_module(
@@ -11,18 +30,15 @@ ddk_module(
         "mbfs_backend.h",
         "mbfs_base.h",
         "mbfs_mirror.c",
+        "mbfs_protocol.h",
     ],
     out = "mbfs.ko",
     hdrs = [
         "include/perf/mbfs.h",
-        "include/perf/mbfs_protocol.h",
     ],
     includes = ["include"],
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules:__subpackages__",
-    ],
+    local_defines = ["DYNAMIC_DEBUG_MODULE"],
     deps = [
         "//common:all_headers_aarch64",
     ],
@@ -38,12 +54,45 @@ ddk_module(
     kernel_build = "//private/devices/google/common:kernel",
     # Add "MBFS_DEV" to local_defines to enable removable module during development
     local_defines = ["DYNAMIC_DEBUG_MODULE"],
-    visibility = ["//private/devices/google:__subpackages__"],
     deps = [
         ":mbfs",
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
-        # Depend on the below for drivers/soc/google/goog-mba-cpm-iface.ko
-        "//private/google-modules/soc/rdo:rdo_soc_module",
+        "//private/google-modules/soc/rdo/drivers/soc/google:goog-mba-cpm-iface",
+    ],
+)
+
+ddk_module(
+    name = "mbfs_kunit_test",
+    srcs = [
+        "mbfs_backend.h",
+        "mbfs_base.h",
+        "mbfs_protocol.h",
+        "test/mbfs_kunit_test.c",
+    ],
+    out = "mbfs_kunit_test.ko",
+    includes = [
+        "include",
+    ],
+    kernel_build = "//private/devices/google/common:kernel",
+    deps = [
+        "//common:all_headers_aarch64",
+        "//private/google-modules/perf/infra/mbfs",
+    ],
+)
+
+ddk_module(
+    name = "mbfs_api_test",
+    srcs = [
+        "test/mbfs_api_test.c",
+    ],
+    out = "mbfs_api_test.ko",
+    includes = [
+        "include",
+    ],
+    kernel_build = "//private/devices/google/common:kernel",
+    deps = [
+        "//common:all_headers_aarch64",
+        "//private/google-modules/perf/infra/mbfs",
     ],
 )

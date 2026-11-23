@@ -54,9 +54,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "client_ri_bridge.h"
 #if defined(__KERNEL__)
 #include "pvrsrv.h"
-#else
-#include "pvr_bridge_client.h"
 #endif
+#endif
+#if !defined(__KERNEL__)
+#include "pvr_bridge_client.h"
 #endif
 
 #if defined(PVRSRV_ENABLE_PROCESS_STATS)
@@ -67,12 +68,26 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "srvcore.h"
 #else
 #include "srvcore_intern.h"
+#include "info_page_defs.h"
 #endif
 
 /*
 	SVM heap management support functions for CPU (un)mapping
  */
 #define DEVMEM_MAP_SVM_USER_MANAGED_RETRY				10
+
+#if defined(PVRSRV_ENABLE_PHYSHEAP_PERPID_UM_STATS)
+#if defined(__QNXNTO__) || defined(INTEGRITY_OS)
+/* On Neutrino and Integrity only support one device */
+static ATOMIC_U64_T aui64PhysHeapStats[3];
+#else
+static ATOMIC_U64_T aui64PhysHeapStats[PVRSRV_MAX_DEVICES][3];
+static PVRSRV_DEVICE_ID asDeviceList[PVRSRV_MAX_DEVICES];
+static IMG_UINT uiNumDevices;
+#endif
+
+#define PHYS_HEAP_MEMSTATS_IGNORED_PROPERTIES (DEVMEM_PROPERTIES_IMPORTED | DEVMEM_PROPERTIES_EXTMEM)
+#endif
 
 static inline PVRSRV_ERROR
 DevmemCPUMapSVMKernelManaged(DEVMEM_HEAP *psHeap,
@@ -533,6 +548,23 @@ IMG_BOOL DevmemImportStructRelease(DEVMEM_IMPORT *psImport)
 		                                            BridgePMRUnrefPMR,
 		                                            psImport->hPMR);
 		PVR_ASSERT(eError == PVRSRV_OK);
+
+#if defined(PVRSRV_ENABLE_PHYSHEAP_PERPID_UM_STATS)
+		if (!BITMASK_ANY(psImport->uiProperties, PHYS_HEAP_MEMSTATS_IGNORED_PROPERTIES))
+		{
+			IMG_UINT64 ui64Decr = psImport->uiSize;
+			if (psImport->ui32PhysicalChunkCount < psImport->ui32LogicalChunkCount)
+			{
+				ui64Decr = IMG_PAGES2BYTES64(psImport->ui32PhysicalChunkCount,
+				                             psImport->ui32LogicalPageLog2);
+			}
+
+			eError = DevmemPhysHeapStatsDecr(psImport->hDevConnection,
+			                                 PVRSRV_GET_PHYS_HEAP_HINT(psImport->uiFlags),
+			                                 ui64Decr);
+			PVR_ASSERT(eError == PVRSRV_OK);
+		}
+#endif
 
 		OSLockDestroy(psImport->sCPUImport.hLock);
 		OSLockDestroy(psImport->sDeviceImport.hLock);
@@ -1419,3 +1451,210 @@ void DevmemImportStructCPUUnmap(DEVMEM_IMPORT *psImport)
 		OSLockRelease(psCPUImport->hLock);
 	}
 }
+
+#if !defined(__KERNEL__)
+IMG_INTERNAL
+PVRSRV_ERROR DevmemAllocPhysicalWithRetries(SHARED_DEV_CONNECTION hDevConnection,
+                                            IMG_DEVMEM_SIZE_T uiSize,
+                                            IMG_UINT32 ui32NumPhysChunks,
+                                            IMG_UINT32 ui32NumVirtChunks,
+                                            IMG_UINT32 *pui32MappingTable,
+                                            IMG_UINT32 ui32Log2PageSize,
+                                            PVRSRV_MEMALLOCFLAGS_T uiFlags,
+                                            const IMG_CHAR *pszAnnotation,
+                                            IMG_HANDLE *phPMR,
+                                            PVRSRV_MEMALLOCFLAGS_T *puiOutFlags)
+{
+	PVRSRV_ERROR eError;
+	IMG_HANDLE hPMR;
+	PVRSRV_MEMALLOCFLAGS_T uiOutFlags = 0;
+	const IMG_UINT32 *pui32InfoPage =
+	    ((const PVRSRV_DEV_CONNECTION *) hDevConnection)->pui32InfoPage;
+	/* This usually ranges between 10000 to 20000 so this should give around
+	 * 200 to 400 retries. */
+	IMG_INT32 iRetryCount = pui32InfoPage[TIMEOUT_INFO_VALUE_RETRIES] / 50;
+	/* For regular devices this value is usually defined as 1100ms. Dividing by
+	 * 130 should give ~8ms. This alongside ALLOC_RETRY_COUNT should result in max
+	 * waiting time around ~1.5s to 3s. */
+	IMG_UINT32 uiRetryTimeoutUs = pui32InfoPage[TIMEOUT_INFO_VALUE_TIMEOUT_MS] / 130 * 1000;
+
+	do
+	{
+		eError = BridgePhysmemNewRamBackedPMR(GetBridgeHandle(hDevConnection),
+		                                      uiSize,
+		                                      ui32NumPhysChunks,
+		                                      ui32NumVirtChunks,
+		                                      pui32MappingTable,
+		                                      ui32Log2PageSize,
+		                                      uiFlags & PVRSRV_MEMALLOCFLAGS_PMRFLAGSMASK,
+		                                      OSStringNLength(pszAnnotation, DEVMEM_ANNOTATION_MAX_LEN - 1) + 1,
+		                                      pszAnnotation,
+		                                      OSGetCurrentProcessID(),
+		                                      &hPMR,
+		                                      PDUMP_NONE,
+		                                      &uiOutFlags);
+
+		if (eError != PVRSRV_OK && eError != PVRSRV_ERROR_RETRY)
+		{
+			return eError;
+		}
+		else if (eError == PVRSRV_ERROR_RETRY)
+		{
+			OSWaitus(uiRetryTimeoutUs);
+		}
+	} while (eError == PVRSRV_ERROR_RETRY && iRetryCount-- > 0);
+
+	if (eError == PVRSRV_ERROR_RETRY)
+	{
+		return PVRSRV_ERROR_TIMEOUT;
+	}
+
+	*phPMR = hPMR;
+	*puiOutFlags = uiOutFlags;
+
+	return eError;
+}
+#endif /* defined(__KERNEL__) */
+
+#if defined(PVRSRV_ENABLE_PHYSHEAP_PERPID_UM_STATS)
+IMG_INTERNAL
+PVRSRV_ERROR DevmemPhysHeapStatsIncr(SHARED_DEV_CONNECTION hDevConnection,
+                                     PVRSRV_PHYS_HEAP ePhysHeap,
+                                     IMG_DEVMEM_SIZE_T uiAllocSize)
+{
+	IMG_UINT64 ui64NewValue;
+#if !defined(__QNXNTO__) && !defined(INTEGRITY_OS)
+	IMG_UINT32 ui32DeviceIndex = PVRSRV_MAX_DEVICES;
+	IMG_UINT i;
+	PVRSRV_ERROR eError;
+#endif
+
+	PVR_ASSERT(hDevConnection != NULL);
+	PVR_ASSERT(ePhysHeap != PVRSRV_PHYS_HEAP_DEFAULT);
+
+	if (ePhysHeap > PVRSRV_PHYS_HEAP_GPU_PRIVATE)
+	{
+		return PVRSRV_OK;
+	}
+
+#if defined(__QNXNTO__) || defined(INTEGRITY_OS)
+	ui64NewValue = OSAtomicU64Add(&aui64PhysHeapStats[ePhysHeap-1], uiAllocSize);
+#else
+	if (uiNumDevices == 0)
+	{
+		eError = EnumerateDevices(asDeviceList, PVRSRV_MAX_DEVICES, &uiNumDevices);
+		PVR_LOG_RETURN_IF_ERROR(eError, "EnumerateDevices");
+	}
+
+	for (i = 0; i < uiNumDevices; i++)
+	{
+		if (hDevConnection->sDeviceID.iDeviceID == asDeviceList[i].iDeviceID)
+		{
+			ui32DeviceIndex = i;
+			break;
+		}
+	}
+
+	PVR_ASSERT(ui32DeviceIndex != PVRSRV_MAX_DEVICES);
+	ui64NewValue = OSAtomicU64Add(&aui64PhysHeapStats[ui32DeviceIndex][ePhysHeap-1], uiAllocSize);
+#endif
+
+	if (ui64NewValue - uiAllocSize > ui64NewValue)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "failed incr prev: %"IMG_UINT64_FMTSPEC" now: %"IMG_UINT64_FMTSPEC, ui64NewValue + uiAllocSize, ui64NewValue));
+	}
+
+	return PVRSRV_OK;
+}
+
+IMG_INTERNAL
+PVRSRV_ERROR DevmemPhysHeapStatsDecr(SHARED_DEV_CONNECTION hDevConnection,
+                                     PVRSRV_PHYS_HEAP ePhysHeap,
+                                     IMG_DEVMEM_SIZE_T uiAllocSize)
+{
+	IMG_UINT64 ui64NewValue;
+#if !defined(__QNXNTO__) && !defined(INTEGRITY_OS)
+	IMG_UINT32 ui32DeviceIndex = PVRSRV_MAX_DEVICES;
+	IMG_UINT i;
+#endif
+
+	PVR_ASSERT(hDevConnection != NULL);
+	PVR_ASSERT(ePhysHeap != PVRSRV_PHYS_HEAP_DEFAULT);
+
+	if (ePhysHeap > PVRSRV_PHYS_HEAP_GPU_PRIVATE)
+	{
+		return PVRSRV_OK;
+	}
+
+#if defined(__QNXNTO__) || defined(INTEGRITY_OS)
+	ui64NewValue = OSAtomicU64Subtract(&aui64PhysHeapStats[ePhysHeap-1], uiAllocSize);
+#else
+	for (i = 0; i < uiNumDevices; i++)
+	{
+		if (hDevConnection->sDeviceID.iDeviceID == asDeviceList[i].iDeviceID)
+		{
+			ui32DeviceIndex = i;
+			break;
+		}
+	}
+
+	PVR_ASSERT(ui32DeviceIndex != PVRSRV_MAX_DEVICES);
+	ui64NewValue = OSAtomicU64Subtract(&aui64PhysHeapStats[ui32DeviceIndex][ePhysHeap-1], uiAllocSize);
+#endif
+
+	if (ui64NewValue + uiAllocSize < ui64NewValue)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "failed incr prev: %"IMG_UINT64_FMTSPEC" now: %"IMG_UINT64_FMTSPEC, ui64NewValue + uiAllocSize, ui64NewValue));
+	}
+
+	return PVRSRV_OK;
+}
+
+IMG_INTERNAL
+PVRSRV_ERROR DevmemPhysHeapStatsGet(SHARED_DEV_CONNECTION hDevConnection,
+                                    PVRSRV_PHYS_HEAP ePhysHeap,
+                                    IMG_DEVMEM_SIZE_T *puiAllocSize)
+{
+#if !defined(__QNXNTO__) && !defined(INTEGRITY_OS)
+	IMG_UINT32 ui32DeviceIndex = PVRSRV_MAX_DEVICES;
+	IMG_UINT i;
+	PVRSRV_ERROR eError;
+#endif
+
+	PVR_ASSERT(hDevConnection != NULL);
+	PVR_ASSERT(ePhysHeap != PVRSRV_PHYS_HEAP_DEFAULT);
+	PVR_ASSERT(puiAllocSize != NULL);
+
+	*puiAllocSize = 0;
+
+	if (ePhysHeap > PVRSRV_PHYS_HEAP_GPU_PRIVATE)
+	{
+		return PVRSRV_OK;
+	}
+
+#if defined(__QNXNTO__) || defined(INTEGRITY_OS)
+	*puiAllocSize = aui64PhysHeapStats[ePhysHeap-1].counter;
+#else
+	if (uiNumDevices == 0)
+	{
+		eError = EnumerateDevices(asDeviceList, PVRSRV_MAX_DEVICES, &uiNumDevices);
+		PVR_LOG_RETURN_IF_ERROR(eError, "EnumerateDevices");
+	}
+
+	for (i = 0; i < uiNumDevices; i++)
+	{
+		if (hDevConnection->sDeviceID.iDeviceID == asDeviceList[i].iDeviceID)
+		{
+			ui32DeviceIndex = i;
+			break;
+		}
+	}
+
+	PVR_ASSERT(ui32DeviceIndex != PVRSRV_MAX_DEVICES);
+
+	*puiAllocSize = aui64PhysHeapStats[ui32DeviceIndex][ePhysHeap-1].counter;
+#endif
+
+	return PVRSRV_OK;
+}
+#endif

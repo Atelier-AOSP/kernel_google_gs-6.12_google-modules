@@ -1797,6 +1797,14 @@ wl_cellavoid_set_cell_channels(struct bcm_cfg80211 *cfg, wl_cellavoid_param_t *p
 		param_band = param->chan_param[i].chspec_band;
 		param_bw = param->chan_param[i].chspec_bw;
 
+#ifdef CELLAVOID_LIMIT_TXPWRCAP_BW160
+		if (wf_valid_160MHz_center_chan(param_ch, param_band)) {
+			WL_INFORM_MEM(("160MHz channel is not supported ch : %d band %x\n",
+				param_ch, param_band));
+			continue;
+		}
+#endif /* CELLAVOID_LIMIT_TXPWRCAP_BW160 */
+
 		bzero(chspecs, sizeof(chspecs));
 
 		ret = wl_get_all_sideband_chanspecs(param_ch, param_band, param_bw,

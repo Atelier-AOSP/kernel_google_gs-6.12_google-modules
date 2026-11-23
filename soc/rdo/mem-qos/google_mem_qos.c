@@ -9,6 +9,7 @@
 #include <linux/platform_device.h>
 #include <linux/types.h>
 
+#include <mem-qos/google_mem_qos_scenario.h>
 #include "google_mem_qos.h"
 #include "google_mem_qos_debugfs.h"
 #include "google_qos_box.h"

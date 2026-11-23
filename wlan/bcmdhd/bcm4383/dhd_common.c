@@ -9158,13 +9158,9 @@ init_dhd_timeouts(dhd_pub_t *pub)
 	} else {
 		DHD_INFO(("Initializing dhd_timeouts\n"));
 		pub->timeout_info->scan_timer_lock = osl_spin_lock_init(pub->osh);
-		OSL_LOCK_CLASS_SET(pub->timeout_info->scan_timer_lock);
 		pub->timeout_info->join_timer_lock = osl_spin_lock_init(pub->osh);
-		OSL_LOCK_CLASS_SET(pub->timeout_info->join_timer_lock);
 		pub->timeout_info->bus_timer_lock = osl_spin_lock_init(pub->osh);
-		OSL_LOCK_CLASS_SET(pub->timeout_info->bus_timer_lock);
 		pub->timeout_info->cmd_timer_lock = osl_spin_lock_init(pub->osh);
-		OSL_LOCK_CLASS_SET(pub->timeout_info->cmd_timer_lock);
 		pub->timeout_info->scan_timeout_val = SCAN_TIMEOUT_DEFAULT;
 		pub->timeout_info->join_timeout_val = JOIN_TIMEOUT_DEFAULT;
 		pub->timeout_info->cmd_timeout_val = CMD_TIMEOUT_DEFAULT;

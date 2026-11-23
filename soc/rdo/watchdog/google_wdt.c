@@ -13,12 +13,60 @@
 #include <linux/syscore_ops.h>
 #include <linux/watchdog.h>
 
-#include <soc/google/google_gtc.h>
+#include <soc/google/google_timestamp_sync.h>
 #include <soc/google/google_wdt.h>
 
 #include "google_wdt_local.h"
 
 static LIST_HEAD(google_wdt_list);
+
+/**
+ * struct wdt_pet_callback_info - Watchdog pet timestamp callback information
+ * @lock: Spinlock to protect access to the callback function pointer.
+ * @callback: Function pointer to the callback to be invoked when the
+ *            watchdog is pet. This callback receives the kernel monotonic
+ *            raw time and GTC time.
+ *
+ * This structure manages the registration of a single callback function
+ * that is notified with timestamp data upon a watchdog pet event.
+ */
+struct wdt_pet_callback_info {
+	spinlock_t lock;			/* Protects @callback */
+	wdt_pet_timestamp_callback_t callback;	/* The registered callback */
+};
+
+static struct wdt_pet_callback_info wdt_pet_time_cb = {
+	.lock = __SPIN_LOCK_UNLOCKED(wdt_pet_time_cb.lock),
+	.callback = NULL,
+};
+
+void google_wdt_register_pet_timestamp_callback(wdt_pet_timestamp_callback_t callback)
+{
+	unsigned long flags;
+
+	if (!callback) {
+		pr_err("%s: Cannot register NULL callback\n", __func__);
+		return;
+	}
+
+	spin_lock_irqsave(&wdt_pet_time_cb.lock, flags);
+	if (wdt_pet_time_cb.callback)
+		pr_err("%s: Pet timestamp callback already registered\n", __func__);
+	else
+		wdt_pet_time_cb.callback = callback;
+	spin_unlock_irqrestore(&wdt_pet_time_cb.lock, flags);
+}
+EXPORT_SYMBOL_GPL(google_wdt_register_pet_timestamp_callback);
+
+void google_wdt_unregister_pet_timestamp_callback(void)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&wdt_pet_time_cb.lock, flags);
+	wdt_pet_time_cb.callback = NULL;
+	spin_unlock_irqrestore(&wdt_pet_time_cb.lock, flags);
+}
+EXPORT_SYMBOL_GPL(google_wdt_unregister_pet_timestamp_callback);
 
 struct watchdog_device *google_wdt_wdd_get(struct device *dev)
 {
@@ -209,8 +257,8 @@ EXPORT_SYMBOL_GPL(google_wdt_watchdog_op_stop);
 static int google_wdt_watchdog_ping(struct google_wdt *wdt)
 {
 	unsigned long flags;
-	struct device *dev = wdt->dev;
-	u64 gtc_nsec, gtc_sec;
+	struct timestamp_snapshot_data time_data;
+	wdt_pet_timestamp_callback_t current_wdt_pet_time_cb;
 
 	spin_lock_irqsave(&wdt->lock, flags);
 
@@ -220,8 +268,17 @@ static int google_wdt_watchdog_ping(struct google_wdt *wdt)
 
 	spin_unlock_irqrestore(&wdt->lock, flags);
 
-	gtc_sec = div64_u64_rem(goog_gtc_get_time_ns(), NSEC_PER_SEC, &gtc_nsec);
-	dev_info(dev, "keepalive, GTC: %llu.%llu\n", gtc_sec, gtc_nsec);
+	/* Capture timestamp to report to CDD */
+	goog_timestamp_sync_snapshot_update();
+
+	spin_lock_irqsave(&wdt_pet_time_cb.lock, flags);
+	current_wdt_pet_time_cb = wdt_pet_time_cb.callback;
+	spin_unlock_irqrestore(&wdt_pet_time_cb.lock, flags);
+
+	if (current_wdt_pet_time_cb && goog_timestamp_sync_get_nth_snapshot(0, &time_data) == 0) {
+		time_data.gtc_nsec += time_data.gtc_sec * NSEC_PER_SEC;
+		current_wdt_pet_time_cb(time_data.mono_raw, time_data.gtc_nsec);
+	}
 
 	return 0;
 }

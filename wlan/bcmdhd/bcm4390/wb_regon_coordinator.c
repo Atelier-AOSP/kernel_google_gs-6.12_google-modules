@@ -54,7 +54,7 @@ typedef unsigned int __poll_t;
 #endif
 
 static struct wbrc_pvt_data *g_wbrc_data;
-static struct mutex wbrc_mutex;
+static DEFINE_MUTEX(wbrc_mutex);
 static wait_queue_head_t outmsg_waitq;
 
 static int bt2wbrc_ack_bt_reset(struct wbrc_pvt_data *wbrc_data);

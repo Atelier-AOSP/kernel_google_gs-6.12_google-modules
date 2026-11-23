@@ -66,7 +66,6 @@
 struct pdp_gem_context;
 enum pdp_crtc_flip_status;
 struct pdp_flip_data;
-struct pdp_gem_private;
 
 #if !defined(SUPPORT_PLATO_DISPLAY)
 struct tc_pdp_platform_data;
@@ -84,9 +83,6 @@ struct pdp_drm_private {
 
 	/* differentiate Orion from base Odin PDP */
 	enum pdp_odin_subversion subversion;
-
-	/* created by pdp_gem_init */
-	struct pdp_gem_private	*gem_priv;
 
 	/* preferred output device */
 	enum pdp_output_device outdev;

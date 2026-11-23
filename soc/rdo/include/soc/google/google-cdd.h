@@ -24,6 +24,7 @@ enum cdd_log_freq_domain {
 extern int google_cdd_get_sjtag_status(void);
 extern bool google_cdd_get_reboot_status(void);
 extern bool google_cdd_get_panic_status(void);
+extern bool google_cdd_get_warm_status(void);
 void google_cdd_set_debug_test_buffer_addr(u64 paddr, unsigned int cpu);
 unsigned int google_cdd_get_debug_test_buffer_addr(unsigned int cpu);
 extern uint64_t google_cdd_get_last_pc(unsigned int cpu);
@@ -60,8 +61,11 @@ extern int google_cdd_set_core_ehld_stat(uint32_t cpu, uint32_t val);
 extern int google_cdd_set_core_pmu_val(uint32_t cpu, uint32_t val);
 
 /* google-cdd-log functions */
-extern void google_cdd_cpuidle_mod(char *modes, unsigned int state, s64 diff, int en);
+extern void google_cdd_cpuidle_mod_by_id(int cpu, char *modes, unsigned int
+					 state, s64 diff, int en);
 extern void google_cdd_freq(enum cdd_log_freq_domain domain, unsigned int *old_freq,
+			    unsigned int *target_freq);
+extern void google_cdd_freq_by_name(const char *name, unsigned int *old_freq,
 			    unsigned int *target_freq);
 extern void google_cdd_log_output(void);
 
@@ -82,6 +86,7 @@ static inline void google_cdd_set_item_enable(const char *name, int en) {}
 static inline int google_cdd_get_enable(void) { return 0; }
 static inline void google_cdd_output(void) {}
 static inline unsigned int google_cdd_get_max_core_num(void) { return 0; }
+static inline void google_cdd_set_powerkey_status(bool val) {}
 
 /* google-cdd-dpm functions */
 static inline void google_cdd_do_dpm_policy(unsigned int policy, const char *str) {}
@@ -97,7 +102,8 @@ static inline void google_cdd_register_debug_ops(int (*halt)(void), int (*cached
 static inline void google_cdd_save_context(struct pt_regs *regs, bool stack_dump) {}
 
 /* google-cdd-log functions */
-static inline void google_cdd_cpuidle_mod(char *modes, unsigned int state, s64 diff, int en) {}
+static inline void google_cdd_cpuidle_mod_by_id(int cpu, char *modes, unsigned
+						int state, s64 diff, int en) {}
 static inline void google_cdd_freq(enum cdd_log_freq_domain domain, unsigned int *old_freq,
 				   unsigned int *target_freq) {}
 static inline void google_cdd_log_output(void) {}

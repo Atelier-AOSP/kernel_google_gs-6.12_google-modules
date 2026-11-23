@@ -73,6 +73,12 @@
 
 #define DHD_RTT_INVALID_TARGET_INDEX		-1
 
+/* minimum WLC API version supporting 11AZ */
+#define FTM_11AZ_MIN_WLC_API 16
+
+/* minimum WLC API version supporting separate FTM passphrase db */
+#define FTM_SEPARATE_PASSPHRASE_DB_MIN_WLC_VER	21u
+
 enum rtt_role {
 	RTT_INITIATOR = 0,
 	RTT_TARGET = 1

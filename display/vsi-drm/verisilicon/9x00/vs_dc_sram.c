@@ -397,15 +397,21 @@ int32_t _get_dma_sram_size_with_rot(u8 format, u8 tile, u16 width, u32 *ret_size
 			break;
 		case FORMAT_P010:
 			size = vsALIGN(width * 2, sp_alignment) * 16 +
-			       vsALIGN(width / 2 * 4, sp_alignment) * 8;
+				   vsALIGN(width / 2 * 4, sp_alignment) * 8;
 			extra_size0 = sp_alignment * 16;
 			extra_size1 = sp_alignment * 8;
 			break;
 		case FORMAT_P210:
-		case FORMAT_YUV420_PACKED:
-			size = vsALIGN(width * 2, sp_alignment) * 16 * 2;
-			extra_size0 = sp_alignment * 32;
-			extra_size1 = sp_alignment * 32;
+			size = vsALIGN(width * 2, sp_alignment) * 16 +
+				   vsALIGN(width * 4, sp_alignment) * 8;
+			extra_size0 = sp_alignment * 16;
+			extra_size1 = sp_alignment * 8;
+			break;
+		case FORMAT_YUV420_PACKED_10BIT:
+			size = vsALIGN(width * 2, sp_alignment) * 24 +
+				   vsALIGN(width / 2 * 4, sp_alignment) * 12;
+			extra_size0 = sp_alignment * 24;
+			extra_size1 = sp_alignment * 12;
 			break;
 		default:
 			pr_err("%s : format %d with tile %d not support Rotation.\n", __func__,
@@ -519,7 +525,7 @@ int32_t _get_dma_sram_size_without_rot(u8 format, u8 tile, u16 width, u32 *ret_s
 			break;
 		case FORMAT_P010:
 		case FORMAT_P210:
-		case FORMAT_YUV420_PACKED:
+		case FORMAT_YUV420_PACKED_10BIT:
 			size = vsALIGN((width * 2), sp_alignment) * 3 * 2;
 			break;
 		default:

@@ -4,7 +4,7 @@
  *
  */
 
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
@@ -17,30 +17,31 @@
 static int max77759_register_irq(struct bcl_device *bcl_dev, const char *irq_name, int idx,
 				 u32 link)
 {
-	int irq, pin, ret, irq_config;
+	int irq, ret, irq_config;
+	struct gpio_desc *pin;
 	u32 flag;
 
 	switch (link) {
 	case IF_VDROOP1:
-		irq = gpio_to_irq(bcl_dev->vdroop1_pin);
+		irq = gpiod_to_irq(bcl_dev->vdroop1_pin);
 		pin = bcl_dev->vdroop1_pin;
 		irq_config = IRQ_EXIST;
 		break;
 	case IF_VDROOP2:
-		irq = gpio_to_irq(bcl_dev->vdroop2_pin);
+		irq = gpiod_to_irq(bcl_dev->vdroop2_pin);
 		pin = bcl_dev->vdroop2_pin;
 		irq_config = IRQ_EXIST;
 		break;
 	case IF_INTB:
 		irq = bcl_dev->pmic_irq;
-		pin = NOT_USED;
+		pin = NULL;
 		irq_config = IRQ_NOT_EXIST;
 		break;
 	default:
 		return 0;
 	};
 
-	flag = IRQF_ONESHOT | IRQF_NO_AUTOEN | IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING;
+	flag = IRQF_ONESHOT | IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING | IRQF_SHARED;
 	ret = google_bcl_register_zone(bcl_dev, idx, irq_name, pin, irq,
 				       IF_PMIC, irq_config, POLARITY_HIGH, flag);
 	if (ret < 0) {
@@ -53,17 +54,10 @@ static int max77759_register_irq(struct bcl_device *bcl_dev, const char *irq_nam
 static int max77759_intf_pmic_init(struct bcl_device *bcl_dev)
 {
 	int ret;
-	unsigned int uvlo1_lvl, uvlo2_lvl, batoilo_lvl, batoilo2_lvl, lvl;
 	struct device_node *np = bcl_dev->device->of_node;
-	struct device_node *p_np;
+	struct device_node *p_np __free(device_node) = NULL;
 	u32 uvlo1_link, uvlo2_link, oilo1_link, link;
-
-	batoilo_reg_read(bcl_dev->intf_pmic_dev, bcl_dev->ifpmic, BATOILO2, &lvl);
-	batoilo2_lvl = BO_STEP * lvl + bcl_dev->batt_irq_conf1.batoilo_lower_limit;
-	batoilo_reg_read(bcl_dev->intf_pmic_dev, bcl_dev->ifpmic, BATOILO1, &lvl);
-	batoilo_lvl = BO_STEP * lvl + bcl_dev->batt_irq_conf1.batoilo_lower_limit;
-	uvlo_reg_read(bcl_dev->intf_pmic_dev, bcl_dev->ifpmic, UVLO1, &uvlo1_lvl);
-	uvlo_reg_read(bcl_dev->intf_pmic_dev, bcl_dev->ifpmic, UVLO2, &uvlo2_lvl);
+	u8 val;
 
 	p_np = of_get_child_by_name(np, "ifpmic_irq_mapping");
 	if (!p_np)
@@ -74,6 +68,22 @@ static int max77759_intf_pmic_init(struct bcl_device *bcl_dev)
 	uvlo2_link = ret ? -1 : link;
 	ret = of_property_read_u32(p_np, "bat_oilo1", &link);
 	oilo1_link = ret ? -1 : link;
+
+	if (!bcl_dev->ifpmic_irq_drv_en) {
+		bcl_dev->vdroop1_pin = devm_gpiod_get_index(bcl_dev->device, NULL, 0, GPIOD_ASIS);
+		if (IS_ERR(bcl_dev->vdroop1_pin)) {
+			dev_err(bcl_dev->device, "failed to get vdroop1_pin: %ld\n",
+					PTR_ERR(bcl_dev->vdroop1_pin));
+			return -ENODEV;
+		}
+		bcl_dev->vdroop2_pin = devm_gpiod_get_index(bcl_dev->device, NULL, 1, GPIOD_ASIS);
+		if (IS_ERR(bcl_dev->vdroop2_pin)) {
+			dev_err(bcl_dev->device, "failed to get vdroop2_pin: %ld\n",
+					PTR_ERR(bcl_dev->vdroop2_pin));
+			return -ENODEV;
+		}
+	}
+
 	if (max77759_register_irq(bcl_dev, "uvlo1", UVLO1, uvlo1_link) != 0)
 		return -EINVAL;
 	if (max77759_register_irq(bcl_dev, "uvlo2", UVLO2, uvlo2_link) != 0)
@@ -81,9 +91,18 @@ static int max77759_intf_pmic_init(struct bcl_device *bcl_dev)
 	if (max77759_register_irq(bcl_dev, "oilo1", BATOILO1, oilo1_link) != 0)
 		return -EINVAL;
 
-	max77759_clr_irq(bcl_dev, UVLO1);
-	max77759_clr_irq(bcl_dev, UVLO2);
-	max77759_clr_irq(bcl_dev, BATOILO1);
+	/* UVLO1, UVLO2 and BATOILO DET */
+	ret = max77759_external_reg_read(bcl_dev->intf_pmic_dev, MAX77759_CHG_CNFG_17, &val);
+	if (ret < 0)
+		return -ENODEV;
+	val = (val & CHG_CNFG_17_AICL_MASK);
+	val |= (bcl_dev->batt_irq_conf1.batoilo_det << BATOILO_DET_SHIFT |
+			bcl_dev->batt_irq_conf1.uvlo_det << UVLO1_DET_SHIFT |
+			bcl_dev->batt_irq_conf2.uvlo_det << UVLO2_DET_SHIFT) &
+		CHG_CNFG_17_DET_MASK;
+	ret = max77759_external_reg_write(bcl_dev->intf_pmic_dev, MAX77759_CHG_CNFG_17, val);
+	if (ret < 0)
+		return -EIO;
 
 	return ret;
 }
@@ -121,6 +140,16 @@ static void max77759_ifpmic_parse_dt(struct bcl_device *bcl_dev)
 	bcl_dev->batt_irq_conf2.batoilo_usb_trig_lvl = ret ?
 			bcl_dev->batt_irq_conf2.batoilo_trig_lvl :
 			(retval - bcl_dev->batt_irq_conf2.batoilo_lower_limit) / BO_STEP;
+	ret = of_property_read_u32(np, "batoilo_otg_trig_lvl", &retval);
+	bcl_dev->batt_irq_conf1.batoilo_otg_trig_lvl =
+		ret ? bcl_dev->batt_irq_conf1.batoilo_trig_lvl :
+		      (retval - bcl_dev->batt_irq_conf1.batoilo_lower_limit) /
+				BO_STEP;
+	ret = of_property_read_u32(np, "batoilo2_otg_trig_lvl", &retval);
+	bcl_dev->batt_irq_conf2.batoilo_otg_trig_lvl =
+		ret ? bcl_dev->batt_irq_conf2.batoilo_trig_lvl :
+		      (retval - bcl_dev->batt_irq_conf2.batoilo_lower_limit) /
+				BO_STEP;
 	ret = of_property_read_u32(np, "batoilo_wlc_trig_lvl", &retval);
 	bcl_dev->batt_irq_conf1.batoilo_wlc_trig_lvl = ret ?
 			bcl_dev->batt_irq_conf1.batoilo_trig_lvl :
@@ -150,13 +179,13 @@ static void max77759_ifpmic_parse_dt(struct bcl_device *bcl_dev)
 	ret = of_property_read_u32(np, "batoilo2_int_det", &retval);
 	bcl_dev->batt_irq_conf2.batoilo_int_det = ret ? BO_INT_DET_DEFAULT : retval;
 	ret = of_property_read_u32(np, "uvlo1_det", &retval);
-	bcl_dev->batt_irq_conf1.uvlo_det = ret ? UV_INT_REL_DEFAULT : retval;
+	bcl_dev->batt_irq_conf1.uvlo_det = ret ? UV_INT_DET_DEFAULT : retval;
 	ret = of_property_read_u32(np, "uvlo2_det", &retval);
-	bcl_dev->batt_irq_conf2.uvlo_det = ret ? UV_INT_REL_DEFAULT : retval;
+	bcl_dev->batt_irq_conf2.uvlo_det = ret ? UV_INT_DET_DEFAULT : retval;
 	ret = of_property_read_u32(np, "uvlo1_rel", &retval);
-	bcl_dev->batt_irq_conf1.uvlo_rel = ret ? UV_INT_DET_DEFAULT : retval;
+	bcl_dev->batt_irq_conf1.uvlo_rel = ret ? UV_INT_REL_DEFAULT : retval;
 	ret = of_property_read_u32(np, "uvlo2_rel", &retval);
-	bcl_dev->batt_irq_conf2.uvlo_rel = ret ? UV_INT_DET_DEFAULT : retval;
+	bcl_dev->batt_irq_conf2.uvlo_rel = ret ? UV_INT_REL_DEFAULT : retval;
 	ret = of_property_read_u32(np, "evt_cnt_enable", &retval);
 	bcl_dev->evt_cnt.enable = ret ? EVT_CNT_ENABLE_DEFAULT : retval;
 	ret = of_property_read_u32(np, "evt_cnt_rate", &retval);
@@ -193,56 +222,3 @@ int max77759_ifpmic_setup(struct bcl_device *bcl_dev, struct platform_device *pd
 
 	return 0;
 }
-
-int max77759_get_irq(struct bcl_device *bcl_dev, u8 *irq_val)
-{
-	u8 chg_int;
-	u8 ret;
-	u8 clr_bcl_irq_mask;
-
-	clr_bcl_irq_mask = (MAX77759_CHG_INT2_BAT_OILO_I | MAX77759_CHG_INT2_SYS_UVLO1_I |
-			    MAX77759_CHG_INT2_SYS_UVLO2_I);
-	ret = max77759_external_reg_read(bcl_dev->intf_pmic_dev, MAX77759_CHG_INT2, &chg_int);
-	if (ret < 0)
-		return IRQ_NONE;
-	if ((chg_int & clr_bcl_irq_mask) == 0)
-		return IRQ_NONE;
-
-	/* UVLO2 has the highest priority and then BATOILO, then UVLO1 */
-	if (chg_int & MAX77759_CHG_INT2_SYS_UVLO2_I)
-		*irq_val = UVLO2;
-	else if (chg_int & MAX77759_CHG_INT2_BAT_OILO_I)
-		*irq_val = BATOILO;
-	else if (chg_int & MAX77759_CHG_INT2_SYS_UVLO1_I)
-		*irq_val = UVLO1;
-
-	return ret;
-}
-
-int max77759_clr_irq(struct bcl_device *bcl_dev, int idx)
-{
-	u8 irq_val = 0;
-	u8 chg_int = 0;
-	int ret;
-
-	if (idx == NOT_USED) {
-		irq_val = idx;
-	} else {
-		if (max77759_get_irq(bcl_dev, &irq_val) != 0)
-			return IRQ_NONE;
-	}
-	if (irq_val == UVLO2)
-		chg_int = MAX77759_CHG_INT2_SYS_UVLO2_I | MAX77759_CHG_INT2_BAT_OILO_I;
-	else if (irq_val == UVLO1)
-		chg_int = MAX77759_CHG_INT2_SYS_UVLO1_I;
-	else if (irq_val == BATOILO)
-		chg_int = MAX77759_CHG_INT2_SYS_UVLO2_I | MAX77759_CHG_INT2_BAT_OILO_I;
-
-	ret = max77759_external_reg_write(bcl_dev->intf_pmic_dev, MAX77759_CHG_INT2, chg_int);
-	if (ret < 0)
-		return IRQ_NONE;
-	return ret;
-
-}
-
-int max77759_vimon_read(struct bcl_device *bcl_dev) { return 0; }

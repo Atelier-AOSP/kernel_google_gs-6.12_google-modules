@@ -18,7 +18,11 @@ description: |
 
 properties:
   compatible:
-    - const: google,gdmc-dhub
+    oneOf:
+      - const: google,gdmc-dhub-gen1
+        description: For the first generation of the DHUB UART channels.
+      - const: google,gdmc-dhub-gen2
+        description: For the second generation of the DHUB UART channels.
 
   gdmc-iface:
     description:
@@ -34,6 +38,6 @@ additionalProperties: false
 examples:
   - |
     gdmc_dhub: gdmc_dhub {
-        compatible = "google,gdmc-dhub";
+        compatible = "google,gdmc-dhub-gen1";
         gdmc-iface = <&goog_mba_gdmc_iface>;
     };

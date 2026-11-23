@@ -1282,14 +1282,14 @@ free_pdata:
 	return ret;
 }
 
-static int bt_power_remove(struct platform_device *pdev)
+static void bt_power_remove(struct platform_device *pdev)
 {
 	struct btpower_platform_data *drvdata = platform_get_drvdata(pdev);
 
 	LOGD(drvdata, "%s: entry", __func__);
 
 	if (!drvdata)
-		return 0;
+		return;
 
 	btpower_chardev_remove(drvdata);
 	btpower_rfkill_remove(pdev);
@@ -1299,8 +1299,6 @@ static int bt_power_remove(struct platform_device *pdev)
 	if (!IS_ERR_OR_NULL(drvdata->devlog))
 		logbuffer_unregister(drvdata->devlog);
 	kfree(drvdata);
-
-	return 0;
 }
 
 int btpower_register_slimdev(struct device *dev)

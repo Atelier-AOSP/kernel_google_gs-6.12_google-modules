@@ -11,6 +11,32 @@
 #include <linux/ioctl.h>
 #include <linux/types.h>
 
+/**
+ * define _EDGETPU_INTERFACE_VERSION_MAJOR - The major version number of the interfaces in this
+ * file.
+ *
+ * This number must be incremented when deprecated features or fields are removed.
+ */
+#define _EDGETPU_INTERFACE_VERSION_MAJOR 1
+
+/**
+ * define _EDGETPU_INTERFACE_VERSION_MINOR - The minor version number of the interfaces in this
+ * file.
+ * This number must be incremented when new features or fields are added, or when existing features
+ * are marked deprecated.
+ */
+#define _EDGETPU_INTERFACE_VERSION_MINOR 5
+
+/*
+ * Interface version history:
+ *
+ * 1.1: Initial support for interface versioning.
+ * 1.2: Add EDGETPU_TRIM_ENABLE; earlier versions to be considered not supporting trim.
+ * 1.3: Add EDGETPU_IDENTIFY_CLIENT.
+ * 1.4: EDGETPU_MAP_COHERENT implies EDGETPU_MAP_SKIP_CPU_SYNC for Zuma and beyond; remove PBHA.
+ * 1.5: Remove HWTRACE hardware tracing interfaces.
+ */
+
 /*
  * Legacy Platforms Only: mmap offsets for mailbox CSRs, command queue, and response queue.
  *
@@ -43,7 +69,6 @@ typedef __u32 edgetpu_map_flag_t;
 #define EDGETPU_MAP_DMA_BIDIRECTIONAL   0
 #define EDGETPU_MAP_DMA_TO_DEVICE       1
 #define EDGETPU_MAP_DMA_FROM_DEVICE     2
-#define EDGETPU_MAP_DMA_NONE            3
 /* The address is mapped to all dies in a device group */
 #define EDGETPU_MAP_MIRRORED		(0u << 2)
 /* The address is mapped on the specific die */
@@ -53,12 +78,10 @@ typedef __u32 edgetpu_map_flag_t;
 #define EDGETPU_MAP_CPU_NONACCESSIBLE	(1u << 3)
 /* Skip CPU sync on unmap */
 #define EDGETPU_MAP_SKIP_CPU_SYNC	(1u << 4)
-/* Offset and mask to set the PBHA bits of IOMMU mappings */
-#define EDGETPU_MAP_ATTR_PBHA_SHIFT	5
-#define EDGETPU_MAP_ATTR_PBHA_MASK	0xf
-/* Create coherent mapping of the buffer */
+/* Bits 5-8 unused. */
+/* Create coherent mapping of the buffer (implies EDGETPU_MAP_SKIP_CPU_SYNC for Zuma and beyond) */
 #define EDGETPU_MAP_COHERENT		(1u << 9)
-/* Map buffer "trimmable" on request from Pixel trim subsystem */
+/* Map buffer "trimmable" on request from Pixel trim subsystem when client enables trimming */
 #define EDGETPU_MAP_TRIMMABLE		(1u << 10)
 
 /* External mailbox types */
@@ -79,7 +102,6 @@ struct edgetpu_map_ioctl {
 	 *               00 = DMA_BIDIRECTIONAL
 	 *               01 = DMA_TO_DEVICE
 	 *               10 = DMA_FROM_DEVICE
-	 *               11 = DMA_NONE
 	 *   [2:2]   - Mirroredness. Mirrored across device group or local to a
 	 *             specific die:
 	 *               0 = map to all dies in a device group
@@ -96,7 +118,7 @@ struct edgetpu_map_ioctl {
 	 *               0 = Don't skip CPU sync. Default DMA API behavior.
 	 *               1 = Skip CPU sync.
 	 *             Note: This bit is ignored on the map call.
-	 *   [8:5]   - Value of PBHA bits for IOMMU mappings. For Abrolhos only.
+	 *   [8:5]   - Unused.
 	 *   [9:9]   - Coherent Mapping:
 	 *              0 = Create non-coherent mappings of the buffer.
 	 *              1 = Create coherent mappings of the buffer.
@@ -284,11 +306,10 @@ struct edgetpu_sync_ioctl {
 	 * Set RESERVED bits to 0 to ensure backwards compatibility.
 	 *
 	 * Bitfields:
-	 *   [1:0]   - DMA_DIRECTION:
+	 *   [1:0]   - DMA_DIRECTION: Deprecated. Directions will be fetched from internal records.
 	 *               00 = DMA_BIDIRECTIONAL
 	 *               01 = DMA_TO_DEVICE
 	 *               10 = DMA_FROM_DEVICE
-	 *               11 = DMA_NONE
 	 *   [2:2]   - Sync direction. Sync for device or CPU.
 	 *               0 = sync for device
 	 *               1 = sync for CPU
@@ -322,9 +343,6 @@ struct edgetpu_map_dmabuf_ioctl {
 	/*
 	 * Flags indicating mapping attributes. See edgetpu_map_ioctl.flags for
 	 * details.
-	 *
-	 * Note: the SKIP_CPU_SYNC and PBHA flags are ignored, DMA flags to be
-	 * used is controlled by the dma-buf exporter.
 	 */
 	edgetpu_map_flag_t flags;
 	/*
@@ -424,9 +442,8 @@ struct edgetpu_map_bulk_dmabuf_ioctl {
 	/*
 	 * The list of file descriptors backed by dma-buf.
 	 *
-	 * The first FD will be mapped to the first device in the target group
-	 * (i.e. the master die); the second FD will be mapped to the second
-	 * device and so on.
+	 * The first FD will be mapped to the first device in the target group;
+	 * the second FD will be mapped to the second device and so on.
 	 * Only the first N FDs will be used, where N is the number of devices
 	 * in the group.
 	 *
@@ -439,7 +456,7 @@ struct edgetpu_map_bulk_dmabuf_ioctl {
 };
 
 /*
- * Map a list of dma-buf FDs to devices in the group.
+ * Obsolete: Map a list of dma-buf FDs to devices in the group.
  *
  * On success, @device_address is set and the syscall returns zero.
  *
@@ -452,7 +469,7 @@ struct edgetpu_map_bulk_dmabuf_ioctl {
 #define EDGETPU_MAP_BULK_DMABUF \
 	_IOWR(EDGETPU_IOCTL_BASE, 22, struct edgetpu_map_bulk_dmabuf_ioctl)
 /*
- * Un-map address previously mapped by EDGETPU_MAP_BULK_DMABUF.
+ * Obsolete: Un-map address previously mapped by EDGETPU_MAP_BULK_DMABUF.
  *
  * Only field @device_address in the third argument is used, other fields such
  * as @size will be fetched from the kernel's internal records.
@@ -656,8 +673,9 @@ struct edgetpu_vii_command {
 	 */
 	__u16 code;
 	/*
-	 * Priority level from 0 to 99, with 0 being the highest.
+	 * Priority level from 0 to 11, with 0 being the highest.
 	 * Pending commands with higher priorities will be executed before lower priority ones.
+	 * Firmware behavior for invalid values is undefined.
 	 */
 	__u8 priority;
 	__u8 reserved_0[5];
@@ -881,6 +899,8 @@ struct edgetpu_vii_litebuf_response_ioctl {
  * The set of IOCTLs supported by the limited interface includes:
  * - EDGETPU_MAP_BUFFER
  * - EDGETPU_UNMAP_BUFFER
+ * - EDGETPU_MAP_DMABUF
+ * - EDGETPU_UNMAP_DMABUF
  *
  * To create a limited interface, a file descriptor must be obtained by calling open() on the
  * limited interface's device node (e.g. /dev/edgetpu-limited). The limited interface FD must then
@@ -904,11 +924,64 @@ struct edgetpu_vii_litebuf_response_ioctl {
 #define EDGETPU_NUM_VII_CREDITS 8
 
 /*
- * Remap all buffers previously trimmed for this client.
+ * Remap all buffers previously trimmed for this client, and disable trimming until re-enabled
+ * via EDGETPU_TRIM_ENABLE.
  *
  * If a non-zero error code is returned then remapping failed unexpectedly, and the client still
  * cannot run the associated models until another call to remap buffers returns successfully.
+ * Trim will be disabled for the client upon return, even if an error occurs remapping buffers.
  */
-#define EDGETPU_REMAP_BUFFERS	_IO(EDGETPU_IOCTL_BASE, 41)
+#define EDGETPU_TRIM_REMAP	_IO(EDGETPU_IOCTL_BASE, 41)
+#define EDGETPU_REMAP_BUFFERS	EDGETPU_TRIM_REMAP
+
+#define EDGETPU_INTERFACE_VERSION_BUFFER_SIZE 64
+
+/**
+ * struct edgetpu_interface_version_ioctl - The object to output the version information of the
+ * driver.
+ * @version_major: The major version number of the current driver.
+ * @version_minor: The minor version number of the current driver.
+ */
+struct edgetpu_interface_version_ioctl {
+	__u16 version_major;
+	__u16 version_minor;
+	/**
+	 * @version_build: The build identifier of current driver.
+	 *
+	 * The identifier is a NULL-terminated string which is the git hash of the commit that the
+	 * driver was built from.
+	 *
+	 * If the driver had uncommitted changes the string will end with "-dirty".
+	 */
+	char version_build[EDGETPU_INTERFACE_VERSION_BUFFER_SIZE];
+};
+
+/**
+ * define EDGETPU_GET_INTERFACE_VERSION - The encoded cmd for querying the driver's interface
+ * version.
+ *
+ * Return the interface version of the running kernel driver. A user-space application must check
+ * the version through this ioctl for compatibility, instead of directly checking the
+ * _EDGETPU_INTERFACE_VERSION_* macros.
+ */
+#define EDGETPU_GET_INTERFACE_VERSION _IOR(EDGETPU_IOCTL_BASE, 42, \
+					   struct edgetpu_interface_version_ioctl)
+
+/* Convenience symbols for argument to EDGETPU_TRIM_ENABLE */
+#define EDGETPU_TRIM_ENABLED	1
+#define EDGETPU_TRIM_DISABLED	0
+
+/*
+ * Enable or disable trimming for all buffers marked as trimmable for this client. If enabled, the
+ * edgetpu driver will trim any such buffers in response to a request from the Pixel Trim subsystem,
+ * until the client disables trim via this ioctl. Parameter is non-zero to enable trim, or zero to
+ * disable trim.
+ */
+#define EDGETPU_TRIM_ENABLE	_IOW(EDGETPU_IOCTL_BASE, 43, __u32)
+
+/*
+ * Runtime server passes the PID of its client process for identification/triage purposes.
+ */
+#define EDGETPU_IDENTIFY_CLIENT	_IOW(EDGETPU_IOCTL_BASE, 44, __u32)
 
 #endif /* __EDGETPU_H__ */

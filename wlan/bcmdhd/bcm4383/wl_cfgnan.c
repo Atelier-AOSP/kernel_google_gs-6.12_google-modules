@@ -4900,6 +4900,7 @@ wl_cfgnan_start_handler(struct net_device *ndev, struct bcm_cfg80211 *cfg,
 	 * If if_sync & nan_mutex comes together in same context, nan_mutex
 	 * should follow if_sync.
 	 */
+
 	mutex_lock(&cfg->if_sync);
 	NAN_MUTEX_LOCK();
 
@@ -5315,11 +5316,12 @@ fail:
 		if (err != BCME_OK) {
 			WL_ERR(("failed to de-initialize NAN[%d]\n", err));
 		}
+#ifdef WLTDLS
+		/* Re-enable TDLS if NAN enable fails */
+		wl_cfg80211_tdls_config(cfg, TDLS_STATE_IF_DELETE, false);
+#endif /* WLTDLS */
 	}
 done:
-	/* Enable back TDLS if connected interface is <= 1 */
-	wl_cfg80211_tdls_config(cfg, TDLS_STATE_IF_DELETE, false);
-
 	/* reset conditon variable */
 	nancfg->nan_event_recvd = false;
 
@@ -11841,8 +11843,9 @@ wl_cfgnan_notify_nan_status(struct bcm_cfg80211 *cfg,
 		ret = wl_nan_dp_cmn_event_data(cfg, event_data, data_len,
 				&tlvs_offset, &nan_opts_len,
 				event_num, &hal_event_id, nan_event_data);
-		/* Avoiding optional param parsing for DP END Event */
-		if (event_num == WL_NAN_EVENT_DATAPATH_END) {
+		/* Avoiding optional param parsing for DP END Event/DP reject case */
+		if (event_num == WL_NAN_EVENT_DATAPATH_END ||
+			(nan_event_data->status == NAN_DP_REQUEST_REJECT)) {
 			nan_opts_len = 0;
 			xtlv_opt = BCM_IOV_CMD_OPT_ALIGN_NONE;
 		}
@@ -12012,8 +12015,8 @@ wl_cfgnan_notify_nan_status(struct bcm_cfg80211 *cfg,
 			bs_entry = wl_cfgnan_add_bootstrapping_entry(cfg,
 					(struct ether_addr *)cfg->nancfg->nan_nmi_mac,
 					&nan_event_data->remote_nmi, NAN_PAIRING_BS_ROLE_RESPONDER,
-					nan_event_data->requestor_id,
 					nan_event_data->local_inst_id,
+					nan_event_data->requestor_id,
 					&nan_event_data->npba_info);
 			if (bs_entry == NULL) {
 				WL_ERR(("Could not add BS cache entry for BS REQ event \n"));

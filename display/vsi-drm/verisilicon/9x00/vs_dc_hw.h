@@ -18,6 +18,8 @@
 
 #if IS_ENABLED(CONFIG_VERISILICON_DC9400_0x32a)
 #include "info/sswrp_dpu_gpcsr_pg_9400_0x32a.h"
+#elif IS_ENABLED(CONFIG_VERISILICON_DC9400_0x20000005)
+#include "info/sswrp_dpu_gpcsr_pg_9400_0x20000005.h"
 #endif
 
 #define __vsFIELDSTART(reg_field) \
@@ -240,6 +242,7 @@
 #define R2R_TABLE_SIZE 9
 #define FILTER_COEF_NUM 238 /* For 32 phases and 9x5 taps */
 #define MAX_CRC_CORE_NUM 2 /* For OFIFO_OUT CRC */
+#define MAX_QOS_LEVLE 4
 /*****************************************************************
  *
  * TBD !!
@@ -266,7 +269,7 @@ enum dc_hw_color_format {
 	FORMAT_NV16,
 	FORMAT_P010,
 	FORMAT_P210,
-	FORMAT_YUV420_PACKED,
+	FORMAT_YUV420_PACKED_10BIT,
 };
 
 enum dc_hw_tile_mode {
@@ -599,6 +602,29 @@ struct dc_hw_display_wb {
 	u8 wb_id;
 	u32 wb_point;
 	bool enable;
+	bool dirty;
+};
+
+struct dc_hw_disp_qos {
+	u32 qos_threshold[MAX_QOS_LEVLE - 1];
+	u32 urgent_threshold[MAX_QOS_LEVLE - 1];
+	u32 qos_value[MAX_QOS_LEVLE];
+	u32 urgent_high;
+	u32 urgent_low;
+	u32 hist_qos_value;
+	bool hist_qos_changed;
+	bool dirty;
+};
+
+struct dc_hw_plane_qos {
+	u32 fe0_qos_value[MAX_QOS_LEVLE];
+	u32 fe1_qos_value[MAX_QOS_LEVLE];
+	u32 plane_qos_value[MAX_QOS_LEVLE];
+	bool dirty;
+};
+
+struct dc_hw_wb_qos {
+	u32 qos_value;
 	bool dirty;
 };
 
@@ -942,6 +968,7 @@ struct dc_hw_display {
 	struct vs_dc_property_state_group states;
 	struct dc_hw_sram_pool sram_pool;
 	struct drm_dsc_config dsc;
+	struct dc_hw_disp_qos qos;
 	enum dc_hw_output_id output_id;
 	bool sbs_split_dirty;
 	bool wb_split_dirty;
@@ -962,6 +989,7 @@ struct dc_hw_plane {
 	struct dc_hw_block lut_3d;
 	struct dc_hw_scale scale;
 	struct dc_hw_roi roi;
+	struct dc_hw_plane_qos qos;
 	struct dc_hw_clear clear;
 	struct vs_dc_property_state_group states;
 	struct dc_hw_sram_pool sram;
@@ -972,8 +1000,10 @@ struct dc_hw_plane {
 struct dc_hw_wb {
 	const struct vs_wb_info *info;
 	struct dc_hw_fb fb;
+	struct dc_hw_wb_qos qos;
 	struct dc_hw_r2y r2y;
 	struct vs_dc_property_state_group states;
+	bool wb_frm_done;
 	bool config_status;
 	struct dc_hw_wb_funcs func;
 	/* TBD */
@@ -1186,6 +1216,9 @@ int dc_hw_reset_all_be_interrupts(struct dc_hw *hw);
 int dc_hw_disable_all_be_interrupts(struct dc_hw *hw);
 int dc_hw_clear_be_interrupt_statuses(struct dc_hw *hw);
 int dc_hw_clear_be_interrupt_overflows(struct dc_hw *hw);
+void dc_hw_get_fe0_interrupt(struct dc_hw *hw, struct dc_hw_interrupt_status *status);
+void dc_hw_get_fe1_interrupt(struct dc_hw *hw, struct dc_hw_interrupt_status *status);
+void dc_hw_get_be_interrupt(struct dc_hw *hw, struct dc_hw_interrupt_status *status);
 int dc_hw_get_interrupt(struct dc_hw *hw, struct dc_hw_interrupt_status *status);
 int dc_hw_enable_fe_interrupts(struct dc_hw *hw);
 u8 dc_hw_get_plane_id(u8 layer, struct dc_hw *hw);
@@ -1197,12 +1230,17 @@ void dc_hw_clear_display_pattern(struct dc_hw *hw, u8 id, struct dc_hw_pattern *
 int dc_hw_reg_dump_custom(struct dc_hw *hw, struct drm_printer *p, const char *desc, u32 offset,
 			  u32 size);
 int dc_hw_reg_dump(struct dc_hw *hw, struct drm_printer *p, enum dc_hw_reg_bank_type reg_type);
+void dc_hw_get_fe_qos_value(struct dc_hw_plane_qos *qos);
+void dc_hw_get_be_qos_value(struct dc_hw_disp_qos *qos);
 void dc_hw_collect_reg_dump(struct device *dev, enum dc_hw_reg_dump_options option,
 			    enum dc_hw_reg_bank_type reg_type);
 void dc_hw_do_fe0_reset(struct dc_hw *hw);
 void dc_hw_do_fe1_reset(struct dc_hw *hw);
 void dc_hw_do_be_reset(struct dc_hw *hw);
+void dc_hw_do_be_reset_cleanup(struct dc_hw *hw);
 void dc_hw_do_reset(struct dc_hw *hw);
+bool dc_hw_fe0_is_all_layers_idle(struct dc_hw *hw);
+bool dc_hw_fe1_is_all_layers_idle(struct dc_hw *hw);
 bool dc_hw_fe_is_all_layers_idle(struct dc_hw *hw);
 void dc_hw_enable_shadow_register(struct dc_hw *hw, u8 display_id, bool enable);
 void dc_hw_start_trigger(struct dc_hw *hw, u8 display_id, struct drm_crtc *crtc);
@@ -1226,6 +1264,7 @@ void dc_hw_display_commit(struct dc_hw *hw, u8 display_id);
 void dc_hw_display_frame_done(struct dc_hw *hw, u8 display_id);
 void dc_hw_wb_commit(struct dc_hw *hw, u8 display_id);
 void dc_hw_display_flip_done(struct dc_hw *hw, u8 display_id);
+void dc_hw_plane_set_secure_bits(struct dc_hw *hw, u8 display_id, bool secure_bit_en);
 u32 vs_dc_get_display_offset(u32 hw_id);
 u32 vs_dc_get_panel_dither_table_offset(u32 hw_id);
 u32 vs_dc_get_wb_offset(u32 hw_id);
@@ -1249,6 +1288,9 @@ u32 vs_dpu_link_node_config_get(struct dc_hw *hw, u32 link_node_id);
 void dc_hw_save_plane_status(struct dc_hw_plane *plane);
 void dc_hw_save_display_status(struct dc_hw_display *display);
 void dc_hw_save_wb_status(struct dc_hw_wb *wb);
+void dc_hw_fe0_save_status(struct dc_hw *hw);
+void dc_hw_fe1_save_status(struct dc_hw *hw);
+void dc_hw_be_save_status(struct dc_hw *hw);
 void dc_hw_save_status(struct dc_hw *hw);
 #endif
 

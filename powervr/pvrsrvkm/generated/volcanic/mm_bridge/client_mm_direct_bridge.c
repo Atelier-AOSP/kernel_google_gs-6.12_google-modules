@@ -51,7 +51,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pvrsrv_memalloc_physheap.h"
 #include "devicemem_typedefs.h"
 
-#include "pvrsrv_memalloc_physheap.h"
 #include "devicemem.h"
 #include "devicemem_server.h"
 #include "pmr.h"
@@ -408,12 +407,10 @@ IMG_INTERNAL PVRSRV_ERROR BridgeDevmemIntUnreserveRange(IMG_HANDLE hBridge, IMG_
 	return eError;
 }
 
-IMG_INTERNAL PVRSRV_ERROR BridgeChangeSparseMem(IMG_HANDLE hBridge,
-						IMG_UINT32 ui32AllocPageCount,
-						IMG_UINT32 * pui32AllocPageIndices,
-						IMG_UINT32 ui32FreePageCount,
-						IMG_UINT32 * pui32FreePageIndices,
-						IMG_UINT32 ui32SparseFlags, IMG_HANDLE hReservation)
+IMG_INTERNAL PVRSRV_ERROR BridgeSparseAddBacking(IMG_HANDLE hBridge,
+						 IMG_UINT32 ui32AllocPageCount,
+						 IMG_UINT32 * pui32AllocPageIndices,
+						 IMG_HANDLE hReservation)
 {
 	PVRSRV_ERROR eError;
 	DEVMEMINT_RESERVATION *psReservationInt;
@@ -422,10 +419,24 @@ IMG_INTERNAL PVRSRV_ERROR BridgeChangeSparseMem(IMG_HANDLE hBridge,
 	psReservationInt = (DEVMEMINT_RESERVATION *) hReservation;
 
 	eError =
-	    DevmemIntChangeSparse(ui32AllocPageCount,
-				  pui32AllocPageIndices,
-				  ui32FreePageCount,
-				  pui32FreePageIndices, ui32SparseFlags, psReservationInt);
+	    DevmemIntSparseAddBacking(ui32AllocPageCount, pui32AllocPageIndices, psReservationInt);
+
+	return eError;
+}
+
+IMG_INTERNAL PVRSRV_ERROR BridgeSparseRemoveBacking(IMG_HANDLE hBridge,
+						    IMG_UINT32 ui32FreePageCount,
+						    IMG_UINT32 * pui32FreePageIndices,
+						    IMG_HANDLE hReservation)
+{
+	PVRSRV_ERROR eError;
+	DEVMEMINT_RESERVATION *psReservationInt;
+	PVR_UNREFERENCED_PARAMETER(hBridge);
+
+	psReservationInt = (DEVMEMINT_RESERVATION *) hReservation;
+
+	eError =
+	    DevmemIntSparseRemoveBacking(ui32FreePageCount, pui32FreePageIndices, psReservationInt);
 
 	return eError;
 }
@@ -517,7 +528,9 @@ IMG_INTERNAL PVRSRV_ERROR BridgeHeapCfgHeapDetails(IMG_HANDLE hBridge,
 						   IMG_DEVMEM_SIZE_T * puiHeapLength,
 						   IMG_DEVMEM_SIZE_T * puiReservedRegionLength,
 						   IMG_UINT32 * pui32Log2DataPageSizeOut,
-						   IMG_UINT32 * pui32Log2ImportAlignmentOut)
+						   IMG_UINT32 * pui32Log2ImportAlignmentOut,
+						   IMG_UINT32 * pui32HeapManagerFlags,
+						   IMG_UINT32 * pui32PolicyVMRA)
 {
 	PVRSRV_ERROR eError;
 
@@ -530,7 +543,8 @@ IMG_INTERNAL PVRSRV_ERROR BridgeHeapCfgHeapDetails(IMG_HANDLE hBridge,
 			       psDevVAddrBase,
 			       puiHeapLength,
 			       puiReservedRegionLength,
-			       pui32Log2DataPageSizeOut, pui32Log2ImportAlignmentOut);
+			       pui32Log2DataPageSizeOut,
+			       pui32Log2ImportAlignmentOut, pui32HeapManagerFlags, pui32PolicyVMRA);
 
 	return eError;
 }
@@ -553,13 +567,13 @@ IMG_INTERNAL PVRSRV_ERROR BridgeDevmemIntRegisterPFNotifyKM(IMG_HANDLE hBridge,
 IMG_INTERNAL PVRSRV_ERROR BridgePhysHeapGetMemInfo(IMG_HANDLE hBridge,
 						   IMG_UINT32 ui32PhysHeapCount,
 						   PVRSRV_PHYS_HEAP * peaPhysHeapID,
-						   PHYS_HEAP_MEM_STATS * pasapPhysHeapMemStats)
+						   PHYS_HEAP_MEM_STATS_OLD * psapPhysHeapMemStats)
 {
 	PVRSRV_ERROR eError;
 
 	eError =
 	    PVRSRVPhysHeapGetMemInfoKM(NULL, (PVRSRV_DEVICE_NODE *) ((void *)hBridge),
-				       ui32PhysHeapCount, peaPhysHeapID, pasapPhysHeapMemStats);
+				       ui32PhysHeapCount, peaPhysHeapID, psapPhysHeapMemStats);
 
 	return eError;
 }
@@ -731,6 +745,20 @@ IMG_INTERNAL PVRSRV_ERROR BridgeDevmemIntFindCPUAddress(IMG_HANDLE hBridge,
 	psDevmemServerHeapInt = (DEVMEMINT_HEAP *) hDevmemServerHeap;
 
 	eError = DevmemIntFindCPUAddress(psDevmemServerHeapInt, ui64Size, ui64AddrHint, pui64Addr);
+
+	return eError;
+}
+
+IMG_INTERNAL PVRSRV_ERROR BridgePhysHeapGetMemInfo2(IMG_HANDLE hBridge,
+						    IMG_UINT32 ui32PhysHeapCount,
+						    PVRSRV_PHYS_HEAP * peaPhysHeapID,
+						    PHYS_HEAP_MEM_STATS * pasapPhysHeapMemStats)
+{
+	PVRSRV_ERROR eError;
+
+	eError =
+	    PVRSRVPhysHeapGetMemInfoKM2(NULL, (PVRSRV_DEVICE_NODE *) ((void *)hBridge),
+					ui32PhysHeapCount, peaPhysHeapID, pasapPhysHeapMemStats);
 
 	return eError;
 }

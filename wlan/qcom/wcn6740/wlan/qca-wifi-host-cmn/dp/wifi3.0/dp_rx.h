@@ -905,11 +905,11 @@ void dp_rx_desc_update_dbg_info(struct dp_rx_desc *rx_desc,
 		return;
 
 	if (flag == RX_DESC_REPLENISHED) {
-		qdf_str_lcopy(info->replenish_caller, func_name,
+		qdf_str_scopy(info->replenish_caller, func_name,
 			      QDF_MEM_FUNC_NAME_SIZE);
 		info->replenish_ts = qdf_get_log_timestamp();
 	} else {
-		qdf_str_lcopy(info->freelist_caller, func_name,
+		qdf_str_scopy(info->freelist_caller, func_name,
 			      QDF_MEM_FUNC_NAME_SIZE);
 		info->freelist_ts = qdf_get_log_timestamp();
 		info->prev_nbuf = rx_desc->nbuf;

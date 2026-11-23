@@ -8,6 +8,7 @@
 
 #include <linux/pcie_google_if.h>
 #include "pcie-google.h"
+#include "pcie-google-shim.h"
 
 void exynos_pcie_set_perst_gpio(int ch_num, bool on)
 {
@@ -120,20 +121,6 @@ int exynos_pcie_rc_l1ss_ctrl(int enable, int id, int ch_num)
 }
 EXPORT_SYMBOL_GPL(exynos_pcie_rc_l1ss_ctrl);
 
-/* called by modem driver */
-int exynos_pcie_poweron(int ch_num, int spd)
-{
-	return google_pcie_poweron_withspeed(ch_num, spd);
-}
-EXPORT_SYMBOL_GPL(exynos_pcie_poweron);
-
-/* called by modem driver */
-void exynos_pcie_poweroff(int ch_num)
-{
-	google_pcie_rc_poweroff(ch_num);
-}
-EXPORT_SYMBOL_GPL(exynos_pcie_poweroff);
-
 int exynos_pcie_rc_chk_link_status(int ch_num)
 {
 	return google_pcie_link_status(ch_num);
@@ -154,13 +141,6 @@ int exynos_pcie_deregister_event(void *reg)
 }
 EXPORT_SYMBOL_GPL(exynos_pcie_deregister_event);
 
-int exynos_pcie_rc_set_affinity(int ch_num, int affinity)
-{
-	pr_warn("WARNING: %s() not implemented", __func__);
-	return 0;
-}
-EXPORT_SYMBOL_GPL(exynos_pcie_rc_set_affinity);
-
 int register_separated_msi_vector(int ch_num, irq_handler_t handler,
 				  void *context, int *irq_num)
 {
@@ -168,10 +148,3 @@ int register_separated_msi_vector(int ch_num, irq_handler_t handler,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(register_separated_msi_vector);
-
-u32 pcie_linkup_stat(void)
-{
-	pr_warn("WARNING: %s() not implemented", __func__);
-	return 0;
-}
-EXPORT_SYMBOL_GPL(pcie_linkup_stat);

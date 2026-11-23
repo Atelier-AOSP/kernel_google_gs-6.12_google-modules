@@ -228,35 +228,57 @@ void PVRSRVPrintBridgeStats(void)
 		   "Total number of bytes copied via copy_from_user = %u\n"
 		   "Total number of bytes copied via copy_to_user = %u\n"
 		   "Total number of bytes copied via copy_*_user = %u\n\n"
-		   "%3s: %-60s | %-48s | %10s | %20s | %20s | %20s | %20s\n",
+		   "%3s: %-54s %-44s %-10s %-10s %-10s %-21s %-21s %-20s %-20s %-20s\n",
 		   g_BridgeGlobalStats.ui32IOCTLCount,
 		   g_BridgeGlobalStats.ui32TotalCopyFromUserBytes,
 		   g_BridgeGlobalStats.ui32TotalCopyToUserBytes,
-		   g_BridgeGlobalStats.ui32TotalCopyFromUserBytes + g_BridgeGlobalStats.ui32TotalCopyToUserBytes,
+		   g_BridgeGlobalStats.ui32TotalCopyFromUserBytes +
+		       g_BridgeGlobalStats.ui32TotalCopyToUserBytes,
 		   "#",
 		   "Bridge Name",
 		   "Wrapper Function",
+		   "In Size",
+		   "Out Size",
 		   "Call Count",
 		   "copy_from_user (B)",
 		   "copy_to_user (B)",
 		   "Total Time (us)",
-		   "Max Time (us)");
+		   "Max Time (us)",
+		   "Avg Time (us)");
+	printf("%137s %-10s %-10s %-10s %-10s\n",
+	       " ",
+	       "Total",
+	       "Avg",
+	       "Total",
+	       "Avg");
 
 	/* Is the item asked for (starts at 0) a valid table index? */
 	for ( ui32Index=0; ui32Index < BRIDGE_DISPATCH_TABLE_ENTRY_COUNT; ui32Index++ )
 	{
 		PVRSRV_BRIDGE_DISPATCH_TABLE_ENTRY *psEntry = &g_BridgeDispatchTable[ui32Index];
-		printf("%3d: %-60s   %-48s   %-10u   %-20u   %-20u   %-20llu   %-20llu\n",
+		IMG_UINT32 ui32InAvgSize, ui32OutAvgSize;
+		IMG_UINT64 ui64AvgTime;
+
+		ui32InAvgSize = psEntry->ui32CopyFromUserTotalBytes / psEntry->ui32CallCount;
+		ui32OutAvgSize = psEntry->ui32CopyToUserTotalBytes / psEntry->ui32CallCount;
+
+		ui64AvgTime = OSDivide64By32(psEntry->ui64TotalTimeNS, psEntry->ui32CallCount);
+		ui64AvgTime = OSDivide64By32(ui64AvgTime, 1000);
+
+		printf("%3d: %-54s %-44s %-10u %-10u %-10u %-10u %-10u %-10u %-10u %-20llu %-20llu %-20llu\n",
 			   (IMG_UINT32)(((size_t)psEntry-(size_t)g_BridgeDispatchTable)/sizeof(*g_BridgeDispatchTable)),
 			   psEntry->pszIOCName,
 			   (psEntry->pfFunction != NULL) ? psEntry->pszFunctionName : "(null)",
+			   psEntry->ui32InBufferSize,
+			   psEntry->ui32OutBufferSize,
 			   psEntry->ui32CallCount,
 			   psEntry->ui32CopyFromUserTotalBytes,
+			   ui32InAvgSize,
 			   psEntry->ui32CopyToUserTotalBytes,
+			   ui32OutAvgSize,
 			   (unsigned long long) OSDivide64By32(psEntry->ui64TotalTimeNS, 1000),
-			   (unsigned long long) OSDivide64By32(psEntry->ui64MaxTimeNS, 1000));
-
-
+			   (unsigned long long) OSDivide64By32(psEntry->ui64MaxTimeNS, 1000),
+			   (unsigned long long) ui64AvgTime);
 	}
 
 	BridgeGlobalStatsUnlock();
@@ -267,7 +289,7 @@ PVRSRV_ERROR
 CopyFromUserWrapper(CONNECTION_DATA *psConnection,
 					IMG_UINT32 ui32DispatchTableEntry,
 					void *pvDest,
-					void __user *pvSrc,
+					const void __user *pvSrc,
 					IMG_UINT32 ui32Size)
 {
 	BridgeGlobalStatsLock();
@@ -281,7 +303,7 @@ PVRSRV_ERROR
 CopyToUserWrapper(CONNECTION_DATA *psConnection,
 				  IMG_UINT32 ui32DispatchTableEntry,
 				  void __user *pvDest,
-				  void *pvSrc,
+				  const void *pvSrc,
 				  IMG_UINT32 ui32Size)
 {
 	BridgeGlobalStatsLock();
@@ -632,6 +654,7 @@ PVRSRVConnectKM(CONNECTION_DATA *psConnection,
 		ui32ServerBuildOptionsMismatch &= KM_OPTIONS_STRICT;
 		ui32ClientBuildOptionsMismatch &= UM_OPTIONS_STRICT;
 #endif
+
 		if ( (ui32ClientBuildOptions & ui32ClientBuildOptionsMismatch) != 0)
 		{
 			PVR_LOG(("(FAIL) %s: Mismatch in client-side and KM driver build options; "
@@ -1103,7 +1126,10 @@ PVRSRV_ERROR PVRSRVGetUSCTimerFreqKM(CONNECTION_DATA *psConnection,
 	RGX_DATA *psRGXData = (RGX_DATA*)psDeviceNode->psDevConfig->hDevData;
 	PVR_UNREFERENCED_PARAMETER(psConnection);
 
-	PVR_ASSERT(psRGXData->psRGXTimingInfo->ui32USCTimerFreq > 0);
+	if (psRGXData->psRGXTimingInfo->ui32USCTimerFreq == 0)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "USC Timer is not configured correctly"));
+	}
 
 	*pui32USCTimerFreq = psRGXData->psRGXTimingInfo->ui32USCTimerFreq;
 
@@ -1308,8 +1334,8 @@ _SetDispatchTableEntry(IMG_UINT32 ui32BridgeGroup,
 		g_BridgeDispatchTable[ui32Index].ui32InBufferSize = ui32InBufferSize;
 		g_BridgeDispatchTable[ui32Index].ui32OutBufferSize = ui32OutBufferSize;
 #if defined(DEBUG_BRIDGE_KM)
-		g_BridgeDispatchTable[ui32Index].pszIOCName = pszIOCName;
-		g_BridgeDispatchTable[ui32Index].pszFunctionName = pszFunctionName;
+		g_BridgeDispatchTable[ui32Index].pszIOCName = pszIOCName + sizeof("PVRSRV_BRIDGE_") - 1;
+		g_BridgeDispatchTable[ui32Index].pszFunctionName = pszFunctionName + sizeof("PVRSRVBridge") - 1;
 		g_BridgeDispatchTable[ui32Index].pszBridgeLockName = pszBridgeLockName;
 		g_BridgeDispatchTable[ui32Index].ui32CallCount = 0;
 		g_BridgeDispatchTable[ui32Index].ui32CopyFromUserTotalBytes = 0;
@@ -1624,14 +1650,19 @@ unlock_and_return_error:
 #if !defined(INTEGRITY_OS)
 	if (hBridgeBufferPoolToken != NULL)
 	{
-		/* Clear the buffer before putting it back in to the pool. This is to
-		 * ensure that another bridge call that acquires this buffer and for
-		 * example errors before initialising all of it doesn't end up
-		 * dereferencing any dangling pointers. */
-		OSCachedMemSet(psBridgeIn, 0, psBridgePackageKM->ui32InBufferSize);
+		/* psBridgeIn can't be NULL if hBridgeBufferPoolToken is not NULL
+		 * but make the explicit check to aid static analysers which may
+		 * miss this relationship. */
+		if (psBridgeIn != NULL)
+		{
+			/* Clear the buffer before putting it back in to the pool. This is to
+			 * ensure that another bridge call that acquires this buffer and for
+			 * example errors before initialising all of it doesn't end up
+			 * dereferencing any dangling pointers. */
+			OSCachedMemSet(psBridgeIn, 0, psBridgePackageKM->ui32InBufferSize);
+		}
 
-		PVRSRVPoolPut(g_psBridgeBufferPool,
-					  hBridgeBufferPoolToken);
+		PVRSRVPoolPut(g_psBridgeBufferPool, hBridgeBufferPoolToken);
 	}
 #endif
 

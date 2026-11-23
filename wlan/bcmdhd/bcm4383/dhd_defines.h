@@ -136,7 +136,7 @@
 #define EWP_RTT_LOGGING
 #if IS_ENABLED(CONFIG_BCMDHD_PCIE)
 	/* Resume delay WAR not required for P26 platform */
-	#if !(IS_ENABLED(CONFIG_SOC_MBU) && IS_ENABLED(CONFIG_BCM4390))
+	#if !(IS_ENABLED(CONFIG_SOC_MBU))
 		#define DHD_PCIE_RESUME_DELAY_WAR
 	#endif /* CONFIG_SOC_MBU */
 	#define DHD_LINUX_STD_FW_API
@@ -366,9 +366,9 @@
 			#define DHD_LB_CPU_SET4 0x0F0
 			#define DHD_LB_CPU_SET0 0x00E
 		#elif IS_ENABLED(CONFIG_BCM4383)
-			#define DHD_LB_CPU_SET8 0x100
-			#define DHD_LB_CPU_SET4 0x07C
-			#define DHD_LB_CPU_SET0 0x002
+			#define DHD_LB_CPU_SET8 0x080
+			#define DHD_LB_CPU_SET4 0x060
+			#define DHD_LB_CPU_SET0 0x01C
 		#endif
 	#elif IS_ENABLED(CONFIG_SOC_ZUMAPRO)
 		#if IS_ENABLED(CONFIG_BCM4390)
@@ -380,8 +380,24 @@
 			#define DHD_LB_CPU_SET4 0x070
 			#define DHD_LB_CPU_SET0 0x00E
 		#endif
+	#elif IS_ENABLED(CONFIG_SOC_MBU)
+		#if IS_ENABLED(CONFIG_BCM4390)
+			#define DHD_LB_CPU_SET8 0x000
+			#define DHD_LB_CPU_SET4 0x030
+			#define DHD_LB_CPU_SET0 0x00C
+		#elif IS_ENABLED(CONFIG_BCM4383)
+			#define DHD_LB_CPU_SET8 0x040
+			#define DHD_LB_CPU_SET4 0x030
+			#define DHD_LB_CPU_SET0 0x00C
+			#define DHD_LB_CPU_NAPI_RX	/* improve TCP RX performance */
+		#endif
 	#elif IS_ENABLED(CONFIG_PCI_EXYNOS_GS)
 		#if IS_ENABLED(CONFIG_BCM4383)
+			#define DHD_LB_CPU_SET8 0x100
+			#define DHD_LB_CPU_SET4 0x0F0
+			#define DHD_LB_CPU_SET0 0x00E
+		#endif
+		#if IS_ENABLED(CONFIG_BCM4398)
 			#define DHD_LB_CPU_SET8 0x100
 			#define DHD_LB_CPU_SET4 0x0F0
 			#define DHD_LB_CPU_SET0 0x00E
@@ -416,16 +432,20 @@
 				#define PKT_COUNT_HIGH 60000
 				#define PKT_COUNT_MID 5000
 				#define PKT_COUNT_LOW 3000
+				/* Boost host cpufreq to max for peak tput. default is false */
+				#define DHD_HOST_CPUFREQ_BOOST
+				/* Boost host cpufreq to max for peak tput. default is true */
+				#define DHD_HOST_CPUFREQ_BOOST_DEFAULT_ENAB
 			#elif IS_ENABLED(CONFIG_BCM4383)
 				#define DHD_CUSTOM_PKT_COUNT_ENABLE
 				#define PKT_COUNT_HIGH 50000
 				#define PKT_COUNT_MID 5000
 				#define PKT_COUNT_LOW 3000
-				#define DHD_CPUFREQ_MID 2u
+				#define DHD_CPUFREQ_MID 5u
 				#define DHD_CPUFREQ_BIG 6u
-				#define DHD_LITTLE_CORE_PERF_FREQ 1920000u
+				#define DHD_LITTLE_CORE_PERF_FREQ 1824000u
 				#define DHD_MID_CORE_PERF_FREQ 2649000u
-				#define DHD_BIG_CORE_PERF_FREQ 3340000u
+				#define DHD_BIG_CORE_PERF_FREQ 3033000u
 			#endif
 		#elif IS_ENABLED(CONFIG_SOC_LGA)
 			#if IS_ENABLED(CONFIG_BCM4390)
@@ -493,6 +513,14 @@
 		#elif IS_ENABLED(CONFIG_PCI_EXYNOS_GS)
 			#define IRQ_AFFINITY_SMALL_CORE 7
 			#define IRQ_AFFINITY_BIG_CORE 8
+		#elif IS_ENABLED(CONFIG_SOC_MBU)
+			#if IS_ENABLED(CONFIG_BCM4390)
+				#define IRQ_AFFINITY_SMALL_CORE 4
+				#define IRQ_AFFINITY_BIG_CORE 5
+			#elif IS_ENABLED(CONFIG_BCM4383)
+				#define IRQ_AFFINITY_SMALL_CORE 5
+				#define IRQ_AFFINITY_BIG_CORE 6
+			#endif
 		#else
 			#define IRQ_AFFINITY_SMALL_CORE 0
 			#define IRQ_AFFINITY_BIG_CORE 0
@@ -546,7 +574,8 @@
 		#define DHD_SKIP_COREDUMP_OLDER_CHIPS
 		/* Skip coredump for continousy pkt drop health check */
 		#define SKIP_COREDUMP_PKTDROP_RXHC
-		#if IS_ENABLED(CONFIG_PCI_EXYNOS_GS) || IS_ENABLED(CONFIG_SOC_LGA)
+		#if IS_ENABLED(CONFIG_PCI_EXYNOS_GS) || IS_ENABLED(CONFIG_SOC_LGA) || \
+		    IS_ENABLED(CONFIG_SOC_MBU)
 			/* Boost host cpufreq to max for peak tput. default is false */
 			#define DHD_HOST_CPUFREQ_BOOST
 			/* Boost host cpufreq to max for peak tput. default is true */
@@ -576,6 +605,8 @@
 	#define WL_MLO_BKPORT_NEW_PORT_AUTH
 	/* CROSS AKM related back port changes */
 	#define WL_CROSS_AKM_BKPORT
+	/* Assoc link id element support in owe event */
+	#define WL_AP_OWE_BKPORT
 	#if IS_ENABLED(CONFIG_SOC_LGA)
 		/* Avoid SSR dump on state mismatch */
 		#define DHD_AVOID_SSR_ON_STATE_MISMATCH
@@ -655,7 +686,9 @@
 #define WL_USE_RANDOMIZED_SCAN
 #define STA_RANDMAC_ENFORCED
 /* Connected MAC randomization */
-#define WL_STA_ASSOC_RAND
+#ifndef BCMDHD_FACTORY_BUILD
+	#define WL_STA_ASSOC_RAND
+#endif
 /* Soft AP MAC randomization */
 #define WL_SOFTAP_RAND
 /* p2p MAC randomization */
@@ -966,8 +999,11 @@
 #if IS_ENABLED(CONFIG_SOC_GOOGLE)
 	#define WL_OWE_OFFLD_BKPORT
 	#define WL_AP_PORT_AUTH_BKPORT
-	#define WL_OWE_OFFLD_FEAT_ADV_BKPORT
 #endif
+
+/* Advertise OWE offload support to host */
+#define WL_OWE_OFFLD_FEAT_ADV_BKPORT
+
 /* In-dongle WPAIE/RSNIE/RSNXE support */
 /* #define WL_WSEC_IE_OFFLD */
 /* STA DUMP */
@@ -1163,6 +1199,7 @@
 			#define BCMPCI_NOOTP_DEV_ID 0x4398
 			#define BCM4398_CHIP_DEF
 			#define ML_AWARE_SUP_SUPPORT
+			#define CELLAVOID_LIMIT_TXPWRCAP_BW160
 		#endif
 		#if IS_ENABLED(CONFIG_BCM4390)
 			#define BCMPCI_DEV_ID 0x4438
@@ -1178,14 +1215,18 @@
 		#endif
 	#endif
 	#if IS_ENABLED(CONFIG_BCMDHD_PCIE)
-		#if IS_ENABLED(CONFIG_SOC_GS201) || IS_ENABLED(CONFIG_SOC_ZUMA) || IS_ENABLED(CONFIG_SOC_LGA)
+		#if IS_ENABLED(CONFIG_SOC_GS201) || IS_ENABLED(CONFIG_SOC_ZUMA) \
+		|| IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU)
 			#define PCIE_CPL_TIMEOUT_RECOVERY
 		#endif
 	#endif
 	/* TCP TPUT Enhancement, enable only for GS101 */
 	#define DHD_TCP_LIMIT_OUTPUT
 	#define DHD_TCP_PACING_SHIFT
-	#define MACADDR_PROVISION_ENFORCED
+	/* Only define MACADDR_PROVISION_ENFORCED for non-factory build */
+	#ifndef BCMDHD_FACTORY_BUILD
+		#define MACADDR_PROVISION_ENFORCED
+	#endif
 #elif IS_ENABLED(CONFIG_ARCH_HISI)
 	#define BOARD_HIKEY
 	#define BOARD_HIKEY_HW2

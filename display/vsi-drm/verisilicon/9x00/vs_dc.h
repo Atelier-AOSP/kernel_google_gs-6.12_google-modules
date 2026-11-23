@@ -21,6 +21,7 @@
 
 #include "vs_crtc.h"
 #include "vs_dc_hw.h"
+#include "vs_dc_info.h"
 #include "vs_plane.h"
 #include "vs_writeback.h"
 #include "preprocess/vs_dc_pvric.h"
@@ -93,6 +94,22 @@ struct vs_dc_plane {
 	struct dc_pvric pvric;
 };
 
+struct dc_irq_info {
+	int irq_num;
+	int *irqs;
+	int enable_count;
+
+	u8 *irq_depths;
+	DECLARE_BITMAP(irq_masked_status, VS_DC_MAX_NUM_IRQS);
+	DECLARE_BITMAP(irq_pending_status, VS_DC_MAX_NUM_IRQS);
+};
+
+struct dc_urgent_override {
+	struct vs_dc_urgent_cmd_config urgent_cmd_config;
+	struct vs_dc_urgent_vid_config urgent_vid_config;
+	bool override_urgent;
+};
+
 struct vs_dc {
 	/* TBD !
 	 * developer should modify this item according to
@@ -101,17 +118,19 @@ struct vs_dc {
 	struct vs_crtc *crtc[DC_DISPLAY_NUM];
 	struct dc_hw hw;
 	struct drm_device *drm_dev;
+	/* backreferences to fe, be, wb device nodes */
+	struct device *fe_dev[DC_FE_NUM];
+	struct device *be_dev;
+	struct device *wb_dev;
 
 	struct devfreq *core_devfreq;
+	struct devfreq *fab_devfreq;
 	struct devfreq *boost_fab_devfreq;
 	struct devfreq *boost_core_devfreq;
-	int irq_num;
-	int *irqs;
-	int irq_enable_count;
+	struct dc_irq_info fe_irq_info[DC_FE_NUM];
+	struct dc_irq_info be_irq_info;
+	struct dc_irq_info dc_irq_info;
 	spinlock_t int_lock;
-	u8 *irq_depths;
-	DECLARE_BITMAP(irq_masked_status, VS_DC_MAX_NUM_IRQS);
-	DECLARE_BITMAP(irq_pending_status, VS_DC_MAX_NUM_IRQS);
 	struct mutex dc_lock; /* protect state and data */
 	struct mutex dc_qos_lock;
 
@@ -128,11 +147,17 @@ struct vs_dc {
 
 	struct vs_writeback_connector *writeback[DC_WB_NUM];
 
+	/** @debugfs: Root debugfs directory for the display controller. */
 	struct dentry *debugfs;
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+	/** @display_debugfs: Tracked child debugfs directories for each display. */
+	struct dentry *display_debugfs[DC_DISPLAY_NUM];
+#endif
 	struct google_icc_path *path;
 	struct platform_device *tzprot_pdev;
 	struct vs_qos_config min_qos_config;
 	struct vs_fe_qos_config fe_qos_config;
+	struct dc_urgent_override urgent_override[DC_DISPLAY_NUM];
 
 	u32 crtc_mask;
 
@@ -160,15 +185,20 @@ static inline bool is_boost_freq_enabled(struct vs_dc *dc)
 
 bool dc_is_coredump_source_enabled(const struct vs_dc *dc, enum coredump_source source);
 
+int vs_get_wb_frm_done_ioctl(struct drm_device *dev, void *data, struct drm_file *file_priv);
 int vs_sw_reset_ioctl(struct drm_device *dev, void *data, struct drm_file *file_priv);
 int vs_get_feature_cap_ioctl(struct drm_device *dev, void *data, struct drm_file *file_priv);
 int vs_get_hw_cap_ioctl(struct drm_device *dev, void *data, struct drm_file *file_priv);
 int vs_get_hist_bins_query_ioctl(struct drm_device *dev, void *data, struct drm_file *file_priv);
 int vs_get_ltm_hist_ioctl(struct drm_device *dev, void *data, struct drm_file *file_priv);
 bool vs_dc_is_yuv_format(u32 format);
+unsigned int vs_dc_get_framedone_timeout(void);
+int dc_component_parse_irqs(struct device *dev, struct dc_irq_info *irq_info,
+			    irq_handler_t handler);
+void dc_component_enable_irqs(struct device *dev, struct dc_irq_info *irq_info);
+void dc_component_disable_irqs(struct device *dev, struct dc_irq_info *irq_info);
 void vs_dc_check_interrupts(struct device *dev);
-int vs_dc_power_get(struct device *dev, bool sync);
-int vs_dc_power_put(struct device *dev, bool sync);
+void vs_dc_handle_interrupts(struct vs_dc *dc);
 int vs_dc_coredump(struct vs_dc *dc, const char *reason);
 bool is_display_cmd_sw_trigger(struct dc_hw_display *display);
 int vs_dc_sw_reset(struct drm_device *drm_dev);

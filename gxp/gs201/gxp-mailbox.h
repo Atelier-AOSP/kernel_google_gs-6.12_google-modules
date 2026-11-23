@@ -31,10 +31,9 @@
 #define MAILBOX_DEVICE_INTERFACE_OFFSET 0x10000
 #endif
 
-#define __wait_event_lock_irq_timeout_exclusive(wq_head, condition, lock,      \
-						timeout, state)                \
-	___wait_event(wq_head, ___wait_cond_timeout(condition), state, 1,      \
-		      timeout, spin_unlock_irq(&lock);                         \
+#define __wait_event_lock_irq_timeout_exclusive(wq_head, condition, lock, timeout, state) \
+	___wait_event(wq_head, ___wait_cond_timeout(condition), state, 1, timeout,        \
+		      spin_unlock_irq(&lock);                                             \
 		      __ret = schedule_timeout(__ret); spin_lock_irq(&lock))
 
 /*
@@ -71,6 +70,13 @@ enum gxp_mailbox_type {
 	 * Will be used for handling kernel commands.
 	 */
 	GXP_MBOX_TYPE_KCI,
+};
+
+enum gxp_mailbox_communication_mode {
+	/* Mailbox supports bi-directional communication. */
+	GXP_MBOX_FULL_DUPLEX,
+	/* Mailbox supports uni-directional communication from AP to client. */
+	GXP_MBOX_TX_SIMPLEX,
 };
 
 enum gxp_response_status {
@@ -156,6 +162,7 @@ struct gxp_mailbox_ops {
 
 struct gxp_mailbox_args {
 	enum gxp_mailbox_type type;
+	enum gxp_mailbox_communication_mode mode;
 	struct gxp_mailbox_ops *ops;
 	u64 queue_wrap_bit;
 	u32 cmd_elem_size;
@@ -205,6 +212,7 @@ struct gxp_mailbox {
 	struct kthread_work response_work;
 
 	enum gxp_mailbox_type type;
+	enum gxp_mailbox_communication_mode mode;
 	struct gxp_mailbox_ops *ops;
 	void *data; /* private data */
 
@@ -274,8 +282,7 @@ void gxp_mailbox_reinit(struct gxp_mailbox *mailbox);
  * See the `gcip_mailbox_send_cmd` of `gcip-mailbox.h` or `gcip_kci_send_cmd` of `gcip-kci.h`
  * for detail.
  */
-int gxp_mailbox_send_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp,
-			 gcip_mailbox_cmd_flags_t flags);
+int gxp_mailbox_send_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp);
 
 /*
  * Executes command asynchronously. The response will be written to @resp.
@@ -283,8 +290,7 @@ int gxp_mailbox_send_cmd(struct gxp_mailbox *mailbox, void *cmd, void *resp,
  *
  * Note: KCI doesn't support asynchronous requests.
  */
-struct gcip_mailbox_resp_awaiter *gxp_mailbox_put_cmd(struct gxp_mailbox *mailbox, void *cmd,
-						      void *resp, void *data,
-						      gcip_mailbox_cmd_flags_t flags);
+int gxp_mailbox_put_cmd(struct gxp_mailbox *mailbox, void *cmd,
+			struct gcip_mailbox_awaiter *awaiter);
 
 #endif /* __GXP_MAILBOX_H__ */

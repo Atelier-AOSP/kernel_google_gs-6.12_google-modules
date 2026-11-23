@@ -126,6 +126,7 @@ PVRSRV_ERROR PVRSRVRGXCreateRayContextKM(CONNECTION_DATA			*psConnection,
 		Create the FW ray context, this has the RDM common
 		context embedded within it
 	 */
+	PDUMPCOMMENT(psDeviceNode, "Allocate FwRayContext");
 	eError = DevmemFwAllocate(psDevInfo,
 			sizeof(RGXFWIF_FWRAYCONTEXT),
 			RGX_FWCOMCTX_ALLOCFLAGS,

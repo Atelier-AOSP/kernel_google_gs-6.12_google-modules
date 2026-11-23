@@ -9,14 +9,13 @@
 #include "cpm_tracepoint_decoder.h"
 #include "perf_tracepoints.h"
 
+#define DOMAIN_TRACE_STR_LEN (MAX_DVFS_NAME_LEN + sizeof("_freq"))
 #define TRACE_OP_LVL_BITFIELD GENMASK(15, 0)
 #define EXTRACT_DOMAIN_ID(payload) (payload >> 16)
 #define EXTRACT_DOMAIN_OP_LVL(payload) (payload & TRACE_OP_LVL_BITFIELD)
 
-#define DOMAIN_TRACE_STR_LEN (MAX_DVFS_NAME_LEN + sizeof("_freq"))
-
-enum tracepoint_handle domain_freq_handler(const char *tp_string, u32 payload,
-					   u64 timestamp)
+static enum tracepoint_handle domain_freq_handler(const char *tp_string,
+						  u32 payload, u64 timestamp)
 {
 	u16 domain_id;
 	const char *domain_name;
@@ -34,7 +33,7 @@ enum tracepoint_handle domain_freq_handler(const char *tp_string, u32 payload,
 		return CLIENT_TP_HANDLING_ERROR;
 
 	scnprintf(trace_name, sizeof(trace_name), "%s_freq", domain_name);
-	add_cpm_param_trace(trace_name, KHZ_PER_MHZ * freq, timestamp);
+	add_cpm_param_trace(trace_name, freq, timestamp);
 
 	return CLIENT_TP_HANDLING_COMPLETE;
 }
@@ -86,13 +85,14 @@ const char *voter_id_str[] = {
 #define AGG_UPDATE_TRACE_STR_LEN \
 	(MAX_DVFS_NAME_LEN + sizeof("_agg_") + sizeof("max"))
 
-enum tracepoint_handle freq_agg_update_handler(const char *tp_string,
-					       u32 payload, u64 timestamp)
+static enum tracepoint_handle
+freq_agg_update_handler(const char *tp_string, u32 payload, u64 timestamp)
 {
 	char trace_name_min_max[AGG_UPDATE_TRACE_STR_LEN];
 	char trace_name_agg_update[AGG_UPDATE_TRACE_STR_LEN];
 	char trace_voter_id[MAX_DVFS_NAME_LEN + MAX_VOTER_ID_STR_LEN +
 			    sizeof("_vote")];
+	char trace_name_voted_freq[DOMAIN_TRACE_STR_LEN];
 	u16 domain_id;
 	const char *domain_name;
 	u32 voter_id;
@@ -101,6 +101,7 @@ enum tracepoint_handle freq_agg_update_handler(const char *tp_string,
 	u32 min_of_high_votes;
 	u32 max_of_low_votes;
 	u32 final_high_vote;
+	s64 freq;
 
 	domain_id = EXTRACT_AGG_UPDATE_DOMAIN_ID(payload);
 	domain_name = dvfs_helper_domain_id_to_name(domain_id);
@@ -135,6 +136,15 @@ enum tracepoint_handle freq_agg_update_handler(const char *tp_string,
 
 	add_cpm_param_trace(trace_voter_id, last_vote, timestamp);
 
+	freq = dvfs_helper_get_domain_opp_frequency_mhz(domain_id, last_vote);
+
+	if (freq < 0)
+		return CLIENT_TP_HANDLING_ERROR;
+
+	scnprintf(trace_name_voted_freq, sizeof(trace_name_voted_freq),
+		  "%s_freq", domain_name);
+	add_cpm_param_trace(trace_name_voted_freq, freq, timestamp);
+
 	return CLIENT_TP_HANDLING_COMPLETE;
 }
 
@@ -144,4 +154,61 @@ struct client_tracepoint freq_agg_update_tp = {
 	.init = NULL,
 	.handler = freq_agg_update_handler,
 	.exit = NULL
+};
+
+/*
+ * Payload format:
+ * 28 - 31 bits: lp_gov id
+ * 25 - 27 bits: event type (0: clock, 1: read, 2: write, 3: util)
+ * 0 - 24 bits: data
+ */
+
+#define EXTRACT_LP_GOV_ID(payload) (((payload) & GENMASK(31, 28)) >> 28)
+#define EXTRACT_LP_GOV_EVENT(payload) (((payload) & GENMASK(27, 25)) >> 25)
+#define EXTRACT_LP_GOV_DATA(payload) ((payload) & GENMASK(24, 0))
+
+#define DVFSMON_TRACE_NAMES(name) \
+	"dvfsmon_" #name "_clocks", \
+	"dvfsmon_" #name "_read_bandwidth", \
+	"dvfsmon_" #name "_write_bandwidth", \
+	"dvfsmon_" #name "_utilization"
+
+static const char * const dvfsmon_trace_names[][4] = {
+	{ DVFSMON_TRACE_NAMES(gpu) },     // 0
+	{ DVFSMON_TRACE_NAMES(tpu) },     // 1
+	{ DVFSMON_TRACE_NAMES(aurdsp) },  // 2
+	{ DVFSMON_TRACE_NAMES(fabmed) },  // 3
+	{ DVFSMON_TRACE_NAMES(fabsyss) }, // 4
+	{ DVFSMON_TRACE_NAMES(aoss) },    // 5
+	{ DVFSMON_TRACE_NAMES(fabstby) }, // 6
+	{ DVFSMON_TRACE_NAMES(fabmem) },  // 7
+	{ DVFSMON_TRACE_NAMES(fabdisp) }, // 8
+	{ DVFSMON_TRACE_NAMES(fabhbw) },  // 9
+	{ DVFSMON_TRACE_NAMES(cpu) },     // 10
+};
+
+static enum tracepoint_handle
+dvfsmon_handler(const char *tp_string, u32 payload, u64 timestamp)
+{
+	u8 id = EXTRACT_LP_GOV_ID(payload);
+	u8 event = EXTRACT_LP_GOV_EVENT(payload);
+	u32 data = EXTRACT_LP_GOV_DATA(payload);
+
+	if (id >= ARRAY_SIZE(dvfsmon_trace_names) || event >= 4) {
+		pr_err_ratelimited("%s: invalid id %u or event %u\n",
+				   __func__, id, event);
+		return CLIENT_TP_HANDLING_ERROR;
+	}
+
+	add_cpm_param_trace(dvfsmon_trace_names[id][event], data, timestamp);
+
+	return CLIENT_TP_HANDLING_COMPLETE;
+}
+
+struct client_tracepoint dvfsmon_tp = {
+	.enabled = true,
+	.tp_string = "lp_gov %d",
+	.init = NULL,
+	.handler = dvfsmon_handler,
+	.exit = NULL,
 };

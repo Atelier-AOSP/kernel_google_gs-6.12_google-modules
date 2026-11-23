@@ -22,11 +22,15 @@
 #define MAX_NUM_PLANES 3 /* colour format plane */
 
 struct vs_plane;
+struct vs_gem_object;
 
 struct vs_plane_funcs {
 	void (*update)(struct device *dev, struct vs_plane *plane);
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	void (*set_pattern)(struct device *dev, struct vs_plane *plane);
+	void (*set_qos)(struct device *dev, struct vs_plane *plane, const char __user *ubuf,
+			size_t len);
+	int (*show_qos)(struct seq_file *s);
 #endif /* CONFIG_DEBUG_FS */
 	void (*disable)(struct device *dev, struct vs_plane *plane);
 	int (*check)(struct device *dev, struct vs_plane *plane, struct drm_plane_state *state);
@@ -68,6 +72,9 @@ struct vs_plane_state {
 	struct drm_plane_state base;
 	struct vs_plane_status status; /* for debugfs */
 	struct vs_plane_pattern pattern; /* for pattern debugfs */
+#ifdef CONFIG_DEBUG_FS
+	struct dc_hw_plane_qos qos;
+#endif
 
 	struct drm_property_blob *watermark;
 	struct drm_property_blob *y2r_coef;

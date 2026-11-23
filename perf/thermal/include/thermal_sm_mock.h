@@ -18,6 +18,7 @@ int mock_thermal_sm_get_section_addr(u8, u32*, u32*, u32*);
 void __iomem *mock_devm_ioremap(struct device*, u32, u32);
 void mock_memcpy_fromio(void*, void __iomem*, u32, u32);
 void mock_memcpy_toio(void __iomem*, void*, u32, u32);
+int mock_sm_cdev_to_hw_tzid(enum hw_dev_type cdev_id, enum hw_thermal_zone_id *hw_tzid);
 #else
 static inline int mock_thermal_sm_get_section_addr(u8 section, u32 *version, u32 *addr, u32 *size)
 {
@@ -34,6 +35,11 @@ static inline void mock_memcpy_fromio(void *dest, void __iomem *src, size_t size
 static inline void mock_memcpy_toio(void __iomem *dest, void *src, size_t size)
 {
 	return;
+}
+static inline int mock_sm_cdev_to_hw_tzid(enum hw_dev_type cdev_id,
+					  enum hw_thermal_zone_id *hw_tzid)
+{
+	return -EOPNOTSUPP;
 }
 #endif // CONFIG_GOOGLE_THERMAL_HELPER_KUNIT_TEST
 
@@ -72,4 +78,15 @@ static inline void thermal_sm_memcpy_toio(void __iomem *base, void *source, u32 
 	return memcpy_toio(base + offset, source, size);
 #endif
 }
+
+static inline int thermal_sm_cdev_to_hw_tzid(enum hw_dev_type cdev_id,
+					     enum hw_thermal_zone_id *hw_tzid)
+{
+#if IS_ENABLED(CONFIG_GOOGLE_THERMAL_HELPER_KUNIT_TEST)
+	return mock_sm_cdev_to_hw_tzid(cdev_id, hw_tzid);
+#else
+	return thermal_cpm_mbox_cdev_to_hw_tzid(cdev_id, hw_tzid);
+#endif
+}
+
 #endif // _THERMAL_SM_MOCK_H_

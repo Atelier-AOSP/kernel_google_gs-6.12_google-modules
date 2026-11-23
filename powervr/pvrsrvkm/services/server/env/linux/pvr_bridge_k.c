@@ -159,7 +159,7 @@ static int BridgeStatsDIShow(OSDI_IMPL_ENTRY *psEntry, void *pvData)
 		         "Total number of bytes copied via copy_from_user = %u\n"
 		         "Total number of bytes copied via copy_to_user = %u\n"
 		         "Total number of bytes copied via copy_*_user = %u\n\n"
-		         "%3s: %-60s | %-48s | %10s | %20s | %20s | %20s | %20s\n",
+		         "%3s: %-54s %-44s %-10s %-10s %-10s %-21s %-21s %-20s %-20s %-20s\n",
 		         g_BridgeGlobalStats.ui32IOCTLCount,
 		         g_BridgeGlobalStats.ui32TotalCopyFromUserBytes,
 		         g_BridgeGlobalStats.ui32TotalCopyToUserBytes,
@@ -168,28 +168,53 @@ static int BridgeStatsDIShow(OSDI_IMPL_ENTRY *psEntry, void *pvData)
 		         "#",
 		         "Bridge Name",
 		         "Wrapper Function",
+		         "In Size",
+		         "Out Size",
 		         "Call Count",
 		         "copy_from_user (B)",
 		         "copy_to_user (B)",
 		         "Total Time (us)",
-		         "Max Time (us)");
+		         "Max Time (us)",
+		         "Avg Time (us)");
+		DIPrintf(psEntry,
+		         "%137s %-10s %-10s %-10s %-10s\n",
+		         " ",
+		         "Total",
+		         "Avg",
+		         "Total",
+		         "Avg");
 		BridgeGlobalStatsUnlock();
 	}
 	else if (pvData != NULL)
 	{
 		PVRSRV_BRIDGE_DISPATCH_TABLE_ENTRY *psTableEntry = pvData;
+		IMG_UINT32 ui32InAvgSize, ui32OutAvgSize;
+		IMG_UINT64 ui64AvgTime;
 
 		BridgeGlobalStatsLock();
+		ui32InAvgSize = psTableEntry->ui32CopyFromUserTotalBytes / psTableEntry->ui32CallCount;
+		ui32OutAvgSize = psTableEntry->ui32CopyToUserTotalBytes / psTableEntry->ui32CallCount;
+
+		ui64AvgTime = OSDivide64By32(psTableEntry->ui64TotalTimeNS,
+		                             psTableEntry->ui32CallCount);
+		ui64AvgTime = OSDivide64By32(ui64AvgTime, 1000);
+
 		DIPrintf(psEntry,
-		         "%3d: %-60s   %-48s   %-10u   %-20u   %-20u   %-20" IMG_UINT64_FMTSPEC "   %-20" IMG_UINT64_FMTSPEC "\n",
+		         "%3d: %-54s %-44s %-10u %-10u %-10u %-10u %-10u %-10u %-10u %-20" IMG_UINT64_FMTSPEC
+		         " %-20" IMG_UINT64_FMTSPEC " %-20" IMG_UINT64_FMTSPEC "\n",
 		         (IMG_UINT32)(((size_t)psTableEntry-(size_t)g_BridgeDispatchTable)/sizeof(*g_BridgeDispatchTable)),
 		         psTableEntry->pszIOCName,
 		         (psTableEntry->pfFunction != NULL) ? psTableEntry->pszFunctionName : "(null)",
+		         psTableEntry->ui32InBufferSize,
+		         psTableEntry->ui32OutBufferSize,
 		         psTableEntry->ui32CallCount,
 		         psTableEntry->ui32CopyFromUserTotalBytes,
+		         ui32InAvgSize,
 		         psTableEntry->ui32CopyToUserTotalBytes,
+		         ui32OutAvgSize,
 		         OSDivide64By32(psTableEntry->ui64TotalTimeNS, 1000),
-		         OSDivide64By32(psTableEntry->ui64MaxTimeNS, 1000));
+		         OSDivide64By32(psTableEntry->ui64MaxTimeNS, 1000),
+		         ui64AvgTime);
 		BridgeGlobalStatsUnlock();
 	}
 

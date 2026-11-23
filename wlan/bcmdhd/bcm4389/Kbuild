@@ -101,6 +101,11 @@ ifneq ($(CONFIG_DEBUG_KMEMLEAK),)
     -DDHD_PRINT_RXPKTS_TRACE
 endif
 
+# Allow Zero-length and one-element arrays instead of forcing C99 FAM
+ifneq ($(CONFIG_SOC_GOOGLE),)
+  DHDCFLAGS += -fstrict-flex-arrays=0
+endif
+
 DHDCFLAGS += -DBCMUTILS_ERR_CODES -DUSE_NEW_RSPEC_DEFS
 DHDCFLAGS += -Wall -Werror -Wstrict-prototypes -Wno-parentheses-equality -Dlinux -DLINUX -DBCMDRIVER \
 	-DBCMDONGLEHOST -DBCMDMA32 -DBCMFILEIMAGE \
@@ -1074,6 +1079,39 @@ bcmdhd$(BCM_WLAN_CHIP_SUFFIX)-objs := $(DHDOFILES)
 obj-$(DRIVER_TYPE)   += bcmdhd$(BCM_WLAN_CHIP_SUFFIX).o
 ccflags-y := $(KBUILD_CFLAGS)
 ccflags-y += $(DHDCFLAGS)
+
+# For supporting DDK in Pixel build
+ifneq ($(EXTRACT_DHD_CFLAGS),)
+  # Extracts flags starting with "-D" including characters enclosed in quotes
+  # Regular expression covers three cases below
+  # 1. -DMACRO1="\"some_string\""
+  # 2. -DMACRO2=1 or -DMACRO2=y or -DMACRO2=
+  # 3. -DMACRO3
+  DEF_REGEX := '\-D[^[:space:]]*="[^"]*"\|-D[^[:space:]]*'
+  DEF_TMP := "dhd_defines.tmp"
+  DEF_TMP2 := "dhd_defines.tmp2"
+  DEF_HDR := "dhd_defines.h"
+
+  # remove the following flags that already exist in built-in system
+  DHDCFLAGS := $(filter-out -Dlinux ,$(DHDCFLAGS))
+
+  # Save DHDCFLAGS to a temporary file
+  $(shell echo "$(DHDCFLAGS)" > $(DEF_TMP))
+
+  # Extracts define flags only using regular expression
+  $(shell grep -o $(DEF_REGEX) $(DEF_TMP) > $(DEF_TMP2))
+
+  # Copy the mogrified skeleton file to a name suitable for the platform
+  $(shell cp $(M)/dhd_defines.h $(DEF_HDR))
+
+  # Switch defines from GNU Make to C style and appends stream to DEF_HDR file
+  $(shell sed 's/-D/#define /g' $(DEF_TMP2) >> $(DEF_HDR))
+  $(shell sed -i 's/=/ /g' $(DEF_HDR))
+
+  # Removes trailing whitespace from each line
+  $(shell sed -i 's/ $$//' $(DEF_HDR))
+  $(error "Generated $(DEF_HDR). Proceed to trigger DDK build")
+endif
 
 # For in-tree model, define make rules here (KERNEL_SRC will be NULL)
 ifeq ($(KERNEL_SRC),)

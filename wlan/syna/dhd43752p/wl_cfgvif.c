@@ -3868,14 +3868,12 @@ exit:
 	return err;
 }
 
-s32
-wl_cfg80211_change_beacon(
-	struct wiphy *wiphy,
-	struct net_device *dev,
-	struct cfg80211_beacon_data *info)
+int wl_cfg80211_change_beacon(struct wiphy *wiphy, struct net_device *dev,
+			      struct cfg80211_ap_update *params)
 {
 	s32 err = BCME_OK;
 	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
+	struct cfg80211_beacon_data *info = &params->beacon;
 	struct parsed_ies ies;
 	u32 dev_role = 0;
 	s32 bssidx = 0;
@@ -5171,13 +5169,9 @@ wl_cfg80211_ch_switch_notify(struct net_device *dev, uint16 chanspec, struct wip
 		WL_ERR(("chspec_chandef failed\n"));
 		return;
 	}
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION (3, 8, 0))
+
 	freq = chandef.chan ? chandef.chan->center_freq : chandef.center_freq1;
-	cfg80211_ch_switch_notify(dev, &chandef, 0, 0);
-#elif (LINUX_VERSION_CODE >= KERNEL_VERSION (3, 5, 0) && (LINUX_VERSION_CODE <= (3, 7, 0)))
-	freq = chan_info.freq;
-	cfg80211_ch_switch_notify(dev, freq, chan_info.chan_type);
-#endif /* (LINUX_VERSION_CODE >= KERNEL_VERSION (3, 8, 0)) */
+	cfg80211_ch_switch_notify(dev, &chandef, 0);
 
 	WL_ERR(("Channel switch notification for freq: %d chanspec: 0x%x\n", freq, chanspec));
 	return;

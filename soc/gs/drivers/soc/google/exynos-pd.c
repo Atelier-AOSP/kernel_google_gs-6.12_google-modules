@@ -16,7 +16,9 @@
 #include <soc/google/bts.h>
 #include <soc/google/cal-if.h>
 #include <linux/module.h>
+#include <linux/usb/dwc3-exynos.h>
 #include <soc/google/exynos-cpupm.h>
+#include <soc/google/exynos-usbdrd.h>
 
 struct exynos_pm_domain *exynos_pd_lookup_name(const char *domain_name)
 {
@@ -37,6 +39,7 @@ struct exynos_pm_domain *exynos_pd_lookup_name(const char *domain_name)
 			pd = platform_get_drvdata(pdev);
 			if (!strcmp(pd->name, domain_name)) {
 				exypd = pd;
+				of_node_put(np);
 				break;
 			}
 		}
@@ -486,6 +489,7 @@ static int exynos_pd_probe(struct platform_device *pdev)
 	parent = of_parse_phandle(np, "power-domains", 0);
 	if (parent) {
 		parent_pd_pdev = of_find_device_by_node(parent);
+		of_node_put(parent);
 		if (parent_pd_pdev) {
 			parent_pd = platform_get_drvdata(parent_pd_pdev);
 			if (parent_pd) {

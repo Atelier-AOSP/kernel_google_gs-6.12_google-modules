@@ -12,7 +12,7 @@
  *
  * This file is used only if the DHD is built with the feature string "dscp_policy".
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -125,6 +125,7 @@ dhd_dscp_policy_attach(struct bcm_cfg80211 *cfg)
 
 	/* Setup policy spin lock */
 	policy_info->dscp_policy_lock = osl_spin_lock_init(cfg->osh);
+	OSL_LOCK_CLASS_SET(policy_info->dscp_policy_lock);
 	if (policy_info->dscp_policy_lock == NULL) {
 		ret_val = BCME_ERROR;
 		goto done;
@@ -730,109 +731,6 @@ done:
 }
 
 /*
- * Adds the vendor-specific WFA Capabilities IE to the association request.
- * In the wpa_supplicant association path, wl_config_assoc_ies() calls this function to set
- * WFA Cap IE using the IOVAR.
- */
-int
-dhd_dscp_policy_set_vndr_ie(struct bcm_cfg80211 *cfg, struct net_device *ndev, int bssidx)
-{
-	uint8 *buf = NULL;
-	uint16 buf_len = WLC_IOCTL_MAXLEN;
-	int ret_val;
-	wfa_cap_ie_t *wfa_cap_ie;
-	uint8 *vndr_ie_buf = NULL;
-	uint16 vndr_ie_buf_len;
-	vndr_ie_setbuf_t *hdr;
-	s32 iecount;
-	s32 pktflag = VNDR_IE_ASSOCREQ_FLAG;
-	uint8 cap_bits = 0;
-	uint16 tot_cap_len = WFA_CAP_IE_HDR_SIZE + WFA_CAP_IE_DATA_LEN; /* WFA Capabilities IE */
-
-	DHD_ERROR(("*** dhd_dscp_policy_set_vndr_ie has caled \n"));
-
-	if (is_ap_enabled_dscp_policy(cfg) == false) {
-		ret_val = BCME_ERROR;
-		goto done;
-	}
-
-	vndr_ie_buf_len = sizeof(vndr_ie_setbuf_t) + tot_cap_len;
-
-	vndr_ie_buf = (uint8 *) MALLOCZ(cfg->osh, vndr_ie_buf_len);
-	if (vndr_ie_buf == NULL) {
-		DHD_ERROR(("*** dhd_dscp_policy_set_vndr_ie: failed to allocate vendor buf "
-		           "memory %d bytes\n", buf_len));
-		ret_val = BCME_NOMEM;
-		goto done;
-	}
-
-	hdr = (vndr_ie_setbuf_t *) vndr_ie_buf;
-
-	/* Copy the vndr_ie SET command ("add"/"del") to the buffer */
-	strlcpy(hdr->cmd, "add", sizeof(hdr->cmd));
-
-	/* Set the IE count - the buffer contains only 1 IE */
-	iecount = htol32(1);
-
-	hdr->vndr_ie_buffer.iecount = iecount;
-
-	/* Copy packet flags that indicate which packets will contain this IE */
-	pktflag = htol32(pktflag);
-	(void) memcpy((void *)&hdr->vndr_ie_buffer.vndr_ie_list[0].pktflag, &pktflag, sizeof(u32));
-
-	wfa_cap_ie = (wfa_cap_ie_t *) &hdr->vndr_ie_buffer.vndr_ie_list[0].vndr_ie_data;
-	wfa_cap_ie->id = DOT11_MNG_VS_ID; /* 0xDD */
-	wfa_cap_ie->len = tot_cap_len - TLV_HDR_LEN;
-
-	wfa_cap_ie->capabilities_len = WFA_CAP_IE_DATA_LEN; /* WFA Capabilities length */
-
-	/* Copy WFA OUI */
-	ret_val = memcpy_s(wfa_cap_ie->oui, sizeof(wfa_cap_ie->oui), WFA_OUI, WFA_OUI_LEN);
-	if (ret_val != BCME_OK) {
-		goto done;
-	}
-
-	/* WFA capablities OUI type */
-	wfa_cap_ie->oui_type = WFA_CAP_VSIE_OUI_TYPE;
-
-	/* advertize the DSCP capability */
-	cap_bits |= QOS_MGMT_CAP_DSCP_POLICY;
-	ret_val = memcpy_s(wfa_cap_ie->capabilities, wfa_cap_ie->capabilities_len,
-	                   &cap_bits, sizeof(cap_bits));
-	if (ret_val != BCME_OK) {
-		goto done;
-	}
-
-	buf = (uint8 *) MALLOCZ(cfg->osh, buf_len);
-	if (buf == NULL) {
-		DHD_ERROR(("*** dhd_dscp_policy_set_vndr_ie: failed to allocate "
-		           "memory %d bytes\n", buf_len));
-		ret_val = BCME_NOMEM;
-		goto done;
-	}
-
-	if (wl_dbg_level & WL_DBG_DBG) {
-		prhex("**** Sending vendor IE", vndr_ie_buf, vndr_ie_buf_len);
-	}
-
-	ret_val = wldev_iovar_setbuf_bsscfg(ndev, "vndr_ie", vndr_ie_buf, vndr_ie_buf_len,
-	                                    buf, WLC_IOCTL_MAXLEN, bssidx, NULL);
-	if (ret_val != BCME_OK) {
-		DHD_ERROR(("*** failed to set the vndr_ie in the assoc request = %d\n", ret_val));
-	}
-done:
-	if (buf) {
-		MFREE(cfg->osh, buf, buf_len);
-	}
-
-	if (vndr_ie_buf) {
-		MFREE(cfg->osh, vndr_ie_buf, vndr_ie_buf_len);
-	}
-
-	return ret_val;
-}
-
-/*
  * Sends the DSCP query to the AP. When STA sends the DSCP query, AP
  * responds with DSCP policy request frame with all the policies. By default all the policies
  * from the AP are accepted.
@@ -989,14 +887,23 @@ dhd_dscp_policy_send_af(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 	wl_af_params_v1_t *af_params = NULL;
 	wl_action_frame_v1_t *action_frame;
 	struct ether_addr tmp_bssid;
-	struct channel_info ci;
 	uint8 *smbuf  = NULL;
-	int tmp_channel = 0;
 	int ret_val;
 	wl_af_params_v2_t *af_params_v2_p = NULL;
 	u8 *af_params_iov_p = NULL;
 	s32 af_params_iov_len = 0;
 	uint16 wl_af_params_size = 0;
+	uint8 *bi_buf = NULL;
+	uint32 bi_buf_len = WLC_IOCTL_MAXLEN;
+	wl_bss_info_v109_t *bss;
+
+	/* Allocate bss info buf */
+	bi_buf = (uint8 *) MALLOCZ(cfg->osh, bi_buf_len);
+	if (bi_buf == NULL) {
+		ret_val = BCME_NOMEM;
+		DHD_ERROR(("*** dhd_dscp_policy_send_response: unable to allocate bi_info\n"));
+		goto done;
+	}
 
 	/* fill up af_params */
 	af_params = (wl_af_params_v1_t *)MALLOCZ(cfg->osh, WL_WIFI_AF_PARAMS_SIZE_V1);
@@ -1014,17 +921,17 @@ dhd_dscp_policy_send_af(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 		goto done;
 	}
 
-	bzero(&ci, sizeof(ci));
-	ret_val = wldev_ioctl_get(ndev, WLC_GET_CHANNEL, &ci, sizeof(ci));
+	/* Get BSS information */
+	*(u32 *) bi_buf = htod32(bi_buf_len);
+	ret_val = wldev_ioctl_get(ndev, WLC_GET_BSS_INFO, (void *)bi_buf, bi_buf_len);
 	if (ret_val != BCME_OK) {
 		DHD_ERROR(("wldev_ioctl_get has failed to get channel,"
 		           " ret_val = %d\n", ret_val));
 		goto done;
 	}
 
-	tmp_channel = ci.hw_channel;
-
-	af_params->channel = tmp_channel;
+	bss = (wl_bss_info_v109_t *)(bi_buf + sizeof(bi_buf_len));
+	af_params->channel = bss->chanspec;
 	af_params->dwell_time = DSCP_AF_DEFAULT_DWELL_TIME;
 	eacopy(tmp_bssid.octet, af_params->BSSID.octet);
 	action_frame = &af_params->action_frame;
@@ -1078,6 +985,9 @@ dhd_dscp_policy_send_af(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 		DHD_INFO(("*** sending DSCP response action frame is a success \n"));
 	}
 done:
+	if (bi_buf) {
+		MFREE(cfg->osh, bi_buf, bi_buf_len);
+	}
 
 	if (af_params_v2_p) {
 		MFREE(cfg->osh, af_params_v2_p, wl_af_params_size);

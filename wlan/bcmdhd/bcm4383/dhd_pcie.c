@@ -142,10 +142,6 @@
 #define PCIE_FLR_CAPAB_BIT		28
 #define PCIE_FUNCTION_LEVEL_RESET_BIT	15
 
-#if IS_ENABLED(CONFIG_SOC_LGA)
-#define PCIEREG_L1_ENTRY_TIME_EXT 0x6904b0a0
-#endif /* CONFIG_SOC_LGA */
-
 #ifdef BCMQT_HW
 int cc_wd_reset = TRUE;
 int db7trap_in_detach = FALSE;
@@ -835,7 +831,6 @@ dhd_init_pwr_req_lock(dhd_bus_t *bus)
 {
 	if (!bus->pwr_req_lock) {
 		bus->pwr_req_lock = osl_spin_lock_init(bus->osh);
-		OSL_LOCK_CLASS_SET(bus->pwr_req_lock);
 	}
 }
 
@@ -865,7 +860,6 @@ dhd_init_dongle_ds_lock(dhd_bus_t *bus)
 {
 	if (!bus->dongle_ds_lock) {
 		bus->dongle_ds_lock = osl_spin_lock_init(bus->osh);
-		OSL_LOCK_CLASS_SET(bus->dongle_ds_lock);
 	}
 }
 
@@ -3471,7 +3465,6 @@ dhd_init_bus_lp_state_lock(dhd_bus_t *bus)
 {
 	if (!bus->bus_lp_state_lock) {
 		bus->bus_lp_state_lock = osl_spin_lock_init(bus->osh);
-		OSL_LOCK_CLASS_SET(bus->bus_lp_state_lock);
 	}
 }
 
@@ -3489,7 +3482,6 @@ dhd_init_backplane_access_lock(dhd_bus_t *bus)
 {
 	if (!bus->backplane_access_lock) {
 		bus->backplane_access_lock = osl_spin_lock_init(bus->osh);
-		OSL_LOCK_CLASS_SET(bus->backplane_access_lock);
 	}
 }
 
@@ -6977,7 +6969,6 @@ dhd_init_bar1_switch_lock(dhd_bus_t *bus)
 {
 	if (bus->bar1_switch_enab && !bus->bar1_switch_lock) {
 		bus->bar1_switch_lock = osl_spin_lock_init(bus->osh);
-		OSL_LOCK_CLASS_SET(bus->bar1_switch_lock);
 	}
 }
 
@@ -6995,7 +6986,6 @@ dhd_init_bar2_switch_lock(dhd_bus_t *bus)
 {
 	if (!bus->bar2_switch_lock) {
 		bus->bar2_switch_lock = osl_spin_lock_init(bus->osh);
-		OSL_LOCK_CLASS_SET(bus->bar2_switch_lock);
 	}
 }
 
@@ -11748,25 +11738,6 @@ dhdpcie_set_l1_entry_time(struct dhd_bus *bus, int l1_entry_time)
 	return 0;
 }
 
-/* get pcie l1 entry time: dhd pciereg 0x1004[22:16] */
-int32
-dhdpcie_get_l1_entry_time(struct dhd_bus *bus)
-{
-	int32 int_val = 0;
-	ASSERT(bus && bus->sih);
-
-	if (!bus->is_linkdown) {
-		si_corereg(bus->sih, bus->sih->buscoreidx, PCIE_REG_OFF(ConfigIndAddr), ~0,
-			0x1004);
-		int_val = si_corereg(bus->sih, bus->sih->buscoreidx,
-			PCIE_REG_OFF(ConfigIndData), 0, 0);
-	} else {
-		DHD_ERROR(("%s: bus link down\n", __FUNCTION__));
-	}
-
-	return int_val;
-}
-
 static uint32
 dhd_apply_d11_war_length(struct  dhd_bus *bus, uint32 len, uint32 d11_lpbk)
 {
@@ -13544,6 +13515,11 @@ sched_axi:
 }
 #endif /* DNGL_AXI_ERROR_LOGGING */
 
+/* Limit TX flowring processing time per DPC pass to avoid hard lockup. */
+#ifndef DHD_TXFLOWRINGS_DPC_BUDGET_NSEC
+#define DHD_TXFLOWRINGS_DPC_BUDGET_NSEC 200000ULL      /* 200 usec */
+#endif /* !DHD_TXFLOWRINGS_DPC_BUDGET_NSEC */
+
 /**
  * Brings transmit packets on all flow rings closer to the dongle, by moving (a subset) from their
  * flow queue to their flow ring.
@@ -13557,6 +13533,8 @@ dhd_update_txflowrings(dhd_pub_t *dhd)
 	struct dhd_bus *bus = dhd->bus;
 	int count = 0;
 	bool more = FALSE;
+	uint64 start_ts = OSL_LOCALTIME_NS();
+	uint64 now_ts;
 
 	if (dhd_query_bus_erros(dhd)) {
 		return more;
@@ -13591,8 +13569,18 @@ dhd_update_txflowrings(dhd_pub_t *dhd)
 		/* Ensure that the flowring node has valid contents */
 		ASSERT(flow_ring_node->prot_info != NULL);
 
-		more = dhd_prot_update_txflowring(dhd, flow_ring_node->flowid,
+		more |= dhd_prot_update_txflowring(dhd, flow_ring_node->flowid,
 			flow_ring_node->prot_info);
+
+		now_ts = OSL_LOCALTIME_NS();
+		if ((now_ts - start_ts) >= DHD_TXFLOWRINGS_DPC_BUDGET_NSEC) {
+			DHD_INFO(("%s: txflowring budget hit (%llu nsec), rescheduling\n",
+				__FUNCTION__,
+				(unsigned long long)DHD_TXFLOWRINGS_DPC_BUDGET_NSEC));
+			/* Keep DPC reschedule path active for remaining rings/packets. */
+			more = TRUE;
+			break;
+		}
 	}
 	DHD_FLOWRING_LIST_UNLOCK(bus->dhd->flowring_list_lock, flags);
 
@@ -15027,24 +15015,6 @@ dhdpci_bus_read_frames(dhd_bus_t *bus)
 	dhdpci_bus_rte_log_time_sync_poll(bus);
 #endif /* DHD_H2D_LOG_TIME_SYNC */
 
-#if defined(DHD_WAKE_STATUS)
-	/* Check if host was woken up by any packets */
-	if (dhd_bus_get_bus_wake(bus->dhd) > 0) {
-		/*
-		 * If wake is due to Rx packets,
-		 * pktwake info will be printed and cleared from dhd_rx_frame()
-		 */
-		DHD_PRINT(("#### dhdpcie_host_wake: rxcpl:%d ctrlcpl:%d txcpl:%d evtlog:%d ####\n",
-			rxcpl_items, ctrlcpl_items, txcpl_items, evtlog_items));
-
-		dhd_bus_set_get_bus_wake(bus->dhd, 0);
-
-		if (rxcpl_items > 0) {
-			/* Request packet dump for first Rx packet */
-			dhd_bus_set_get_bus_wake_pkt_dump(bus->dhd, 1);
-		}
-	}
-#endif /* DHD_WAKE_STATUS */
 	return more;
 }
 
@@ -16219,17 +16189,6 @@ static void dhdpcie_bus_post_init_quirks(dhd_bus_t *bus)
 }
 #endif /* __linux__ */
 
-#if IS_ENABLED(CONFIG_SOC_LGA)
-static void dhdpcie_bus_check_l1_entry_time(dhd_bus_t *bus)
-{
-	int32 val = dhdpcie_get_l1_entry_time(bus);
-	if (val != PCIEREG_L1_ENTRY_TIME_EXT) {
-		DHD_ERROR(("%s : Error with pcie_l1_entry 0x%x (expected 0x%x)\n",
-			__FUNCTION__, val, PCIEREG_L1_ENTRY_TIME_EXT));
-	}
-}
-#endif /* CONFIG_SOC_LGA */
-
 /**
  * Initialize bus module: prepare for communication with the dongle. Called after downloading
  * firmware into the dongle.
@@ -16335,7 +16294,6 @@ int dhd_bus_init(dhd_pub_t *dhdp, bool enforce_mutex)
 	/* Initialize the lock to serialize Device Wake Inband activities */
 	if (!bus->inb_lock) {
 		bus->inb_lock = osl_spin_lock_init(bus->dhd->osh);
-		OSL_LOCK_CLASS_SET(bus->inb_lock);
 	}
 #endif
 
@@ -16383,10 +16341,6 @@ int dhd_bus_init(dhd_pub_t *dhdp, bool enforce_mutex)
 #if defined(__linux__)
 	dhdpcie_bus_post_init_quirks(bus);
 #endif /* __linux__ */
-
-#if IS_ENABLED(CONFIG_SOC_LGA)
-	dhdpcie_bus_check_l1_entry_time(bus);
-#endif /* CONFIG_SOC_LGA */
 
 exit:
 	if (ret) {

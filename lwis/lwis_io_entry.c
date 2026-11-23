@@ -74,7 +74,7 @@ int lwis_io_entry_read_assert(struct lwis_device *lwis_dev, struct lwis_io_entry
 
 	ret = lwis_device_single_register_read(lwis_dev, entry->read_assert.bid,
 					       entry->read_assert.offset, &val,
-					       lwis_dev->native_value_bitwidth);
+					       lwis_dev->native_read_value_bitwidth);
 	if (ret) {
 		dev_err(lwis_dev->dev, "Failed to read registers: block %d offset 0x%llx\n",
 			entry->read_assert.bid, entry->read_assert.offset);
@@ -128,7 +128,7 @@ void *lwis_io_entry_result(void *read_buf, struct lwis_io_entry *entry, int reg_
 	return (uint8_t *)read_buf + result_struct_size + io_result->num_value_bytes;
 }
 
-bool lwis_io_entry_is_type_batch_compatible(struct lwis_io_entry *entry)
+static bool is_type_batch_compatible(struct lwis_io_entry *entry)
 {
 	return entry->type == LWIS_IO_ENTRY_WRITE || entry->type == LWIS_IO_ENTRY_WRITE_V2 ||
 	       entry->type == LWIS_IO_ENTRY_WRITE_BATCH ||
@@ -139,8 +139,8 @@ bool lwis_io_entry_is_type_batch_compatible(struct lwis_io_entry *entry)
 
 int lwis_io_entry_process(struct lwis_device *lwis_dev, struct lwis_io_entry *entry)
 {
-	if (lwis_io_entry_is_type_batch_compatible(entry) || entry->type == LWIS_IO_ENTRY_MODIFY)
-		return lwis_dev->vops.register_io(lwis_dev, entry, lwis_dev->native_value_bitwidth);
+	if (is_type_batch_compatible(entry) || entry->type == LWIS_IO_ENTRY_MODIFY)
+		return lwis_dev->vops.register_io(lwis_dev, entry);
 	else if (entry->type == LWIS_IO_ENTRY_POLL)
 		return lwis_io_entry_poll(lwis_dev, entry, /*is_short=*/false);
 	else if (entry->type == LWIS_IO_ENTRY_POLL_SHORT)
@@ -166,21 +166,18 @@ int lwis_io_entries_process(struct lwis_device *lwis_dev, struct lwis_io_entry *
 	while (i < end_idx) {
 		int batch_start_idx = i;
 		bool is_batch_compatible = lwis_dev->vops.batch_register_io &&
-					   lwis_io_entry_is_type_batch_compatible(&io_entries[i]);
+					   is_type_batch_compatible(&io_entries[i]);
 		if (is_batch_compatible && (end_idx - i) > 1) {
 			i++;
 
-			while (i < end_idx &&
-			       lwis_io_entry_is_type_batch_compatible(&io_entries[i])) {
+			while (i < end_idx && is_type_batch_compatible(&io_entries[i]))
 				i++;
-			}
 
 			int batch_size = i - batch_start_idx;
 
 			if (batch_size > 1) {
 				ret = lwis_dev->vops.batch_register_io(
-					lwis_dev, &io_entries[batch_start_idx],
-					lwis_dev->native_value_bitwidth, batch_size);
+					lwis_dev, &io_entries[batch_start_idx], batch_size);
 				if (ret)
 					return ret;
 				continue;
@@ -215,7 +212,7 @@ uint8_t *lwis_io_entry_prepare_results(struct lwis_device *lwis_dev,
 	struct lwis_io_result *io_result;
 	struct lwis_io_entry *entry;
 	size_t result_struct_size;
-	const int reg_value_bytewidth = lwis_dev->native_value_bitwidth / 8;
+	const int reg_value_bytewidth = lwis_dev->native_read_value_bitwidth / 8;
 
 	for (i = start_idx; i < end_idx; i++) {
 		entry = &io_entries[i];

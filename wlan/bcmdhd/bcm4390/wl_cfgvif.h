@@ -76,7 +76,12 @@
 #define WL_EHT_FEATURES_STA_DISABLE	0x4u
 #define DHD_DISABLE_STA_EHT		BIT(0)
 #define DHD_ENABLE_STA_EHT		BIT(1)
-#define EHT_FEATURES_EHT_AP		0x1u
+#define DHD_ENABLE_AP_EHT		BIT(2)
+
+/* EHT Capability Bitmask */
+#define EHT_FEATURES_EHT_AP         BIT(0)
+#define EHT_FEATURES_CRIT_UPDATE    BIT(1)
+
 
 extern bool wl_cfg80211_check_vif_in_use(struct net_device *ndev);
 
@@ -217,8 +222,6 @@ extern s32 wl_cfg80211_stop_ap(struct wiphy *wiphy, struct net_device *dev, unsi
 #else
 extern s32 wl_cfg80211_stop_ap(struct wiphy *wiphy, struct net_device *dev);
 #endif /* LINUX_VERSION_CODE > KERNEL_VERSION(5, 19, 0) || WL_MLO_BKPORT */
-extern s32 wl_cfg80211_change_beacon(struct wiphy *wiphy, struct net_device *dev,
-	struct cfg80211_beacon_data *info);
 #else
 extern s32 wl_cfg80211_add_set_beacon(struct wiphy *wiphy, struct net_device *dev,
 	struct beacon_parameters *info);
@@ -253,8 +256,13 @@ wl_cfg80211_add_virtual_iface(struct wiphy *wiphy,
 #endif /* LINUX_VERSION_CODE < KERNEL_VERSION(4, 12, 0) */
 	struct vif_params *params);
 extern s32 wl_cfg80211_del_virtual_iface(struct wiphy *wiphy, bcm_struct_cfgdev *cfgdev);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 7, 0))
+extern s32 wl_cfg80211_change_beacon(struct wiphy *wiphy, struct net_device *dev,
+	struct cfg80211_ap_update *info);
+#else
 extern s32 wl_cfg80211_change_beacon(struct wiphy *wiphy, struct net_device *dev,
 	struct cfg80211_beacon_data *info);
+#endif /* LINUX_VERSION_CODE < KERNEL_VERSION(6, 7, 0) */
 
 extern s32 wl_get_auth_assoc_status(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 	const wl_event_msg_t *e, void *data);
@@ -289,10 +297,8 @@ chanspec_t wl_cfg80211_get_ap_bw_limited_chspec(struct bcm_cfg80211 *cfg,
 	uint32 band, chanspec_t candidate);
 int wl_cfg80211_set_softap_bw(struct bcm_cfg80211 *cfg, uint32 band, uint32 limit);
 #endif /* LIMIT_AP_BW */
-#ifdef WL_IDAUTH
 extern s32 wl_cfgvif_scb_authorized(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
 	const wl_event_msg_t *event, void *data);
-#endif /* WL_IDAUTH */
 #ifdef WL_MLO
 extern void wl_cfgvif_mlo_update_linkaddr(wl_mlo_config_v1_t *mlo_config);
 extern s32
@@ -342,10 +348,8 @@ extern s32 wl_cfgvif_apply_default_keep_alive(struct net_device *ndev, struct bc
 #endif /* KEEP_ALIVE && OEM_ANDROID */
 
 extern s32 wl_cfgvif_get_eht_features(struct net_device *dev, u32 *eht_feature_val);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0))
 extern s32 wl_cfgvif_set_eht_features(struct net_device *dev, struct bcm_cfg80211 *cfg,
 	u32 eht_mask);
-#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0) */
 
 extern void wl_cfgvif_sta_multilink_config(struct bcm_cfg80211 *cfg, wl_assoc_state_t assoc_state);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
@@ -361,4 +365,8 @@ extern void wl_cfgvif_enable_aggressive_roam(struct bcm_cfg80211 *cfg, struct ne
 #endif /* WL_AGGRESSIVE_ROAM */
 extern int wl_cfgvif_dump_survey(struct wiphy *wiphy, struct net_device *ndev,
 	int idx, struct survey_info *info);
+
+int wl_set_ant_config(struct net_device *dev, uint param);
+int wl_get_ant_config(struct net_device *dev, void *param);
+
 #endif /* _wl_cfgvif_h_ */

@@ -11,6 +11,7 @@
  */
 #include <linux/acpi.h>
 #include <linux/clk.h>
+#include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/io.h>
@@ -24,9 +25,11 @@
 #include <linux/pm_runtime.h>
 #include <linux/property.h>
 #include <linux/reset.h>
+#include <linux/semaphore.h>
 #include <linux/slab.h>
 #include <linux/workqueue.h>
 
+#include <aoss-ssr-notifier/aoss_ssr_notifier.h>
 #include <asm/byteorder.h>
 
 #include "google_serial_8250.h"
@@ -47,6 +50,8 @@
 /* DesignWare specific register fields */
 #define DW_UART_MCR_SIRE		BIT(6)
 
+#define AOSS_SSR_TIMEOUT		msecs_to_jiffies(10000)
+
 /* Renesas specific register fields */
 #define RZN1_UART_xDMACR_DMA_EN		BIT(0)
 #define RZN1_UART_xDMACR_1_WORD_BURST	(0 << 1)
@@ -60,6 +65,42 @@
 #define DW_UART_QUIRK_SKIP_SET_RATE	BIT(2)
 #define DW_UART_QUIRK_IS_DMA_FC		BIT(3)
 
+#define AOSS_SSR_RUNNING		0
+
+struct dw8250_platform_data {
+	u8 usr_reg;
+	u32 cpr_val;
+	unsigned int quirks;
+};
+
+struct dw8250_data {
+	struct dw8250_port_data	data;
+	const struct dw8250_platform_data *pdata;
+
+	int			msr_mask_on;
+	int			msr_mask_off;
+	struct clk		*clk;
+	struct clk		*pclk;
+	struct notifier_block	clk_notifier;
+	struct work_struct	clk_work;
+	struct dentry		*debugfs;
+	struct reset_control	*rst;
+
+	unsigned int		skip_autocfg:1;
+	unsigned int		uart_16550_compatible:1;
+	unsigned int		defer_pinctrl:1;
+
+	unsigned long		flags;
+	struct semaphore	aoss_ssr_lock;
+
+	struct notifier_block 	aoss_ssr_nb;
+};
+
+static inline struct dw8250_data *to_dw8250_data(struct dw8250_port_data *data)
+{
+	return container_of(data, struct dw8250_data, data);
+}
+
 static inline struct dw8250_data *clk_to_dw8250_data(struct notifier_block *nb)
 {
 	return container_of(nb, struct dw8250_data, clk_notifier);
@@ -68,6 +109,153 @@ static inline struct dw8250_data *clk_to_dw8250_data(struct notifier_block *nb)
 static inline struct dw8250_data *work_to_dw8250_data(struct work_struct *work)
 {
 	return container_of(work, struct dw8250_data, clk_work);
+}
+
+static void dw8250_start_aoss_ssr(struct dw8250_data *data)
+{
+	struct uart_8250_port *up_8250 = google_serial8250_get_port(data->data.line);
+	struct uart_port *port = &up_8250->port;
+
+	/* If the bit was already set, another start is in progress; bail out */
+	if (test_and_set_bit(AOSS_SSR_RUNNING, &data->flags)) {
+		dev_warn(port->dev, "AOSS SSR already started, ignoring duplicate request\n");
+		return;
+	}
+
+	dev_info(port->dev, "Starting AOSS SSR\n");
+
+	/*
+	 * Lock the port before changing hw_stopped flag. This will let any ongoing activity to
+	 * complete before port is marked as stopped and suspended.
+	 */
+	uart_port_lock(port);
+	port->hw_stopped = true;
+	uart_port_unlock(port);
+
+	google_serial8250_suspend_port(data->data.line);
+	pm_runtime_force_suspend(port->dev);
+	down(&data->aoss_ssr_lock);
+}
+
+static void dw8250_finish_aoss_ssr(struct dw8250_data *data)
+{
+	struct uart_8250_port *up_8250 = google_serial8250_get_port(data->data.line);
+	struct uart_port *port = &up_8250->port;
+
+	/* Only proceed if we successfully clear the bit (guarantees exactly-once execution) */
+	if (!test_and_clear_bit(AOSS_SSR_RUNNING, &data->flags))
+		return;
+
+	dev_info(port->dev, "Finishing AOSS SSR\n");
+
+	up(&data->aoss_ssr_lock);
+	pm_runtime_force_resume(port->dev);
+	google_serial8250_resume_port(data->data.line);
+
+	uart_port_lock(port);
+	port->hw_stopped = false;
+	uart_port_unlock(port);
+}
+
+static int aoss_ssr_read(void *data, u64 *val)
+{
+	struct dw8250_data *d = data;
+
+	*val = test_bit(AOSS_SSR_RUNNING, &d->flags);
+	return 0;
+}
+
+static int aoss_ssr_write(void *data, u64 val)
+{
+	struct dw8250_data *d = data;
+
+	if (val)
+		dw8250_start_aoss_ssr(d);
+	else
+		dw8250_finish_aoss_ssr(d);
+
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(aoss_ssr_fops, aoss_ssr_read, aoss_ssr_write, "%llu\n");
+
+static int dw8250_info_show(struct seq_file *s, void *data)
+{
+	struct dw8250_data *priv_data = s->private;
+	struct uart_8250_port *up = google_serial8250_get_port(priv_data->data.line);
+	struct uart_port *p = &up->port;
+
+	seq_printf(s, "uartclk: %u\n", p->uartclk);
+	seq_printf(s, "fifosize: %u\n", p->fifosize);
+	seq_printf(s, "tx_loadsz: %u\n", up->tx_loadsz);
+	seq_printf(s, "irq: %d\n", p->irq);
+	seq_printf(s, "port type: %d\n", p->type);
+	seq_printf(s, "iotype: %d\n", p->iotype);
+	seq_printf(s, "flags: 0x%llx\n", p->flags);
+	seq_printf(s, "bugs: 0x%x\n", up->bugs);
+	seq_printf(s, "capabilities: 0x%x\n", up->capabilities);
+
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(dw8250_info);
+
+static void dw8250_debugfs_create(struct platform_device *pdev, struct dw8250_data *data)
+{
+	struct dentry *tmp;
+
+	data->debugfs = debugfs_create_dir(dev_name(&pdev->dev), NULL);
+	if (IS_ERR_OR_NULL(data->debugfs)) {
+		dev_err(&pdev->dev, "failed to create debugfs directory: %ld\n",
+			PTR_ERR(data->debugfs));
+		return;
+	}
+
+	tmp = debugfs_create_file("info", 0400, data->debugfs, data, &dw8250_info_fops);
+	if (IS_ERR_OR_NULL(tmp)) {
+		dev_err(&pdev->dev, "failed to create debugfs info file: %ld\n",
+			PTR_ERR(tmp));
+		debugfs_remove_recursive(data->debugfs);
+		return;
+	}
+
+	tmp = debugfs_create_file("trigger-aoss-ssr", 0644, data->debugfs, data, &aoss_ssr_fops);
+	if (IS_ERR_OR_NULL(tmp)) {
+		dev_err(&pdev->dev, "failed to create debugfs trigger-aoss-ssr file: %ld\n",
+			PTR_ERR(tmp));
+		debugfs_remove_recursive(data->debugfs);
+		return;
+	}
+}
+
+static void dw8250_debugfs_remove(struct uart_8250_port *p)
+{
+	struct dw8250_data *d = to_dw8250_data(p->port.private_data);
+
+	debugfs_remove_recursive(d->debugfs);
+}
+
+static int aoss_ssr_notifier(struct notifier_block *notifier, unsigned long event, void *v)
+{
+	struct dw8250_data *d = container_of(notifier, struct dw8250_data, aoss_ssr_nb);
+	struct uart_8250_port *up = google_serial8250_get_port(d->data.line);
+	struct uart_port *port = &up->port;
+
+	switch (event) {
+	case AOSS_SSR_PG_DOWN:
+		dev_info(port->dev, "%s: PG down\n", __func__);
+		dw8250_start_aoss_ssr(d);
+		break;
+	case AOSS_SSR_ONLINE:
+		dev_info(port->dev, "%s: online\n", __func__);
+		dw8250_finish_aoss_ssr(d);
+		break;
+	default:
+		dev_info(port->dev, "%s: don't care\n", __func__);
+		break;
+	}
+
+	return NOTIFY_OK;
 }
 
 static inline int dw8250_modify_msr(struct uart_port *p, int offset, int value)
@@ -350,7 +538,25 @@ static int dw8250_clk_notifier_cb(struct notifier_block *nb,
 static void
 dw8250_do_pm(struct uart_port *port, unsigned int state, unsigned int old)
 {
+	struct dw8250_data *data = to_dw8250_data(port->private_data);
+	int lock_failed = 0;
+
 	trace_dw8250_do_pm(port->dev, state, old);
+
+	/*
+	 * Wait for any ongoing AOSS SSR to finish. Do trylock first to see if there is an active
+	 * SSR in progress to have a debug message printed in case if actual wait happens.
+	 * Wait with timeout to avoid deadlock in case if SSR never finishes for some reason.
+	 * Timeout is set to the value much longer than usual SSR duration to avoid false positives.
+	 * In case of timeout just proceed without waiting further to avoid blocking PM operations,
+	 * it's safe to proceed forward since system is already in unusable state if AOSS SSR didn't
+	 * finish in time.
+	 */
+	if (down_trylock(&data->aoss_ssr_lock)) {
+		lock_failed = down_timeout(&data->aoss_ssr_lock, AOSS_SSR_TIMEOUT);
+		dev_info(port->dev, "wait for aoss_ssr_lock: %s\n",
+			 lock_failed ? "timeout" : "acquired");
+	}
 
 	if (!state)
 		pm_runtime_get_sync(port->dev);
@@ -359,6 +565,9 @@ dw8250_do_pm(struct uart_port *port, unsigned int state, unsigned int old)
 
 	if (state)
 		pm_runtime_put_sync_suspend(port->dev);
+
+	if (!lock_failed)
+		up(&data->aoss_ssr_lock);
 }
 
 static void dw8250_set_termios(struct uart_port *p, struct ktermios *termios,
@@ -383,6 +592,12 @@ static void dw8250_set_termios(struct uart_port *p, struct ktermios *termios,
 	}
 
 	google_dw8250_do_set_termios(p, termios, old);
+
+	if (d->defer_pinctrl) {
+		ret = pinctrl_pm_select_default_state(p->dev);
+		if (ret)
+			dev_err(p->dev, "failed to configure pins: %d\n", ret);
+	}
 }
 
 static void dw8250_set_ldisc(struct uart_port *p, struct ktermios *termios)
@@ -530,7 +745,7 @@ void google_8250_trace_init(struct platform_device *pdev)
 {
 	struct trace_array *trace_instance;
 
-	trace_instance = trace_array_get_by_name_ext("google_8250", "uart");
+	trace_instance = trace_array_get_by_name("google_8250", "uart");
 	if (!trace_instance) {
 		dev_err(&pdev->dev, "google_8250 trace instance creation/retrieve did not succeed\n");
 		return;
@@ -595,6 +810,8 @@ static int dw8250_probe(struct platform_device *pdev)
 
 	data->uart_16550_compatible = device_property_read_bool(dev,
 						"snps,uart-16550-compatible");
+	data->defer_pinctrl = device_property_read_bool(dev,
+						"google,defer-pinctrl-to-termios");
 
 	err = device_property_read_u32(dev, "reg-shift", &val);
 	if (!err)
@@ -682,6 +899,7 @@ static int dw8250_probe(struct platform_device *pdev)
 		return err;
 
 	dw8250_quirks(p, data);
+	sema_init(&data->aoss_ssr_lock, 1);
 
 	/* If the Busy Functionality is not implemented, don't handle it */
 	if (data->uart_16550_compatible)
@@ -697,10 +915,7 @@ static int dw8250_probe(struct platform_device *pdev)
 		up->dma = &data->data.dma;
 	}
 
-	if (of_get_property(pdev->dev.of_node, "google,uart-logging", NULL))
-		up->uart_logging = true;
-	else
-		up->uart_logging = false;
+	up->uart_logging = of_property_read_bool(pdev->dev.of_node, "google,uart-logging");
 
 	if (up->uart_logging) {
 		snprintf(logbuf_port, sizeof(logbuf_port), "tty%d", up->port.line);
@@ -728,6 +943,12 @@ static int dw8250_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, data);
+	dw8250_debugfs_create(pdev, data);
+
+	if (of_property_read_bool(pdev->dev.of_node, "aoc-ssr-capable")) {
+		data->aoss_ssr_nb.notifier_call = aoss_ssr_notifier;
+		aoss_ssr_add_notifier(&data->aoss_ssr_nb);
+	}
 
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
@@ -735,11 +956,11 @@ static int dw8250_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int dw8250_remove(struct platform_device *pdev)
+static void dw8250_remove(struct platform_device *pdev)
 {
 	struct dw8250_data *data = platform_get_drvdata(pdev);
-	struct device *dev = &pdev->dev;
 	struct uart_8250_port *up = google_serial8250_get_port(data->data.line);
+	struct device *dev = &pdev->dev;
 
 	pm_runtime_get_sync(dev);
 
@@ -750,15 +971,16 @@ static int dw8250_remove(struct platform_device *pdev)
 	if (data->clk) {
 		clk_notifier_unregister(data->clk, &data->clk_notifier);
 
+		dw8250_debugfs_remove(up);
+
 		flush_work(&data->clk_work);
 	}
 
 	google_serial8250_unregister_port(data->data.line);
+	aoss_ssr_remove_notifier(&data->aoss_ssr_nb);
 
 	pm_runtime_disable(dev);
 	pm_runtime_put_noidle(dev);
-
-	return 0;
 }
 
 static int dw8250_enable_cli(struct device *dev)
@@ -786,8 +1008,14 @@ static int dw8250_suspend(struct device *dev)
 {
 	struct dw8250_data *data = dev_get_drvdata(dev);
 	struct uart_8250_port *up = google_serial8250_get_port(data->data.line);
+	struct timespec64 ts;
 
 	trace_dw8250_function_entry(dev, __func__);
+
+	if (up->uart_logging && !IS_ERR_OR_NULL(up->log)) {
+		ktime_get_real_ts64(&ts);
+		logbuffer_log(up->log, "%s: %ptTt", __func__, &ts);
+	}
 
 	google_serial8250_suspend_port(data->data.line);
 
@@ -801,9 +1029,15 @@ static int dw8250_resume(struct device *dev)
 {
 	struct dw8250_data *data = dev_get_drvdata(dev);
 	struct uart_8250_port *up = google_serial8250_get_port(data->data.line);
+	struct timespec64 ts;
 	int res;
 
 	trace_dw8250_function_entry(dev, __func__);
+
+	if (up->uart_logging && !IS_ERR_OR_NULL(up->log)) {
+		ktime_get_real_ts64(&ts);
+		logbuffer_log(up->log, "%s: %ptTt", __func__, &ts);
+	}
 
 	res = pm_runtime_force_resume(dev);
 	if (res)
@@ -820,8 +1054,11 @@ static int dw8250_resume(struct device *dev)
 static int dw8250_runtime_suspend(struct device *dev)
 {
 	struct dw8250_data *data = dev_get_drvdata(dev);
+	struct uart_8250_port *up = google_serial8250_get_port(data->data.line);
 
 	trace_dw8250_function_entry(dev, __func__);
+
+	disable_irq(up->port.irq);
 
 	pinctrl_pm_select_sleep_state(dev);
 
@@ -829,12 +1066,15 @@ static int dw8250_runtime_suspend(struct device *dev)
 
 	clk_disable_unprepare(data->pclk);
 
+	reset_control_assert(data->rst);
+
 	return 0;
 }
 
 static int dw8250_runtime_resume(struct device *dev)
 {
 	struct dw8250_data *data = dev_get_drvdata(dev);
+	struct uart_8250_port *up = google_serial8250_get_port(data->data.line);
 	int res;
 
 	trace_dw8250_function_entry(dev, __func__);
@@ -856,9 +1096,13 @@ static int dw8250_runtime_resume(struct device *dev)
 	if (res)
 		goto err_reset;
 
-	res = pinctrl_pm_select_default_state(dev);
-	if (res)
-		goto err_pinctrl;
+	if (!data->defer_pinctrl) {
+		res = pinctrl_pm_select_default_state(dev);
+		if (res)
+			goto err_pinctrl;
+	}
+
+	enable_irq(up->port.irq);
 
 	return 0;
 

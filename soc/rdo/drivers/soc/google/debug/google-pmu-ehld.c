@@ -26,7 +26,6 @@
 #include <soc/google/goog_gdmc_service_ids.h>
 #include <soc/google/google-cdd.h>
 #include <soc/google/google_gtc.h>
-#include <linux/perf/arm_pmuv3.h>
 #include <linux/perf_event.h>
 #include <linux/cpumask.h>
 #include <linux/coresight.h>
@@ -393,21 +392,13 @@ static int gdmc_ehld_timer_disable(void)
 					NULL, ehld_dev.dev);
 }
 
-/*
- * This implementation uses the code in `drivers/perf/arm_pmuv3.c` to access low-level ARMv8 PMU
- * events. The `ARMV8_IDX_TO_COUNTER` is cloned to convert the `event->hw.idx` to the corresponding
- * ARMv8 counter ID.
- */
-#define ARMV8_IDX_COUNTER0 1
-#define ARMV8_IDX_TO_COUNTER(x) (((x) - ARMV8_IDX_COUNTER0) & ARMV8_PMU_COUNTER_MASK)
-
 static u32 google_ehld_read_pmu_counter(void)
 {
 	unsigned int cpu = raw_smp_processor_id();
 	struct google_ehld_ctrl *ctrl = per_cpu_ptr(&ehld_ctrl, cpu);
 	struct perf_event *event = ctrl->event;
 
-	write_sysreg(ARMV8_IDX_TO_COUNTER(event->hw.idx), pmselr_el0);
+	write_sysreg(event->hw.idx, pmselr_el0);
 	isb();
 	return read_sysreg(pmxevcntr_el0);
 }
@@ -506,7 +497,7 @@ static int google_ehld_start_cpu(unsigned int cpu)
 		ctrl->event = event;
 		perf_event_enable(event);
 
-		err = gdmc_ehld_set_pmu_cntr(cpu, ARMV8_IDX_TO_COUNTER(event->hw.idx));
+		err = gdmc_ehld_set_pmu_cntr(cpu, event->hw.idx);
 
 		if (err) {
 			dev_err(ehld_dev.dev, "@%s: cpu%u set_pmu_cntr_id failed: %d\n", __func__,
@@ -959,7 +950,7 @@ static int ehld_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int ehld_remove(struct platform_device *pdev)
+static void ehld_remove(struct platform_device *pdev)
 {
 	platform_set_drvdata(pdev, NULL);
 
@@ -969,8 +960,6 @@ static int ehld_remove(struct platform_device *pdev)
 	}
 
 	dev_dbg(ehld_dev.dev, "Removed Google EHLD device.\n");
-
-	return 0;
 }
 
 static const struct of_device_id ehld_dt_match[] = {

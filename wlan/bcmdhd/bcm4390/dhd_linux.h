@@ -43,11 +43,7 @@
 #if defined(CONFIG_HAS_EARLYSUSPEND) && defined(DHD_USE_EARLYSUSPEND)
 #include <linux/earlysuspend.h>
 #endif /* defined(CONFIG_HAS_EARLYSUSPEND) && defined(DHD_USE_EARLYSUSPEND) */
-#if defined(CONFIG_WIFI_CONTROL_FUNC) || defined(CUSTOMER_HW4)
-#include <linux/wlan_plat.h>
-#else
 #include <dhd_plat.h>
-#endif /* CONFIG_WIFI_CONTROL_FUNC */
 
 #ifdef BCMPCIE
 #include <bcmmsgbuf.h>

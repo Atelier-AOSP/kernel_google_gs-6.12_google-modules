@@ -193,10 +193,10 @@ typedef struct             {    /* Time value with microsecond resolution    */
 
 /* Linux/ARM 32 prstatus for notes section */
 typedef struct prstatus {
-	  int32 si_signo; 	/* Signal number */
-	  int32 si_code; 	/* Extra code */
-	  int32 si_errno; 	/* Errno */
-	  uint16 pr_cursig; 	/* Current signal.  */
+	  int32 si_signo;	/* Signal number */
+	  int32 si_code;	/* Extra code */
+	  int32 si_errno;	/* Errno */
+	  uint16 pr_cursig;	/* Current signal.  */
 	  uint16 unused;
 	  uint32 pr_sigpend;	/* Set of pending signals.  */
 	  uint32 pr_sighold;	/* Set of held signals.  */

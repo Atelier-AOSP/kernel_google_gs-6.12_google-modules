@@ -5,30 +5,30 @@
  */
 
 #include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/of_platform.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/mod_devicetable.h>
-#include <linux/reset.h>
-#include <linux/clk.h>
 #include <linux/dma-mapping.h>
 #include <linux/iopoll.h>
 #include <linux/phy/phy.h>
 #include <linux/pm_runtime.h>
-#include <linux/fwnode.h>
-#include <linux/usb/role.h>
 #include <linux/device.h>
 #include <linux/sysfs.h>
-#include <linux/phy/phy.h>
-#include <linux/pm_domain.h>
-#include <linux/regulator/consumer.h>
 #include <linux/kernfs.h>
-#include "core.h"
-
-#include <trace/hooks/usb.h>
+#include <linux/usb.h>
+#include <linux/usb/ch9.h>
+#include <linux/usb/gadget.h>
 #include <linux/usb/hcd.h>
+#include <linux/of_irq.h>
+#include <linux/usb/xhci-sideband.h>
+#include <soc/google/google-usb-phy.h>
+#include <trace/hooks/dwc3.h>
+
+#include <dwc3/core.h>
+#include <dwc3/io.h>
+#include <dwc3/trace.h>
+
+#include "gadget.h"
+#include "core.h"
 
 #define CREATE_TRACE_POINTS
 #include "usb_trace.h"
@@ -36,17 +36,6 @@
 #include <interconnect/google_icc_helper.h>
 
 #include "dwc3-google.h"
-#include "xhci-goog-dma.h"
-
-#define DWC3_GOOGLE_MAX_CLOCKS 10
-// One time setup clocks are always on while USB top is on
-#define DWC3_GOOGLE_MAX_OTS_CLOCKS 6
-
-#define DWC3_GOOGLE_MAX_RESETS 8
-#define DWC3_GOOGLE_MAX_OTS_RESETS 5
-
-#define POLL_DELAY_US 10
-#define POLL_TIMEOUT_US 10000
 
 #define DWC3_GOOGLE_CONTROLLER_PHY_CONTROL 0x0
 #define DWC3_GOOGLE_PMU_PHY_CONTROL 0x3
@@ -79,69 +68,30 @@
 #define USBCS_USBINT_STATUS_USBDRD_PME_GEN_U2P_INTR_STS_RAW	BIT(2)
 #define USBCS_USBINT_STATUS_USBDRD_PME_GEN_U3P_INTR_STS_RAW	BIT(3)
 
-/* USBCS_TOP_CFG1 CSR fields */
+/* USBCS_TOP_CFG1 CSR fields V1*/
 #define USBCS_TOP_CFG1_AWUSERVC GENMASK(2, 0)
 #define USBCS_TOP_CFG1_ARUSERVC GENMASK(5, 3)
 
-/* Bandwidth requirements based on speed */
-#define USB_HS_GOOGLE_ICC_BW_MB 40
-#define USB_SS_GOOGLE_ICC_BW_MB 400
-#define USB_SSP_GOOGLE_ICC_BW_MB 1000
+/* USBCS_TOP_CFG1 CSR fields V2*/
+#define USBCS_TOP_CFG1_R_VC_OVRD_EN GENMASK(0, 0)
+#define USBCS_TOP_CFG1_R_VC_OVRD_VAL GENMASK(7, 4)
+#define USBCS_TOP_CFG1_W_VC_OVRD_EN GENMASK(8, 8)
+#define USBCS_TOP_CFG1_W_VC_OVRD_VAL GENMASK(15, 12)
 
-struct dwc3_google_driverdata {
-	const char	*clk_names[DWC3_GOOGLE_MAX_CLOCKS];
-	const char *ots_clk_names[DWC3_GOOGLE_MAX_OTS_CLOCKS];
-	const char	*rst_names[DWC3_GOOGLE_MAX_RESETS];
-	const char *ots_rst_names[DWC3_GOOGLE_MAX_OTS_RESETS];
-	int	num_clks;
-	int num_ots_clks;
-	int	num_rsts;
-	int num_ots_rsts;
-};
+/* USBCS_TOP_CTRL_CFG1 */
+#define USBCS_TOP_CTRL_CFG1_OFFSET 0x4
+#define USBCS_TOP_CTRL_CFG1_USB2ONLY_MODE BIT(5)
 
-struct dwc3_google {
-	struct device *dev;
-	struct platform_device *dwc3;
-	void __iomem *usbcs_host_cfg_base;
-	void __iomem *usbcs_usbint_base;
-	void __iomem *usb_top_cfg_reg;
-	const struct dwc3_google_driverdata *drv_data;
-	struct clk_bulk_data clocks[DWC3_GOOGLE_MAX_CLOCKS];
-	struct clk_bulk_data ots_clocks[DWC3_GOOGLE_MAX_OTS_CLOCKS];
-	struct reset_control_bulk_data resets[DWC3_GOOGLE_MAX_RESETS];
-	struct reset_control_bulk_data ots_resets[DWC3_GOOGLE_MAX_OTS_RESETS];
-	struct reset_control *usbc_non_sticky_rst;
-	struct usb_role_switch *role_sw;
-	struct usb_role_switch *dwc3_drd_sw;
-	struct usb_role_switch *phy_role_sw;
-	struct device *usb_psw_pd;
-	struct device *usb_top_pd;
-	// GenPD Notifier to switch phy control between PMU and dwc3
-	struct notifier_block usb_psw_pd_nb;
-	// To maintain suspend order of pm virtual dev after glue
-	struct device_link *usb_top_pd_dl;
-	// To control phy runtime PM from this driver
-	struct phy *u2_phy;
-	struct phy *u3_phy;
-	int pme_u2phy_irq;
-	int pme_u3phy_irq;
-	bool is_suspended;
-	bool usb_on;
-	bool wakeup;
-	// To protect role variables between work and role_switch_set
-	spinlock_t	role_lock;
-	enum usb_role	current_role;
-	enum usb_role	desired_role;
-	struct kernfs_node	*desired_role_kn;
-	struct delayed_work	role_switch_work;
-	struct regulator *vdd0p75;
-	struct regulator *vdd1p2;
-	int force_speed;
-	int usb_vc;
-	struct xhci_goog_dma_coherent_mem	**mem;
-	struct google_icc_path *icc_path;
-	u32 avg_bw;
-	u32 peak_bw;
+/* Soft Reset WA */
+#define SUSPHY_MAX_RETRIES	5
+
+bool dwc3_vendor_hooks_registered;
+
+static const struct reg_field google_pmu_reg_fields[]  = {
+	[PME_EN] = REG_FIELD(USBCS_HOST_CFG1_OFFSET, 3, 3),
+	[POWER_STATE_REQUEST] = REG_FIELD(USBCS_HOST_CFG1_OFFSET, 4, 5),
+	[CURRENT_POWER_STATE_U2PMU] = REG_FIELD(USBCS_HC_STATUS_OFFSET, 0, 1),
+	[CURRENT_POWER_STATE_U3PMU] = REG_FIELD(USBCS_HC_STATUS_OFFSET, 3, 4),
 };
 
 static int dwc3_google_set_icc_bw(struct dwc3_google *gdwc3, u32 avg_bw, u32 peak_bw)
@@ -173,6 +123,9 @@ static ssize_t force_speed_store(struct device *dev, struct device_attribute *at
 {
 	struct dwc3_google *gdwc3 = dev_get_drvdata(dev);
 	struct dwc3 *dwc = platform_get_drvdata(gdwc3->dwc3);
+
+	if (gdwc3->current_role == USB_ROLE_HOST)
+		return -EINVAL;
 
 	if (sysfs_streq(buf, "super-speed-plus")) {
 		gdwc3->force_speed = USB_SPEED_SUPER_PLUS;
@@ -296,6 +249,9 @@ static void _dwc3_google_set_role(struct work_struct *work)
 	curr_role = gdwc3->current_role;
 	dr_role = gdwc3->desired_role;
 	spin_unlock_irqrestore(&gdwc3->role_lock, flags);
+
+	trace_platform_usb_set_role(usb_role_string(dr_role),
+				    usb_role_string(curr_role));
 
 	if (curr_role == dr_role) {
 		dev_info(gdwc3->dev, "%s scheduled with same role %s\n", __func__,
@@ -429,17 +385,7 @@ static int dwc3_google_setup_role_switch(struct dwc3_google *gdwc3)
 	return 0;
 }
 
-int dwc3_google_parse_ots_clocks(struct dwc3_google *gdwc3)
-{
-	int i;
-
-	for (i = 0; i < gdwc3->drv_data->num_ots_clks; i++)
-		gdwc3->ots_clocks[i].id = gdwc3->drv_data->ots_clk_names[i];
-
-	return devm_clk_bulk_get(gdwc3->dev, gdwc3->drv_data->num_ots_clks, gdwc3->ots_clocks);
-}
-
-int dwc3_google_parse_clocks(struct dwc3_google *gdwc3)
+static int dwc3_google_parse_clocks(struct dwc3_google *gdwc3)
 {
 	int i;
 
@@ -449,18 +395,7 @@ int dwc3_google_parse_clocks(struct dwc3_google *gdwc3)
 	return devm_clk_bulk_get(gdwc3->dev, gdwc3->drv_data->num_clks, gdwc3->clocks);
 }
 
-int dwc3_google_parse_ots_resets(struct dwc3_google *gdwc3)
-{
-	int i;
-
-	for (i = 0; i < gdwc3->drv_data->num_ots_rsts; i++)
-		gdwc3->ots_resets[i].id = gdwc3->drv_data->ots_rst_names[i];
-
-	return devm_reset_control_bulk_get_exclusive(gdwc3->dev,
-		gdwc3->drv_data->num_ots_rsts, gdwc3->ots_resets);
-}
-
-int dwc3_google_parse_resets(struct dwc3_google *gdwc3)
+static int dwc3_google_parse_resets(struct dwc3_google *gdwc3)
 {
 	int i;
 
@@ -488,6 +423,15 @@ static int google_configure_glue(struct dwc3_google *gdwc3)
 {
 	int ret = 0;
 
+	if (!gdwc3->u3_phy) {
+		u32 reg = 0;
+
+		dev_err(gdwc3->dev, "Enable usb2only mode\n");
+		reg = readl(gdwc3->usb_top_cfg_reg + USBCS_TOP_CTRL_CFG1_OFFSET);
+		writel(reg | USBCS_TOP_CTRL_CFG1_USB2ONLY_MODE,
+		       gdwc3->usb_top_cfg_reg + USBCS_TOP_CTRL_CFG1_OFFSET);
+	}
+
 	ret = clk_bulk_prepare_enable(gdwc3->drv_data->num_clks, gdwc3->clocks);
 	if (ret)
 		return ret;
@@ -513,47 +457,22 @@ static int google_usb_pwr_enable(struct dwc3_google *gdwc3)
 		return 0;
 	}
 
-	dev_info(gdwc3->dev, "Enabling USB Regulators\n");
-
-	ret = regulator_enable(gdwc3->vdd0p75);
-	if (ret) {
-		dev_err(gdwc3->dev, "Failed to enable PHY digital supply, err: %d\n", ret);
-		return ret;
-	}
-
-	ret = regulator_enable(gdwc3->vdd1p2);
-	if (ret) {
-		dev_err(gdwc3->dev, "Failed to enable PHY I/O supply, err: %d\n", ret);
-		regulator_disable(gdwc3->vdd0p75);
-		return ret;
-	}
+	dev_info(gdwc3->dev, "Enabling USB top power\n");
 
 	if (!IS_ERR_OR_NULL(gdwc3->usb_psw_pd)) {
-		dev_info(gdwc3->dev, "Enabling USB top power\n");
 		ret = pm_runtime_resume_and_get(gdwc3->usb_psw_pd);
 		if (ret) {
 			dev_err(gdwc3->dev, "Failed to enable USB top power, err: %d\n", ret);
-			goto disable_regulators;
+			return ret;
 		}
 	}
 	gdwc3->usb_on = true;
-	ret = clk_bulk_prepare_enable(gdwc3->drv_data->num_ots_clks, gdwc3->ots_clocks);
-	if (ret) {
-		dev_err(gdwc3->dev, "Failed to enable clock, err: %d\n", ret);
-		goto power_off_usb_top;
-	}
-
-	ret = reset_control_bulk_deassert(gdwc3->drv_data->num_ots_rsts, gdwc3->ots_resets);
-	if (ret) {
-		dev_err(gdwc3->dev, "Failed to deassert reset, err: %d\n", ret);
-		goto disable_clk;
-	}
 
 	/* Upon power loss any previous configuration is lost, restore it */
 	ret = google_configure_glue(gdwc3);
 	if (ret) {
 		dev_err(gdwc3->dev, "failed to configure glue, err: %d\n", ret);
-		goto assert_rst;
+		goto power_off_usb_top;
 	}
 
 	ret = phy_init(gdwc3->u2_phy);
@@ -569,17 +488,10 @@ exit_phy2:
 	phy_exit(gdwc3->u2_phy);
 unconfigure:
 	google_unconfigure_glue(gdwc3);
-assert_rst:
-	reset_control_bulk_assert(gdwc3->drv_data->num_ots_rsts, gdwc3->ots_resets);
-disable_clk:
-	clk_bulk_disable_unprepare(gdwc3->drv_data->num_ots_clks, gdwc3->ots_clocks);
 power_off_usb_top:
 	gdwc3->usb_on = false;
 	if (!IS_ERR_OR_NULL(gdwc3->usb_psw_pd))
 		pm_runtime_put_sync(gdwc3->usb_psw_pd);
-disable_regulators:
-	regulator_disable(gdwc3->vdd1p2);
-	regulator_disable(gdwc3->vdd0p75);
 
 	return ret;
 }
@@ -596,17 +508,11 @@ static int google_usb_pwr_disable(struct dwc3_google *gdwc3)
 
 	google_unconfigure_glue(gdwc3);
 
-	reset_control_bulk_assert(gdwc3->drv_data->num_ots_rsts, gdwc3->ots_resets);
-	clk_bulk_disable_unprepare(gdwc3->drv_data->num_ots_clks, gdwc3->ots_clocks);
-
+	dev_info(gdwc3->dev, "Disabling USB top power\n");
 	if (!IS_ERR_OR_NULL(gdwc3->usb_psw_pd)) {
-		dev_info(gdwc3->dev, "Disabling USB top power\n");
 		pm_runtime_put_sync(gdwc3->usb_psw_pd);
 	}
 
-	dev_info(gdwc3->dev, "Disabling USB regulators\n");
-	regulator_disable(gdwc3->vdd0p75);
-	regulator_disable(gdwc3->vdd1p2);
 	gdwc3->usb_on = false;
 	return 0;
 }
@@ -661,6 +567,8 @@ static int dwc3_google_pmu_set_state(struct dwc3_google *gdwc3, int state)
 	u32 reg;
 	int ret;
 
+	trace_platform_usb_pmu_set_state(state);
+
 	reg = readl(gdwc3->usbcs_host_cfg_base + USBCS_HOST_CFG1_OFFSET);
 	reg &= ~USBCS_HOST_CFG1_PM_POWER_STATE_REQUEST;
 	reg |= (FIELD_PREP(USBCS_HOST_CFG1_PM_POWER_STATE_REQUEST, state) |
@@ -708,9 +616,8 @@ static int dwc3_google_psw_pd_on(struct dwc3_google *gdwc3)
 		dev_err(gdwc3->dev, "Failed to enable USB top power, err: %d\n", ret);
 		return ret;
 	}
-	ret = device_wakeup_disable(gdwc3->usb_top_pd);
-	if (ret)
-		dev_err(gdwc3->dev, "Failed to disable wakeup, err: %d\n", ret);
+
+	device_wakeup_disable(gdwc3->usb_top_pd);
 	pm_runtime_put_sync(gdwc3->usb_top_pd);
 	return 0;
 }
@@ -725,7 +632,7 @@ static int dwc3_google_psw_pd_notifier(struct notifier_block *nb, unsigned long 
 		return NOTIFY_OK;
 
 	if (action == GENPD_NOTIFY_OFF) {
-		dev_dbg(gdwc3->dev, "Switching phy control to PMU\n");
+		dev_info(gdwc3->dev, "Switching phy control to PMU\n");
 		dwc3_google_pmu_set_state(gdwc3, DWC3_GOOGLE_PMU_PHY_CONTROL);
 		ret = reset_control_assert(gdwc3->usbc_non_sticky_rst);
 		if (ret)
@@ -733,7 +640,7 @@ static int dwc3_google_psw_pd_notifier(struct notifier_block *nb, unsigned long 
 		if (gdwc3->wakeup)
 			dwc3_google_enable_pme_irqs(gdwc3);
 	} else if (action == GENPD_NOTIFY_ON) {
-		dev_dbg(gdwc3->dev, "Switching phy control to Controller\n");
+		dev_info(gdwc3->dev, "Switching phy control to Controller\n");
 		dwc3_google_clear_pme_irqs(gdwc3);
 		ret = reset_control_deassert(gdwc3->usbc_non_sticky_rst);
 		if (ret)
@@ -753,6 +660,18 @@ static void dwc3_google_configure_qos(struct dwc3_google *gdwc3)
 	reg &= ~(USBCS_TOP_CFG1_AWUSERVC | USBCS_TOP_CFG1_ARUSERVC);
 	reg |= (FIELD_PREP(USBCS_TOP_CFG1_AWUSERVC, gdwc3->usb_vc) |
 			FIELD_PREP(USBCS_TOP_CFG1_ARUSERVC, gdwc3->usb_vc));
+	writel(reg, gdwc3->usb_top_cfg_reg);
+}
+
+static void dwc3_google_configure_qos_v2(struct dwc3_google *gdwc3)
+{
+	u32 reg;
+
+	reg = readl(gdwc3->usb_top_cfg_reg);
+	reg |= (USBCS_TOP_CFG1_R_VC_OVRD_EN | USBCS_TOP_CFG1_W_VC_OVRD_EN);
+	reg &= ~(USBCS_TOP_CFG1_R_VC_OVRD_VAL | USBCS_TOP_CFG1_W_VC_OVRD_VAL);
+	reg |= (FIELD_PREP(USBCS_TOP_CFG1_R_VC_OVRD_VAL, gdwc3->usb_vc) |
+			FIELD_PREP(USBCS_TOP_CFG1_W_VC_OVRD_VAL, gdwc3->usb_vc));
 	writel(reg, gdwc3->usb_top_cfg_reg);
 }
 
@@ -781,9 +700,10 @@ static irqreturn_t dwc3_google_resume_interrupt(int irq, void *_gdwc3)
 	enum usb_role role;
 	u32 irq_status_reg;
 
-	dev_dbg(gdwc3->dev, "resume interrupt irq: %d\n", irq);
+	dev_info(gdwc3->dev, "resume interrupt irq: %d\n", irq);
 
 	irq_status_reg = dwc3_google_clear_pme_irqs(gdwc3);
+	trace_platform_usb_resume_interrupt(irq_status_reg);
 
 	if (!gdwc3->is_suspended) {
 		dev_warn(gdwc3->dev, "Spurious pme irq, 0x%x\n", irq_status_reg);
@@ -798,41 +718,6 @@ static irqreturn_t dwc3_google_resume_interrupt(int irq, void *_gdwc3)
 		dev_err(gdwc3->dev, "Invalid Role during wakeup interrupt\n");
 	}
 	return IRQ_HANDLED;
-}
-
-struct xhci_goog_dma_coherent_mem **dwc3_google_get_dma_coherent_mem(struct device *dev)
-{
-	struct xhci_goog_dma_coherent_mem **dma_mem = NULL;
-	struct device *dwc3_google = dev->parent;
-	struct dwc3_google *gdwc3 = dev_get_drvdata(dwc3_google);
-
-	if (gdwc3) {
-		if (!gdwc3->mem) {
-			gdwc3->mem = devm_kzalloc(dev,
-				XHCI_GOOG_DMA_RMEM_MAX*sizeof(struct xhci_goog_dma_coherent_mem *),
-				GFP_KERNEL);
-		}
-
-		dma_mem = gdwc3->mem;
-	}
-
-	return dma_mem;
-}
-
-void dwc3_google_put_dma_coherent_mem(struct device *dev)
-{
-	struct device *dwc3_google = dev->parent;
-	struct dwc3_google *gdwc3 = dev_get_drvdata(dwc3_google);
-
-	if (gdwc3) {
-		if (gdwc3->mem) {
-			dev_dbg(dev, "Free the DMA memory\n");
-			gdwc3->mem[XHCI_GOOG_DMA_RMEM_SRAM] = NULL;
-			gdwc3->mem[XHCI_GOOG_DMA_RMEM_DRAM] = NULL;
-			devm_kfree(dev, gdwc3->mem);
-			gdwc3->mem = NULL;
-		}
-	}
 }
 
 /* assigning bandwidths based on 'maximum-speed' property from dwc3 dt node */
@@ -855,9 +740,102 @@ static void dwc3_google_set_bw_by_max_speed(struct dwc3_google *gdwc3)
 
 }
 
-static void xhci_full_reset_on_remove(void *unused, bool *full_reset)
+bool susphy_cached;
+
+static void dwc3_google_sus_phy_common(struct device *dwc3_dev,
+				       void __iomem *dwc3_regs, bool enable)
 {
-	*full_reset = true;
+	u32 reg;
+	int ret = 0;
+
+	dev_info(dwc3_dev, "%s: %d\n", __func__, enable);
+
+	reg = readl(dwc3_regs + DWC3_GUSB3PIPECTL(0) - DWC3_GLOBALS_REGS_START);
+	if (!enable) {
+		/* W4A: Step#2 */
+		susphy_cached = (reg >> 17) & 1;
+		if (susphy_cached) {
+			/* W4A: Step#3 */
+			reg &= ~DWC3_GUSB3PIPECTL_SUSPHY;
+			writel(reg, dwc3_regs + DWC3_GUSB3PIPECTL(0) - DWC3_GLOBALS_REGS_START);
+			dev_info(dwc3_dev, "%s cleared susphy\n", __func__);
+			ret = 1;
+		}
+		/* W4A: Step#4 */
+		mdelay(10);
+	} else {
+		/* W4A: Step#14 */
+		if (susphy_cached) {
+			reg |= DWC3_GUSB3PIPECTL_SUSPHY;
+			writel(reg, dwc3_regs + DWC3_GUSB3PIPECTL(0) - DWC3_GLOBALS_REGS_START);
+			dev_info(dwc3_dev, "%s enable, set susphy\n", __func__);
+		}
+	}
+}
+
+static void dwc3_soft_reset_common(struct device *dwc3_dev, void __iomem *dwc3_regs,
+				   struct phy **dwc3_usb3_generic_phy, enum soft_reset_phase phase)
+{
+	int retry_count;
+	int ret;
+
+	switch (phase) {
+	case PRE_SOFT_RESET:
+		for (retry_count = 0; retry_count < SUSPHY_MAX_RETRIES; retry_count++) {
+			/* W4A: Step#2, Step#3 and Step#4 */
+			dwc3_google_sus_phy_common(dwc3_dev, dwc3_regs, false);
+
+			/* W4A: Step#5 Step#6 Step#7 Step#8 Enable MPLL override */
+			ret = google_u3phy_soft_reset(dwc3_usb3_generic_phy[0], true);
+			if (!ret)
+				break;
+		}
+		if (retry_count == SUSPHY_MAX_RETRIES)
+			dev_err(dwc3_dev, "%s: exceeded max retries\n", __func__);
+		break;
+	case SOFT_RESET_INITIATED:
+		/* W4A: Step#10 */
+		mdelay(2);
+		/* W4A:  Step#11 Disable MPLL override */
+		google_u3phy_soft_reset(dwc3_usb3_generic_phy[0], false);
+		break;
+	case POST_SOFT_RESET:
+		/* W4A: Step#13 */
+		google_u3phy_force_ss_rx_det_disable(dwc3_usb3_generic_phy[0], false);
+		/* W4A: Step#14 */
+		dwc3_google_sus_phy_common(dwc3_dev, dwc3_regs, true);
+		break;
+	}
+}
+
+static void dwc3_soft_reset(void *unused, struct device *dwc3_dev, void __iomem *dwc3_regs,
+			    struct phy **dwc3_usb3_generic_phy, enum soft_reset_phase phase)
+{
+	dwc3_soft_reset_common(dwc3_dev, dwc3_regs, dwc3_usb3_generic_phy, phase);
+}
+
+static void dwc3_xhci_soft_reset(void *unused, struct usb_hcd *hcd,
+				 enum soft_reset_phase phase)
+{
+	struct platform_device *pdev;
+	struct dwc3 *dwc;
+
+	pdev = to_platform_device(hcd->self.controller);
+	dwc = dev_get_drvdata(pdev->dev.parent);
+
+	dwc3_soft_reset_common(dwc->dev, dwc->regs, dwc->usb3_generic_phy, phase);
+}
+
+
+static void dwc3_register_vendor_hooks(struct device *gdwc3_dev)
+{
+	/* Work around for STAR-6887553 */
+	if (!device_property_present(gdwc3_dev, "soft-reset-war"))
+		return;
+
+	register_trace_android_vh_dwc3_core_soft_reset(dwc3_soft_reset, NULL);
+	register_trace_android_vh_dwc3_xhci_soft_reset(dwc3_xhci_soft_reset, NULL);
+	dwc3_vendor_hooks_registered = true;
 }
 
 static int dwc3_google_probe(struct platform_device *pdev)
@@ -879,6 +857,10 @@ static int dwc3_google_probe(struct platform_device *pdev)
 	if (!gdwc3)
 		return -ENOMEM;
 	gdwc3->drv_data = of_device_get_match_data(dev);
+
+	/* Add dts property */
+	if (!dwc3_vendor_hooks_registered)
+		dwc3_register_vendor_hooks(dev);
 
 	gdwc3->usbcs_host_cfg_base =
 		devm_platform_ioremap_resource_byname(pdev, "usbcs_host_cfg_csr");
@@ -958,20 +940,12 @@ static int dwc3_google_probe(struct platform_device *pdev)
 	gdwc3->usb_top_pd = NULL;
 	gdwc3->avg_bw = USB_SSP_GOOGLE_ICC_BW_MB;
 	gdwc3->peak_bw = USB_SSP_GOOGLE_ICC_BW_MB;
+	gdwc3->sideband_at_suspend = 0;
 	platform_set_drvdata(pdev, gdwc3);
-	ret = dwc3_google_parse_ots_clocks(gdwc3);
-	if (ret)
-		return ret;
 
 	ret = dwc3_google_parse_clocks(gdwc3);
 	if (ret) {
 		dev_err(dev, "Failed to parse clocks\n");
-		return ret;
-	}
-
-	ret = dwc3_google_parse_ots_resets(gdwc3);
-	if (ret) {
-		dev_err(dev, "Failed to parse ots resets\n");
 		return ret;
 	}
 
@@ -986,23 +960,9 @@ static int dwc3_google_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	gdwc3->vdd0p75 = devm_regulator_get(dev, "vdd0p75");
-	if (IS_ERR(gdwc3->vdd0p75)) {
-		ret = PTR_ERR(gdwc3->vdd0p75);
-		dev_err(dev, "Failed to get 0.75V PHY regulator\n");
-		return ret;
-	}
-
-	gdwc3->vdd1p2 = devm_regulator_get(dev, "vdd1p2");
-	if (IS_ERR(gdwc3->vdd1p2)) {
-		ret = PTR_ERR(gdwc3->vdd1p2);
-		dev_err(dev, "Failed to get 1.2V PHY regulator\n");
-		return ret;
-	}
-
 	dev_pm_domain_detach(dev, true);
 	gdwc3->usb_psw_pd = dev_pm_domain_attach_by_name(dev, "usb_psw_pd");
-	if (IS_ERR(gdwc3->usb_psw_pd)) {
+	if (IS_ERR_OR_NULL(gdwc3->usb_psw_pd)) {
 		dev_warn(dev, "Unable to find power-domains, assuming enabled\n");
 	} else {
 		gdwc3->usb_psw_pd_nb.notifier_call = dwc3_google_psw_pd_notifier;
@@ -1013,7 +973,7 @@ static int dwc3_google_probe(struct platform_device *pdev)
 	}
 
 	gdwc3->usb_top_pd = dev_pm_domain_attach_by_name(dev, "usb_top_pd");
-	if (IS_ERR(gdwc3->usb_top_pd)) {
+	if (IS_ERR_OR_NULL(gdwc3->usb_top_pd)) {
 		dev_warn(dev, "Unable to find power-domains, assuming enabled\n");
 	} else {
 		device_set_wakeup_capable(gdwc3->usb_top_pd, true);
@@ -1026,6 +986,13 @@ static int dwc3_google_probe(struct platform_device *pdev)
 	if (!dwc3_np) {
 		ret = -ENODEV;
 		dev_err(dev, "failed to find dwc3 core child\n");
+		goto detach_usb_pds;
+	}
+
+	gdwc3->usbdrd_irq = of_irq_get(dwc3_np, 0);
+	if (gdwc3->usbdrd_irq < 0) {
+		dev_err(dev, "failed to get USBDRD IRQ\n");
+		ret = gdwc3->usbdrd_irq;
 		goto detach_usb_pds;
 	}
 
@@ -1045,11 +1012,6 @@ static int dwc3_google_probe(struct platform_device *pdev)
 	}
 	pm_runtime_forbid(dev);
 
-	if (IS_ENABLED(CONFIG_USB_XHCI_GOOG_DMA)) {
-		xhci_goog_register_get_cb(dwc3_google_get_dma_coherent_mem);
-		xhci_goog_register_put_cb(dwc3_google_put_dma_coherent_mem);
-	}
-
 	if (of_platform_populate(node, NULL, NULL, dev)) {
 		dev_err(dev, "failed to add dwc3 core\n");
 		ret = -ENODEV;
@@ -1065,8 +1027,9 @@ static int dwc3_google_probe(struct platform_device *pdev)
 
 	dwc3_google_set_bw_by_max_speed(gdwc3);
 
-	gdwc3->dwc3_drd_sw = usb_role_switch_find_by_fwnode(dev_fwnode(&(gdwc3->dwc3->dev)));
-	fwnode_handle_put(dev_fwnode(&(gdwc3->dwc3->dev)));
+	gdwc3->dwc3_drd_sw =
+		usb_role_switch_find_by_fwnode(dev_fwnode(&gdwc3->dwc3->dev));
+	fwnode_handle_put(dev_fwnode(&gdwc3->dwc3->dev));
 	if (IS_ERR_OR_NULL(gdwc3->dwc3_drd_sw)) {
 		gdwc3->dwc3_drd_sw = NULL;
 		ret = -EPROBE_DEFER;
@@ -1074,10 +1037,10 @@ static int dwc3_google_probe(struct platform_device *pdev)
 		goto platform_device_put;
 	}
 
-	if (gdwc3->u3_phy) {
+	if (gdwc3->u2_phy) {
 		gdwc3->phy_role_sw =
-			usb_role_switch_find_by_fwnode(dev_fwnode(&(gdwc3->u3_phy->dev)));
-		fwnode_handle_put(dev_fwnode(&(gdwc3->u3_phy->dev)));
+			usb_role_switch_find_by_fwnode(dev_fwnode(&(gdwc3->u2_phy->dev)));
+		fwnode_handle_put(dev_fwnode(&(gdwc3->u2_phy->dev)));
 		if (IS_ERR(gdwc3->phy_role_sw)) {
 			gdwc3->phy_role_sw = NULL;
 			dev_err(dev, "phy didn't register a usb_role_switch object\n");
@@ -1085,10 +1048,6 @@ static int dwc3_google_probe(struct platform_device *pdev)
 			goto platform_device_put;
 		}
 	}
-
-	ret = register_trace_android_vh_xhci_full_reset_on_remove(xhci_full_reset_on_remove, NULL);
-	if (ret)
-		dev_err(dev, "register xhci full reset on remove vh failed\n");
 
 	ret = dwc3_google_setup_role_switch(gdwc3);
 	if (ret)
@@ -1152,7 +1111,7 @@ detach_usb_pds:
 	return ret;
 }
 
-static int dwc3_google_remove(struct platform_device *pdev)
+static void dwc3_google_remove(struct platform_device *pdev)
 {
 	struct dwc3_google *gdwc3 = platform_get_drvdata(pdev);
 
@@ -1165,10 +1124,6 @@ static int dwc3_google_remove(struct platform_device *pdev)
 	device_init_wakeup(&gdwc3->dwc3->dev, false);
 	pm_runtime_disable(&pdev->dev);
 	of_platform_depopulate(&pdev->dev);
-	if (IS_ENABLED(CONFIG_USB_XHCI_GOOG_DMA)) {
-		xhci_goog_unregister_get_cb();
-		xhci_goog_unregister_put_cb();
-	}
 
 	if (!pm_runtime_status_suspended(&pdev->dev)) {
 		google_unconfigure_glue(gdwc3);
@@ -1184,7 +1139,6 @@ static int dwc3_google_remove(struct platform_device *pdev)
 		device_init_wakeup(gdwc3->usb_top_pd, false);
 		dev_pm_domain_detach(gdwc3->usb_top_pd, true);
 	}
-	return 0;
 }
 
 
@@ -1215,6 +1169,7 @@ static int dwc3_google_suspend(struct dwc3_google *gdwc3,
 		if (wakeup) {
 			dwc3_google_enable_wakeup_irq(gdwc3->pme_u2phy_irq);
 			dwc3_google_enable_wakeup_irq(gdwc3->pme_u3phy_irq);
+			enable_irq_wake(gdwc3->usbdrd_irq);
 		}
 		break;
 	case USB_ROLE_DEVICE:
@@ -1250,20 +1205,22 @@ static int dwc3_google_resume(struct dwc3_google *gdwc3,
 			dwc3_google_set_icc_bw(gdwc3, 0, 0);
 			return ret;
 		}
-		if (gdwc3->usb_top_cfg_reg)
-			dwc3_google_configure_qos(gdwc3);
+		if (gdwc3->usb_top_cfg_reg && gdwc3->drv_data->configure_qos)
+			gdwc3->drv_data->configure_qos(gdwc3);
 	}
 
 	if (gdwc3->current_role == USB_ROLE_HOST) {
 		if (wakeup) {
 			dwc3_google_disable_wakeup_irq(gdwc3->pme_u2phy_irq);
 			dwc3_google_disable_wakeup_irq(gdwc3->pme_u3phy_irq);
+			disable_irq_wake(gdwc3->usbdrd_irq);
 		}
 		ret = dwc3_google_psw_pd_on(gdwc3);
 		if (ret) {
 			if (wakeup) {
 				dwc3_google_enable_wakeup_irq(gdwc3->pme_u2phy_irq);
 				dwc3_google_enable_wakeup_irq(gdwc3->pme_u3phy_irq);
+				enable_irq_wake(gdwc3->usbdrd_irq);
 			}
 			dwc3_google_set_icc_bw(gdwc3, 0, 0);
 			return ret;
@@ -1279,22 +1236,16 @@ static int dwc3_google_pm_suspend(struct device *dev)
 	struct dwc3_google *gdwc3 = dev_get_drvdata(dev);
 	struct dwc3 *dwc = platform_get_drvdata(gdwc3->dwc3);
 	struct platform_device *xhci = dwc->xhci;
-	struct usb_device *udev;
 	struct usb_hcd	*hcd;
-	int ret, bypass = 0;
+	int ret;
 
 	dev_dbg(dev, "pm_suspend. device may wakeup : %d\n", device_may_wakeup(dev));
 
 	if (xhci) {
 		hcd = platform_get_drvdata(xhci);
-		udev = hcd->self.root_hub;
-		trace_android_rvh_usb_dev_suspend(udev, PMSG_SUSPEND, &bypass);
-		if (bypass) {
-			ret = device_wakeup_enable(gdwc3->usb_psw_pd);
-			if (ret) {
-				dev_err(gdwc3->dev, "Failed to enable wakeup, err: %d\n", ret);
-				return ret;
-			}
+		if (xhci_sideband_check(hcd)) {
+			gdwc3->sideband_at_suspend = 1;
+			device_wakeup_enable(gdwc3->usb_psw_pd);
 		}
 	}
 
@@ -1305,25 +1256,13 @@ static int dwc3_google_pm_suspend(struct device *dev)
 static int dwc3_google_pm_resume(struct device *dev)
 {
 	struct dwc3_google *gdwc3 = dev_get_drvdata(dev);
-	struct dwc3 *dwc = platform_get_drvdata(gdwc3->dwc3);
-	struct platform_device *xhci = dwc->xhci;
-	struct usb_device *udev;
-	struct usb_hcd	*hcd;
-	int ret, bypass = 0;
+	int ret = 0;
 
 	dev_dbg(dev, "pm_resume. device may wakeup : %d\n", device_may_wakeup(dev));
 
-	if (xhci) {
-		hcd = platform_get_drvdata(xhci);
-		udev = hcd->self.root_hub;
-		trace_android_vh_usb_dev_resume(udev, PMSG_RESUME, &bypass);
-		if (bypass) {
-			ret = device_wakeup_disable(gdwc3->usb_psw_pd);
-			if (ret) {
-				dev_err(gdwc3->dev, "Failed to disable wakeup, err: %d\n", ret);
-				return ret;
-			}
-		}
+	if (gdwc3->sideband_at_suspend) {
+		gdwc3->sideband_at_suspend = 0;
+		device_wakeup_disable(gdwc3->usb_psw_pd);
 	}
 
 	ret = dwc3_google_resume(gdwc3, device_may_wakeup(dev));
@@ -1373,27 +1312,44 @@ static const struct dev_pm_ops dwc3_google_dev_pm_ops = {
 	.prepare = gdwc3_prepare,
 };
 
-static const struct dwc3_google_driverdata lga_drvdata = {
+static const struct dwc3_google_driverdata mbu_drvdata = {
 	.clk_names = {
 		"usbc_non_sticky",
 		"usbc_sticky",
 		"u2phy_apb_clk"
-	},
-	.ots_clk_names = {
 	},
 	.rst_names = {
 		"usbc_non_sticky",
 		"usbc_sticky",
 		"usb_drd_bus_rst",
 		"u2phy_apb_rst",
-	},
-	.ots_rst_names = {
 		"usb_top_csr"
 	},
-	.num_rsts = 4,
-	.num_ots_rsts = 1,
+	.pmu_reg_fields = google_pmu_reg_fields,
+	.num_rsts = 5,
 	.num_clks = 3,
-	.num_ots_clks = 0,
+	.num_pmu_reg_fields = ARRAY_SIZE(google_pmu_reg_fields),
+	.configure_qos = dwc3_google_configure_qos_v2,
+};
+
+static const struct dwc3_google_driverdata lga_drvdata = {
+	.clk_names = {
+		"usbc_non_sticky",
+		"usbc_sticky",
+		"u2phy_apb_clk"
+	},
+	.rst_names = {
+		"usbc_non_sticky",
+		"usbc_sticky",
+		"usb_drd_bus_rst",
+		"u2phy_apb_rst",
+		"usb_top_csr"
+	},
+	.pmu_reg_fields = google_pmu_reg_fields,
+	.num_rsts = 5,
+	.num_clks = 3,
+	.num_pmu_reg_fields = ARRAY_SIZE(google_pmu_reg_fields),
+	.configure_qos = dwc3_google_configure_qos,
 };
 
 static const struct dwc3_google_driverdata rdo_drvdata = {
@@ -1407,8 +1363,6 @@ static const struct dwc3_google_driverdata rdo_drvdata = {
 		"csr",
 		"dp_vcc"
 	},
-	.ots_clk_names = {
-	},
 	.rst_names = {
 		"usbc_non_sticky",
 		"usbc_sticky",
@@ -1418,16 +1372,18 @@ static const struct dwc3_google_driverdata rdo_drvdata = {
 		"usb_top_csr",
 		"dp_vcc"
 	},
-	.ots_rst_names = {
-	},
+	.pmu_reg_fields = google_pmu_reg_fields,
 	.num_rsts = 7,
-	.num_ots_rsts = 0,
 	.num_clks = 8,
-	.num_ots_clks = 0,
+	.num_pmu_reg_fields = ARRAY_SIZE(google_pmu_reg_fields),
+	.configure_qos = dwc3_google_configure_qos,
 };
 
 static const struct of_device_id dwc3_google_match[] = {
 	{
+		.compatible = "google,dwc3-mbu",
+		.data = &mbu_drvdata,
+	}, {
 		.compatible = "google,dwc3-lga",
 		.data = &lga_drvdata,
 	}, {

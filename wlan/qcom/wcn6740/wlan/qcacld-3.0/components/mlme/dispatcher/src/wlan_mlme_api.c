@@ -1296,14 +1296,20 @@ wlan_mlme_get_manufacturer_name(struct wlan_objmgr_psoc *psoc,
 				uint8_t *pbuf, uint32_t *plen)
 {
 	struct wlan_mlme_psoc_ext_obj *mlme_obj;
+	qdf_ssize_t ret_val;
 
 	mlme_obj = mlme_get_psoc_ext_obj(psoc);
 	if (!mlme_obj)
 		return QDF_STATUS_E_FAILURE;
 
-	*plen = qdf_str_lcopy(pbuf,
-			      mlme_obj->cfg.product_details.manufacturer_name,
-			      *plen);
+	ret_val = qdf_str_scopy(pbuf,
+				mlme_obj->cfg.product_details.manufacturer_name,
+				*plen);
+	if (ret_val == -E2BIG)
+		return QDF_STATUS_E_FAILURE;
+
+	*plen = ret_val;
+
 	return QDF_STATUS_SUCCESS;
 }
 
@@ -1312,14 +1318,19 @@ wlan_mlme_get_model_number(struct wlan_objmgr_psoc *psoc,
 			   uint8_t *pbuf, uint32_t *plen)
 {
 	struct wlan_mlme_psoc_ext_obj *mlme_obj;
+	qdf_ssize_t ret_val;
 
 	mlme_obj = mlme_get_psoc_ext_obj(psoc);
 	if (!mlme_obj)
 		return QDF_STATUS_E_FAILURE;
 
-	*plen = qdf_str_lcopy(pbuf,
-			      mlme_obj->cfg.product_details.model_number,
-			      *plen);
+	ret_val = qdf_str_scopy(pbuf,
+				mlme_obj->cfg.product_details.model_number,
+				*plen);
+	if (ret_val == -E2BIG)
+		return QDF_STATUS_E_FAILURE;
+
+	*plen = ret_val;
 
 	return QDF_STATUS_SUCCESS;
 }
@@ -1329,14 +1340,20 @@ wlan_mlme_get_model_name(struct wlan_objmgr_psoc *psoc,
 			 uint8_t *pbuf, uint32_t *plen)
 {
 	struct wlan_mlme_psoc_ext_obj *mlme_obj;
+	qdf_ssize_t ret_val;
 
 	mlme_obj = mlme_get_psoc_ext_obj(psoc);
 	if (!mlme_obj)
 		return QDF_STATUS_E_FAILURE;
 
-	*plen = qdf_str_lcopy(pbuf,
-			      mlme_obj->cfg.product_details.model_name,
-			      *plen);
+	ret_val = qdf_str_scopy(pbuf,
+				mlme_obj->cfg.product_details.model_name,
+				*plen);
+	if (ret_val == -E2BIG)
+		return QDF_STATUS_E_FAILURE;
+
+	*plen = ret_val;
+
 	return QDF_STATUS_SUCCESS;
 }
 
@@ -1345,14 +1362,20 @@ wlan_mlme_get_manufacture_product_version(struct wlan_objmgr_psoc *psoc,
 					  uint8_t *pbuf, uint32_t *plen)
 {
 	struct wlan_mlme_psoc_ext_obj *mlme_obj;
+	qdf_ssize_t ret_val;
 
 	mlme_obj = mlme_get_psoc_ext_obj(psoc);
 	if (!mlme_obj)
 		return QDF_STATUS_E_FAILURE;
 
-	*plen = qdf_str_lcopy(pbuf,
-		     mlme_obj->cfg.product_details.manufacture_product_version,
-		     *plen);
+	ret_val = qdf_str_scopy(pbuf,
+				mlme_obj->cfg.product_details.manufacture_product_version,
+				*plen);
+	if (ret_val == -E2BIG)
+		return QDF_STATUS_E_FAILURE;
+
+	*plen = ret_val;
+
 	return QDF_STATUS_SUCCESS;
 }
 
@@ -1361,14 +1384,20 @@ wlan_mlme_get_manufacture_product_name(struct wlan_objmgr_psoc *psoc,
 				       uint8_t *pbuf, uint32_t *plen)
 {
 	struct wlan_mlme_psoc_ext_obj *mlme_obj;
+	qdf_ssize_t ret_val;
 
 	mlme_obj = mlme_get_psoc_ext_obj(psoc);
 	if (!mlme_obj)
 		return QDF_STATUS_E_FAILURE;
 
-	*plen = qdf_str_lcopy(pbuf,
-			mlme_obj->cfg.product_details.manufacture_product_name,
-			*plen);
+	ret_val = qdf_str_scopy(pbuf,
+				mlme_obj->cfg.product_details.manufacture_product_name,
+				*plen);
+	if (ret_val == -E2BIG)
+		return QDF_STATUS_E_FAILURE;
+
+	*plen = ret_val;
+
 	return QDF_STATUS_SUCCESS;
 }
 

@@ -8,12 +8,15 @@
  */
 
 
+#include <linux/cleanup.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/version.h>
 #include <linux/delay.h>
 #include <linux/dev_printk.h>
 #include <linux/of_device.h>
+
+#include <misc/logbuffer.h>
 
 #include "ln8411_regs.h"
 #include "ln8411_charger.h"
@@ -34,17 +37,19 @@ static struct device_node *ln8411_find_config(struct device_node *node)
 
 	if (!node)
 		return node;
+
 	temp = of_parse_phandle(node, "ln8411,google_cpm", 0);
 	if (temp)
-		node = temp;
-	return node;
+		return temp;
+
+	return of_node_get(node);
 }
 
 int ln8411_probe_pps(struct ln8411_charger *ln8411_chg)
 {
 	const char *tmp_name = NULL;
 	bool pps_available = false;
-	struct device_node *node;
+	struct device_node *node __free(device_node);
 	int ret;
 
 	node = ln8411_find_config(ln8411_chg->dev->of_node);
@@ -122,7 +127,7 @@ int ln8411_usbpd_setup(struct ln8411_charger *ln8411)
 
 		ln8411->pd = tcpm_psy;
 	} else if (ln8411->tcpm_phandle) {
-		struct device_node *node;
+		struct device_node *node __free(device_node);
 
 		node = ln8411_find_config(ln8411->dev->of_node);
 		if (!node)
@@ -477,16 +482,19 @@ int ln8411_get_rx_max_power(struct ln8411_charger *ln8411)
 
 	ln8411->ta_max_vol = pro_val.intval;
 
-	/* Get the maximum current */
-	ret = power_supply_get_property(wlc_psy, POWER_SUPPLY_PROP_CURRENT_MAX,
-					&pro_val);
-	if (ret < 0) {
-		dev_err(ln8411->dev, "%s Cannot get the maximum RX current (%d)\n",
-			__func__, ret);
-		return ret;
+	if (!ln8411->mpp) {
+		/* Get the maximum current */
+		ret = power_supply_get_property(wlc_psy, POWER_SUPPLY_PROP_CURRENT_MAX,
+						&pro_val);
+		if (ret < 0) {
+			dev_err(ln8411->dev, "%s Cannot get the maximum RX current (%d)\n",
+				__func__, ret);
+			return ret;
+		}
+
+		ln8411->ta_max_cur = pro_val.intval;
 	}
 
-	ln8411->ta_max_cur = pro_val.intval;
 	ln8411->ta_max_pwr = (ln8411->ta_max_vol / 1000) *
 			      (ln8411->ta_max_cur / 1000);
 

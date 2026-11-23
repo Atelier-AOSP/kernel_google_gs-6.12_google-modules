@@ -72,6 +72,9 @@ struct vs_crtc_funcs {
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	int (*show_pattern_config)(struct seq_file *s);
 	void (*set_pattern)(struct drm_crtc *crtc, const char __user *ubuf, size_t len);
+	void (*set_qos)(struct device *dev, struct drm_crtc *crtc, const char __user *ubuf,
+			size_t len);
+	int (*show_qos)(struct seq_file *s);
 #endif /* CONFIG_DEBUG_FS */
 	void (*config)(struct device *dev, struct drm_crtc *crtc);
 	void (*enable_vblank)(struct vs_crtc *crtc, bool enable);
@@ -103,12 +106,15 @@ struct vs_recovery_request_data {
 	u64 panel_errors;
 	/** @dsi_errors: error bitmap from dsi host to report; see enum gs_dsi_err */
 	u64 dsi_errors;
+	/** @pmic_errors: error bitmap from panel PMIC to report; see enum gs_pmic_err */
+	u64 pmic_errors;
 };
 
 struct vs_crtc_state {
 	struct drm_crtc_state base;
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	struct dc_hw_pattern pattern; /* for pattern debugfs */
+	struct dc_hw_disp_qos qos; /* for CRTC qos debugfs */
 #endif
 
 	u32 sync_mode;
@@ -284,6 +290,7 @@ struct vs_crtc {
 	bool needs_hw_reset;
 	atomic_t hw_reset_count;
 	wait_queue_head_t framedone_waitq;
+	u32 framedone_timeout;
 
 	struct kthread_worker *commit_worker;
 	struct kthread_worker *vblank_worker;
@@ -358,8 +365,9 @@ void vs_crtc_trigger_panel_dsi_coredump(struct vs_crtc *vs_crtc,
 					u64 dsi_errors, enum coredump_source source);
 bool vs_crtc_state_is_recovery_source_enabled(const struct vs_crtc_state *vs_crtc_state,
 					      enum coredump_source source);
-
 bool vs_crtc_state_has_secure(const struct drm_crtc_state *crtc_state);
+u32 vs_crtc_state_active_planes_enabling_secure_mask(const struct drm_crtc_state *old_crtc_state,
+						     const struct drm_crtc_state *new_crtc_state);
 bool vs_crtc_state_is_active_and_wb(const struct drm_crtc_state *crtc_state,
 				    const struct drm_device *drm_dev);
 bool vs_crtc_commit_enables_secure_or_wb(const struct drm_crtc_state *crtc_state,

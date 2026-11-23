@@ -21,10 +21,12 @@
 #include <linux/debugfs.h>
 
 #include <dvfs-helper/google_dvfs_helper.h>
-#include "APC_GPU_CSRS_csr.h"
 
 #define LPCM_STATUS_TIMEOUT_US 1000
+/* TODO(b/484302093): Investigate why DVFS transition takes longer on P26 */
+#define LPCM_STATUS_TIMEOUT_P26_US 2000
 #define LPCM_STATUS_INTERVAL_US 10
+#define EMULATION_TIMEOUT_MULTIPLIER 30
 
 #define PFSM_MODE_SW 1
 #define UNUSED_PF_STATE -1
@@ -65,11 +67,20 @@ enum GPU_PF_STATE_ELEMS {
 	GPU_PF_STATE_TOTAL_ELEM_TYPES,
 };
 
+enum soc_type {
+	SOC_RDO,
+	SOC_P25,
+	SOC_P26,
+};
+
 struct gpu_pf_state_dev_desc {
 	u32 pfsm_config_offset;
 	u32 pfsm_start_offset;
 	u32 pfsm_status_offset;
 	u8 pfsm_sw_pfs_target_shift;
+	u32 apc_gpu_req_ltv_gmc_offset;
+	u32 apc_gpu_req_trig_offset;
+	enum soc_type soc;
 };
 
 struct gpu_pf_state_clk {
@@ -90,6 +101,7 @@ struct gpu_pf_state_clk {
 	struct dentry *debugfs_root;
 	bool disable_fabric_votes;
 	u16 scale_fabric_votes_percent;
+	unsigned int timeout_multiplier;
 };
 
 static const struct gpu_pf_state_dev_desc gpu_pf_state_dev_desc_rdo = {
@@ -97,14 +109,67 @@ static const struct gpu_pf_state_dev_desc gpu_pf_state_dev_desc_rdo = {
 	.pfsm_start_offset = 0x28c,
 	.pfsm_status_offset = 0x294,
 	.pfsm_sw_pfs_target_shift = 2,
+	.apc_gpu_req_ltv_gmc_offset = 0x1c,
+	.apc_gpu_req_trig_offset = 0x40,
+	.soc = SOC_RDO,
 };
 
-static const struct gpu_pf_state_dev_desc gpu_pf_state_dev_desc_lga = {
+static const struct gpu_pf_state_dev_desc gpu_pf_state_dev_desc_p25 = {
 	.pfsm_config_offset = 0x0,
 	.pfsm_start_offset = 0x4,
 	.pfsm_status_offset = 0x8,
 	.pfsm_sw_pfs_target_shift = 1,
+	.apc_gpu_req_ltv_gmc_offset = 0x1c,
+	.apc_gpu_req_trig_offset = 0x40,
+	.soc = SOC_P25,
 };
+
+static const struct gpu_pf_state_dev_desc gpu_pf_state_dev_desc_p26 = {
+	.pfsm_config_offset = 0x0,
+	.pfsm_start_offset = 0x4,
+	.pfsm_status_offset = 0x8,
+	.pfsm_sw_pfs_target_shift = 1,
+	.apc_gpu_req_ltv_gmc_offset = 0x1c,
+	.apc_gpu_req_trig_offset = 0x24,
+	.soc = SOC_P26,
+};
+
+/*
+ * P26 specific, according to b/414282372 PFSM_STS register needs to be idle
+ * 4 consecutive times to ensure LPCM HW is ready to start new operation.
+ */
+#define PFSM_IDLE_POLL_NUMBER 4
+
+struct lpcm_pfsm_idle_helper {
+	bool idle;
+	int pfsm_status_reg_val;
+};
+
+static struct lpcm_pfsm_idle_helper
+gpu_pf_state_pfsm_status_idle_helper(struct gpu_pf_state_clk *gpu_pf_state)
+{
+	struct lpcm_pfsm_idle_helper ret;
+	int pfsm_status_reg_val[PFSM_IDLE_POLL_NUMBER];
+
+	for (int i = 0; i < PFSM_IDLE_POLL_NUMBER; i++)
+		pfsm_status_reg_val[i] =
+			readl(gpu_pf_state->base +
+			      gpu_pf_state->hw_desc->pfsm_status_offset);
+
+	for (int i = 0; i < PFSM_IDLE_POLL_NUMBER; i++) {
+		if (pfsm_status_reg_val[i] & PFSM_STATUS_PFSM_STS_BITMASK) {
+			ret.idle = false;
+			ret.pfsm_status_reg_val = pfsm_status_reg_val[i];
+			return ret;
+		}
+	}
+
+	ret.idle = true;
+	ret.pfsm_status_reg_val =
+		pfsm_status_reg_val[PFSM_IDLE_POLL_NUMBER - 1];
+
+	return ret;
+}
 
 static u32 get_pf_pg_rate(struct dvfs_domain_info const * const di,
 			  int pf_state_num)
@@ -153,9 +218,9 @@ static void gpu_set_fabric_votes(struct clk_hw *hw, int gpu_pf_state)
 
 	vote = FABRIC_VOTE(fabhbw_vote, memss_vote, gmc_vote);
 	writel(vote, g_pf_state->fabric_vote_base +
-			CPM_IRM_CSRS__APC_GPU_CSRS__DVFS_REQ_LTV_GMC_offset);
+			g_pf_state->hw_desc->apc_gpu_req_ltv_gmc_offset);
 	writel(FABRIC_VOTE_TRIG, g_pf_state->fabric_vote_base +
-			CPM_IRM_CSRS__APC_GPU_CSRS__DVFS_REQ_TRIG_offset);
+			g_pf_state->hw_desc->apc_gpu_req_trig_offset);
 }
 
 static int gpu_pf_state_set_fabric_votes_from_rate(struct clk_hw *hw,
@@ -187,6 +252,7 @@ static int gpu_pf_state_clk_set_rate_internal(struct clk_hw *hw,
 	struct gpu_pf_state_clk *gpu_pf_state = to_gpu_pf_state_clk(hw);
 	struct device *dev;
 	u32 pfsm_config;
+	struct lpcm_pfsm_idle_helper pfsm_idle;
 
 	dev = gpu_pf_state->dev;
 	ret = 0;
@@ -216,11 +282,24 @@ static int gpu_pf_state_clk_set_rate_internal(struct clk_hw *hw,
 	/* Check if the previous request completed to prevent sending a request when the
 	 * previous one is still in progress
 	 */
-	if ((pfsm_status_reg_val & PFSM_STATUS_STATE_VALID_BITMASK) == 0 ||
-		(pfsm_status_reg_val & PFSM_STATUS_PFSM_STS_BITMASK)) {
-		dev_err(dev, "Cannot trigger LPCM request: %#X", pfsm_status_reg_val);
-		ret = -EIO;
-		goto set_rate_exit;
+	if (gpu_pf_state->hw_desc->soc == SOC_P26) {
+		pfsm_idle = gpu_pf_state_pfsm_status_idle_helper(gpu_pf_state);
+		if (!pfsm_idle.idle || (pfsm_idle.pfsm_status_reg_val &
+					PFSM_STATUS_STATE_VALID_BITMASK) == 0) {
+			dev_err(dev, "Cannot trigger LPCM request: %#X",
+				pfsm_status_reg_val);
+			ret = -EIO;
+			goto set_rate_exit;
+		}
+	} else {
+		if ((pfsm_status_reg_val & PFSM_STATUS_STATE_VALID_BITMASK) ==
+			    0 ||
+		    (pfsm_status_reg_val & PFSM_STATUS_PFSM_STS_BITMASK)) {
+			dev_err(dev, "Cannot trigger LPCM request: %#X",
+				pfsm_status_reg_val);
+			ret = -EIO;
+			goto set_rate_exit;
+		}
 	}
 
 	pfsm_config = PFSM_MODE_SW |
@@ -230,13 +309,34 @@ static int gpu_pf_state_clk_set_rate_internal(struct clk_hw *hw,
 	writel(1, gpu_pf_state->base +
 	       gpu_pf_state->hw_desc->pfsm_start_offset);
 
-	ret = readl_poll_timeout(gpu_pf_state->base +
-				 gpu_pf_state->hw_desc->pfsm_status_offset,
-				 pfsm_status_reg_val,
-				 (pfsm_status_reg_val &
-				  PFSM_STATUS_CURR_STATE_BITMASK) == target_pf_state,
-				 LPCM_STATUS_INTERVAL_US,
-				 LPCM_STATUS_TIMEOUT_US);
+	if (gpu_pf_state->hw_desc->soc == SOC_P26) {
+		ret = readx_poll_timeout(gpu_pf_state_pfsm_status_idle_helper,
+					 gpu_pf_state, pfsm_idle,
+					 pfsm_idle.idle == true,
+					 LPCM_STATUS_INTERVAL_US *
+						 gpu_pf_state
+							 ->timeout_multiplier,
+					 LPCM_STATUS_TIMEOUT_P26_US *
+						 gpu_pf_state
+							 ->timeout_multiplier);
+
+		pfsm_status_reg_val = pfsm_idle.pfsm_status_reg_val;
+	} else {
+		ret = readl_poll_timeout(gpu_pf_state->base +
+						 gpu_pf_state->hw_desc
+							 ->pfsm_status_offset,
+					 pfsm_status_reg_val,
+					 (pfsm_status_reg_val &
+					  PFSM_STATUS_CURR_STATE_BITMASK) ==
+						 target_pf_state,
+					 LPCM_STATUS_INTERVAL_US *
+						 gpu_pf_state
+							 ->timeout_multiplier,
+					 LPCM_STATUS_TIMEOUT_US *
+						 gpu_pf_state
+							 ->timeout_multiplier);
+	}
+
 	dev_dbg(dev, "pfsm status register value = %u\n", pfsm_status_reg_val);
 	current_pf_state = pfsm_status_reg_val & PFSM_STATUS_CURR_STATE_BITMASK;
 	if (ret) {
@@ -272,7 +372,7 @@ static int gpu_pf_state_clk_set_rate(struct clk_hw *hw, unsigned long rate,
 	struct device *dev = g_gpu_pf_state->dev;
 	int ret;
 
-	if (!pm_runtime_get_if_active(dev, true)) {
+	if (!pm_runtime_get_if_active(dev)) {
 		dev_dbg(dev,
 			"Calling set rate when power is OFF. Rate will be set once power is restored");
 		g_gpu_pf_state->saved_rate = rate;
@@ -307,7 +407,7 @@ static unsigned long gpu_pf_state_clk_recalc_rate(struct clk_hw *hw,
 	bool pm_runtime_enabled = true;
 	unsigned long long freq;
 
-	ret = pm_runtime_get_if_active(dev, true);
+	ret = pm_runtime_get_if_active(dev);
 	/*
 	 * when clients call clk_set_rate(), clk core invokes recalc_rate function
 	 * to update the cached rate. If power is currently OFF, return saved_rate
@@ -521,6 +621,11 @@ static int gpu_pf_state_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
+	if (of_property_present(node, "in_emulation"))
+		g_pf_state->timeout_multiplier = EMULATION_TIMEOUT_MULTIPLIER;
+	else
+		g_pf_state->timeout_multiplier = 1;
+
 	init.name = "gpu_pf_state_clk";
 	init.ops = &gpu_pf_state_clk_ops;
 	g_pf_state->hw.init = &init;
@@ -566,20 +671,20 @@ static void gpu_pf_state_debug_deinit(struct device *dev)
 	debugfs_remove_recursive(clk->debugfs_root);
 }
 
-static int gpu_pf_state_remove(struct platform_device *pdev)
+static void gpu_pf_state_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 
 	gpu_pf_state_debug_deinit(dev);
-
-	return 0;
 }
 
 static const struct of_device_id gpu_pf_state_of_match_table[] = {
 	{ .compatible = "google,rdo-gpu-pf-state",
 	  .data = &gpu_pf_state_dev_desc_rdo },
 	{ .compatible = "google,lga-gpu-pf-state",
-	  .data = &gpu_pf_state_dev_desc_lga },
+	  .data = &gpu_pf_state_dev_desc_p25 },
+	{ .compatible = "google,mbu-gpu-pf-state",
+	  .data = &gpu_pf_state_dev_desc_p26 },
 	{},
 };
 

@@ -59,7 +59,7 @@ struct trx_header {
 #ifndef BCMTRXV2
 	uint32 offsets[TRX_MAX_OFFSET];	/* Offsets of partitions from start of header */
 #else
-	BCM_DECLARE_FLEX_ARRAY(uint32, offsets);	/* Offsets of partitions from start of header */
+	uint32 offsets[BCM_FLEX_ARRAY];	/* Offsets of partitions from start of header */
 #endif
 };
 

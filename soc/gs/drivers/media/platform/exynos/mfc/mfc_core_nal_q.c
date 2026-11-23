@@ -691,6 +691,7 @@ static void __mfc_core_nal_q_get_dec_metadata_sei_nal(struct mfc_core *core, str
 	struct mfc_dec *dec = ctx->dec_priv;
 	dma_addr_t buf_addr;
 	dma_addr_t offset;
+	dma_addr_t top_addr;
 	unsigned int *sei_addr = NULL;
 	unsigned int *addr;
 	int buf_size, sei_size;
@@ -704,12 +705,15 @@ static void __mfc_core_nal_q_get_dec_metadata_sei_nal(struct mfc_core *core, str
 		return;
 	}
 
-	offset = buf_addr - ctx->metadata_buf.daddr;
-	if (offset < 0) {
-		mfc_ctx_err("[NALQ][HDR+][META] The metadata offset %#llx is wrong\n", offset);
+	top_addr = ctx->metadata_buf.daddr + ctx->metadata_buf.size - HDR10_PLUS_DATA_SIZE;
+	if ((buf_addr < ctx->metadata_buf.daddr) ||
+		(buf_addr > top_addr)) {
+		mfc_ctx_err("[NALQ][HDR+][META] The meta daddr %#llx is less than base %#llx or larger than top address(%#llx)\n",
+			buf_addr, ctx->metadata_buf.daddr, top_addr);
 		return;
 	}
 
+	offset = buf_addr - ctx->metadata_buf.daddr;
 	/* SEI data - 0x0: payload type, 0x4: payload size, 0x8: payload data */
 	sei_addr = ctx->metadata_buf.vaddr + offset + MFC_META_SEI_NAL_SIZE_OFFSET;
 	sei_size = *sei_addr;
@@ -720,9 +724,14 @@ static void __mfc_core_nal_q_get_dec_metadata_sei_nal(struct mfc_core *core, str
 				sei_size, buf_size);
 
 	/* HAL needs SEI data size info "size(4 bytes) + SEI data" */
-	sei_size += MFC_META_SEI_NAL_SIZE_OFFSET;
+	sei_size += MFC_META_SEI_NAL_SIZE_OF_FIELD;
 	mfc_debug(2, "[NALQ][HDR+][META] copy metadata offset %pad size: %d / %d\n",
 			&offset, sei_size, buf_size);
+	if (HDR10_PLUS_DATA_SIZE < sei_size + MFC_META_SEI_NAL_SIZE_OFFSET) {
+		mfc_ctx_err("[NALQ][HDR+][META] sei_size(%d) is too large to support\n",
+			sei_size);
+		return;
+	}
 
 	memcpy(addr, sei_addr, sei_size);
 
@@ -1354,7 +1363,7 @@ static int __mfc_core_nal_q_run_in_buf_dec(struct mfc_core *core, struct mfc_cor
 
 	pInStr->StreamDataSize = strm_size;
 	pInStr->CpbBufferAddr = buf_addr;
-	pInStr->CpbBufferSize = cpb_buf_size;
+	pInStr->CpbBufferSize = cpb_buf_size + offset;
 	pInStr->CpbBufferOffset = offset;
 	ctx->last_src_addr = buf_addr;
 
@@ -1375,6 +1384,9 @@ static int __mfc_core_nal_q_run_in_buf_dec(struct mfc_core *core, struct mfc_cor
 
 	pInStr->ScratchBufAddr = core_ctx->codec_buf.daddr;
 	pInStr->ScratchBufSize = ctx->scratch_buf_size;
+
+	MFC_TRACE_CTX("scratch buf addr: 0x%#llx, size: %ld\n",
+			core_ctx->codec_buf.daddr, ctx->scratch_buf_size);
 
 	if (call_cop(ctx, set_buf_ctrls_val_nal_q_dec, ctx,
 				&ctx->src_ctrls[src_index], pInStr) < 0)
@@ -1895,6 +1907,24 @@ static void __mfc_core_nal_q_get_img_size(struct mfc_core *core, struct mfc_ctx 
 	}
 }
 
+static void __mfc_core_nal_q_get_crop_info(struct mfc_core *core, struct mfc_ctx *ctx,
+			DecoderOutputStr *pOutStr) {
+	struct mfc_dec *dec = ctx->dec_priv;
+	u32 left, right, top, bottom;
+
+	left = pOutStr->DisplayCropInfo1;
+	right = left >> MFC_REG_D_SHARED_CROP_RIGHT_SHIFT;
+	left = left & MFC_REG_D_SHARED_CROP_LEFT_MASK;
+	top = pOutStr->DisplayCropInfo2;
+	bottom = top >> MFC_REG_D_SHARED_CROP_BOTTOM_SHIFT;
+	top = top & MFC_REG_D_SHARED_CROP_TOP_MASK;
+
+	dec->cr_left = left;
+	dec->cr_right = right;
+	dec->cr_top = top;
+	dec->cr_bot = bottom;
+}
+
 static struct mfc_buf *__mfc_core_nal_q_handle_frame_output_del(struct mfc_core *core,
 		struct mfc_ctx *ctx, DecoderOutputStr *pOutStr)
 {
@@ -1912,6 +1942,7 @@ static struct mfc_buf *__mfc_core_nal_q_handle_frame_output_del(struct mfc_core 
 	unsigned int disp_err;
 	unsigned int is_hdr10_plus_full = 0;
 	unsigned int is_uncomp = 0;
+	unsigned int is_crop_info_change = 0;
 	int i, index, idr_flag;
 
 	if (MFC_FEATURE_SUPPORT(dev, dev->pdata->color_aspect_dec)) {
@@ -2029,6 +2060,19 @@ static struct mfc_buf *__mfc_core_nal_q_handle_frame_output_del(struct mfc_core 
 			ctx->wait_state = WAIT_G_FMT;
 			__mfc_core_nal_q_get_img_size(core, ctx, pOutStr, MFC_GET_RESOL_SIZE);
 			mfc_set_mb_flag(dst_mb, MFC_FLAG_DISP_RES_CHANGE);
+			mutex_unlock(&ctx->drc_wait_mutex);
+		}
+
+		is_crop_info_change = (pOutStr->DisplayStatus
+					>> MFC_REG_DISP_STATUS_CROP_INFO_CHANGE_SHIFT)
+					& MFC_REG_DISP_STATUS_CROP_INFO_CHANGE_MASK;
+		if (is_crop_info_change) {
+			mfc_ctx_info("[NALQ][FRAME][DRC] crop info changed\n");
+			mutex_lock(&ctx->drc_wait_mutex);
+			ctx->wait_state = WAIT_G_FMT;
+			__mfc_core_nal_q_get_crop_info(core, ctx, pOutStr);
+			mfc_set_mb_flag(dst_mb, MFC_FLAG_DISP_RES_CHANGE);
+			dec->disp_drc.disp_crop_change = 1;
 			mutex_unlock(&ctx->drc_wait_mutex);
 		}
 
@@ -2422,8 +2466,8 @@ static void __mfc_core_nal_q_handle_frame_input(struct mfc_core *core, struct mf
 	vb2_buffer_done(&src_mb->vb.vb2_buf, VB2_BUF_STATE_DONE);
 }
 
-void __mfc_core_nal_q_handle_frame(struct mfc_core *core, struct mfc_core_ctx *core_ctx,
-			DecoderOutputStr *pOutStr)
+static void __mfc_core_nal_q_handle_frame(struct mfc_core *core, struct mfc_core_ctx *core_ctx,
+					  DecoderOutputStr *pOutStr)
 {
 	struct mfc_ctx *ctx = core_ctx->ctx;
 	struct mfc_dec *dec = ctx->dec_priv;
@@ -2619,8 +2663,8 @@ leave_handle_frame:
 	mfc_debug_leave();
 }
 
-int __mfc_core_nal_q_handle_error(struct mfc_core *core, struct mfc_core_ctx *core_ctx,
-			EncoderOutputStr *pOutStr, int err)
+static int __mfc_core_nal_q_handle_error(struct mfc_core *core, struct mfc_core_ctx *core_ctx,
+					 EncoderOutputStr *pOutStr, int err)
 {
 	struct mfc_ctx *ctx = core_ctx->ctx;
 	struct mfc_dec *dec;

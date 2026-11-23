@@ -12,11 +12,11 @@
 #include <linux/string.h>
 #include <linux/timekeeping.h>
 
+#include <mem-qos/google_qos_box_reg_api.h>
 #include "google_mem_qos.h"
 #include "google_mem_qos_debugfs.h"
 #include "google_qos_box.h"
 #include "google_qos_box_of.h"
-#include "google_qos_box_reg.h"
 
 #define GOOGLE_QOS_BOX_AUTOSUSPEND_DELAY_MS		10
 
@@ -279,11 +279,11 @@ static int google_qos_box_select_config(struct qos_box_dev *qos_box_dev, u32 sce
 	spin_lock_irqsave(&qos_box_dev->lock, flags);
 
 	next_scenario = qos_box_dev->scenario_arr[scenario_idx] ?
-			scenario_idx :
-			MEM_QOS_SCENARIO_DEFAULT;
+		scenario_idx :
+		MEM_QOS_SCENARIO_DEFAULT;
 
 	/* Write HW registers if debugfs isn't in control */
-	if (!dbg->ctl) {
+	if (dbg && !dbg->ctl) {
 		if (qos_box_dev->is_rpm_active && qos_box_dev->hw_scenario != next_scenario)
 			ret = __config_hw_policy(qos_box_dev, next_scenario);
 	}
@@ -434,7 +434,7 @@ static int google_qos_box_rpm_resume(struct device *dev)
 	qos_box_dev->is_rpm_active = true;
 
 	/* Write HW registers if debugfs isn't in control */
-	if (!dbg->ctl) {
+	if (dbg && !dbg->ctl) {
 		if (qos_box_dev->hw_scenario != qos_box_dev->active_scenario)
 			ret = __config_hw_policy(qos_box_dev, qos_box_dev->active_scenario);
 	}
@@ -567,7 +567,7 @@ out:
 	return ret;
 }
 
-static int google_qos_box_platform_remove(struct platform_device *pdev)
+static void google_qos_box_platform_remove(struct platform_device *pdev)
 {
 	struct qos_box_dev *qos_box_dev = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
@@ -579,8 +579,6 @@ static int google_qos_box_platform_remove(struct platform_device *pdev)
 
 	pm_runtime_dont_use_autosuspend(dev);
 	pm_runtime_disable(dev);
-
-	return 0;
 }
 
 struct qos_box_desc rdo_qos_box_desc = {

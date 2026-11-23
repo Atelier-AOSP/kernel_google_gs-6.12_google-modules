@@ -8,7 +8,41 @@
 
 #include <linux/device.h>
 
-#include "mbfs_protocol.h"
+#define MBFS_PAYLOAD_BYTES 8
+
+enum mbfs_error_code {
+	MBFS_OK,
+	MBFS_UNRECOGNIZED_COMMAND,
+	MBFS_NOT_FOUND,
+	MBFS_FORBIDDEN,
+	MBFS_ILLEGAL_OPERATION,
+	MBFS_TRY_AGAIN,
+	MBFS_CUSTOM_FILE_ERROR, // the last from mbfs protocol
+	NUM_MBFS_PROTOCOL_ERROR_CODES,
+	MBFS_COMMUNICATION_FAILURE =
+		NUM_MBFS_PROTOCOL_ERROR_CODES, // the first related to linux platform
+	MBFS_PROBE_DEFER,
+	MBFS_INVALID_ARG,
+	NUM_MBFS_ERROR_CODES,
+};
+_Static_assert(NUM_MBFS_PROTOCOL_ERROR_CODES <= 8,
+	       ""); // Error codes need to fit on 3 bits
+
+enum mbfs_node_type {
+	MBFS_FOLDER,
+	MBFS_FILE,
+	NUM_MBFS_NODE_TYPES,
+};
+_Static_assert(NUM_MBFS_NODE_TYPES == 2, ""); // Type should fit on 1 bit
+
+enum mbfs_file_value_type {
+	MBFS_UINT64,
+	MBFS_INT64,
+	MBFS_DOUBLE,
+	MBFS_SHORT_STRING, // 8-byte string (may not be nil-terminated)
+	NUM_MBFS_VALUE_TYPES
+};
+_Static_assert(NUM_MBFS_VALUE_TYPES <= 16, "");
 
 // This mbfs module implements a client library for the mbfs pseudo-file
 // system protocol.
@@ -52,7 +86,6 @@ struct mbfs_client_node_desc {
 
 extern int mbfs_error2linux(enum mbfs_error_code error);
 extern const char *get_mbfs_error_string(enum mbfs_error_code code);
-extern const char *get_mbfs_file_value_type_string(enum mbfs_file_value_type type);
 
 extern enum mbfs_error_code mbfs_get_handle(const char *path, union mbfs_client_handle *handle);
 extern enum mbfs_error_code mbfs_get_node_desc(union mbfs_client_handle handle,
@@ -68,11 +101,6 @@ extern enum mbfs_error_code mbfs_write_file(union mbfs_client_handle handle, uni
 
 extern enum mbfs_error_code mbfs_read_child_by_name(union mbfs_client_handle parent_h,
 						    const char *child_name, union val64 *output);
-
-extern bool mbfs_get_next_token(const char *path, char *new_token, int new_token_length,
-				const char **next_token);
-
-extern bool mbfs_is_next_token_valid(const char *path);
 
 extern bool is_mbfs_handle_invalid(union mbfs_client_handle handle);
 

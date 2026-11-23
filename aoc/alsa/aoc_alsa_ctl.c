@@ -2587,6 +2587,9 @@ static const char *ft_aec_ref_source_texts[NUM_AEC_REF_SOURCE] = { "Default", "S
 								   "BT" };
 static SOC_ENUM_SINGLE_DECL(ft_aec_ref_source_enum, 1, 0, ft_aec_ref_source_texts);
 
+static struct snd_kcontrol_new hac_amp_en_ctl =
+	SOC_SINGLE_EXT("HAC AMP EN", SND_SOC_NOPM, 0, 1, 0, hac_amp_en_get, hac_amp_en_set);
+
 static struct snd_kcontrol_new snd_aoc_ctl[] = {
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
@@ -3020,9 +3023,6 @@ static struct snd_kcontrol_new snd_aoc_ctl[] = {
 	SOC_SINGLE_RANGE_EXT_TLV_modified("HD Mic gain (cB)", SND_SOC_NOPM,
 		0, -1280, 1280, 0, aoc_audio_hdmic_gain_get, aoc_audio_hdmic_gain_set, NULL),
 #endif
-
-	SOC_SINGLE_EXT("HAC AMP EN", SND_SOC_NOPM, 0, 1, 0,
-		       hac_amp_en_get, hac_amp_en_set),
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.name = "BUILDIN_MIC_POWER_INIT",
@@ -3074,6 +3074,9 @@ int snd_aoc_new_ctl(struct aoc_chip *chip)
 		if (err < 0)
 			return err;
 	}
+
+	if (chip->hac_amp_en_gpio)
+		snd_ctl_add(chip->card, snd_ctl_new1(&hac_amp_en_ctl, chip));
 
 	pdm_callback_register(snd_aoc_pdm_state, NUM_OF_BUILTIN_MIC, chip);
 

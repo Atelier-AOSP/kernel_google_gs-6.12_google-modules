@@ -2016,10 +2016,16 @@ dhdpcie_fis_recover(dhd_pub_t *dhd)
 {
 	uint32 FISCtrlStatus = 0;
 	uint32 FISTrigRsrcState, RsrcState, MinResourceMask;
-
-#ifdef FIS_WITH_CMN
 	uint32 cfg_status_cmd;
 	uint32 cfg_pmcsr;
+
+	BCM_REFERENCE(FISTrigRsrcState);
+	BCM_REFERENCE(RsrcState);
+	BCM_REFERENCE(MinResourceMask);
+	BCM_REFERENCE(cfg_status_cmd);
+	BCM_REFERENCE(cfg_pmcsr);
+
+#ifdef FIS_WITH_CMN
 	/*
 	 * For android built-in platforms need to perform REG ON/OFF
 	 * to restore pcie link.
@@ -2551,6 +2557,7 @@ dhdpcie_set_pmu_fisctrlsts(struct dhd_bus *bus)
 	uint32 FISCtrlStatus = 0;
 	bool   fis_fw_triggered = FALSE;
 
+	BCM_REFERENCE(FISCtrlStatus);
 	if (CHIPTYPE(bus->sih->socitype) != SOCI_NCI) {
 		return;
 	}
@@ -2736,7 +2743,7 @@ dhd_dump_sssr_reg_info_v6(dhd_pub_t *dhd)
 
 	DHD_PRINT(("pmu_regs\n"));
 	DHD_PRINT(("pmuintmask0=0x%x pmuintmask1=0x%x resreqtimer=0x%x "
-		"macresreqtimer=0x%x macresreqtimer1=0x%x macresreqtimer2=0x%x"
+		"macresreqtimer=0x%x macresreqtimer1=0x%x macresreqtimer2=0x%x "
 		"pmu_min_res_mask=0x%x pmu_max_res_mask=0x%x sssr_max_res_mask=0x%x\n",
 		sssr_reg_info->pmu_regs.base_regs.pmuintmask0,
 		sssr_reg_info->pmu_regs.base_regs.pmuintmask1,
@@ -2850,7 +2857,7 @@ dhd_dump_sssr_reg_info_v5(dhd_pub_t *dhd)
 
 	DHD_PRINT(("pmu_regs\n"));
 	DHD_PRINT(("pmuintmask0=0x%x pmuintmask1=0x%x resreqtimer=0x%x "
-		"macresreqtimer=0x%x macresreqtimer1=0x%x macresreqtimer2=0x%x"
+		"macresreqtimer=0x%x macresreqtimer1=0x%x macresreqtimer2=0x%x "
 		"pmu_min_res_mask=0x%x pmu_max_res_mask=0x%x sssr_max_res_mask=0x%x\n",
 		sssr_reg_info->pmu_regs.base_regs.pmuintmask0,
 		sssr_reg_info->pmu_regs.base_regs.pmuintmask1,
@@ -3345,7 +3352,7 @@ dhd_sssr_dump_init(dhd_pub_t *dhd, bool fis_dump)
 				" is no FIS cache\n", __FUNCTION__));
 				return BCME_ERROR;
 			} else {
-				DHD_INFO(("%s: dhd_get_sssr_reg_info succeeds"
+				DHD_INFO(("%s: dhd_get_sssr_reg_info succeeds "
 				"with FIS cache\n", __FUNCTION__));
 			}
 		} else {

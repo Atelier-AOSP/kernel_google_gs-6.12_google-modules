@@ -106,7 +106,7 @@ Description:
 		List ambient-sec-acc state kernel and sswrp blockers.
 
 What:		/sys/devices/platform/powerdashboard/csr_*
-Date:		April 2025
+Date:		September 2025
 Contact:	"Pranav Prasad" <pranavpp@google.com>
 Description:
 		Each node displays the value of a specific CSR register,

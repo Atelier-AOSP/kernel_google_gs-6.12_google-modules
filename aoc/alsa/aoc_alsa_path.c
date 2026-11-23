@@ -1350,50 +1350,6 @@ static int aoc_path_put(uint32_t ep_id, uint32_t hw_id,
 	return 0;
 }
 
-bool aoc_alsa_usb_capture_enabled(void)
-{
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(tx_ep_list); i++) {
-		struct snd_ctl_elem_value ucontrol;
-		int ret;
-
-		ret = aoc_path_get(tx_ep_list[i], USB_TX, NULL, &ucontrol);
-		if (ret) {
-			pr_err("%s failed ret %d\n", __func__, ret);
-			return false;
-		}
-
-		if (ucontrol.value.integer.value[0])
-			return true;
-	}
-
-	return false;
-}
-EXPORT_SYMBOL_GPL(aoc_alsa_usb_capture_enabled);
-
-bool aoc_alsa_usb_playback_enabled(void)
-{
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(rx_ep_list); i++) {
-		struct snd_ctl_elem_value ucontrol;
-		int ret;
-
-		ret = aoc_path_get(rx_ep_list[i], USB_RX, NULL, &ucontrol);
-		if (ret) {
-			pr_err("%s failed ret %d\n", __func__, ret);
-			return false;
-		}
-
-		if (ucontrol.value.integer.value[0])
-			return true;
-	}
-
-	return false;
-}
-EXPORT_SYMBOL_GPL(aoc_alsa_usb_playback_enabled);
-
 bool aoc_alsa_dp_playback_enabled(void)
 {
 	int i;

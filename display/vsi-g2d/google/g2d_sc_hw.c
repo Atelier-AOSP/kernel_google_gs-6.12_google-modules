@@ -8,7 +8,7 @@
 
 #include <gs_drm/gs_reg_dump.h>
 
-#include "vs_g2d_reg_sc.h"
+#include "g2d_registers.h"
 #include "g2d_plane_hw.h"
 #include "g2d_sc_hw.h"
 #include "g2d_trace.h"
@@ -235,9 +235,10 @@ int sc_hw_reg_dump(struct seq_file *s, struct sc_hw *hw)
 		       SCREG_DEBUG_LAYER1_WB_WDMA_BRESP_CNT_Address, &p);
 	reg_dump_block("Layer0", hw->reg_base, SCREG_LAYER0_CONFIG_Address,
 		       SCREG_LAYER0_ENC_PVRIC_COUNTER_SLAVE_R_Address, &p);
+#ifndef CONFIG_VERISILICON_ONE_LAYER_G2D
 	reg_dump_block("Layer1", hw->reg_base, SCREG_LAYER1_CONFIG_Address,
 		       SCREG_LAYER1_ENC_PVRIC_COUNTER_SLAVE_R_Address, &p);
-
+#endif
 	return 0;
 }
 #endif /* CONFIG_DEBUG_FS */

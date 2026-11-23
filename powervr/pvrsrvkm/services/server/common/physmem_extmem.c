@@ -47,24 +47,29 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "physmem_extmem.h"
 
 
-#if defined(LMA)
-#pragma message "WARNING! You are compiling SUPPORT_WRAP_EXTMEM on a platform with LMA. " \
-	"Make sure the memory you wrap is actually accessible by the GPU!"
-#endif
-
 PVRSRV_ERROR
-PhysmemWrapExtMem(CONNECTION_DATA * psConnection,
+PhysmemWrapExtMem(CONNECTION_DATA *psConnection,
                   PVRSRV_DEVICE_NODE *psDevNode,
                   IMG_DEVMEM_SIZE_T uiSize,
                   IMG_UINT64 pvCpuVAddr,
                   PVRSRV_MEMALLOCFLAGS_T uiFlags,
                   PMR **ppsPMRPtr)
 {
+	/* For UMA systems:
+	 *   - enable SUPPORT_WRAP_EXTMEM in the Makefile,
+	 *   - test at runtime that the system is indeed UMA.
+	 */
+	if (PhysHeapHasUMAHeap(psDevNode) == IMG_FALSE)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "%s: WrapExtMem requires at least one UMA heap",
+		         __func__));
+		return PVRSRV_ERROR_UNSUPPORTED_MEMORY_LAYOUT;
+	}
+
 	return PhysmemWrapExtMemOS(psConnection,
 	                           psDevNode,
 	                           uiSize,
 	                           (IMG_CPU_VIRTADDR)(uintptr_t)pvCpuVAddr,
 	                           uiFlags,
 	                           ppsPMRPtr);
-
 }

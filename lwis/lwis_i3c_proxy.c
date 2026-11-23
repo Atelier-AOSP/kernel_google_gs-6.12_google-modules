@@ -70,7 +70,7 @@ static inline int get_xfers_len(struct i3c_priv_xfer *xfers, int nxfers)
 	return total_len;
 }
 
-static int setup_i3c_read(struct lwis_i2c_device *i3c_dev, uint64_t offset, uint64_t *value,
+static int setup_i3c_read(struct lwis_i2c_device *i3c_dev, uint64_t offset,
 			  struct xfer_context *context, struct i3c_priv_xfer *xfers)
 {
 	unsigned int offset_bits;
@@ -86,7 +86,7 @@ static int setup_i3c_read(struct lwis_i2c_device *i3c_dev, uint64_t offset, uint
 		return -EINVAL;
 	}
 
-	value_bits = i3c_dev->base_dev.native_value_bitwidth;
+	value_bits = i3c_dev->base_dev.native_read_value_bitwidth;
 	value_bytes = value_bits / BITS_PER_BYTE;
 	if (!check_bitwidth(value_bits, MIN_DATA_BITS, MAX_DATA_BITS)) {
 		dev_err(i3c_dev->base_dev.dev, "Invalid value bitwidth %d\n", value_bits);
@@ -134,7 +134,7 @@ static int setup_i3c_write(struct lwis_i2c_device *i3c_dev, uint64_t offset, uin
 		return -EINVAL;
 	}
 
-	value_bits = i3c_dev->base_dev.native_value_bitwidth;
+	value_bits = i3c_dev->base_dev.native_write_value_bitwidth;
 	value_bytes = value_bits / BITS_PER_BYTE;
 	if (!check_bitwidth(value_bits, MIN_DATA_BITS, MAX_DATA_BITS)) {
 		dev_err(i3c_dev->base_dev.dev, "Invalid value bitwidth %d\n", value_bits);
@@ -244,7 +244,7 @@ static int setup_i3c_xfer(struct lwis_i2c_device *i3c_dev, struct lwis_io_entry 
 			  struct xfer_context *context, struct i3c_priv_xfer *xfers)
 {
 	if (entry->type == LWIS_IO_ENTRY_READ) {
-		return setup_i3c_read(i3c_dev, entry->rw.offset, &entry->rw.val, context, xfers);
+		return setup_i3c_read(i3c_dev, entry->rw.offset, context, xfers);
 	} else if (entry->type == LWIS_IO_ENTRY_WRITE) {
 		return setup_i3c_write(i3c_dev, entry->rw.offset, entry->rw.val, context, xfers);
 	} else if (entry->type == LWIS_IO_ENTRY_READ_BATCH) {
@@ -266,6 +266,52 @@ static void parse_i3c_result(struct lwis_io_entry *entry, struct xfer_context *c
 		/* for i3c_read, xfers[1].data.in = context->rbuf */
 		*(&entry->rw.val) = lwis_be_buf_to_value(context->rbuf, xfers[1].len);
 	}
+}
+
+int lwis_i3c_io_entry_mod(struct lwis_i2c_device *i3c_dev, struct lwis_io_entry *entry)
+{
+	int ret;
+	uint64_t reg_value;
+	struct i3c_priv_xfer xfers[2];
+	struct xfer_context context = { .wbuf = { 0 }, .lwbuf = { 0 }, .rbuf = { 0 }, .buf = NULL };
+	char trace_name[LWIS_MAX_NAME_STRING_LEN];
+
+	if (!entry) {
+		dev_err(i3c_dev->base_dev.dev, "IO entry is NULL.\n");
+		return -EINVAL;
+	}
+
+	ret = setup_i3c_read(i3c_dev, entry->mod.offset, &context, xfers);
+	if (ret) {
+		dev_err(i3c_dev->base_dev.dev, "failed to setup xfer ret: %d\n", ret);
+		return ret;
+	}
+
+	scnprintf(trace_name, LWIS_MAX_NAME_STRING_LEN, "i3c_mod_read_%s", i3c_dev->base_dev.name);
+	LWIS_ATRACE_FUNC_INT_BEGIN(&(i3c_dev->base_dev), trace_name, get_xfers_len(xfers, 2));
+	ret = i3c_device_do_priv_xfers(i3c_dev->i3c, xfers, 2);
+	LWIS_ATRACE_FUNC_INT_END(&(i3c_dev->base_dev), trace_name, get_xfers_len(xfers, 2));
+	if (ret)
+		return ret;
+
+	reg_value = lwis_be_buf_to_value(context.rbuf, xfers[1].len);
+	reg_value &= ~entry->mod.val_mask;
+	reg_value |= entry->mod.val_mask & entry->mod.val;
+
+	ret = setup_i3c_write(i3c_dev, entry->mod.offset, reg_value, &context, xfers);
+
+	if (ret) {
+		dev_err(i3c_dev->base_dev.dev, "failed to setup xfer ret: %d\n", ret);
+		return ret;
+	}
+
+	/* Reuse xfer_context for modification write */
+	scnprintf(trace_name, LWIS_MAX_NAME_STRING_LEN, "i3c_mod_write_%s", i3c_dev->base_dev.name);
+	LWIS_ATRACE_FUNC_INT_BEGIN(&(i3c_dev->base_dev), trace_name, get_xfers_len(xfers, 1));
+	ret = i3c_device_do_priv_xfers(i3c_dev->i3c, xfers, 1);
+	LWIS_ATRACE_FUNC_INT_END(&(i3c_dev->base_dev), trace_name, get_xfers_len(xfers, 1));
+
+	return ret;
 }
 
 int lwis_i3c_io_entry_rw(struct lwis_i2c_device *i3c_dev, struct lwis_io_entry *entry)

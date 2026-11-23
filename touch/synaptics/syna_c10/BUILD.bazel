@@ -2,6 +2,11 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 filegroup(
     name = "syna_touch.kconfig",
     srcs = [
@@ -46,15 +51,12 @@ ddk_module(
         "DYNAMIC_DEBUG_MODULE",
         "USE_DRM_BRIDGE",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         ":headers",
         "//common:all_headers_aarch64",
         "//private/google-modules/display/samsung:headers",
-        "//private/google-modules/soc/gs:gs_soc_module",
         "//private/google-modules/soc/gs:headers",
+        "//private/google-modules/soc/gs/drivers/soc/google/vh/kernel:systrace",
         "//private/google-modules/touch/common:ddk_headers",
         "//private/google-modules/touch/common:heatmap",
         "//private/google-modules/touch/common:touch_bus_negotiator",

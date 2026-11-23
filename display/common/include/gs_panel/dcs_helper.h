@@ -11,11 +11,7 @@
 #define _GS_DCS_HELPER_H_
 
 #include <linux/version.h>
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 19, 0))
 #include <drm/display/drm_dsc.h>
-#else
-#include <drm/drm_dsc.h>
-#endif
 #include <drm/drm_mipi_dsi.h>
 
 /** Private DSI msg flags **/
@@ -72,6 +68,7 @@ enum {
  * PANEL_REVID_* is used to aid in storing the raw panel revision information
  */
 #define PANEL_REVID_PROTO1		PANEL_REV_ID(STAGE_PROTO, 1, 0, 0)
+#define PANEL_REVID_PROTO1_0_1		PANEL_REV_ID(STAGE_PROTO, 1, 0, 1)
 #define PANEL_REVID_PROTO1_1		PANEL_REV_ID(STAGE_PROTO, 1, 1, 0)
 #define PANEL_REVID_PROTO1_2		PANEL_REV_ID(STAGE_PROTO, 1, 2, 0)
 #define PANEL_REVID_PROTO2		PANEL_REV_ID(STAGE_PROTO, 2, 0, 0)
@@ -92,19 +89,20 @@ enum {
  * to guide driver behavior as it relates to command-sending logic
  */
 #define PANEL_REV_PROTO1		BIT(0)
-#define PANEL_REV_PROTO1_1		BIT(1)
-#define PANEL_REV_PROTO1_2		BIT(2)
-#define PANEL_REV_PROTO2		BIT(3)
-#define PANEL_REV_EVT1			BIT(4)
-#define PANEL_REV_EVT1_0_2		BIT(5)
-#define PANEL_REV_EVT1_1		BIT(6)
-#define PANEL_REV_EVT1_1_1		BIT(7)
-#define PANEL_REV_EVT1_2		BIT(8)
-#define PANEL_REV_EVT2			BIT(9)
-#define PANEL_REV_DVT1			BIT(10)
-#define PANEL_REV_DVT1_1		BIT(11)
-#define PANEL_REV_PVT			BIT(12)
-#define PANEL_REV_MP			BIT(13)
+#define PANEL_REV_PROTO1_0_1		BIT(1)
+#define PANEL_REV_PROTO1_1		BIT(2)
+#define PANEL_REV_PROTO1_2		BIT(3)
+#define PANEL_REV_PROTO2		BIT(4)
+#define PANEL_REV_EVT1			BIT(5)
+#define PANEL_REV_EVT1_0_2		BIT(6)
+#define PANEL_REV_EVT1_1		BIT(7)
+#define PANEL_REV_EVT1_1_1		BIT(8)
+#define PANEL_REV_EVT1_2		BIT(9)
+#define PANEL_REV_EVT2			BIT(10)
+#define PANEL_REV_DVT1			BIT(11)
+#define PANEL_REV_DVT1_1		BIT(12)
+#define PANEL_REV_PVT			BIT(13)
+#define PANEL_REV_MP			BIT(14)
 #define PANEL_REV_LATEST		BIT(31)
 #define PANEL_REV_ALL			(~0)
 #define PANEL_REV_GE(rev)		(~((rev) - 1))
@@ -156,6 +154,17 @@ struct gs_dsi_cmdset {
  */
 #define CHECK_CMDLIST_NOT_EMPTY(cmdlist) (0 * sizeof( \
 	struct {static_assert(sizeof(cmdlist) != 0, "CMDLIST is empty."); }))
+
+/**
+ * CHECK_CMDLIST_EQ_SIZE() - Check if two cmdlists have same size
+ * @lhs: The binary array of data of a command
+ * @rhs: The binary array of data of a command
+ *
+ * This macro enables checking if two cmdlists have same size in
+ * compile time while always returns 0.
+ */
+#define CHECK_CMDLIST_EQ_SIZE(lhs, rhs) (0 * sizeof( \
+	struct {static_assert(sizeof(lhs) == sizeof(rhs), "expect equal cmd length."); }))
 
 /**
  * GS_DSI_FLAGS_DELAY_REV_CMDLIST - construct a struct gs_dsi_cmd from inline data
@@ -370,7 +379,7 @@ static inline ssize_t gs_dsi_dcs_write_buffer_force_batch_end(struct mipi_dsi_de
 				       GS_DSI_MSG_FORCE_FLUSH | GS_DSI_MSG_IGNORE_VBLANK);
 }
 
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 19, 0)) || IS_ENABLED(CONFIG_DRM_DISPLAY_DP_HELPER)
+#if IS_ENABLED(CONFIG_DRM_DISPLAY_DP_HELPER)
 /**
  * gs_dcs_write_dsc_config() - function to write dsc configuration to panel
  * @dev: struct device corresponding to dsi panel
@@ -386,7 +395,7 @@ int gs_dcs_write_dsc_config(struct device *dev, const struct drm_dsc_config *dsc
 #else
 static inline int gs_dcs_write_dsc_config(struct device *dev, const struct drm_dsc_config *dsc_cfg)
 {
-	return -ENOTSUPP;
+	return -EOPNOTSUPP;
 }
 #endif
 

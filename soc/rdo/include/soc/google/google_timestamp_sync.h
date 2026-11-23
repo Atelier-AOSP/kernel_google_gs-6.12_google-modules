@@ -6,6 +6,25 @@
 #ifndef _GOOGLE_TIMESTAMP_SYNC_H
 #define _GOOGLE_TIMESTAMP_SYNC_H
 
+#include <linux/rtc.h>
+
+/**
+ * struct timestamp_snapshot_data - Structure to hold processed snapshot data.
+ *
+ * @tm: RTC time derived from the snapshot.
+ * @tv_nsec: nanosecond part of the real time.
+ * @gtc_sec: seconds part of GTC time.
+ * @gtc_nsec: nanosecond part of GTC time.
+ * @mono_raw: CLOCK_MONOTONIC_RAW clock value in nanosecond.
+ */
+struct timestamp_snapshot_data {
+	struct rtc_time tm;
+	long tv_nsec;
+	u64 gtc_sec;
+	u64 gtc_nsec;
+	u64 mono_raw;
+};
+
 #if IS_ENABLED(CONFIG_GOOGLE_TIMESTAMP_SYNC)
 
 /**
@@ -44,11 +63,49 @@
  */
 u64 goog_gtc_ticks_to_boottime(u64 gtc_tick);
 
+void goog_timestamp_sync_snapshot_update(void);
+
+/**
+ * goog_timestamp_sync_get_nth_snapshot - Get the Nth most recent snapshot.
+ *
+ * @n: The index from the latest (0 is latest, 1 is second latest, etc.).
+ * @data: Pointer to store the snapshot data.
+ *
+ * Returns 0 on success, -EINVAL if n is out of bounds, -EOPNOTSUPP if not enabled.
+ */
+int goog_timestamp_sync_get_nth_snapshot(unsigned int n, struct timestamp_snapshot_data *data);
+
+/**
+ * goog_timestamp_sync_get_all_snapshots - Get all available snapshots.
+ *
+ * @data_array: Pointer to an array of timestamp_snapshot_data to fill.
+ * @array_size: The number of elements in data_array.
+ *
+ * Returns the number of snapshots copied (at most array_size), or -EOPNOTSUPP.
+ * Snapshots are ordered from most recent [0] to oldest.
+ */
+int goog_timestamp_sync_get_all_snapshots(struct timestamp_snapshot_data *data_array,
+					  unsigned int array_size);
+
 #else /* IS_ENABLED(CONFIG_GOOGLE_TIMESTAMP_SYNC) */
 
-static u64 goog_gtc_ticks_to_boottime(u64 gtc_tick)
+static inline u64 goog_gtc_ticks_to_boottime(u64 gtc_tick)
 {
 	return 0;
+}
+
+static inline void goog_timestamp_sync_snapshot_update(void) {}
+
+static inline int goog_timestamp_sync_get_nth_snapshot(unsigned int n,
+						       struct timestamp_snapshot_data *data)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int goog_timestamp_sync_get_all_snapshots(struct timestamp_snapshot_data *data_array,
+							unsigned int array_size)
+{
+	return -EOPNOTSUPP;
 }
 
 #endif /* IS_ENABLED(CONFIG_GOOGLE_TIMESTAMP_SYNC) */

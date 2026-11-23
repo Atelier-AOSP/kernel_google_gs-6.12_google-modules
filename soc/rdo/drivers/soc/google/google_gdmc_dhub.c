@@ -4,57 +4,101 @@
  */
 
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/types.h>
+#include <kunit/visibility.h>
 
 #include <soc/google/goog-mba-gdmc-iface.h>
 #include <soc/google/goog_gdmc_service_ids.h>
 #include <soc/google/goog_mba_nq_xport.h>
 
-struct gdmc_dhub {
-	struct gdmc_iface *gdmc_iface;
-};
+#include "google_gdmc_dhub.h"
 
 struct uart_attribute {
 	struct device_attribute dev_attr;
 	u32 num;
 };
 
+struct uart_sysfs_attr_data {
+	struct uart_attribute *uart_attrs;
+	struct attribute_group *uart_group;
+	int num_groups_created;
+};
+
+struct gdmc_dhub_driver {
+	struct gdmc_dhub gdmc_dhub;
+	struct uart_sysfs_attr_data attr_data;
+};
+
+static const struct uart_id_name uart_id_names_gen1[] = {
+	{ GDMC_MBA_LGA_DHUB_UART_ID_CPM, "cpm" },
+	{ GDMC_MBA_LGA_DHUB_UART_ID_APC, "apc" },
+	{ GDMC_MBA_LGA_DHUB_UART_ID_AOC, "aoc" },
+	{ GDMC_MBA_LGA_DHUB_UART_ID_BMSM, "bmsm" },
+	{ GDMC_MBA_LGA_DHUB_UART_ID_GSA, "gsa" },
+	{ GDMC_MBA_LGA_DHUB_UART_ID_ISPFE, "ispfe" },
+	{ GDMC_MBA_LGA_DHUB_UART_ID_AURDSP, "aurdsp" },
+	{ GDMC_MBA_LGA_DHUB_UART_ID_TPU, "tpu" },
+	{ GDMC_MBA_LGA_DHUB_UART_ID_MODEM, "modem" },
+	{ GDMC_MBA_LGA_DHUB_UART_ID_GSC, "gsc" },
+	{ GDMC_MBA_LGA_DHUB_UART_ID_GDMC, "gdmc" },
+};
+
+VISIBLE_IF_KUNIT const struct dhub_uart_list dhub_uart_list_gen1 = {
+	.id_names_length = ARRAY_SIZE(uart_id_names_gen1),
+	.id_names = uart_id_names_gen1,
+};
+EXPORT_SYMBOL_IF_KUNIT(dhub_uart_list_gen1);
+
+static const struct uart_id_name uart_id_names_gen2[] = {
+	{ GDMC_MBA_MBU_DHUB_UART_ID_AOSS_CPM_M55, "aoss_cpm_m55" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_APC, "apc" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_AOSS_A32, "aoss_a32" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_BMSM, "bmsm" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_GSA, "gsa" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_AOSS_CPM_M0P, "aoss_cpm_m0p" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_AURDSP, "aurdsp" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_TPU, "tpu" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_MODEM, "modem" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_GSC, "gsc" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_GDMC, "gdmc" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_AOSS_SENSOR_CORE, "aoss_sensor_core" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_NANO_TPU, "nano_tpu" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_CPUACC_SSU, "cpuacc_ssu" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_HSION_EBU_M0P, "hsion_ebu_m0p" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_PCIE_DPA0, "pcie_dpa0" },
+	{ GDMC_MBA_MBU_DHUB_UART_ID_PCIE_DPA1, "pcie_dpa1" },
+};
+
+VISIBLE_IF_KUNIT const struct dhub_uart_list dhub_uart_list_gen2 = {
+	.id_names_length = ARRAY_SIZE(uart_id_names_gen2),
+	.id_names = uart_id_names_gen2,
+};
+EXPORT_SYMBOL_IF_KUNIT(dhub_uart_list_gen2);
+
 static inline struct uart_attribute *to_uart_attr(struct device_attribute *attr)
 {
 	return container_of(attr, struct uart_attribute, dev_attr);
 }
 
-struct uart_id_name {
-	u8 id;
-	const char *name;
-};
-
-static const struct uart_id_name uart_list[] = {
-	{ 0, "none" },
-	{ 1, "cpm" },
-	{ 2, "apc" },
-	{ 3, "aoc" },
-	{ 4, "bmsm" },
-	{ 5, "gsa" },
-	{ 6, "ispfe" },
-	{ 7, "aurdsp" },
-	{ 8, "tpu" },
-	{ 9, "modem" },
-	{ 10, "gsc" },
-	{ 11, "gdmc" },
-	{ 255, "virt" },
-};
-
 /*
  * Converts uart name into a uart id
  * Returns -EINVAL if the name is not valid.
- **/
-static int google_uart_name_to_id(const char *name)
+ */
+static int google_uart_name_to_id(const struct gdmc_dhub *gdmc_dhub, const char *name)
 {
-	for (int i = 0; i < ARRAY_SIZE(uart_list); i++) {
-		if (sysfs_streq(name, uart_list[i].name))
-			return uart_list[i].id;
+	const struct dhub_uart_list *dhub_uart_list = gdmc_dhub->dhub_uart_list;
+
+	if (sysfs_streq(name, "none"))
+		return GDMC_MBA_DHUB_UART_MUX_ID_NONE;
+
+	if (sysfs_streq(name, "virt"))
+		return GDMC_MBA_DHUB_UART_MUX_ID_VIRTUALIZED;
+
+	for (int i = 0; i < dhub_uart_list->id_names_length; i++) {
+		if (sysfs_streq(name, dhub_uart_list->id_names[i].name))
+			return dhub_uart_list->id_names[i].id;
 	}
 
 	return -EINVAL;
@@ -63,16 +107,166 @@ static int google_uart_name_to_id(const char *name)
 /*
  * Converts uart id into a uart name
  * Returns -EINVAL if the id is not valid.
- **/
-static const char *google_uart_id_to_name(u32 id)
+ */
+static const char *google_uart_id_to_name(const struct gdmc_dhub *gdmc_dhub, u32 id)
 {
-	for (int i = 0; i < ARRAY_SIZE(uart_list); i++) {
-		if (id == uart_list[i].id)
-			return uart_list[i].name;
+	const struct dhub_uart_list *dhub_uart_list = gdmc_dhub->dhub_uart_list;
+
+	if (id == GDMC_MBA_DHUB_UART_MUX_ID_NONE)
+		return "none";
+
+	if (id == GDMC_MBA_DHUB_UART_MUX_ID_VIRTUALIZED)
+		return "virt";
+
+	for (int i = 0; i < dhub_uart_list->id_names_length; i++) {
+		if (id == dhub_uart_list->id_names[i].id)
+			return dhub_uart_list->id_names[i].name;
 	}
 
 	return ERR_PTR(-EINVAL);
 }
+
+static inline u32 uart_num_to_bit(const struct gdmc_dhub *gdmc_dhub, u32 uart_num)
+{
+	const struct dhub_uart_list *dhub_uart_list = gdmc_dhub->dhub_uart_list;
+
+	for (int i = 0; i < dhub_uart_list->id_names_length; i++) {
+		if (uart_num == dhub_uart_list->id_names[i].id)
+			return BIT(uart_num);
+	}
+
+	return 0;
+}
+
+/*
+ * Get the UART mux.
+ * @gdmc_dhub: The gdmc_dhub device.
+ *
+ * Returns a pointer to a constant string representing the name of the
+ * active UART (e.g., "apc", "gsc") or "none". On failure,
+ * returns an ERR_PTR() encoded error code
+ */
+VISIBLE_IF_KUNIT const char *mux_get(struct gdmc_dhub *gdmc_dhub)
+{
+	struct gdmc_dhub_iface *dhub_iface = gdmc_dhub->dhub_iface;
+	u32 uart_id;
+	int ret;
+
+	ret = dhub_iface->dhub_mux_get(dhub_iface, &uart_id);
+	if (ret < 0)
+		return ERR_PTR(ret);
+
+	return google_uart_id_to_name(gdmc_dhub, uart_id);
+}
+EXPORT_SYMBOL_IF_KUNIT(mux_get);
+
+/*
+ * Set the UART mux.
+ * @gdmc_dhub: The gdmc_dhub device.
+ * @name: The name of the UART to select, can be a sysfs string ('\0' or '\n' terminated).
+ *
+ * Returns 0 on success, or a negative error code on failure.
+ */
+VISIBLE_IF_KUNIT int mux_set(struct gdmc_dhub *gdmc_dhub, const char *name)
+{
+	struct gdmc_dhub_iface *dhub_iface = gdmc_dhub->dhub_iface;
+	int uart_id = google_uart_name_to_id(gdmc_dhub, name);
+
+	if (uart_id < 0)
+		return -EINVAL;
+
+	return dhub_iface->dhub_mux_set(dhub_iface, uart_id);
+}
+EXPORT_SYMBOL_IF_KUNIT(mux_set);
+
+/*
+ * Get the baud rate.
+ * @gdmc_dhub: The gdmc_dhub device.
+ * @uart_num: UART ID.
+ * @baudrate: A pointer to a u32 variable where the current baud
+ * rate will be stored.
+ *
+ * Return: 0 on success, or a negative error code on failure.
+ */
+VISIBLE_IF_KUNIT int baudrate_get(struct gdmc_dhub *gdmc_dhub, u32 uart_num, u32 *baudrate)
+{
+	struct gdmc_dhub_iface *dhub_iface = gdmc_dhub->dhub_iface;
+
+	return dhub_iface->dhub_baudrate_get(dhub_iface, uart_num, baudrate);
+}
+EXPORT_SYMBOL_IF_KUNIT(baudrate_get);
+
+/*
+ * Set the baud rate.
+ * @gdmc_dhub: The gdmc_dhub device.
+ * @uart_num: UART ID.
+ * @baudrate: The new baud rate to configure.
+ *
+ * Return: 0 on success, or a negative error code on failure.
+ */
+VISIBLE_IF_KUNIT int baudrate_set(struct gdmc_dhub *gdmc_dhub, u32 uart_num, u32 baudrate)
+{
+	struct gdmc_dhub_iface *dhub_iface = gdmc_dhub->dhub_iface;
+
+	return dhub_iface->dhub_baudrate_set(dhub_iface, uart_num, baudrate);
+}
+EXPORT_SYMBOL_IF_KUNIT(baudrate_set);
+
+/*
+ * Get the virtual state for a specific UART.
+ * @gdmc_dhub: The gdmc_dhub device.
+ * @uart_num: UART ID.
+ * @enable: A pointer to a bool variable where the state will be
+ * stored (true if enabled, false if disabled).
+ *
+ * Return: 0 on success, or a negative error code on failure.
+ */
+VISIBLE_IF_KUNIT int virt_en_get(struct gdmc_dhub *gdmc_dhub, u32 uart_num, bool *enable)
+{
+	struct gdmc_dhub_iface *dhub_iface = gdmc_dhub->dhub_iface;
+	u32 mask;
+	int ret;
+
+	ret = dhub_iface->dhub_virt_en_get(dhub_iface, &mask);
+	if (ret < 0)
+		return ret;
+
+	*enable = !!(mask & uart_num_to_bit(gdmc_dhub, uart_num));
+
+	return ret;
+}
+EXPORT_SYMBOL_IF_KUNIT(virt_en_get);
+
+/*
+ * Set the virtual state for a specific UART.
+ * @gdmc_dhub: The gdmc_dhub device.
+ * @uart_num: UART ID.
+ * @enable: The new state to set (true to enable, false to disable).
+ *
+ * Return: 0 on success, or a negative error code on failure.
+ */
+VISIBLE_IF_KUNIT int virt_en_set(struct gdmc_dhub *gdmc_dhub, u32 uart_num, bool enable)
+{
+	struct gdmc_dhub_iface *dhub_iface = gdmc_dhub->dhub_iface;
+	int ret;
+	u32 mask, bit;
+
+	ret = dhub_iface->dhub_virt_en_get(dhub_iface, &mask);
+	if (ret < 0)
+		return ret;
+
+	bit = uart_num_to_bit(gdmc_dhub, uart_num);
+	if (enable)
+		mask |= bit;
+	else
+		mask &= ~bit;
+
+	/* Enable bit must be clear for valid command */
+	mask &= ~GDMC_MBA_DHUB_VIRT_MASK_EN;
+
+	return dhub_iface->dhub_virt_en_set(dhub_iface, mask);
+}
+EXPORT_SYMBOL_IF_KUNIT(virt_en_set);
 
 static ssize_t baudrate_show(struct device *dev,
 			     struct device_attribute *attr,
@@ -81,10 +275,10 @@ static ssize_t baudrate_show(struct device *dev,
 	struct gdmc_dhub *gdmc_dhub = dev_get_drvdata(dev);
 	struct uart_attribute *uart_attr = to_uart_attr(attr);
 	u32 uart_num = uart_attr->num;
-	int ret;
 	u32 baudrate;
 
-	ret = gdmc_dhub_uart_baudrate_get(gdmc_dhub->gdmc_iface, uart_num, &baudrate);
+	int ret = baudrate_get(gdmc_dhub, uart_num, &baudrate);
+
 	if (ret < 0)
 		return ret;
 
@@ -106,19 +300,11 @@ static ssize_t baudrate_store(struct device *dev,
 	if (ret != 0)
 		return ret;
 
-	ret = gdmc_dhub_uart_baudrate_set(gdmc_dhub->gdmc_iface, uart_num, baudrate);
-	if (ret)
+	ret = baudrate_set(gdmc_dhub, uart_num, baudrate);
+	if (ret < 0)
 		return ret;
 
 	return count;
-}
-
-static inline u32 uart_num_to_bit(u32 uart_num)
-{
-	if (uart_num < GDMC_MBA_DHUB_UART_ID_CPM ||
-	    uart_num > GDMC_MBA_DHUB_UART_ID_GDMC)
-		return 0;
-	return BIT(uart_num);
 }
 
 static ssize_t virt_en_show(struct device *dev,
@@ -128,16 +314,14 @@ static ssize_t virt_en_show(struct device *dev,
 	struct gdmc_dhub *gdmc_dhub = dev_get_drvdata(dev);
 	struct uart_attribute *uart_attr = to_uart_attr(attr);
 	u32 uart_num = uart_attr->num;
-	int ret;
-	u32 mask;
+	bool enable;
 
-	ret = gdmc_dhub_virt_en_get(gdmc_dhub->gdmc_iface, &mask);
+	int ret = virt_en_get(gdmc_dhub, uart_num, &enable);
+
 	if (ret < 0)
 		return ret;
 
-	mask &= uart_num_to_bit(uart_num);
-
-	return sysfs_emit(buf, "%u\n", !!mask);
+	return sysfs_emit(buf, "%u\n", enable);
 }
 
 static ssize_t virt_en_store(struct device *dev,
@@ -150,80 +334,118 @@ static ssize_t virt_en_store(struct device *dev,
 	u32 uart_num = uart_attr->num;
 	int ret;
 	bool enable;
-	u32 mask, bit;
 
 	ret = kstrtobool(buf, &enable);
 	if (ret != 0)
 		return ret;
 
-	ret = gdmc_dhub_virt_en_get(gdmc_dhub->gdmc_iface, &mask);
-	if (ret < 0)
-		return ret;
-
-	bit = uart_num_to_bit(uart_num);
-	if (enable)
-		mask |= bit;
-	else
-		mask &= ~bit;
-
-	/* Enable bit must be clear for valid command */
-	mask &= ~GDMC_MBA_DHUB_VIRT_MASK_EN;
-
-	ret = gdmc_dhub_virt_en_set(gdmc_dhub->gdmc_iface, mask);
+	ret = virt_en_set(gdmc_dhub, uart_num, enable);
 	if (ret)
 		return ret;
 
 	return count;
 }
 
-#define __UART_ATTR_RW(_name, _num) {					\
-	.dev_attr = __ATTR_RW(_name),					\
-	.num = _num,							\
+static void cleanup_uart_attributes(struct device *dev)
+{
+	struct gdmc_dhub *gdmc_dhub = dev_get_drvdata(dev);
+	struct gdmc_dhub_driver *gdmc_dhub_driver = container_of(gdmc_dhub,
+					 struct gdmc_dhub_driver, gdmc_dhub);
+	struct uart_sysfs_attr_data *attr_data = &gdmc_dhub_driver->attr_data;
+
+	// Remove groups in reverse order of creation
+	for (int i = attr_data->num_groups_created - 1; i >= 0; i--) {
+		// Ensure the group pointer is valid before removing
+		if (attr_data->uart_group && attr_data->uart_group[i].name)
+			sysfs_remove_group(&dev->kobj, &attr_data->uart_group[i]);
+	}
 }
 
-#define UART_ATTR_RW(_name, _uart, _ID)					\
-	struct uart_attribute uart_attr_##_uart##_##_name =		\
-		__UART_ATTR_RW(_name, GDMC_MBA_DHUB_UART_ID_##_ID)
+static int create_uart_list_attributes(struct device *dev)
+{
+	int uart_idx, uart_attr_idx, ret;
+	struct gdmc_dhub *gdmc_dhub = dev_get_drvdata(dev);
+	struct gdmc_dhub_driver *gdmc_dhub_driver = container_of(gdmc_dhub,
+					 struct gdmc_dhub_driver, gdmc_dhub);
+	const struct dhub_uart_list *dhub_uart_list = gdmc_dhub->dhub_uart_list;
+	struct uart_sysfs_attr_data *attr_data = &gdmc_dhub_driver->attr_data;
+	const int num_uart = dhub_uart_list->id_names_length;
+	const int num_attrs_per_uart = 2; // baudrate, virt_en
+	const int num_ptrs_per_group = num_attrs_per_uart + 1; // +1 for NULL
 
-#define UART_ATTR_GROUP(_uart, _ID)					\
-	UART_ATTR_RW(baudrate, _uart, _ID);				\
-	UART_ATTR_RW(virt_en, _uart, _ID);				\
-	static struct attribute *_uart##_attrs[] = {			\
-		&uart_attr_##_uart##_baudrate.dev_attr.attr,		\
-		&uart_attr_##_uart##_virt_en.dev_attr.attr,		\
-		NULL,							\
-	};								\
-	static struct attribute_group _uart##_attr_group = {		\
-		.attrs = _uart##_attrs,					\
-		.name = #_uart,						\
+	attr_data->uart_attrs =
+		 devm_kcalloc(dev, num_uart * num_attrs_per_uart,
+			 sizeof(struct uart_attribute), GFP_KERNEL);
+	if (!attr_data->uart_attrs) {
+		ret = -ENOMEM;
+		goto fail;
 	}
 
-UART_ATTR_GROUP(cpm, CPM);
-UART_ATTR_GROUP(apc, APC);
-UART_ATTR_GROUP(aoc, AOC);
-UART_ATTR_GROUP(bmsm, BMSM);
-UART_ATTR_GROUP(gsa, GSA);
-UART_ATTR_GROUP(ispfe, ISPFE);
-UART_ATTR_GROUP(aurdsp, AURDSP);
-UART_ATTR_GROUP(tpu, TPU);
-UART_ATTR_GROUP(modem, MODEM);
-UART_ATTR_GROUP(gsc, GSC);
-UART_ATTR_GROUP(gdmc, GDMC);
+	attr_data->uart_group =
+		 devm_kcalloc(dev, num_uart, sizeof(struct attribute_group), GFP_KERNEL);
+	if (!attr_data->uart_group) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+
+	uart_attr_idx = 0;
+	for (uart_idx = 0; uart_idx < num_uart; uart_idx++) {
+		// Create attribute group for a uart from the uart list
+		struct attribute_group *uart_group = &attr_data->uart_group[uart_idx];
+		struct uart_attribute *uart_attr;
+
+		uart_group->attrs = devm_kcalloc(dev, num_ptrs_per_group,
+			sizeof(struct attribute *), GFP_KERNEL);
+		if (!uart_group->attrs) {
+			ret = -ENOMEM;
+			goto fail;
+		}
+
+		// Create baudrate attribute
+		uart_attr = &attr_data->uart_attrs[uart_attr_idx++];
+		uart_attr->dev_attr =
+			(struct device_attribute)__ATTR_RW(baudrate);
+		uart_attr->num = dhub_uart_list->id_names[uart_idx].id;
+		sysfs_attr_init(&uart_attr->dev_attr.attr);
+		// Store the pointer to baudrate attribute
+		uart_group->attrs[0] = &uart_attr->dev_attr.attr;
+
+		// Create virt_en attribute
+		uart_attr = &attr_data->uart_attrs[uart_attr_idx++];
+		uart_attr->dev_attr =
+			(struct device_attribute)__ATTR_RW(virt_en);
+		uart_attr->num = dhub_uart_list->id_names[uart_idx].id;
+		sysfs_attr_init(&uart_attr->dev_attr.attr);
+		// Store the pointer to virt_en attribute
+		uart_group->attrs[1] = &uart_attr->dev_attr.attr;
+
+		// Store the uart group attribute name
+		uart_group->name = dhub_uart_list->id_names[uart_idx].name;
+		ret = sysfs_create_group(&dev->kobj, uart_group);
+		if (ret) {
+			dev_err(dev, "Failed to create sysfs group '%s': %d\n",
+				 uart_group->name, ret);
+			// Error occurred, stop creating more groups and go to cleanup
+			goto fail;
+		}
+
+		attr_data->num_groups_created++;
+	}
+
+	return 0;
+fail:
+	dev_err(dev, "Failed to create all UART sysfs attributes (%d)\n", ret);
+	cleanup_uart_attributes(dev);
+	return ret;
+}
 
 static ssize_t uart_mux_show(struct device *dev,
 			     struct device_attribute *attr,
 			     char *buf)
 {
 	struct gdmc_dhub *gdmc_dhub = dev_get_drvdata(dev);
-	int ret;
-	u32 uart_id;
-	const char *name;
+	const char *name = mux_get(gdmc_dhub);
 
-	ret = gdmc_dhub_uart_mux_get(gdmc_dhub->gdmc_iface, &uart_id);
-	if (ret < 0)
-		return ret;
-
-	name = google_uart_id_to_name(uart_id);
 	if (IS_ERR(name))
 		return PTR_ERR(name);
 
@@ -237,12 +459,8 @@ static ssize_t uart_mux_store(struct device *dev,
 {
 	struct gdmc_dhub *gdmc_dhub = dev_get_drvdata(dev);
 	int ret;
-	int uart_id = google_uart_name_to_id(buf);
 
-	if (uart_id < 0)
-		return -EINVAL;
-
-	ret = gdmc_dhub_uart_mux_set(gdmc_dhub->gdmc_iface, uart_id);
+	ret = mux_set(gdmc_dhub, buf);
 	if (ret)
 		return ret;
 
@@ -250,7 +468,10 @@ static ssize_t uart_mux_store(struct device *dev,
 }
 
 DEVICE_ATTR_RW(uart_mux);
-UART_ATTR_RW(baudrate, sbu, VIRTUALIZED);
+static struct uart_attribute uart_attr_sbu_baudrate = {
+	.dev_attr = __ATTR_RW(baudrate),
+	.num = GDMC_MBA_DHUB_UART_MUX_ID_VIRTUALIZED,
+};
 
 static struct attribute *dhub_attrs[] = {
 	&dev_attr_uart_mux.attr,
@@ -264,60 +485,60 @@ static const struct attribute_group root_attr_group = {
 
 static const struct attribute_group *attr_groups[] = {
 	&root_attr_group,
-	&cpm_attr_group,
-	&apc_attr_group,
-	&aoc_attr_group,
-	&bmsm_attr_group,
-	&gsa_attr_group,
-	&ispfe_attr_group,
-	&aurdsp_attr_group,
-	&tpu_attr_group,
-	&modem_attr_group,
-	&gsc_attr_group,
-	&gdmc_attr_group,
 	NULL,
 };
+
+static const struct of_device_id google_gdmc_dhub_of_match_table[] = {
+	{ .compatible = "google,gdmc-dhub-gen1", .data = &dhub_uart_list_gen1},
+	{ .compatible = "google,gdmc-dhub-gen2", .data = &dhub_uart_list_gen2},
+	{},
+};
+MODULE_DEVICE_TABLE(of, google_gdmc_dhub_of_match_table);
+
+VISIBLE_IF_KUNIT void gdmc_dhub_init(struct gdmc_dhub *gdmc_dhub,
+				 struct gdmc_dhub_iface *dhub_iface,
+				 const struct dhub_uart_list *dhub_uart_list)
+{
+	gdmc_dhub->dhub_uart_list = dhub_uart_list;
+	gdmc_dhub->dhub_iface = dhub_iface;
+}
+EXPORT_SYMBOL_IF_KUNIT(gdmc_dhub_init);
 
 static int google_gdmc_dhub_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct gdmc_dhub_driver *gdmc_dhub_driver;
 	struct gdmc_dhub *gdmc_dhub;
+	struct gdmc_dhub_iface *dhub_iface;
 	int ret;
 
-	gdmc_dhub = devm_kzalloc(dev, sizeof(*gdmc_dhub), GFP_KERNEL);
-	if (!gdmc_dhub)
+	gdmc_dhub_driver = devm_kzalloc(dev, sizeof(*gdmc_dhub), GFP_KERNEL);
+	if (!gdmc_dhub_driver)
 		return -ENOMEM;
-	platform_set_drvdata(pdev, gdmc_dhub);
+	platform_set_drvdata(pdev, &gdmc_dhub_driver->gdmc_dhub);
 
-	gdmc_dhub->gdmc_iface = gdmc_iface_get(dev);
-	if (IS_ERR(gdmc_dhub->gdmc_iface))
-		return PTR_ERR(gdmc_dhub->gdmc_iface);
+	dhub_iface = dhub_iface_get(dev);
+	if (IS_ERR(dhub_iface))
+		return PTR_ERR(dhub_iface);
 
-	ret = devm_device_add_groups(dev, attr_groups);
-	if (ret)
-		goto put_gdmc_iface;
+	const struct of_device_id *match = of_match_device(google_gdmc_dhub_of_match_table, dev);
 
-	return 0;
+	gdmc_dhub_init(&gdmc_dhub_driver->gdmc_dhub, dhub_iface, match->data);
 
-put_gdmc_iface:
-	gdmc_iface_put(gdmc_dhub->gdmc_iface);
+	ret = create_uart_list_attributes(dev);
+	if (ret != 0)
+		dhub_iface_put(dhub_iface);
+
 	return ret;
 }
 
-static int google_gdmc_dhub_remove(struct platform_device *pdev)
+static void google_gdmc_dhub_remove(struct platform_device *pdev)
 {
 	struct gdmc_dhub *gdmc_dhub = platform_get_drvdata(pdev);
 
-	gdmc_iface_put(gdmc_dhub->gdmc_iface);
-
-	return 0;
+	cleanup_uart_attributes(&pdev->dev);
+	dhub_iface_put(gdmc_dhub->dhub_iface);
 }
-
-static const struct of_device_id google_gdmc_dhub_of_match_table[] = {
-	{ .compatible = "google,gdmc-dhub" },
-	{},
-};
-MODULE_DEVICE_TABLE(of, google_gdmc_dhub_of_match_table);
 
 static struct platform_driver google_gdmc_dhub_driver = {
 	.probe = google_gdmc_dhub_probe,
@@ -326,6 +547,7 @@ static struct platform_driver google_gdmc_dhub_driver = {
 		.name = "google-gdmc-dhub",
 		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(google_gdmc_dhub_of_match_table),
+		.dev_groups = attr_groups,
 	},
 };
 module_platform_driver(google_gdmc_dhub_driver);

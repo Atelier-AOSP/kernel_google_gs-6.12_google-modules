@@ -21,6 +21,7 @@
 #include <linux/string.h>
 #include <linux/workqueue.h>
 
+#include <gcip/gcip-event.h>
 #include <gcip/gcip-memory.h>
 #include <gcip/gcip-telemetry.h>
 
@@ -54,38 +55,6 @@ int gcip_telemetry_kci(struct gcip_telemetry *tel,
 	return 0;
 }
 
-int gcip_telemetry_set_event(struct gcip_telemetry *tel, u32 eventfd)
-{
-	struct eventfd_ctx *ctx, *prev_ctx;
-
-	ctx = eventfd_ctx_fdget(eventfd);
-	if (IS_ERR(ctx))
-		return PTR_ERR(ctx);
-
-	scoped_guard(mutex, &tel->state_ctx_lock) {
-		prev_ctx = tel->ctx;
-		tel->ctx = ctx;
-	}
-
-	if (prev_ctx)
-		eventfd_ctx_put(prev_ctx);
-
-	return 0;
-}
-
-void gcip_telemetry_unset_event(struct gcip_telemetry *tel)
-{
-	struct eventfd_ctx *prev_ctx;
-
-	scoped_guard(mutex, &tel->state_ctx_lock) {
-		prev_ctx = tel->ctx;
-		tel->ctx = NULL;
-	}
-
-	if (prev_ctx)
-		eventfd_ctx_put(prev_ctx);
-}
-
 /**
  * copy_with_wrap() - The helper function to copy data out of the log buffer with wrapping.
  * @dest: The buffer to copy the data to.
@@ -98,12 +67,12 @@ void gcip_telemetry_unset_event(struct gcip_telemetry *tel)
  */
 static u32 copy_with_wrap(void *dest, void *start, u32 raw_head, u32 length, u32 size)
 {
-	const u32 max_length = size - sizeof(struct gcip_log_entry_header);
+	const u32 max_entry_body = size - sizeof(struct gcip_log_entry_header);
 	const u32 wrap_bit = size + sizeof(struct gcip_telemetry_header);
 	u32 wrap_bit_val = raw_head & wrap_bit;
 	u32 head = raw_head & (wrap_bit - 1);
 
-	if (unlikely(length == 0 || length > max_length || head >= size))
+	if (unlikely(length == 0 || length > max_entry_body || head >= size))
 		return U32_MAX;
 
 	if (head + length < size) {
@@ -124,18 +93,18 @@ static u32 copy_with_wrap(void *dest, void *start, u32 raw_head, u32 length, u32
 /**
  * gcip_telemetry_read_log_entry() - Read a log entry from telemetry buffer.
  * @header: Pointer to the telemetry buffer header.
+ * @queue_size: Size of the telemetry queue.
  * @buffer: Destination buffer to copy log entry payload.
  * @code: Pointer to output the log entry level/code.
  *
  * This function extracts the log entry header and copies the log payload into the buffer.
- * If corruption is detected, head will be reseted to tail.
+ * If corruption is detected, head will be set to tail.
  *
  * Return: 0 on success, or a negative errno on otherwise.
  */
-static int gcip_telemetry_read_log_entry(struct gcip_telemetry_header *header, char *buffer,
-					 s16 *code)
+static int gcip_telemetry_read_log_entry(struct gcip_telemetry_header *header, size_t queue_size,
+					 char *buffer, s16 *code)
 {
-	const size_t queue_size = header->size - sizeof(*header);
 	void *start = (void *)header + sizeof(*header);
 	u32 head = READ_ONCE(header->head);
 	struct gcip_log_entry_header entry;
@@ -174,20 +143,20 @@ static void gcip_telemetry_fw_log(const struct gcip_telemetry *log)
 {
 	struct device *dev = log->dev;
 	struct gcip_telemetry_header *header = log->header;
-	const size_t max_length =
-		log->memory.size - sizeof(*header) - sizeof(struct gcip_log_entry_header);
+	size_t queue_size = log->memory.size - sizeof(*header);
+	const size_t max_entry_body = queue_size - sizeof(struct gcip_log_entry_header);
 	char *buffer;
 	s16 code;
 	int ret;
 
-	buffer = kvmalloc(max_length + 1, GFP_KERNEL);
+	buffer = kvmalloc(max_entry_body + 1, GFP_KERNEL);
 	if (!buffer) {
 		WRITE_ONCE(header->head, READ_ONCE(header->tail));
 		return;
 	}
 
 	while (READ_ONCE(header->head) != READ_ONCE(header->tail)) {
-		ret = gcip_telemetry_read_log_entry(header, buffer, &code);
+		ret = gcip_telemetry_read_log_entry(header, queue_size, buffer, &code);
 		if (ret) {
 			dev_err(dev, "log queue is corrupted");
 			break;
@@ -227,18 +196,11 @@ static void gcip_telemetry_fw_trace(const struct gcip_telemetry *trace)
 
 void gcip_telemetry_irq_handler(struct gcip_telemetry *tel)
 {
-	/*
-	 * Safe to access tel->state without state_ctx_lock because it would just schedule a
-	 * redundant worker which is fine.
-	 */
-	if (tel->state != GCIP_TELEMETRY_ENABLED)
-		return;
-
 	/* Early return if we know there is no pending data. */
 	if (tel->header && (READ_ONCE(tel->header->head) == READ_ONCE(tel->header->tail)))
 		return;
 
-	schedule_delayed_work(&tel->work, 0);
+	schedule_work(&tel->work);
 }
 
 /**
@@ -375,39 +337,31 @@ static void gcip_telemetry_warn_no_eventfd(const struct gcip_telemetry *tel)
 }
 
 /**
- * gcip_telemetry_worker() - The worker for processing log/trace/hwtrace or opaque buffers.
+ * gcip_telemetry_worker() - The worker for processing log/trace or opaque buffers.
  * @work: The work_struct of the telemetry.
  */
 static void gcip_telemetry_worker(struct work_struct *work)
 {
-	struct gcip_telemetry *tel = container_of(work, struct gcip_telemetry, work.work);
-	struct gcip_telemetry_header *header = tel->header;
+	struct gcip_telemetry *tel = container_of(work, struct gcip_telemetry, work);
 
-	scoped_guard(mutex, &tel->state_ctx_lock) {
+	scoped_guard(mutex, &tel->state_lock) {
 		if (tel->state != GCIP_TELEMETRY_ENABLED)
-			return;
-		/* Opaque type buffers do not have a header, always signal on each run. */
-		if (header && (READ_ONCE(header->head) == READ_ONCE(header->tail)))
 			return;
 
 		/*
-		 * The runtime side handler and the fallback function should consider the case that
-		 * head != tail.
+		 * The runtime side handler and the fallback function should consume all the
+		 * available data until head == tail.
 		 */
-		if (tel->ctx)
-			eventfd_signal(tel->ctx, 1);
-		else if (tel->fallback_fn)
+		if (gcip_event_mgr_signal(tel->event_mgr, tel->event_id))
+			return;
+
+		if (tel->fallback_fn)
 			tel->fallback_fn(tel);
 	}
-
-	/* Opaque type buffers do not need a recheck for new data arriving concurrently. */
-	if (tel->type != GCIP_TELEMETRY_TYPE_OPAQUE)
-		schedule_delayed_work(to_delayed_work(work),
-				      msecs_to_jiffies(GCIP_TELEMETRY_TYPE_LOG_RECHECK_DELAY));
 }
 
 int gcip_telemetry_init(struct gcip_telemetry *tel, enum gcip_telemetry_type type,
-			struct device *dev)
+			struct device *dev, struct gcip_event_mgr *event_mgr, size_t event_id)
 {
 	struct gcip_memory *mem = &tel->memory;
 	const char *name;
@@ -438,11 +392,6 @@ int gcip_telemetry_init(struct gcip_telemetry *tel, enum gcip_telemetry_type typ
 		fallback_fn = gcip_telemetry_fw_trace;
 		header = mem->virt_addr;
 		break;
-	case GCIP_TELEMETRY_TYPE_HWTRACE:
-		name = GCIP_TELEMETRY_NAME_HWTRACE;
-		fallback_fn = gcip_telemetry_fw_trace;
-		header = mem->virt_addr;
-		break;
 	case GCIP_TELEMETRY_TYPE_OPAQUE:
 		name = GCIP_TELEMETRY_NAME_OPAQUE;
 		fallback_fn = gcip_telemetry_warn_no_eventfd;
@@ -458,7 +407,8 @@ int gcip_telemetry_init(struct gcip_telemetry *tel, enum gcip_telemetry_type typ
 	tel->type = type;
 	tel->fallback_fn = fallback_fn;
 	tel->header = header;
-	tel->ctx = NULL;
+	tel->event_mgr = gcip_event_mgr_get(event_mgr);
+	tel->event_id = event_id;
 	tel->state = GCIP_TELEMETRY_ENABLED;
 	tel->mmapped_count = 0;
 
@@ -469,26 +419,20 @@ int gcip_telemetry_init(struct gcip_telemetry *tel, enum gcip_telemetry_type typ
 		tel->header->entries_dropped = 0;
 	}
 
-	INIT_DELAYED_WORK(&tel->work, gcip_telemetry_worker);
+	INIT_WORK(&tel->work, gcip_telemetry_worker);
 	mutex_init(&tel->mmap_lock);
-	mutex_init(&tel->state_ctx_lock);
+	mutex_init(&tel->state_lock);
 
 	return 0;
 }
 
 void gcip_telemetry_exit(struct gcip_telemetry *tel)
 {
-	struct eventfd_ctx *prev_ctx;
-
 	/* Prevents racing with the worker. */
-	scoped_guard(mutex, &tel->state_ctx_lock) {
-		prev_ctx = tel->ctx;
-		tel->ctx = NULL;
+	scoped_guard(mutex, &tel->state_lock)
 		tel->state = GCIP_TELEMETRY_INVALID;
-	}
 
-	if (prev_ctx)
-		eventfd_ctx_put(prev_ctx);
+	gcip_event_mgr_put(tel->event_mgr);
 
-	cancel_delayed_work_sync(&tel->work);
+	cancel_work_sync(&tel->work);
 }

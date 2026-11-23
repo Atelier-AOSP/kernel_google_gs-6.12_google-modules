@@ -149,8 +149,8 @@ PVRSRVBridgeRGXGetConfiguredHWPerfCounters(IMG_UINT32 ui32DispatchTableEntry,
 	if ((psConfiguredCountersInt) && ((1 * sizeof(RGX_HWPERF_CONFIG_CNTBLK)) > 0))
 	{
 		if (unlikely
-		    (OSCopyToUser
-		     (NULL,
+		    (CopyToUserWrapper
+		     (NULL, ui32DispatchTableEntry,
 		      (void __user *)psRGXGetConfiguredHWPerfCountersOUT->psConfiguredCounters,
 		      psConfiguredCountersInt,
 		      (1 * sizeof(RGX_HWPERF_CONFIG_CNTBLK))) != PVRSRV_OK))
@@ -187,9 +187,6 @@ RGXGetConfiguredHWPerfCounters_exit:
 	return offsetof(PVRSRV_BRIDGE_OUT_RGXGETCONFIGUREDHWPERFCOUNTERS, eError);
 }
 
-static_assert(RGXFWIF_HWPERF_CTRL_BLKS_MAX <= IMG_UINT32_MAX,
-	      "RGXFWIF_HWPERF_CTRL_BLKS_MAX must not be larger than IMG_UINT32_MAX");
-
 static size_t
 PVRSRVBridgeRGXGetEnabledHWPerfBlocks(IMG_UINT32 ui32DispatchTableEntry,
 				      IMG_UINT8 * psRGXGetEnabledHWPerfBlocksIN_UI8,
@@ -212,12 +209,6 @@ PVRSRVBridgeRGXGetEnabledHWPerfBlocks(IMG_UINT32 ui32DispatchTableEntry,
 	IMG_UINT32 ui32BufferSize = 0;
 	IMG_UINT64 ui64BufferSize =
 	    ((IMG_UINT64) psRGXGetEnabledHWPerfBlocksIN->ui32ArrayLen * sizeof(IMG_UINT32)) + 0;
-
-	if (psRGXGetEnabledHWPerfBlocksIN->ui32ArrayLen > RGXFWIF_HWPERF_CTRL_BLKS_MAX)
-	{
-		psRGXGetEnabledHWPerfBlocksOUT->eError = PVRSRV_ERROR_BRIDGE_ARRAY_SIZE_TOO_BIG;
-		goto RGXGetEnabledHWPerfBlocks_exit;
-	}
 
 	psRGXGetEnabledHWPerfBlocksOUT->pui32EnabledBlockIDs =
 	    psRGXGetEnabledHWPerfBlocksIN->pui32EnabledBlockIDs;
@@ -281,8 +272,9 @@ PVRSRVBridgeRGXGetEnabledHWPerfBlocks(IMG_UINT32 ui32DispatchTableEntry,
 	    ((psRGXGetEnabledHWPerfBlocksIN->ui32ArrayLen * sizeof(IMG_UINT32)) > 0))
 	{
 		if (unlikely
-		    (OSCopyToUser
-		     (NULL, (void __user *)psRGXGetEnabledHWPerfBlocksOUT->pui32EnabledBlockIDs,
+		    (CopyToUserWrapper
+		     (NULL, ui32DispatchTableEntry,
+		      (void __user *)psRGXGetEnabledHWPerfBlocksOUT->pui32EnabledBlockIDs,
 		      pui32EnabledBlockIDsInt,
 		      (psRGXGetEnabledHWPerfBlocksIN->ui32ArrayLen * sizeof(IMG_UINT32))) !=
 		     PVRSRV_OK))
@@ -458,8 +450,8 @@ PVRSRVBridgeRGXControlHWPerfBlocks(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXControlHWPerfBlocksIN->ui32ArrayLen * sizeof(IMG_UINT16) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui16BlockIDsInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui16BlockIDsInt,
 		     (const void __user *)psRGXControlHWPerfBlocksIN->pui16BlockIDs,
 		     psRGXControlHWPerfBlocksIN->ui32ArrayLen * sizeof(IMG_UINT16)) != PVRSRV_OK)
 		{
@@ -683,8 +675,9 @@ PVRSRVBridgeRGXWriteHWPerfClientEvent(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXWriteHWPerfClientEventIN->ui32Size * sizeof(IMG_BYTE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui8DataInt, (const void __user *)psRGXWriteHWPerfClientEventIN->pui8Data,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui8DataInt,
+		     (const void __user *)psRGXWriteHWPerfClientEventIN->pui8Data,
 		     psRGXWriteHWPerfClientEventIN->ui32Size * sizeof(IMG_BYTE)) != PVRSRV_OK)
 		{
 			psRGXWriteHWPerfClientEventOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -831,8 +824,8 @@ PVRSRVBridgeRGXConfigureHWPerfBlocks(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXConfigureHWPerfBlocksIN->ui32ArrayLen * sizeof(RGX_HWPERF_CONFIG_CNTBLK) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, psBlockConfigsInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, psBlockConfigsInt,
 		     (const void __user *)psRGXConfigureHWPerfBlocksIN->psBlockConfigs,
 		     psRGXConfigureHWPerfBlocksIN->ui32ArrayLen *
 		     sizeof(RGX_HWPERF_CONFIG_CNTBLK)) != PVRSRV_OK)

@@ -9,11 +9,6 @@
  * and it's licensed under GPL or MIT licenses.
  */
 
-/* Always build with FWTP enabled. */
-#ifndef FWTP_ENABLED
-#define FWTP_ENABLED 1
-#endif
-
 /* Self include. */
 #ifdef __KERNEL__
 #include "fwtp_printer.h"
@@ -188,22 +183,30 @@ fwtp_tracepoint_data_copy(struct fwtp_tracepoint_data_reader *data_reader,
 }
 
 /*
- * Prints the tracepoint with data entry with the tracepoint name string
- * specified by tracepoint_string using the tracepoint data reader specified by
- * data_reader. The printer context is specified by printer_ctx.
+ * Decodes the tracepoint with data string specified by tracepoint_string.
+ * Returns the size of data required for the string in p_required_data_size if
+ * it's non-NULL.
+ *
+ * If printer_ctx is non-NULL, prints the string using the tracepoint data
+ * reader specified by data_reader and the printer context specified by
+ * printer_ctx.
  *
  *   printer_ctx            Printer context.
  *   tracepoint_string      Tracepoint name string.
  *   data_reader            Tracepoint data reader.
+ *   p_required_data_size   Returned size of data required by string.
  */
-static void fwtp_print_tracepoint_with_data_string(
+/* TODO: b/525380920 - Refactor logic supporting conditional printing. */
+static void fwtp_decode_and_print_tracepoint_with_data_string(
 	struct fwtp_printer_ctx *printer_ctx, const char *tracepoint_string,
-	struct fwtp_tracepoint_data_reader *data_reader)
+	struct fwtp_tracepoint_data_reader *data_reader,
+	unsigned int *p_required_data_size)
 {
 	const char *p_tp_str = tracepoint_string;
 	const char *p_rem_tp_str = p_tp_str;
 	char tp_char;
 	char string_buffer[32];
+	unsigned int required_data_size = 0;
 
 	/* Print the tracepoint string with printf formatting. */
 	while (1) {
@@ -254,6 +257,15 @@ static void fwtp_print_tracepoint_with_data_string(
 					uint64_t uint64_val;
 				} val;
 
+				/* Update the required data size. */
+				required_data_size += is_64bit ?
+							      sizeof(uint64_t) :
+							      sizeof(uint32_t);
+
+				/* Continue decoding if not printing. */
+				if (!printer_ctx)
+					continue;
+
 				/* Get the data value. */
 				fwtp_tracepoint_data_copy(
 					data_reader, &val,
@@ -280,7 +292,6 @@ static void fwtp_print_tracepoint_with_data_string(
 				}
 				fwtp_buffered_append_output(printer_ctx,
 							    string_buffer);
-				p_rem_tp_str = p_tp_str;
 
 				/* Add the data item. */
 				fwtp_add_data_item(&(printer_ctx->data_items),
@@ -289,6 +300,13 @@ static void fwtp_print_tracepoint_with_data_string(
 							      sizeof(uint32_t));
 			} else if (tp_char == 's') {
 				uint32_t val;
+
+				/* Update the required data size. */
+				required_data_size += sizeof(val);
+
+				/* Continue decoding if not printing. */
+				if (!printer_ctx)
+					continue;
 
 				/* Get the data value. */
 				fwtp_tracepoint_data_copy(data_reader, &val,
@@ -300,7 +318,6 @@ static void fwtp_print_tracepoint_with_data_string(
 				fwtp_buffered_append_output(
 					printer_ctx, printer_ctx->get_string(
 							     printer_ctx, val));
-				p_rem_tp_str = p_tp_str;
 
 				/* Add the data item. */
 				fwtp_add_data_item(&(printer_ctx->data_items),
@@ -309,17 +326,27 @@ static void fwtp_print_tracepoint_with_data_string(
 				break;
 			}
 		} else {
+			/* Continue decoding if not printing. */
+			if (!printer_ctx)
+				continue;
+
 			/* Print the tracepoint character. */
 			string_buffer[0] = tp_char;
 			string_buffer[1] = '\0';
 			fwtp_buffered_append_output(printer_ctx, string_buffer);
-			p_rem_tp_str = p_tp_str;
 		}
+
+		/* Advance the remaining tracepoint string. */
+		p_rem_tp_str = p_tp_str;
 	}
 
 	/* Print remaining tracepoint string. */
-	if (*p_rem_tp_str != '\0')
+	if (printer_ctx && *p_rem_tp_str != '\0')
 		fwtp_buffered_append_output(printer_ctx, p_rem_tp_str);
+
+	/* Return the required data size. */
+	if (p_required_data_size)
+		*p_required_data_size = required_data_size;
 }
 
 /*
@@ -389,8 +416,8 @@ fwtp_print_tracepoint(struct fwtp_printer_ctx *printer_ctx, unsigned int type,
 
 		/* Print the entry string. */
 		if (data_reader) {
-			fwtp_print_tracepoint_with_data_string(
-				printer_ctx, name_str, data_reader);
+			fwtp_decode_and_print_tracepoint_with_data_string(
+				printer_ctx, name_str, data_reader, NULL);
 		} else {
 			fwtp_buffered_append_output(printer_ctx, name_str);
 		}
@@ -399,8 +426,8 @@ fwtp_print_tracepoint(struct fwtp_printer_ctx *printer_ctx, unsigned int type,
 		switch (type) {
 		case FWTP_LL_ENTRY_TYPE_TRACE_COUNTER:
 			/* Print the counter value. */
-			fwtp_print_tracepoint_with_data_string(
-				printer_ctx, ": %d", data_reader);
+			fwtp_decode_and_print_tracepoint_with_data_string(
+				printer_ctx, ": %d", data_reader, NULL);
 			break;
 		default:
 			break;
@@ -647,6 +674,7 @@ void fwtp_print_ring_entries(struct fwtp_printer_ctx *printer_ctx,
 		uint64_t entry_word;
 		uint64_t type;
 		unsigned int data_size;
+		unsigned int required_data_size;
 
 		/*
 		 * The entry size cannot be larger than the remaining size to be read and
@@ -780,7 +808,36 @@ void fwtp_print_ring_entries(struct fwtp_printer_ctx *printer_ctx,
 		case FWTP_LL_ENTRY_TYPE_TRACE_BEGIN:
 		case FWTP_LL_ENTRY_TYPE_TRACE_END:
 		case FWTP_LL_ENTRY_TYPE_TRACE_COUNTER:
-			/* Get the total tracepoint with data entry size. */
+			/* Get the size of data required to print the tracepoint. */
+			fwtp_decode_and_print_tracepoint_with_data_string(
+				NULL,
+				printer_ctx->get_string(printer_ctx, name_id),
+				NULL, &required_data_size);
+
+			/*
+			 * Counter tracepoints require an additional 4 bytes of data.
+			 *
+			 * TODO: b/525380920 - Move this to be with the decoding logic in
+			 *                     fwtp_print_tracepoint.
+			 */
+			if (type == FWTP_LL_ENTRY_TYPE_TRACE_COUNTER)
+				required_data_size += 4;
+
+			/*
+			 * Get the entry size required for the required data size. The first two
+			 * entry words provide four bytes of data. Two additional entry words
+			 * are required for each addition 15 bytes of required data.
+			 */
+			entry_size = 2 * sizeof(uint64_t);
+			if (required_data_size > 4) {
+				entry_size +=
+					((required_data_size - 4 + 14) / 15) *
+					2 * sizeof(uint64_t);
+			}
+			if (entry_size > max_entry_size)
+				break;
+
+			/* Get the actual total tracepoint with data entry size. */
 			entry_size = fwtp_get_ll_entry_with_data_size(
 				p_entry_words, max_entry_size);
 
@@ -846,7 +903,7 @@ void fwtp_print_ring_entries(struct fwtp_printer_ctx *printer_ctx,
  *   ring                   Ring from which to print tracepoints.
  *   recent_entry_count     If > 0, print only the most recent entries.
  *   decode_buffer          Intermediate decode buffer.
- *   decode_buffr_size      Size of intermediate decode buffer.
+ *   decode_buffer_size     Size of intermediate decode buffer.
  */
 void fwtp_print_ring_entries_with_decode_buffer(
 	struct fwtp_printer_ctx *printer_ctx, struct tracepoint_ring *ring,

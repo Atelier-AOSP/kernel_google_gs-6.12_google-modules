@@ -76,6 +76,9 @@
 #define REG_ACMP1H_VREF0 0x58
 #define FLD_ACMP1H_VREF0_GAIN GENMASK(1, 0)
 
+#define REG_ACMP2L_VREF1 0x59
+#define ACMP2L_VREF_DIV 0x60
+
 /* Sensor Timine Settings */
 #define REG_CNT5       0x8d
 #define CNT5_DIV_4096  0x3a  /* OSC0 CLK / 4096 */
@@ -146,15 +149,17 @@ static int h2omg_slg_v3_update_timing_regs(struct h2omg_info *info)
 		{ REG_CNT4_D, CNT4_D_20MS },
 		{ REG_CNT5_D, CNT5_D_90S },
 		{ REG_CNT6_D, CNT6_D_ON_31MS },
+		{ REG_ACMP2L_VREF1, ACMP2L_VREF_DIV },
 	};
+	size_t update_rows = (info->vref_div) ? ARRAY_SIZE(timings) : ARRAY_SIZE(timings) - 1;
 
-	return h2omg_update_regs(info, timings, ARRAY_SIZE(timings));
+	return h2omg_update_regs(info, timings, update_rows);
 }
 
 /* configure chip to trigger either when either sensor is wet (SINGLE_TRIGGER)
  * or only when both sensors get wet at the same time (to the resolution of the chip)
  */
-int h2omg_slg_v3_set_trigger_state(struct h2omg_info *info, enum h2omg_trigger_state state)
+static int h2omg_slg_v3_set_trigger_state(struct h2omg_info *info, enum h2omg_trigger_state state)
 {
 	struct regmap *regmap = info->regmap;
 	int err;
@@ -531,6 +536,10 @@ static int h2omg_slg_v3_sensor_acmp_get(struct h2omg_info *info,
 	if (err)
 		return err;
 
+	err = h2omg_slg_v3_update_timing_regs(info);
+	if (err)
+		return err;
+
 	/* If the reference sensor is disabled, the change ACMP0's noninverting input to VDD */
 	if (!FIELD_GET(FLD_CONTROL_REFERENCE_EN, ctrl)) {
 		unsigned int ref_sts0;
@@ -616,7 +625,9 @@ static int h2omg_slg_v3_sensor_acmp_get(struct h2omg_info *info,
 	err = h2omg_slg_v3_control_set(info, ctrl);
 	if (err)
 		return err;
-
+	err = h2omg_slg_v3_update_timing_regs(info);
+	if (err)
+		return err;
 	/* read out results */
 	val = FIELD_PREP(FLD_VSTATUS_INTS0, FIELD_GET(FLD_ACMP_STATUS_SNS0, sts0)) |
 	      FIELD_PREP(FLD_VSTATUS_INTS1, FIELD_GET(FLD_ACMP_STATUS_SNS1, sts0)) |
@@ -1004,6 +1015,7 @@ static const struct regmap_range h2omg_read_range[] = {
 	regmap_reg_range(REG_CNT4_D, REG_CNT4_D),
 	regmap_reg_range(REG_CNT5_D, REG_CNT5_D),
 	regmap_reg_range(REG_CNT6_D, REG_CNT6_D),
+	regmap_reg_range(REG_ACMP2L_VREF1, REG_ACMP2L_VREF1),
 };
 
 static const struct regmap_access_table h2omg_read_table = {
@@ -1026,6 +1038,7 @@ static const struct regmap_range h2omg_write_range[] = {
 	regmap_reg_range(REG_CNT4_D, REG_CNT4_D),
 	regmap_reg_range(REG_CNT5_D, REG_CNT5_D),
 	regmap_reg_range(REG_CNT6_D, REG_CNT6_D),
+	regmap_reg_range(REG_ACMP2L_VREF1, REG_ACMP2L_VREF1),
 };
 
 static const struct regmap_access_table h2omg_write_table = {

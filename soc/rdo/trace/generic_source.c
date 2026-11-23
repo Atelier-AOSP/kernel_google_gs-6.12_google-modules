@@ -6,40 +6,27 @@
 #include <linux/moduleparam.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
+#include <drivers/hwtracing/coresight/coresight-etm4x.h>
 
-#include "coresight-etm4x.h"
 #include "generic_source.h"
 
 DEFINE_CORESIGHT_DEVLIST(soc_source_devs, "soc_source");
 
 static int soc_source_enable(struct coresight_device *csdev,
-			     struct perf_event *event, enum cs_mode mode)
+			     struct perf_event *event, enum cs_mode mode,
+			     struct coresight_trace_id_map *id_map)
 {
-	int ret = 0;
-	u32 val;
-	struct soc_source_drvdata *drvdata;
-
-	drvdata = dev_get_drvdata(csdev->dev.parent);
-
-	val = local_cmpxchg(&drvdata->mode, CS_MODE_DISABLED, mode);
-	/* Someone is already using the tracer */
-	if (val)
+	if (!coresight_take_mode(csdev, mode))
 		return -EBUSY;
 	dev_info(&csdev->dev, "%s enabled\n", __func__);
-	return ret;
+	return 0;
 }
 
 static void soc_source_disable(struct coresight_device *csdev,
 			       struct perf_event *event)
 {
-	u32 mode;
-	struct soc_source_drvdata *drvdata = dev_get_drvdata(csdev->dev.parent);
-
-	mode = local_read(&drvdata->mode);
+	coresight_set_mode(csdev, CS_MODE_DISABLED);
 	dev_info(&csdev->dev, "%s disabled\n", __func__);
-
-	if (mode)
-		local_set(&drvdata->mode, CS_MODE_DISABLED);
 }
 
 static const struct coresight_ops_source soc_source_ops = {
@@ -104,13 +91,12 @@ static int trace_platdev_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int trace_platdev_remove(struct platform_device *pdev)
+static void trace_platdev_remove(struct platform_device *pdev)
 {
 	struct soc_source_drvdata *drvdata = dev_get_drvdata(&pdev->dev);
 
 	dev_info(&pdev->dev, "Remove soc_source device");
 	coresight_unregister(drvdata->csdev);
-	return 0;
 }
 
 static const struct of_device_id trace_of_ids[] = {

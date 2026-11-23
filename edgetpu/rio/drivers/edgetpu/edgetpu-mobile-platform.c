@@ -20,12 +20,14 @@
 
 #include "edgetpu-config.h"
 #include "edgetpu-devfreq.h"
-#include "edgetpu-dmabuf.h"
+#include "edgetpu-coresight-remote.h"
+#include "edgetpu-dt-mailbox-adapter.h"
 #include "edgetpu-firmware.h"
 #include "edgetpu-ikv.h"
 #include "edgetpu-internal.h"
 #include "edgetpu-mmu.h"
 #include "edgetpu-mobile-platform.h"
+#include "edgetpu-msi.h"
 #include "edgetpu-pm.h"
 #include "edgetpu-soc.h"
 #include "edgetpu-telemetry.h"
@@ -33,9 +35,8 @@
 
 static struct edgetpu_dev *edgetpu_debug_pointer;
 
-static int edgetpu_platform_setup_fw_region(struct edgetpu_mobile_platform_dev *etmdev)
+static int edgetpu_platform_setup_fw_region(struct edgetpu_dev *etdev)
 {
-	struct edgetpu_dev *etdev = &etmdev->edgetpu_dev;
 	struct device *dev = etdev->dev;
 	struct resource r;
 	struct device_node *np;
@@ -66,10 +67,8 @@ static int edgetpu_platform_setup_fw_region(struct edgetpu_mobile_platform_dev *
 	return ret;
 }
 
-static void edgetpu_platform_cleanup_fw_region(struct edgetpu_mobile_platform_dev *etmdev)
+static void edgetpu_platform_cleanup_fw_region(struct edgetpu_dev *etdev)
 {
-	struct edgetpu_dev *etdev = &etmdev->edgetpu_dev;
-
 	edgetpu_firmware_cleanup_fw_carveout(etdev);
 }
 
@@ -82,6 +81,17 @@ static inline const char *get_driver_commit(void)
 #else
 	return "Unknown";
 #endif
+}
+
+static void edgetpu_platform_init_emulation(struct edgetpu_dev *etdev)
+{
+	const char *emul_flavor = NULL;
+
+	if (of_property_read_string(etdev->dev->of_node, "emulation",
+				    &emul_flavor))
+		return;
+	if (!strcmp(emul_flavor, "slow-tpu"))
+		etdev->emulation_slow_tpu = true;
 }
 
 static int edgetpu_mobile_platform_probe(struct platform_device *pdev)
@@ -111,20 +121,21 @@ static int edgetpu_mobile_platform_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	mutex_init(&etmdev->tz_mailbox_lock);
 	etdev = &etmdev->edgetpu_dev;
+	etdev->commit_hash = get_driver_commit();
 	platform_set_drvdata(pdev, etdev);
 	etdev->dev = dev;
 	etdev->num_cores = EDGETPU_NUM_CORES;
 	etdev->num_telemetry_buffers = EDGETPU_NUM_CORES;
 	etdev->log_buffer_size = EDGETPU_TELEMETRY_LOG_BUFFER_SIZE;
-#if IS_ENABLED(CONFIG_EDGETPU_TELEMETRY_TRACE)
 	etdev->trace_buffer_size = EDGETPU_TELEMETRY_TRACE_BUFFER_SIZE;
-#endif
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (IS_ERR_OR_NULL(r)) {
 		dev_err(dev, "failed to get memory resource");
 		return -ENODEV;
 	}
 
+	/* Initialize any potential offset between `regs` and the base of TPU_TOP first. */
+	edgetpu_dt_mailbox_adapter_init_regs_offset_from_top(etdev);
 	regs.phys = r->start;
 	regs.size = resource_size(r);
 	regs.mem = devm_ioremap_resource(dev, r);
@@ -142,16 +153,27 @@ static int edgetpu_mobile_platform_probe(struct platform_device *pdev)
 	if (ret)
 		dev_warn(dev, "dma_set_coherent_mask returned %d\n", ret);
 
-	ret = edgetpu_platform_setup_fw_region(etmdev);
+	edgetpu_platform_init_emulation(etdev);
+	ret = edgetpu_platform_setup_fw_region(etdev);
 	if (ret) {
 		dev_err(dev, "setup fw regions failed: %d", ret);
 		return ret;
 	}
 
-	ret = edgetpu_device_add(etdev, &regs, iface_params, ARRAY_SIZE(iface_params));
+	/*
+	 * This must be called before `edgetpu_device_add()` as the function internally initializes
+	 * mailboxes and they are checking the availability of MSI.
+	 */
+	ret = edgetpu_msi_init(etdev);
+	if (ret) {
+		dev_err(dev, "MSI setup failed: %d", ret);
+		goto out_cleanup_fw_region;
+	}
+
+	ret = edgetpu_device_add(etdev, &regs, ARRAY_SIZE(iface_params));
 	if (ret) {
 		dev_err(dev, "edgetpu device add failed: %d", ret);
-		goto out_cleanup_fw_region;
+		goto out_msi_exit;
 	}
 
 	ret = edgetpu_soc_setup_irqs(etdev);
@@ -174,43 +196,56 @@ static int edgetpu_mobile_platform_probe(struct platform_device *pdev)
 	if (ret)
 		etdev_warn(etdev, "Failed to create devfreq interface: %d", ret);
 
-	ret = edgetpu_sync_fence_manager_create(etdev);
-	if (ret) {
-		etdev_err(etdev, "Failed to create DMA fence manager: %d", ret);
-		goto out_destroy_thermal;
-	}
+	ret = edgetpu_coresight_remote_init(etdev);
+	if (ret)
+		etdev_warn(etdev, "Failed to initialize coresight remote: %d", ret);
 
 	edgetpu_soc_post_power_on_init(etdev);
-	dev_info(dev, "%s edgetpu initialized. Build: %s", etdev->dev_name, get_driver_commit());
 
 	/* Turn the device off unless a client request is already received. */
 	edgetpu_pm_shutdown(etdev, false);
+
+	/*
+	 * edgetpu_fs_add() should be the very last line of probe(), since once it succeeds,
+	 * user-space can interact with the device through devtmpfs.
+	 */
+	ret = edgetpu_fs_add(etdev, iface_params, ARRAY_SIZE(iface_params));
+	if (ret) {
+		dev_err(etdev->dev, "%s: edgetpu_fs_add returns %d\n", etdev->dev_name, ret);
+		goto out_destroy_devfreq;
+	}
+
+	dev_info(dev, "%s edgetpu initialized. Build: %s", etdev->dev_name, etdev->commit_hash);
 
 	edgetpu_debug_pointer = etdev;
 
 	return 0;
 
-out_destroy_thermal:
+out_destroy_devfreq:
 	edgetpu_devfreq_destroy(etdev);
 	edgetpu_thermal_destroy(etdev);
 	edgetpu_firmware_destroy(etdev);
 out_remove_device:
 	edgetpu_device_remove(etdev);
+out_msi_exit:
+	edgetpu_msi_exit(etdev);
 out_cleanup_fw_region:
-	edgetpu_platform_cleanup_fw_region(etmdev);
+	edgetpu_platform_cleanup_fw_region(etdev);
 	return ret;
 }
 
 static void edgetpu_mobile_platform_remove(struct platform_device *pdev)
 {
 	struct edgetpu_dev *etdev = platform_get_drvdata(pdev);
-	struct edgetpu_mobile_platform_dev *etmdev = to_mobile_dev(etdev);
 
+	edgetpu_fs_remove(etdev);
 	edgetpu_devfreq_destroy(etdev);
+	edgetpu_coresight_remote_exit(etdev);
 	edgetpu_thermal_destroy(etdev);
 	edgetpu_firmware_destroy(etdev);
 	edgetpu_device_remove(etdev);
-	edgetpu_platform_cleanup_fw_region(etmdev);
+	edgetpu_msi_exit(etdev);
+	edgetpu_platform_cleanup_fw_region(etdev);
 
 	edgetpu_debug_pointer = NULL;
 }

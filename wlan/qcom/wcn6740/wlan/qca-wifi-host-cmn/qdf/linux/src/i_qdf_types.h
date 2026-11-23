@@ -281,6 +281,7 @@ struct __qdf_device {
 typedef struct __qdf_device *__qdf_device_t;
 
 typedef size_t __qdf_size_t;
+typedef ssize_t __qdf_ssize_t;
 typedef off_t __qdf_off_t;
 typedef void __iomem* __qdf_iomem_t;
 

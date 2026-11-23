@@ -133,10 +133,12 @@ static void vs_qos_override_min_core_clk(struct drm_crtc *crtc, struct vs_crtc_s
 static void vs_qos_override_min_qos(struct drm_crtc *crtc, struct drm_crtc_state *new_crtc_state)
 {
 	struct vs_crtc_state *vs_crtc_state = to_vs_crtc_state(new_crtc_state);
+	struct vs_crtc *vs_crtc = to_vs_crtc(crtc);
 
 	vs_qos_override_min_rd_bw(crtc, vs_crtc_state);
 	vs_qos_override_min_wr_bw(crtc, vs_crtc_state);
-	vs_qos_override_min_core_clk(crtc, vs_crtc_state);
+	if (dev_pm_qos_request_active(&vs_crtc->core_devfreq_req))
+		vs_qos_override_min_core_clk(crtc, vs_crtc_state);
 }
 
 static void vs_qos_set_fe(struct device *dev, struct drm_crtc *crtc)
@@ -337,6 +339,7 @@ static int vs_qos_set_bw(struct device *dev, struct drm_crtc *crtc)
 	int ret = 0;
 	struct vs_crtc *vs_crtc = to_vs_crtc(crtc);
 	struct vs_dc *dc = dev_get_drvdata(vs_crtc->dev);
+	const struct vs_dc_info *dc_info = dc->hw.info;
 	bool rd_bw_updated, wr_bw_updated;
 
 	if (!dc->path) {
@@ -347,7 +350,8 @@ static int vs_qos_set_bw(struct device *dev, struct drm_crtc *crtc)
 	mutex_lock(&dc->dc_qos_lock);
 	rd_bw_updated = vs_qos_set_rd_bw(dev, crtc);
 	wr_bw_updated = vs_qos_set_wr_bw(dev, crtc);
-	vs_qos_set_fe(dev, crtc);
+	if (dc_info->fe_axqos_threshold_mbps)
+		vs_qos_set_fe(dev, crtc);
 	mutex_unlock(&dc->dc_qos_lock);
 
 	if (rd_bw_updated || wr_bw_updated) {
@@ -471,8 +475,12 @@ static void vs_qos_calc_default_qos(struct drm_crtc *crtc, struct drm_crtc_state
 	rt_bw_mbps = vs_qos_calc_full_size_rtbw(dc_info, avg_bw_mbps);
 
 	qos_config->rd_avg_bw_mbps = plane_num * avg_bw_mbps;
-	qos_config->rd_rt_bw_mbps = plane_num * rt_bw_mbps;
-	qos_config->rd_peak_bw_mbps = plane_num * rt_bw_mbps;
+	qos_config->rd_peak_bw_mbps = mult_frac(
+		plane_num, rt_bw_mbps * (100 + dc_info->default_rd_peak_bw_margin_pct), 100);
+	qos_config->rd_rt_bw_mbps = mult_frac(
+		plane_num, rt_bw_mbps * (100 + dc_info->default_rd_rt_bw_margin_pct), 100);
+	if (qos_config->rd_rt_bw_mbps < dc_info->default_rd_rt_bw_min_mbps)
+		qos_config->rd_rt_bw_mbps = dc_info->default_rd_rt_bw_min_mbps;
 	if (is_wb) {
 		qos_config->wr_avg_bw_mbps = avg_bw_mbps;
 		qos_config->wr_rt_bw_mbps = rt_bw_mbps;
@@ -493,7 +501,7 @@ static void vs_qos_calc_default_qos(struct drm_crtc *crtc, struct drm_crtc_state
 		qos_config->core_clk, plane_num, is_wb, fps);
 	dev_dbg(dev, "%s: rd_avg: %u Mbps rd_peak: %u Mbps rd_rt: %u Mbps\n", __func__,
 		qos_config->rd_avg_bw_mbps, qos_config->rd_peak_bw_mbps, qos_config->rd_rt_bw_mbps);
-	dev_dbg(dev, "%s: wr_avg: %u Mbps rd_peak: %u Mbps rd_rt: %u Mbps\n", __func__,
+	dev_dbg(dev, "%s: wr_avg: %u Mbps wr_peak: %u Mbps wr_rt: %u Mbps\n", __func__,
 		qos_config->wr_avg_bw_mbps, qos_config->wr_peak_bw_mbps, qos_config->wr_rt_bw_mbps);
 }
 
@@ -549,9 +557,10 @@ void vs_qos_set_qos_config(struct device *dev, struct drm_crtc *crtc)
 void vs_qos_clear_qos_configs(struct vs_dc *dc)
 {
 	struct dc_hw *hw = &dc->hw;
+	const struct vs_dc_info *dc_info = dc->hw.info;
 	int i;
 
-	if (!dc->path)
+	if (!dc->path || !dc_info)
 		return;
 
 	DPU_ATRACE_BEGIN(__func__);
@@ -563,9 +572,11 @@ void vs_qos_clear_qos_configs(struct vs_dc *dc)
 	for (i = 0; i < DC_DISPLAY_NUM; i++) {
 		if (!dc->crtc[i])
 			continue;
+
 		if (dc->crtc[i]->qos_config.core_clk && dc->core_devfreq != NULL)
-			dev_pm_qos_update_request(&dc->crtc[i]->core_devfreq_req,
-				dc->core_devfreq->scaling_min_freq / HZ_PER_KHZ);
+			if (dev_pm_qos_request_active(&dc->crtc[i]->core_devfreq_req))
+				dev_pm_qos_update_request(&dc->crtc[i]->core_devfreq_req,
+					dc->core_devfreq->scaling_min_freq / HZ_PER_KHZ);
 
 		memset(&dc->crtc[i]->qos_config, 0,  sizeof(dc->crtc[i]->qos_config));
 		DPU_ATRACE_INT_PID("set_rd_avg_bw_mbps", 0, dc->crtc[i]->trace_pid);
@@ -578,7 +589,8 @@ void vs_qos_clear_qos_configs(struct vs_dc *dc)
 	}
 
 	memset(&dc->fe_qos_config, 0, sizeof(dc->fe_qos_config));
-	dc_hw_set_fe_qos(hw, 0);
+	if (dc_info->fe_axqos_threshold_mbps)
+		dc_hw_set_fe_qos(hw, 0);
 
 	DPU_ATRACE_END(__func__);
 }

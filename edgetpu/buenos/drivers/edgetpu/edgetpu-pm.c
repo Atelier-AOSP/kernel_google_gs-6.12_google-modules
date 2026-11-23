@@ -17,6 +17,7 @@
 #include <gcip/gcip-status-code.h>
 #include <gcip/gcip-thermal.h>
 
+#include "edgetpu-client.h"
 #include "edgetpu-config.h"
 #include "edgetpu-firmware.h"
 #include "edgetpu-gsa.h"
@@ -575,7 +576,7 @@ void edgetpu_pm_destroy(struct edgetpu_dev *etdev)
 static int __maybe_unused edgetpu_pm_suspend(struct device *dev)
 {
 	struct edgetpu_dev *etdev = dev_get_drvdata(dev);
-	struct edgetpu_list_device_client *lc;
+	struct edgetpu_client *client;
 	int count;
 	bool suspendable;
 
@@ -606,20 +607,17 @@ static int __maybe_unused edgetpu_pm_suspend(struct device *dev)
 
 	if (!mutex_trylock(&etdev->clients_lock))
 		return -EAGAIN;
-	for_each_list_device_client(etdev, lc) {
-		if (!lc->client->wakelock.req_count)
+	list_for_each_entry(client, &etdev->clients, client_list_node) {
+		if (!client->wakelock.req_count)
 			continue;
-		if (lc->client->wakelock.suspendable)
+		if (client->wakelock.suspendable)
 			continue;
-		if (lc->client == etdev->debugfs_wakelock_client)
-			etdev_warn_ratelimited(etdev,
-					       "debugfs client count %d\n",
-					       lc->client->wakelock.req_count);
+		if (client == etdev->debugfs_wakelock_client)
+			etdev_warn_ratelimited(etdev, "debugfs client count %d\n",
+					       client->wakelock.req_count);
 		else
-			etdev_warn_ratelimited(
-				etdev,
-				"client %s tgid %d count %d\n",
-				lc->client->name, lc->client->tgid, lc->client->wakelock.req_count);
+			etdev_warn_ratelimited(etdev, "client %s tgid %d count %d\n", client->name,
+					       client->tgid, client->wakelock.req_count);
 	}
 	mutex_unlock(&etdev->clients_lock);
 	return -EAGAIN;

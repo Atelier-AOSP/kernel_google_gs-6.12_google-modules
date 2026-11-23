@@ -14,7 +14,9 @@
 
 #include "vpu_priv.h"
 
-#define QCHCTL_ACTIVE_MASK_0_OFFSET 0x10
+#define C3P_CONTROL_INPUT_OFFSET 0x1004
+#define C3P_CONTROL_INPUT_SW_EN_OFFSET 0x1008
+#define NS_PSM_C3P_CORE_FSM_STATUS_OFFSET 0x101c
 
 int vpu_pm_init(struct vpu_core *core);
 void vpu_pm_deinit(struct vpu_core *core);

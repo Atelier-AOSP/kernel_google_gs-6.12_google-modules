@@ -26,6 +26,7 @@
 #include <linux/kernel.h>
 #include <linux/version.h>
 #include <linux/skbuff.h>
+#include <linux/skbuff_ref.h>
 #include <linux/module.h>
 #include <linux/proc_fs.h>
 #include <qdf_atomic.h>
@@ -787,7 +788,7 @@ qdf_nbuf_history_add(qdf_nbuf_t nbuf, const char *func, uint32_t line,
 	}
 
 	event->nbuf = nbuf;
-	qdf_str_lcopy(event->func, func, QDF_MEM_FUNC_NAME_SIZE);
+	qdf_str_scopy(event->func, func, QDF_MEM_FUNC_NAME_SIZE);
 	event->line = line;
 	event->type = type;
 	event->timestamp = qdf_get_log_timestamp();
@@ -2777,7 +2778,7 @@ void qdf_net_buf_debug_add_node(qdf_nbuf_t net_buf, size_t size,
 		p_node = new_node;
 		if (p_node) {
 			p_node->net_buf = net_buf;
-			qdf_str_lcopy(p_node->func_name, func_name,
+			qdf_str_scopy(p_node->func_name, func_name,
 				      QDF_MEM_FUNC_NAME_SIZE);
 			p_node->line_num = line_num;
 			p_node->is_nbuf_mapped = false;
@@ -2818,7 +2819,7 @@ void qdf_net_buf_debug_update_node(qdf_nbuf_t net_buf, const char *func_name,
 	p_node = qdf_net_buf_debug_look_up(net_buf);
 
 	if (p_node) {
-		qdf_str_lcopy(p_node->func_name, kbasename(func_name),
+		qdf_str_scopy(p_node->func_name, kbasename(func_name),
 			      QDF_MEM_FUNC_NAME_SIZE);
 		p_node->line_num = line_num;
 	}
@@ -2845,7 +2846,7 @@ void qdf_net_buf_debug_update_map_node(qdf_nbuf_t net_buf,
 	p_node = qdf_net_buf_debug_look_up(net_buf);
 
 	if (p_node) {
-		qdf_str_lcopy(p_node->map_func_name, func_name,
+		qdf_str_scopy(p_node->map_func_name, func_name,
 			      QDF_MEM_FUNC_NAME_SIZE);
 		p_node->map_line_num = line_num;
 		p_node->is_nbuf_mapped = true;
@@ -2870,7 +2871,7 @@ void qdf_net_buf_debug_update_unmap_node(qdf_nbuf_t net_buf,
 	p_node = qdf_net_buf_debug_look_up(net_buf);
 
 	if (p_node) {
-		qdf_str_lcopy(p_node->unmap_func_name, func_name,
+		qdf_str_scopy(p_node->unmap_func_name, func_name,
 			      QDF_MEM_FUNC_NAME_SIZE);
 		p_node->unmap_line_num = line_num;
 		p_node->is_nbuf_mapped = false;

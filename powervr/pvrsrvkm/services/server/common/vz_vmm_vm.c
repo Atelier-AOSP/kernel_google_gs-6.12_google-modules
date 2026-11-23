@@ -44,7 +44,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pvrsrv.h"
 #include "img_defs.h"
 #include "img_types.h"
-#include "pvrsrv.h"
 #include "pvrsrv_error.h"
 #include "vz_vm.h"
 #include "rgxfwutils.h"

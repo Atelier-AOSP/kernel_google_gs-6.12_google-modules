@@ -106,6 +106,7 @@
 #if defined(WL_CFG80211)
 #include <wl_cfg80211.h>
 #include <wl_cfgvif.h>
+#include <wl_cfgscan.h>
 #ifdef WL_BAM
 #include <wl_bam.h>
 #endif	/* WL_BAM */
@@ -501,10 +502,6 @@ dhd_pub_t *g_dhd_pub;
 #endif /* CONFIG_EXYNOS_S2MPU */
 #endif /* CONFIG_ARCH_EXYNOS */
 #endif /* DHD_EXYNOS_S2MPU */
-
-#ifdef WL_CFG80211
-#include <wl_cfgscan.h>
-#endif /* WL_CFG80211 */
 
 
 #ifdef WL_STATIC_IF
@@ -3069,7 +3066,8 @@ _dhd_set_mac_address(dhd_info_t *dhd, int ifidx, uint8 *addr)
 	ret = dhd_iovar(&dhd->pub, ifidx, "cur_etheraddr", (char *)addr,
 			ETHER_ADDR_LEN, NULL, 0, TRUE);
 	if (ret < 0) {
-		DHD_ERROR(("%s: set cur_etheraddr failed\n", dhd_ifname(&dhd->pub, ifidx)));
+		DHD_ERROR(("%s: set cur_etheraddr failed. ret=%d\n",
+			dhd_ifname(&dhd->pub, ifidx), ret));
 	} else {
 		NETDEV_ADDR_SET(dhd->iflist[ifidx]->net, ETHER_ADDR_LEN, addr, ETHER_ADDR_LEN);
 		if (ifidx == 0)
@@ -6348,7 +6346,14 @@ dhd_del_monitor_if(dhd_info_t *dhd)
 	}
 
 #ifdef DHD_ART
-	 dhd_remove_static_if(&dhd->pub, dhd->monitor_dev, FALSE);
+	/*
+	 * When called from dhd_detach via dhdpcie_pci_remove (sysfs remove), RTNL is NOT held
+	 * and need_rtnl_lock must be TRUE so dhd_unregister_net acquires it.
+	 *
+	 * When called from dhd_pri_stop (normal WiFi-off, RTNL held by netdev
+	 * layer), need_rtnl_lock must be FALSE to avoid a deadlock.
+	 */
+	dhd_remove_static_if(&dhd->pub, dhd->monitor_dev, !rtnl_is_locked());
 #else
 	if (dhd->monitor_dev->reg_state == NETREG_UNINITIALIZED) {
 		free_netdev(dhd->monitor_dev);
@@ -6384,11 +6389,20 @@ dhd_set_monitor(dhd_pub_t *pub, int ifidx, int val)
 
 	dhd_net_if_lock_local(dhd);
 	if (!val) {
+#ifndef WL_CFG80211_MONITOR
+		pub->monitor_iface_up = FALSE;
+#endif /* WL_CFG80211_MONITOR */
 		/* Delete monitor */
 		dhd_del_monitor_if(dhd);
 	} else {
 		/* Add monitor */
 		dhd_add_monitor_if(dhd);
+#ifndef WL_CFG80211_MONITOR
+		/* For FC WL_CFG80211_MONITOR is not defined. So set monitor iface up
+		 * once the monitor interface is up in FW
+		 */
+		pub->monitor_iface_up = TRUE;
+#endif /* WL_CFG80211_MONITOR */
 	}
 	dhd->monitor_type[ifidx] = val;
 	/* FW always sends monitor packets on interface zero
@@ -7054,6 +7068,16 @@ dhd_stop(struct net_device *net)
 	dhd_info_t *dhd = DHD_DEV_INFO(net);
 	int timeleft = 0;
 	uint32 bitmask = (uint32)-1;
+
+	if (unlikely(!net)) {
+		DHD_ERROR(("%s: net is NULL\n", __FUNCTION__));
+		return BCME_ERROR;
+	}
+
+	if (!dhd) {
+		DHD_PRINT(("%s: dhd is NULL, already detached\n", __FUNCTION__));
+		return 0;
+	}
 
 	DHD_PRINT(("%s: ENTER\n", __FUNCTION__));
 	DHD_OS_WAKE_LOCK(&dhd->pub);
@@ -10157,7 +10181,6 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 
 #ifdef DHD_TIMESYNC
 	dhd->pub.ts_lock = osl_spin_lock_init(dhd->pub.osh);
-	OSL_LOCK_CLASS_SET(dhd->pub.ts_lock);
 	/* attach the timesync module */
 	if (dhd_timesync_attach(&dhd->pub) != 0) {
 		DHD_ERROR(("dhd_timesync_attach failed\n"));
@@ -10215,7 +10238,6 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 #endif /* !OEM_ANDROID && BTLOG */
 #ifdef DBG_PKT_MON
 	dhd->pub.dbg->pkt_mon_lock = osl_spin_lock_init(dhd->pub.osh);
-	OSL_LOCK_CLASS_SET(dhd->pub.dbg->pkt_mon_lock);
 #ifdef DBG_PKT_MON_INIT_DEFAULT
 	dhd_os_dbg_attach_pkt_monitor(&dhd->pub);
 #endif /* DBG_PKT_MON_INIT_DEFAULT */
@@ -10225,7 +10247,6 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 
 #ifdef DHD_MEM_STATS
 	dhd->pub.mem_stats_lock = osl_spin_lock_init(dhd->pub.osh);
-	OSL_LOCK_CLASS_SET(dhd->pub.mem_stats_lock);
 	dhd->pub.txpath_mem = 0;
 	dhd->pub.rxpath_mem = 0;
 #endif /* DHD_MEM_STATS */
@@ -10240,7 +10261,6 @@ dhd_attach(osl_t *osh, struct dhd_bus *bus, uint bus_hdrlen)
 
 #if defined(DHD_MESH)
 	dhd->pub.mesh_rt_lock = osl_spin_lock_init(dhd->pub.osh);
-	OSL_LOCK_CLASS_SET(dhd->pub.mesh_rt_lock);
 #endif /* defined(DHD_MESH) */
 
 #ifdef RX_PKT_POOL
@@ -12158,6 +12178,11 @@ dhd_get_fw_capabilities(dhd_pub_t *dhd)
 
 	int ret = 0;
 	uint32 cap_buf_size = sizeof(dhd->fw_capabilities);
+
+	/* Validate that feature bit definitions for SET1 and SET2 do not overlap */
+	STATIC_ASSERT(WLC_CAPEXT_FEATURE_SET1_MAX < WLC_CAPEXT_FEATURE_SET2_BUCKET_START);
+	STATIC_ASSERT((WLC_CAPEXT_FEATURE_SET2_BUCKET_END + 1u) == WLC_CAPEXT_FEATURE_BITPOS_MAX);
+
 	bzero(dhd->fw_capabilities, cap_buf_size);
 	if (dhd->wlc_ver_major < 17) {
 		ret = dhd_iovar(dhd, 0, "cap", NULL, 0, dhd->fw_capabilities, (cap_buf_size - 1),
@@ -15879,37 +15904,41 @@ dhd_bus_detach(dhd_pub_t *dhdp)
 void
 dhd_pri_dev_close(dhd_pub_t *dhdp)
 {
-	dhd_info_t *dhd;
-	dhd_if_t *ifp;
-	struct net_device *dev = NULL;
-
-	dhd = (dhd_info_t *)dhdp->info;
-	if (!dhd)
-		return;
-
 	DHD_PRINT(("%s\n", __FUNCTION__));
 
 #ifdef DHD_PCIE_RUNTIMEPM
 	dhdpcie_runtime_bus_wake(dhdp, TRUE, dhd_pri_dev_close);
 #endif /* DHD_PCIE_RUNTIMEPM */
 
-	/* primary interface 0 */
-	ifp = dhd->iflist[0];
-	if (ifp && ifp->net) {
-		dev = ifp->net;
-	}
+	if (!dhdp)
+		return;
 
-	if (dev) {
-		rtnl_lock();
-		if (dev->flags & IFF_UP) {
-			/* If IFF_UP is still up, it indicates that
-			 * "ifconfig wlan0 down" hasn't been called.
-			 * So invoke dev_close explicitly here to
-			 * bring down the interface.
-			 */
-			DHD_TRACE(("IFF_UP flag is up. Enforcing dev_close from detach \n"));
-			dev_close(dev);
-		}
+	dhd_force_close_primary_dev(dhdp);
+}
+
+void
+dhd_force_close_primary_dev(dhd_pub_t *dhdp)
+{
+	struct net_device *dev = NULL;
+
+	if (!dhdp)
+		return;
+
+	dev = dhd_linux_get_primary_netdev(dhdp);
+	if (!dev)
+		return;
+	if (!(dev->flags & IFF_UP))
+		return;
+
+	if (!rtnl_trylock()) {
+		/* If rtnl lock is held,
+		 * skip this and let the unregister context handle it.
+		 */
+		DHD_ERROR(("%s: skip dev_close as rtnl_lock is already held\n",
+			__FUNCTION__));
+	} else {
+		DHD_TRACE(("Enforcing primary netdev close from force-close wrapper\n"));
+		dev_close(dev);
 		rtnl_unlock();
 	}
 }
@@ -16016,6 +16045,10 @@ void dhd_detach(dhd_pub_t *dhdp)
 	}
 #endif /* CONFIG_HAS_EARLYSUSPEND && DHD_USE_EARLYSUSPEND */
 
+#ifdef WL_MONITOR
+	dhd_del_monitor_if(dhd);
+#endif /* WL_MONITOR */
+
 	if (dhdp->dbg) {
 #ifdef DHD_DMPD
 		dhd_dmpd_detach(dhdp);
@@ -16032,20 +16065,16 @@ void dhd_detach(dhd_pub_t *dhdp)
 		dhd_os_dbg_detach(dhdp);
 	}
 
-/* Delete monitor interface before the static-IF loop and wlan0 unregister */
-#ifdef WL_MONITOR
-	dhd_del_monitor_if(dhd);
-#endif /* WL_MONITOR */
-
 	/* delete all interfaces, start with virtual  */
 	if (dhd->dhd_state & DHD_ATTACH_STATE_ADD_IF) {
 		int i = 1;
 
 		/* Cleanup virtual interfaces */
+		rtnl_lock();
 		dhd_net_if_lock_local(dhd);
 		for (i = 1; i < DHD_MAX_IFS; i++) {
 			if (dhd->iflist[i] && !(dhd->iflist[i]->static_if)) {
-				dhd_remove_if(&dhd->pub, i, TRUE);
+				dhd_remove_if(&dhd->pub, i, FALSE);
 			}
 		}
 
@@ -16053,11 +16082,12 @@ void dhd_detach(dhd_pub_t *dhdp)
 		for (i = 0; i < DHD_MAX_STATIC_IFS; i++) {
 			dhd_if_t *static_ifp = dhd->static_iflist[i];
 			if (static_ifp && static_ifp->net) {
-				dhd_remove_static_if(&dhd->pub, static_ifp->net, TRUE);
+				dhd_remove_static_if(&dhd->pub, static_ifp->net, FALSE);
 			}
 		}
 #endif /* WL_STATIC_IF */
 		dhd_net_if_unlock_local(dhd);
+		rtnl_unlock();
 
 		/* 'ifp' indicates primary interface 0, clean it up. */
 		if (ifp && ifp->net) {
@@ -19535,8 +19565,17 @@ int net_os_send_hang_message_reason(struct net_device *dev, const char *string_n
 
 int dhd_net_wifi_platform_set_power(struct net_device *dev, bool on, unsigned long delay_msec)
 {
-	dhd_info_t *dhd = DHD_DEV_INFO(dev);
-	return wifi_platform_set_power(dhd->adapter, on, delay_msec);
+	int ret = BCME_ERROR;
+
+	if (dev) {
+		dhd_info_t *dhd = DHD_DEV_INFO(dev);
+
+		if (dhd && dhd->adapter) {
+			ret = wifi_platform_set_power(dhd->adapter, on, delay_msec);
+		}
+	}
+
+	return ret;
 }
 
 int dhd_wifi_platform_set_power(dhd_pub_t *pub, bool on)
@@ -20198,9 +20237,20 @@ void dhd_wk_lock_stats_dump(dhd_pub_t *dhdp)
 
 int dhd_os_wake_lock(dhd_pub_t *pub)
 {
-	dhd_info_t *dhd = (dhd_info_t *)(pub->info);
+	dhd_info_t *dhd;
 	unsigned long flags;
 	int ret = 0;
+
+	if (unlikely(!pub)) {
+		DHD_ERROR(("%s: pub is NULL\n", __FUNCTION__));
+		return 0;
+	}
+
+	dhd = (dhd_info_t *)(pub->info);
+	if (unlikely(!dhd)) {
+		DHD_ERROR(("%s: dhd is NULL\n", __FUNCTION__));
+		return 0;
+	}
 
 	if (dhd && (dhd->dhd_state & DHD_ATTACH_STATE_WAKELOCKS_INIT)) {
 		DHD_WAKE_SPIN_LOCK(&dhd->wakelock_spinlock, flags);
@@ -24624,7 +24674,6 @@ dhd_ring_init(dhd_pub_t *dhdp, uint8 *buf, uint32 buf_size, uint32 elem_size,
 	ret_ring = (dhd_ring_info_t *)buf;
 	ret_ring->type = type;
 	ret_ring->ring_sync = (void *)DHD_RING_SYNC_LOCK_INIT(dhdp->osh);
-	OSL_LOCK_CLASS_SET(ret_ring->ring_sync);
 	ret_ring->magic = DHD_RING_MAGIC;
 
 	if (type == DHD_RING_TYPE_FIXED) {

@@ -173,14 +173,12 @@ static inline void google_cpm_cli_release_mailbox(struct google_cpm_cli *cpm_cli
 		cpm_iface_free_client(cpm_cli->cpm_client);
 }
 
-static int google_cpm_cli_remove(struct platform_device *pdev)
+static void google_cpm_cli_remove(struct platform_device *pdev)
 {
 	struct google_cpm_cli *cpm_cli = platform_get_drvdata(pdev);
 
 	google_cpm_cli_release_mailbox(cpm_cli);
 	debugfs_remove_recursive(cpm_cli->debugfs_root);
-
-	return 0;
 }
 
 static int google_cpm_cli_probe(struct platform_device *pdev)

@@ -27,9 +27,6 @@
 
 /** XXX Twiki: [PCIeFullDongleArchitecture] */
 
-#if defined(DHD_HP2P) || defined(DHD_MAP_PKTID_LOGGING)
-#include <linux/sched/clock.h>
-#endif /* DHD_HP2P || DHD_MAP_PKTID_LOGGING */
 #include <typedefs.h>
 #include <osl.h>
 
@@ -2003,7 +2000,7 @@ typedef struct dhd_pktid_log_item {
 typedef struct dhd_pktid_log {
 	uint32 items;		/* number of total items */
 	uint32 index;		/* index of pktid_log_item */
-	dhd_pktid_log_item_t map[];	/* metadata storage */
+	dhd_pktid_log_item_t map[0];	/* metadata storage */
 } dhd_pktid_log_t;
 
 typedef void * dhd_pktid_log_handle_t; /* opaque handle to pktid log */
@@ -2444,7 +2441,7 @@ typedef struct dhd_pktid_map {
 	struct bcm_mwbmap *pktid_audit; /* multi word bitmap based audit */
 #endif /* DHD_PKTID_AUDIT_ENABLED */
 	dhd_pktid_key_t	*keys; /* map_items +1 unique pkt ids */
-	dhd_pktid_item_t lockers[];	/* metadata storage */
+	dhd_pktid_item_t lockers[0];           /* metadata storage */
 } dhd_pktid_map_t;
 
 /*

@@ -6,11 +6,11 @@
 
 #include <linux/device.h>
 #include <linux/of.h>
-#include <misc/gvotable.h>
 
 enum gpu_dts_version {
 	GPU_DTS_VERSION_1 = 0,
 	GPU_DTS_VERSION_2,
+	GPU_DTS_VERSION_3,
 	GPU_DTS_VERSION_NUM,
 };
 

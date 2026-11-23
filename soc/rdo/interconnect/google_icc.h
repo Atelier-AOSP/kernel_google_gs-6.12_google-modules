@@ -3,15 +3,9 @@
 #ifndef _GOOGLE_ICC_H
 #define _GOOGLE_ICC_H
 
-#include <linux/interconnect-provider.h>
-#include <linux/platform_device.h>
 #include <linux/types.h>
 
-#include "google_icc_internal.h"
-#include "google_irm.h"
-
-#define to_google_provider(_provider) \
-	container_of(_provider, struct google_icc_provider, provider)
+#include "google_icc_vote.h"
 
 #define MAX_LINKS 8
 
@@ -21,12 +15,6 @@ enum {
 	TYPE_GMC,
 	TYPE_GSLC,
 	TYPE_QBOX,
-};
-
-struct google_icc_provider {
-	struct icc_provider provider;
-	struct device *dev;
-	struct irm_dev *irm_dev;
 };
 
 struct google_icc_node {
@@ -53,8 +41,5 @@ struct google_icc_desc {
 	struct google_icc_node *const *nodes;
 	size_t num_nodes;
 };
-
-int google_icc_platform_probe(struct platform_device *pdev);
-int google_icc_platform_remove(struct platform_device *pdev);
 
 #endif /* _GOOGLE_ICC_H */

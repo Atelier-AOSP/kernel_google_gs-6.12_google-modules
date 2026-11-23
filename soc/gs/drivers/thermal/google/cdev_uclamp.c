@@ -17,7 +17,7 @@
 #include <linux/workqueue.h>
 
 #include "thermal_core.h"
-#include "../../soc/google/vh/include/sched.h"
+#include "sched.h"
 
 struct thermal_uclamp_cdev {
 	unsigned int cpu;
@@ -172,8 +172,7 @@ static struct thermal_cooling_device_ops thermal_uclamp_cdev_ops = {
 	.power2state = thermal_uclamp_power2state,
 };
 
-ssize_t
-state2power_table_show(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t state2power_table_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct thermal_cooling_device *cdev = to_cooling_device(dev);
 	struct thermal_uclamp_cdev *uclamp_cdev = cdev->devdata;

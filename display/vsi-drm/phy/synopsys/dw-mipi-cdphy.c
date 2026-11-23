@@ -33,11 +33,12 @@ static int dw_mipi_cdphy_of_parse_pdata(struct device *dev,
 	}
 
 	pdata->pll_ssc = of_property_read_bool(np, "pll_ssc");
+	pdata->non24x_fix = of_property_read_bool(np, "non24x_fix");
 
 	return 0;
 }
 
-static struct phy *dw_mipi_phy_of_xlate(struct device *dev, struct of_phandle_args *args)
+static struct phy *dw_mipi_phy_of_xlate(struct device *dev, const struct of_phandle_args *args)
 {
 	struct dw_mipi_cdphy *dw_cdphy = dev_get_drvdata(dev);
 
@@ -74,6 +75,7 @@ static int dw_mipi_cdphy_probe(struct platform_device *pdev)
 	dw_cdphy->pdev = pdev;
 	/* Add to the phy struct */
 	dw_cdphy->is_cphy = pdata->is_cphy;
+	dw_cdphy->non24x_fix = pdata->non24x_fix;
 	dw_cdphy->pllref_clk = devm_clk_get(dev, "pllref");
 	if (IS_ERR(dw_cdphy->pllref_clk))
 		return PTR_ERR(dw_cdphy->pllref_clk);
@@ -117,24 +119,27 @@ static int dw_mipi_cdphy_probe(struct platform_device *pdev)
 	return PTR_ERR_OR_ZERO(phy_provider);
 }
 
-static int dw_mipi_cdphy_remove(struct platform_device *pdev)
+static void dw_mipi_cdphy_remove(struct platform_device *pdev)
 {
 	struct dw_mipi_cdphy *dw_cdphy = platform_get_drvdata(pdev);
 
 	dw_cdphy->cdphy_remove(dw_cdphy);
 
 	pr_info("Removed dw_mipi_cdphy\n");
-
-	return 0;
 }
 
 const struct dw_mipi_cdphy_data dw_mipi_cdphy_data_v0 = {
 	.lane_conn_fixup = true,
 };
 
+const struct dw_mipi_cdphy_data dw_mipi_cdphy_data_v1 = {
+	.pll_calc_old = true,
+};
+
 static const struct of_device_id dw_mipi_cdphy_dt_match[] = {
 	{.compatible = "synopsys,dw-mipi-cdphy", .data = &dw_mipi_cdphy_data_v0},
-	{.compatible = "synopsys,dw-mipi-cdphy-v1"},
+	{.compatible = "synopsys,dw-mipi-cdphy-v1", .data = &dw_mipi_cdphy_data_v1},
+	{.compatible = "synopsys,dw-mipi-cdphy-v2"},
 	{},
 };
 MODULE_DEVICE_TABLE(of, dw_mipi_cdphy_dt_match);

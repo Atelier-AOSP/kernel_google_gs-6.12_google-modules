@@ -11,6 +11,8 @@
 #include <linux/acpi.h>
 #include <linux/clk-provider.h>
 #include <linux/clk.h>
+#include <linux/debugfs.h>
+#include <linux/seq_file.h>
 #include <linux/delay.h>
 #include <linux/dmi.h>
 #include <linux/err.h>
@@ -282,6 +284,168 @@ static void i2c_dw_remove_lock_support(struct dw_i2c_dev *dev)
 		i2c_dw_semaphore_cb_table[dev->semaphore_idx].remove(dev);
 }
 
+static void i2c_dw_start_aoss_ssr(struct dw_i2c_dev *i2c_dev)
+{
+	dev_info(i2c_dev->dev, "AOSS SSR started\n");
+
+	i2c_mark_adapter_suspended(&i2c_dev->adapter);
+	pm_runtime_force_suspend(i2c_dev->dev);
+}
+
+static void i2c_dw_finish_aoss_ssr(struct dw_i2c_dev *i2c_dev)
+{
+	dev_info(i2c_dev->dev, "AOSS SSR finished\n");
+
+	pm_runtime_force_resume(i2c_dev->dev);
+	i2c_mark_adapter_resumed(&i2c_dev->adapter);
+}
+
+static int aoss_ssr_read(void *data, u64 *val)
+{
+	*val = ((struct dw_i2c_dev *)data)->aoss_ssr_started;
+	return 0;
+}
+
+static int aoss_ssr_write(void *data, u64 val)
+{
+	struct dw_i2c_dev *i2c_dev = data;
+
+	if (val && !i2c_dev->aoss_ssr_started)
+		i2c_dw_start_aoss_ssr(i2c_dev);
+	else if (!val && i2c_dev->aoss_ssr_started)
+		i2c_dw_finish_aoss_ssr(i2c_dev);
+
+	i2c_dev->aoss_ssr_started = val;
+	return 0;
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(aoss_ssr_fops, aoss_ssr_read, aoss_ssr_write, "%llu\n");
+
+static int clk_freq_show(struct seq_file *s, void *unused)
+{
+	struct dw_i2c_dev *dev = s->private;
+	u32 ic_clk = 0;
+	u32 con = 0;
+	u32 hcnt = 0;
+	u32 lcnt = 0;
+	u32 sda_hold = 0;
+	u32 rx_hold = 0;
+	u32 tx_hold = 0;
+	u32 rx_hold_ns = 0;
+	u32 tx_hold_ns = 0;
+	u32 rise_ns = dev->timings.scl_rise_ns;
+	u64 period_ps = 0;
+	u64 freq = 0;
+	const char *mode_str;
+	const char *hcnt_reg_str;
+	const char *lcnt_reg_str;
+	int ret;
+
+	ret = pm_runtime_resume_and_get(dev->dev);
+	if (ret < 0) {
+		dev_err(dev->dev, "failed to resume the device %d\n", ret);
+		return ret;
+	}
+
+	if (dev->get_clk_rate_khz)
+		ic_clk = i2c_dw_clk_rate(dev);
+
+	if (!ic_clk) {
+		pm_runtime_mark_last_busy(dev->dev);
+		pm_runtime_put_autosuspend(dev->dev);
+		return -EOPNOTSUPP;
+	}
+
+	ret = i2c_dw_acquire_lock(dev);
+	if (ret) {
+		pm_runtime_mark_last_busy(dev->dev);
+		pm_runtime_put_autosuspend(dev->dev);
+		return ret;
+	}
+
+	regmap_read(dev->map, DW_IC_CON, &con);
+
+	switch (con & DW_IC_CON_SPEED_MASK) {
+	case DW_IC_CON_SPEED_HIGH:
+		mode_str = "High Speed (HS)";
+		hcnt_reg_str = "DW_IC_HS_SCL_HCNT";
+		lcnt_reg_str = "DW_IC_HS_SCL_LCNT";
+		regmap_read(dev->map, DW_IC_HS_SCL_HCNT, &hcnt);
+		regmap_read(dev->map, DW_IC_HS_SCL_LCNT, &lcnt);
+		break;
+	case DW_IC_CON_SPEED_FAST:
+		mode_str = "Fast Speed (FS/FMP)";
+		hcnt_reg_str = "DW_IC_FS_SCL_HCNT";
+		lcnt_reg_str = "DW_IC_FS_SCL_LCNT";
+		regmap_read(dev->map, DW_IC_FS_SCL_HCNT, &hcnt);
+		regmap_read(dev->map, DW_IC_FS_SCL_LCNT, &lcnt);
+		break;
+	case DW_IC_CON_SPEED_STD:
+	default:
+		mode_str = "Standard Speed (SS)";
+		hcnt_reg_str = "DW_IC_SS_SCL_HCNT";
+		lcnt_reg_str = "DW_IC_SS_SCL_LCNT";
+		regmap_read(dev->map, DW_IC_SS_SCL_HCNT, &hcnt);
+		regmap_read(dev->map, DW_IC_SS_SCL_LCNT, &lcnt);
+		break;
+	}
+
+	regmap_read(dev->map, DW_IC_SDA_HOLD, &sda_hold);
+	rx_hold = (sda_hold & DW_IC_SDA_HOLD_RX_MASK) >> DW_IC_SDA_HOLD_RX_SHIFT;
+	tx_hold = sda_hold & DW_IC_SDA_HOLD_TX_MASK;
+
+	rx_hold_ns = DIV_ROUND_CLOSEST_ULL((u64)rx_hold * MICRO, ic_clk);
+	tx_hold_ns = DIV_ROUND_CLOSEST_ULL((u64)tx_hold * MICRO, ic_clk);
+
+	if (hcnt + lcnt) {
+		period_ps = DIV_ROUND_CLOSEST_ULL((u64)(hcnt + lcnt + 4) * 1000000000ULL, ic_clk);
+		period_ps += (u64)rise_ns * 1000ULL;
+		if (period_ps)
+			freq = DIV64_U64_ROUND_CLOSEST(1000000000000ULL, period_ps);
+	}
+
+	i2c_dw_release_lock(dev);
+	pm_runtime_mark_last_busy(dev->dev);
+	pm_runtime_put_autosuspend(dev->dev);
+
+	seq_printf(s, "Input Clock Rate: %u kHz\n", ic_clk);
+	seq_printf(s, "Active Speed Mode: %s\n", mode_str);
+	seq_printf(s, "%s: %u\n", hcnt_reg_str, hcnt);
+	seq_printf(s, "%s: %u\n", lcnt_reg_str, lcnt);
+	seq_printf(s, "Rx SDA Hold Delay: %u ns\n", rx_hold_ns);
+	seq_printf(s, "Tx SDA Hold Delay: %u ns\n", tx_hold_ns);
+	seq_printf(s, "Configured Rise Time: %u ns\n", rise_ns);
+	seq_printf(s, "Calculated Clock Frequency: %llu Hz\n", freq);
+
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(clk_freq);
+
+static void i2c_dw_debugfs_init(struct dw_i2c_dev *i2c_dev)
+{
+	struct dentry *tmp;
+
+	i2c_dev->debugfs = debugfs_create_dir(dev_name(i2c_dev->dev), NULL);
+	if (IS_ERR_OR_NULL(i2c_dev->debugfs)) {
+		dev_err(i2c_dev->dev, "failed to create debugfs directory: %ld\n",
+			PTR_ERR(i2c_dev->debugfs));
+		return;
+	}
+
+	tmp = debugfs_create_file("trigger-aoss-ssr", 0644, i2c_dev->debugfs,
+				 i2c_dev, &aoss_ssr_fops);
+	if (IS_ERR_OR_NULL(tmp)) {
+		dev_err(i2c_dev->dev, "failed to create debugfs trigger-aoss-ssr file: %ld\n",
+			PTR_ERR(tmp));
+		debugfs_remove_recursive(i2c_dev->debugfs);
+		i2c_dev->debugfs = NULL;
+		return;
+	}
+
+	debugfs_create_file("clk_freq", 0444, i2c_dev->debugfs, i2c_dev, &clk_freq_fops);
+}
+
 static int dw_i2c_plat_probe(struct platform_device *pdev)
 {
 	struct i2c_adapter *adap;
@@ -403,6 +567,17 @@ static int dw_i2c_plat_probe(struct platform_device *pdev)
 		pm_runtime_use_autosuspend(&pdev->dev);
 	}
 
+	dev->io_vreg_dev = devm_regulator_get_optional(&pdev->dev, "io-vreg");
+	if (IS_ERR(dev->io_vreg_dev)) {
+		ret = PTR_ERR(dev->io_vreg_dev);
+		if (ret == -ENODEV) {
+			dev->io_vreg_dev = NULL;
+		} else {
+			dev_err(&pdev->dev, "io regulator is not ready\n");
+			goto exit_probe;
+		}
+	}
+
 	pm_runtime_set_active(&pdev->dev);
 
 	if (dev->shared_with_punit)
@@ -413,6 +588,8 @@ static int dw_i2c_plat_probe(struct platform_device *pdev)
 	ret = i2c_dw_probe(dev);
 	if (ret)
 		goto exit_probe;
+
+	i2c_dw_debugfs_init(dev);
 
 	if (dev->ext_power_control)
 		pm_runtime_suspend(&pdev->dev);
@@ -441,6 +618,7 @@ static void dw_i2c_plat_remove(struct platform_device *pdev)
 	dw_i2c_plat_pm_cleanup(dev);
 
 	i2c_dw_remove_lock_support(dev);
+	debugfs_remove_recursive(dev->debugfs);
 
 	reset_control_assert(dev->rst);
 }
@@ -459,11 +637,10 @@ static int dw_i2c_plat_prepare(struct device *dev)
 static int dw_i2c_plat_runtime_suspend(struct device *dev)
 {
 	struct dw_i2c_dev *i_dev = dev_get_drvdata(dev);
-
-	trace_i2c_dw_runtime_suspend(i_dev);
+	int ret = 0;
 
 	if (i_dev->shared_with_punit)
-		return 0;
+		goto r_susp_out;
 
 	i_dev->disable(i_dev);
 	i2c_dw_prepare_clk(i_dev, false);
@@ -472,14 +649,22 @@ static int dw_i2c_plat_runtime_suspend(struct device *dev)
 
 	reset_control_assert(i_dev->rst);
 
-	return 0;
+	if (i_dev->io_vreg_dev) {
+		ret = regulator_disable(i_dev->io_vreg_dev);
+		if (ret)
+			dev_err(dev, "failed to disable io regulator\n");
+	}
+
+r_susp_out:
+	trace_i2c_dw_runtime_suspend(i_dev, ret);
+	return ret;
 }
 
 static int dw_i2c_plat_suspend(struct device *dev)
 {
 	struct dw_i2c_dev *i_dev = dev_get_drvdata(dev);
 
-	trace_i2c_dw_suspend(i_dev);
+	trace_i2c_dw_suspend(i_dev, 0);
 
 	i2c_mark_adapter_suspended(&i_dev->adapter);
 	return pm_runtime_force_suspend(dev);
@@ -488,14 +673,20 @@ static int dw_i2c_plat_suspend(struct device *dev)
 static int dw_i2c_plat_runtime_resume(struct device *dev)
 {
 	struct dw_i2c_dev *i_dev = dev_get_drvdata(dev);
-	int res;
+	int ret = 0;
 
-	trace_i2c_dw_runtime_resume(i_dev);
+	if (i_dev->io_vreg_dev) {
+		ret = regulator_enable(i_dev->io_vreg_dev);
+		if (ret) {
+			dev_err(dev, "Fail to enable io regulator\n");
+			goto r_resume_out;
+		}
+	}
 
 	if (i_dev->cli_state) {
-		res = pinctrl_select_state(i_dev->pinctrl, i_dev->cli_state);
-		if (res)
-			return res;
+		ret = pinctrl_select_state(i_dev->pinctrl, i_dev->cli_state);
+		if (ret)
+			goto r_resume_out;
 	}
 
 	if (!i_dev->shared_with_punit)
@@ -507,22 +698,24 @@ static int dw_i2c_plat_runtime_resume(struct device *dev)
 
 	pinctrl_pm_select_default_state(dev);
 
-	return 0;
+r_resume_out:
+	trace_i2c_dw_runtime_resume(i_dev, ret);
+	return ret;
 }
 
 static int dw_i2c_plat_resume(struct device *dev)
 {
 	struct dw_i2c_dev *i_dev = dev_get_drvdata(dev);
-	int ret;
-
-	trace_i2c_dw_resume(i_dev);
+	int ret = 0;
 
 	ret = pm_runtime_force_resume(dev);
 	if (ret < 0)
-		return ret;
+		goto resume_out;
 	i2c_mark_adapter_resumed(&i_dev->adapter);
 
-	return 0;
+resume_out:
+	trace_i2c_dw_resume(i_dev, ret);
+	return ret;
 }
 
 static const struct dev_pm_ops dw_i2c_dev_pm_ops = {

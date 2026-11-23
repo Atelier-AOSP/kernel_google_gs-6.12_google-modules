@@ -348,7 +348,7 @@ PVRSRV_ERROR PhysMemValidateParams(PVRSRV_DEVICE_NODE *psDevNode,
                                    IMG_DEVMEM_SIZE_T *puiSize)
 {
 	IMG_UINT32 uiLog2AllocPageSize = *puiLog2AllocPageSize;
-	IMG_UINT32 ui32PageSize = IMG_PAGE2BYTES32(uiLog2AllocPageSize);
+	IMG_UINT32 ui32PageSize;
 	IMG_DEVMEM_SIZE_T uiSize = *puiSize;
 	/* Sparse if we have different number of virtual and physical chunks plus
 	 * in general all allocations with more than one virtual chunk */
@@ -393,6 +393,18 @@ PVRSRV_ERROR PhysMemValidateParams(PVRSRV_DEVICE_NODE *psDevNode,
 
 		return PVRSRV_ERROR_INVALID_PARAMS;
 	}
+
+	/* Protect against invalid log2 alloc page sizes */
+	if (uiLog2AllocPageSize > IMG_PAGE_SHIFT_2MB)
+	{
+		PVR_DPF((PVR_DBG_ERROR, "%s: Log2 of allocation page size %u is too large",
+		         __func__,
+		         uiLog2AllocPageSize));
+
+		return PVRSRV_ERROR_INVALID_PARAMS;
+	}
+
+	ui32PageSize = IMG_PAGE2BYTES32(uiLog2AllocPageSize);
 
 	/* Protect against invalid page sizes */
 	if ((ui32PageSize & psDevNode->psMMUDevAttrs->ui32ValidPageSizeMask) == 0)
@@ -593,6 +605,67 @@ static INLINE void _PromoteToCpuCached(PVRSRV_MEMALLOCFLAGS_T *puiFlags)
 }
 #endif
 
+PVRSRV_ERROR PhysMemPhysHeapSelect(PVRSRV_DEVICE_NODE *psDevNode,
+                                   PVRSRV_MEMALLOCFLAGS_T *puiFlags,
+                                   PHYS_HEAP **ppsPhysHeap)
+{
+	PVRSRV_PHYS_HEAP ePhysHeapIdx;
+	PVRSRV_ERROR eError;
+
+	eError = _DevPhysHeapFromFlags(*puiFlags, &ePhysHeapIdx, psDevNode);
+	PVR_RETURN_IF_ERROR(eError);
+
+	if (ePhysHeapIdx == PVRSRV_PHYS_HEAP_DEFAULT)
+	{
+		ePhysHeapIdx = psDevNode->psDevConfig->eDefaultHeap;
+		PVRSRV_CHANGE_PHYS_HEAP_HINT(ePhysHeapIdx, *puiFlags);
+	}
+
+	if (ePhysHeapIdx == PVRSRV_PHYS_HEAP_GPU_LOCAL)
+	{
+#if defined(PVRSRV_PHYSHEAP_ENABLE_GPUPRIVATE_PROMOTION)
+		if ((*puiFlags & PVRSRV_MEMALLOCFLAGS_CPU_MAPPABLE_MASK) == 0)
+		{
+			ePhysHeapIdx = PVRSRV_PHYS_HEAP_GPU_PRIVATE;
+			PVRSRV_SET_PHYS_HEAP_HINT(GPU_PRIVATE, *puiFlags);
+			PVR_DPF((PVR_DBG_VERBOSE, "%s: Consider explicit use of GPU_PRIVATE for PMR."
+			        " Implicit conversion to GPU PRIVATE performed",
+			        __func__));
+		}
+		else
+#endif
+		if (PVRSRV_CHECK_GPU_CACHE_COHERENT(*puiFlags) &&
+		    PVRSRVSystemSnoopingOfCPUCache(psDevNode))
+		{
+			ePhysHeapIdx = PVRSRV_PHYS_HEAP_GPU_COHERENT;
+			PVRSRV_SET_PHYS_HEAP_HINT(GPU_COHERENT, *puiFlags);
+		}
+	}
+	else if (ePhysHeapIdx == PVRSRV_PHYS_HEAP_GPU_PRIVATE)
+	{
+		if (*puiFlags & PVRSRV_MEMALLOCFLAGS_CPU_MAPPABLE_MASK)
+		{
+			PVR_DPF((PVR_DBG_ERROR, "%s: Invalid flags for PMR!"
+			        " Client requested GPU_PRIVATE physical heap with CPU access flags.",
+			        __func__));
+			return PVRSRV_ERROR_INVALID_HEAP;
+		}
+	}
+
+	if (psDevNode->apsPhysHeap[ePhysHeapIdx] == NULL)
+	{
+		/* In case a heap hasn't been acquired for this type, return invalid heap error */
+		PVR_DPF((PVR_DBG_ERROR, "%s: Requested allocation on device node (%p) from "
+		        "an invalid heap (HeapIndex=%d)",
+		        __func__, psDevNode, ePhysHeapIdx));
+		return PVRSRV_ERROR_INVALID_HEAP;
+	}
+
+	*ppsPhysHeap = psDevNode->apsPhysHeap[ePhysHeapIdx];
+
+	return PVRSRV_OK;
+}
+
 PVRSRV_ERROR
 PhysmemNewRamBackedPMR_direct(CONNECTION_DATA *psConnection,
                        PVRSRV_DEVICE_NODE *psDevNode,
@@ -611,8 +684,9 @@ PhysmemNewRamBackedPMR_direct(CONNECTION_DATA *psConnection,
 {
 	PVRSRV_ERROR eError;
 	IMG_UINT32 i;
-	PVRSRV_PHYS_HEAP ePhysHeapIdx;
 	PVRSRV_MEMALLOCFLAGS_T uiPMRFlags = uiFlags;
+	PHYS_HEAP *psPhysHeap = NULL;
+
 	uiPid = (psConnection != NULL) ? OSGetCurrentClientProcessIDKM() : uiPid;
 
 	/* This is where we would expect to validate the uiAnnotationLength parameter
@@ -662,54 +736,8 @@ PhysmemNewRamBackedPMR_direct(CONNECTION_DATA *psConnection,
 		                        PVRSRV_ERROR_INVALID_PARAMS);
 	}
 
-	eError = _DevPhysHeapFromFlags(uiFlags, &ePhysHeapIdx, psDevNode);
-	PVR_RETURN_IF_ERROR(eError);
-
-	if (ePhysHeapIdx == PVRSRV_PHYS_HEAP_DEFAULT)
-	{
-		ePhysHeapIdx = psDevNode->psDevConfig->eDefaultHeap;
-		PVRSRV_CHANGE_PHYS_HEAP_HINT(ePhysHeapIdx, uiPMRFlags);
-	}
-
-	if (ePhysHeapIdx == PVRSRV_PHYS_HEAP_GPU_LOCAL)
-	{
-#if defined(PVRSRV_PHYSHEAP_ENABLE_GPUPRIVATE_PROMOTION)
-		if ((uiFlags & PVRSRV_MEMALLOCFLAGS_CPU_MAPPABLE_MASK) == 0)
-		{
-			ePhysHeapIdx = PVRSRV_PHYS_HEAP_GPU_PRIVATE;
-			PVRSRV_SET_PHYS_HEAP_HINT(GPU_PRIVATE, uiPMRFlags);
-			PVR_DPF((PVR_DBG_VERBOSE, "%s: Consider explicit use of GPU_PRIVATE for PMR %s."
-			        " Implicit conversion to GPU PRIVATE performed",
-			        __func__, pszAnnotation));
-		}
-		else
-#endif
-		if (PVRSRV_CHECK_GPU_CACHE_COHERENT(uiFlags) &&
-		    PVRSRVSystemSnoopingOfCPUCache(psDevNode))
-		{
-			ePhysHeapIdx = PVRSRV_PHYS_HEAP_GPU_COHERENT;
-			PVRSRV_SET_PHYS_HEAP_HINT(GPU_COHERENT, uiPMRFlags);
-		}
-	}
-	else if (ePhysHeapIdx == PVRSRV_PHYS_HEAP_GPU_PRIVATE)
-	{
-		if (uiFlags & PVRSRV_MEMALLOCFLAGS_CPU_MAPPABLE_MASK)
-		{
-			PVR_DPF((PVR_DBG_ERROR, "%s: Invalid flags for PMR %s!"
-			        " Client requested GPU_PRIVATE physical heap with CPU access flags.",
-			        __func__, pszAnnotation));
-			return PVRSRV_ERROR_INVALID_HEAP;
-		}
-	}
-
-	if (NULL == psDevNode->apsPhysHeap[ePhysHeapIdx])
-	{
-		/* In case a heap hasn't been acquired for this type, return invalid heap error */
-		PVR_DPF((PVR_DBG_ERROR, "%s: Requested allocation on device node (%p) from "
-		        "an invalid heap (HeapIndex=%d)",
-		        __func__, psDevNode, ePhysHeapIdx));
-		return PVRSRV_ERROR_INVALID_HEAP;
-	}
+	eError = PhysMemPhysHeapSelect(psDevNode, &uiPMRFlags, &psPhysHeap);
+	PVR_LOG_RETURN_IF_ERROR(eError, "PhysMemPhysHeapSelect");
 
 #if defined(DEBUG)
 	if (PMRAllocFail > 0)
@@ -746,7 +774,7 @@ PhysmemNewRamBackedPMR_direct(CONNECTION_DATA *psConnection,
 	 * GPU_LOCAL may demote to CPU_LOCAL.
 	 * On output uiPMRFlags show the PhysHeap finally used.
 	 */
-	eError = PhysHeapCreatePMR(psDevNode->apsPhysHeap[ePhysHeapIdx],
+	eError = PhysHeapCreatePMR(psPhysHeap,
 							   psConnection,
 							   uiSize,
 							   ui32PhysChunkCount,
@@ -842,14 +870,33 @@ PVRSRVPhysHeapGetMemInfoKM(CONNECTION_DATA *psConnection,
                            PVRSRV_DEVICE_NODE *psDevNode,
                            IMG_UINT32 ui32PhysHeapCount,
                            PVRSRV_PHYS_HEAP *paePhysHeapID,
-                           PHYS_HEAP_MEM_STATS *paPhysHeapMemStats)
+                           PHYS_HEAP_MEM_STATS_OLD *paPhysHeapMemStatsOld)
+{
+
+	PVR_UNREFERENCED_PARAMETER(psConnection);
+	PVR_UNREFERENCED_PARAMETER(psDevNode);
+	PVR_UNREFERENCED_PARAMETER(ui32PhysHeapCount);
+	PVR_UNREFERENCED_PARAMETER(paePhysHeapID);
+	PVR_UNREFERENCED_PARAMETER(paPhysHeapMemStatsOld);
+
+	return PVRSRV_ERROR_NOT_SUPPORTED;
+}
+
+PVRSRV_ERROR
+PVRSRVPhysHeapGetMemInfoKM2(CONNECTION_DATA *psConnection,
+                            PVRSRV_DEVICE_NODE *psDevNode,
+                            IMG_UINT32 ui32PhysHeapCount,
+                            PVRSRV_PHYS_HEAP *paePhysHeapID,
+                            PHYS_HEAP_MEM_STATS *paPhysHeapMemStats)
 {
 	PVR_UNREFERENCED_PARAMETER(psConnection);
+
 	return PhysHeapGetMemInfo(psDevNode,
 	                          ui32PhysHeapCount,
 	                          paePhysHeapID,
 	                          paPhysHeapMemStats);
 }
+
 
 /* 'Wrapper' function to call PMRImportPMR(), which first checks the PMR is
  * for the current device. This avoids the need to do this in pmr.c, which

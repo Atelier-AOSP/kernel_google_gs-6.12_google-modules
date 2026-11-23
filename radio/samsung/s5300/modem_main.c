@@ -6,6 +6,7 @@
  *
  */
 
+#include <linux/cleanup.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -33,6 +34,7 @@
 #include <uapi/linux/in.h>
 #include <linux/inet.h>
 #include <net/ipv6.h>
+#include <misc/logbuffer.h>
 #include <soc/google/exynos-modem-ctrl.h>
 #include <soc/google/modem_notifier.h>
 
@@ -483,9 +485,7 @@ static int parse_dt_ipc_region_pdata(struct device *dev, struct device_node *np,
 static int parse_dt_iodevs_pdata(struct device *dev, struct device_node *np,
 				 struct modem_data *pdata)
 {
-	struct device_node *child = NULL;
-
-	for_each_child_of_node(np, child) {
+	for_each_child_of_node_scoped(np, child) {
 		struct modem_io_t *p_iod = NULL;
 		struct modem_io_t *iod;
 		unsigned int ch_count = 0;
@@ -549,7 +549,7 @@ static int parse_dt_iodevs_pdata(struct device *dev, struct device_node *np,
 static struct modem_data *modem_if_parse_dt_pdata(struct device *dev)
 {
 	struct modem_data *pdata;
-	struct device_node *iodevs_node = NULL;
+	struct device_node *iodevs_node __free(device_node) = NULL;
 
 	pdata = devm_kzalloc(dev, sizeof(struct modem_data), GFP_KERNEL);
 	if (!pdata)
@@ -792,6 +792,7 @@ static int cpif_probe(struct platform_device *pdev)
 		np = of_parse_phandle(dev->of_node, "google,clk-buffer", 0);
 		if (np) {
 			dp = s5910_get_device(np);
+			of_node_put(np);
 			if (dp) {
 				modemctl->s5910_dev = dp;
 				link = device_link_add(dev, dp, 0);

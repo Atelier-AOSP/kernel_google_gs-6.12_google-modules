@@ -28,7 +28,11 @@ properties:
     $ref: "types.yaml#/definitions/phandle"
 
   ap5v-gpio:
-    description: GPIO to supply 5V to the WLC chip.
+    description: GPIO to enable 5V supply to the WLC chip.
+    $ref: "types.yaml#/definitions/phandle"
+
+  vdden-gpio:
+    description: GPIO to enable vdd switch internally in WLC chip.
     $ref: "types.yaml#/definitions/phandle"
 
   mode-gpio:
@@ -91,8 +95,12 @@ properties:
     description: thermal table use for MPP charger
     $ref: /schemas/types.yaml#/definitions/uint32-array
 
-  google,has_wlc_dc:
-    description: Support charge pump
+  google,has-mpp25-wlc-dc:
+    description: Support charge pump with 25W MPP
+    type: boolean
+
+  google,has-mpp15-wlc-dc:
+    description: Support charge pump with 15W MPP
     type: boolean
 
   mpp_eds_soc:
@@ -111,6 +119,13 @@ properties:
     description: soc level reached for activating dynamic modulation
     $ref: /schemas/types.yaml#/definitions/uint32
 
+  google,support-mpp25:
+    description: enable mpp25 flow
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  google,dploss-volts:
+    description: dploss voltage table for deltap loss in mpp25
+
   google,wlc_qispec:
     description: supported qi version and mode
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -127,10 +142,77 @@ properties:
     description: The Vout tolerance threshold for check if need to decrease ICL for low-gain BPP chargers
     $ref: /schemas/types.yaml#/definitions/uint32
 
+  google,charger-switch-skip-cloak:
+    description: whether to skip cloak mode when switching chargers
+    type: boolean
+
+  google,wlc-dc-xce-thresh:
+    description: the XCE threshold for WLC_DC
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  google,wlc-chg-configs:
+    description: phandle list of chg configs
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+
+  child-node:
+    description: Child node which represents a charger config
+    properties:
+      target-power-mode:
+        description: MPP power mode that should be used for this charger
+        $ref: /schemas/types.yaml#/definitions/uint32
+        required: true
+      charger-type:
+        description: type of charger it is
+        $ref: /schemas/types.yaml#/definitions/uint32
+        required: true
+      mod-mode:
+        description: modulation mode that should be set for this charger
+        $ref: /schemas/types.yaml#/definitions/uint32
+        required: true
+      mod-change-timing:
+        description: configures when the modulation mode should be changed when using this charger
+        $ref: /schemas/types.yaml#/definitions/uint32
+        required: true
+      initial-current-ua:
+        description: initial current for this charger in uA
+        $ref: /schemas/types.yaml#/definitions/uint32
+        required: true
+      icl-step-size-ua:
+        description: ICL step size for this charger in uA
+        $ref: /schemas/types.yaml#/definitions/uint32
+        required: true
+      icl-rounding:
+        description: Configure the ICL rounding method for this charger
+        $ref: /schemas/types.yaml#/definitions/uint32
+        required: true
+      initial-voltage-uv:
+        description: Configure the initial voltage for this charger
+        $ref: /schemas/types.yaml#/definitions/uint32
+        required: true
+      max-voltage-uv:
+        description: Configure the max voltage the charger supports
+        $ref: /schemas/types.yaml#/definitions/uint32
+        required: true
+      mpp-mdis-name:
+        description: name of the property containing the mdis table for this charger
+        $def: /schemas/types.yaml#/definitions/string
+      use-auto-vout:
+        description: Configure whether the auto vout setting of wlc should be set when using this charger
+        type: boolean
+      mpp25-only:
+        description: Configure whether the charger should be only allowed for MPP25
+        type: boolean
+      exit-by-ept:
+        description: Configure whether the charger should be exited by sending EPT
+        type: boolean
+patternProperties:
+  "^mpp-mdis-[a-zA-Z0-9-]*":
+    description: thermal table used for a specific MPP charger by name
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+
 required:
   - compatible
   - irq-gpio
-  - ap5v-gpio
   - mode-gpio
   - inhibit-gpio
 

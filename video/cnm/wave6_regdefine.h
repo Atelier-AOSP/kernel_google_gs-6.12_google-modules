@@ -58,9 +58,9 @@ enum {
 	INT_WAVE6_ENC_SET_PARAM     = 9,
 	INT_WAVE6_SET_DISP_BUF      = 10,
 	INT_WAVE6_UPDATE_FB         = 11,
+	INT_WAVE6_HW_STOP           = 13,
 	INT_WAVE6_BSBUF_EMPTY       = 15,
 	INT_WAVE6_BSBUF_FULL        = 15,
-	INT_WAVE6_CMD_EMPTY         = 13,
 	INT_WAVE6_SLEEP_VPU_SUCCESS = 28,
 	INT_WAVE6_SLEEP_VPU_IDLE    = 29,
 };
@@ -71,6 +71,7 @@ enum {
 #define W6_REG_BASE     0x00000000
 #define W6_CMD_REG_BASE 0x00000200
 #define W6_CMD_REG_END  0x00000600
+#define W6_CMD_REG_COUNT ((W6_CMD_REG_END - W6_CMD_REG_BASE) / 4)
 
 /************************************************************************/
 /* VPU HOST REGISTER                                                    */

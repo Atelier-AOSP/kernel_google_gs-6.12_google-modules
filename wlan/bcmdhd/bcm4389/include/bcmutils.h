@@ -1544,7 +1544,7 @@ typedef struct dll_pool {
 	uint16      free_count;
 	uint16      elems_max;
 	uint16      elem_size;
-	BCM_DECLARE_FLEX_ARRAY(dll_t, elements);
+	dll_t       elements[BCM_FLEX_ARRAY];
 } dll_pool_t;
 
 dll_pool_t * dll_pool_init(void * osh, uint16 elems_max, uint16 elem_size);
@@ -1662,7 +1662,7 @@ typedef struct {
 	uint32 id;                   /**< id, e.g. core id */
 	uint32 rev;                  /**< rev, e.g. core rev */
 	uint32 n_bytes;              /**< nbytes in array val[] */
-	BCM_DECLARE_FLEX_ARRAY(uint32, val);  /**< out: values that were read out of registers or memory */
+	uint32 val[BCM_FLEX_ARRAY];  /**< out: values that were read out of registers or memory */
 } dump_dongle_out_t;
 
 extern uint32 sqrt_int(uint32 value);

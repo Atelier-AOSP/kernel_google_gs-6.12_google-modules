@@ -188,9 +188,9 @@ extern void exynos_pcie_set_skip_config(int ch_num, bool val);
 #endif /* DHD_TREAT_D3ACKTO_AS_LINKDWN */
 #endif /* CONFIG_PCI_EXYNOS_GS */
 
-#if IS_ENABLED(CONFIG_SOC_LGA)
+#if IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU)
 extern void google_pcie_dump_debug(int num);
-#endif /* CONFIG_SOC_LGA */
+#endif /* CONFIG_SOC_LGA || CONFIG_SOC_MBU */
 
 #ifdef DHD_COREDUMP
 #define DEVICE_NAME "wlan"
@@ -394,46 +394,18 @@ typedef struct {
     char sku[MAX_HW_INFO_LEN];
 } sku_info_t;
 
-#if defined(BCM4383_CHIP_DEF)
 sku_info_t sku_table[] = {
 	{ {"G8HHN"}, {"MMW"} },
 	{ {"GLBW0"}, {"MMW"} },
+	{ {"GPQQ7"}, {"MMW"} },
 	{ {"G6GPR"}, {"ROW"} },
 	{ {"GK2MP"}, {"ROW"} },
+	{ {"GUJ0N"}, {"ROW"} },
 	{ {"G576D"}, {"JPN"} },
 	{ {"GL066"}, {"JPN"} },
+	{ {"GV9X7"}, {"JPN"} },
 	{ {"GKV4X"}, {"NA"} }
 };
-#else
-sku_info_t sku_table[] = {
-	{ {"G9S9B"}, {"MMW"} },
-	{ {"G8V0U"}, {"MMW"} },
-	{ {"GFQM1"}, {"MMW"} },
-	{ {"GB62Z"}, {"MMW"} },
-	{ {"GE2AE"}, {"MMW"} },
-	{ {"GQML3"}, {"MMW"} },
-	{ {"GKWS6"}, {"MMW"} },
-	{ {"G1MNW"}, {"MMW"} },
-	{ {"GB7N6"}, {"ROW"} },
-	{ {"GLU0G"}, {"ROW"} },
-	{ {"GNA8F"}, {"ROW"} },
-	{ {"GX7AS"}, {"ROW"} },
-	{ {"GP4BC"}, {"ROW"} },
-	{ {"GVU6C"}, {"ROW"} },
-	{ {"GPJ41"}, {"ROW"} },
-	{ {"GC3VE"}, {"ROW"} },
-	{ {"GR1YH"}, {"JPN"} },
-	{ {"GF5KQ"}, {"JPN"} },
-	{ {"GPQ72"}, {"JPN"} },
-	{ {"GB17L"}, {"JPN"} },
-	{ {"GFE4J"}, {"JPN"} },
-	{ {"G03Z5"}, {"JPN"} },
-	{ {"GE9DP"}, {"JPN"} },
-	{ {"GZPF0"}, {"JPN"} },
-	{ {"G1AZG"}, {"EU"} },
-	{ {"G9BQD"}, {"NA"} }
-};
-#endif /* BCM4383_CHIP_DEF */
 
 static int
 dhd_wlan_get_mac_addr(unsigned char *buf)
@@ -2012,15 +1984,19 @@ dhd_pcie_l1ss_ctrl(int enable, int ch_num)
 
 	if (support_l1ss & enable) {
 		aspm_state = PCIE_LINK_STATE_L1 |
-#if IS_ENABLED(CONFIG_SOC_LGA)
+#if IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU)
 				PCIE_LINK_STATE_CLKPM |
-#endif /* CONFIG_SOC_LGA */
+#endif /* CONFIG_SOC_LGA || CONFIG_SOC_MBU */
 				PCIE_LINK_STATE_L1_1 | PCIE_LINK_STATE_L1_2;
 	}
 
 	DHD_PRINT(("%s: Set aspm link state %x (support_l1ss = %d)\n",
 		__FUNCTION__, aspm_state, support_l1ss));
+
+	pm_runtime_get_sync(&pci_dev->dev);
 	ret = pci_enable_link_state(pci_dev, aspm_state);
+	pm_runtime_put(&pci_dev->dev);
+
 	return ret;
 }
 

@@ -141,6 +141,14 @@ err:
 	return ERR_PTR(ret);
 }
 
+struct vs_gem_object *vs_fb_get_gem_obj(struct drm_framebuffer *fb, unsigned char plane)
+{
+	if (plane > MAX_NUM_PLANES)
+		return NULL;
+
+	return to_vs_gem_object(fb->obj[plane]);
+}
+
 dma_addr_t vs_fb_get_dma_addr(struct drm_framebuffer *fb, unsigned char plane)
 {
 	struct vs_gem_object *vs_obj;
@@ -197,7 +205,16 @@ static const struct drm_format_info vs_formats[] = {
 	  .num_planes = 3,
 	  .cpp = { 1, 1, 1 },
 	  .hsub = 1,
-	  .vsub = 1 }
+	  .vsub = 1 },
+	{ .format = DRM_FORMAT_YUV420_10BIT,
+	  .depth = 0,
+	  .num_planes = 2,
+	  .char_per_block = { 4, 8, 0 },
+	  .block_w = { 3, 3, 0 },
+	  .block_h = { 1, 1, 0 },
+	  .hsub = 2,
+	  .vsub = 2,
+	  .is_yuv = true }
 };
 
 static const struct drm_format_info *vs_lookup_format_info(const struct drm_format_info formats[],

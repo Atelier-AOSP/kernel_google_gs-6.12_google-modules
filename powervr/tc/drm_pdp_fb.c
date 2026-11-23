@@ -50,6 +50,7 @@
 #endif
 #include <drm/drm_crtc.h>
 #include <drm/drm_crtc_helper.h>
+#include <drm/drm_print.h>
 
 #include "drm_pdp_gem.h"
 #include "kernel_compatibility.h"
@@ -121,7 +122,6 @@ int pdp_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
 #endif
 	struct drm_framebuffer *fb =
 		to_drm_framebuffer(&pdp_fbdev->fb);
-	struct pdp_gem_private *gem_priv = pdp_fbdev->priv->gem_priv;
 	struct drm_device *dev = helper->dev;
 	struct drm_mode_fb_cmd2 mode_cmd;
 	struct pdp_gem_object *pdp_obj;
@@ -131,16 +131,16 @@ int pdp_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
 	size_t obj_size;
 	int err;
 
+	WARN_ON(pdp_fbdev->priv->dev != dev);
+
 	if (helper->fb)
 		return 0;
-
-	mutex_lock(&dev->struct_mutex);
 
 	/* Create a framebuffer */
 	info = pdp_fbdev_helper_alloc(helper);
 	if (!info) {
 		err = -ENOMEM;
-		goto err_unlock_dev;
+		goto err_exit;
 	}
 
 	memset(&mode_cmd, 0, sizeof(mode_cmd));
@@ -152,10 +152,10 @@ int pdp_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
 							  sizes->surface_depth);
 	obj_size = PAGE_ALIGN(mode_cmd.height * mode_cmd.pitches[0]);
 
-	obj = pdp_gem_object_create(dev, gem_priv, obj_size, 0);
+	obj = pdp_gem_object_create(dev, obj_size, 0);
 	if (IS_ERR(obj)) {
 		err = PTR_ERR(obj);
-		goto err_unlock_dev;
+		goto err_exit;
 	}
 
 	pdp_obj = to_pdp_obj(obj);
@@ -203,7 +203,6 @@ int pdp_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
 	info->apertures->ranges[0].size = obj_size;
 #endif
 
-	mutex_unlock(&dev->struct_mutex);
 	return 0;
 
 err_gem_unmap:
@@ -211,11 +210,9 @@ err_gem_unmap:
 		iounmap(vaddr);
 
 err_gem_destroy:
-	pdp_gem_object_free_priv(gem_priv, obj);
+	pdp_gem_object_free(obj);
 
-err_unlock_dev:
-	mutex_unlock(&dev->struct_mutex);
-
+err_exit:
 	DRM_ERROR(FBDEV_NAME " - %s failed (err=%d)\n", __func__, err);
 	return err;
 }

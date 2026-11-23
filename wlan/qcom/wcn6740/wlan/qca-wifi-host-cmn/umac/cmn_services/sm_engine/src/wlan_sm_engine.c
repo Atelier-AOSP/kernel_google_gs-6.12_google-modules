@@ -271,7 +271,7 @@ struct wlan_sm *wlan_sm_create(const char *name, void *ctx,
 	sm->event_names = event_names;
 	sm->num_event_names = num_event_names;
 
-	qdf_str_lcopy(sm->name, name, WLAN_SM_ENGINE_MAX_NAME);
+	qdf_str_scopy(sm->name, name, WLAN_SM_ENGINE_MAX_NAME);
 
 	sm_engine_debug("%s: sm creation successful", name);
 

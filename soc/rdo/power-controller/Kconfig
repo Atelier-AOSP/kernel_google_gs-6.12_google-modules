@@ -11,9 +11,9 @@ config GOOGLE_POWER_CONTROLLER
 	  sswrps, it sends a MBA mailbox to CPM to request toggle
 	  the power domains.
 
-config GOOGLE_POWER_CONTROLLER_GPU_MITIGATION
-       tristate "Google power controller driver with the GPU MITIGATION feature"
-       depends on GOOGLE_POWER_CONTROLLER
-       help
-         This driver is to configures the GPU mitigation response
-         settings.
+config GOOGLE_SYSPM
+	tristate "Power request rerouting to SysPM"
+	depends on GOOGLE_POWER_CONTROLLER
+	help
+	  Enable power domain request rerouting to interface
+	  provided by SysPM framework. If unsure do not enable.

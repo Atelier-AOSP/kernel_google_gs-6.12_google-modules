@@ -733,4 +733,40 @@ struct iif_fence_tracker_status {
  */
 #define IIF_FENCE_CREATE_TRACKER _IOR(IIF_IOCTL_BASE, IIF_FENCE_IOCTL_NUM_BASE + 9, __s32)
 
+/*
+ * Delegates the signaler of the fence from IP to AP.
+ *
+ * The runtime can utilize this ioctl if it needs to signal the fence which was
+ * originally intended to be signaled by IP.
+ *
+ * This MUST be used only if the runtime can guarantee that the IP will not
+ * signal the fence anymore (e.g., the signaler command hasn't been submitted to
+ * the IP yet). Also, this operation is irreversible.
+ *
+ * Once this ioctl is called, the runtime can use `IIF_FENCE_SIGNAL` ioctl to
+ * signal the fence directly.
+ *
+ * Example (Single-shot fence):
+ *   // Note that the created fence is "TPU" signaled, not AP.
+ *   struct iif_create_fence_ioctl create_cmd = {
+ *       .signaler_ip = IIF_IP_TPU,
+ *       .total_signalers = 1,
+ *   };
+ *   ioctl(iif_dev_fd, IIF_CREATE_FENCE, &create_cmd);
+ *
+ *   // To delegate the fence signaler to AP.
+ *   ioctl(create_cmd.fence, IIF_FENCE_DELEGATE_TO_AP);
+ *
+ *   // Now the runtime can signal the fence as AP-signaled.
+ *   struct iif_fence_signal_ioctl signal_cmd = {
+ *       .error = -ECANCELED
+ *   };
+ *   ioctl(create_cmd.fence, IIF_FENCE_SUBMIT_SIGNALER);
+ *   ioctl(create_cmd.fence, IIF_FENCE_SIGNAL, &signal_cmd);
+ *   ioctl(create_cmd.fence, IIF_FENCE_SIGNALER_COMPLETED);
+ *
+ * Returns 0 on success.
+ */
+#define IIF_FENCE_DELEGATE_TO_AP _IO(IIF_IOCTL_BASE, IIF_FENCE_IOCTL_NUM_BASE + 10)
+
 #endif /* __IIF_IIF_H__ */

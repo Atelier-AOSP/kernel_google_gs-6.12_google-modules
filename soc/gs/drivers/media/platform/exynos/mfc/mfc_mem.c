@@ -179,7 +179,7 @@ err_dma_heap_find:
 	return -ENOMEM;
 }
 
-void mfc_mem_dma_heap_free(struct mfc_special_buf *special_buf)
+static void mfc_mem_dma_heap_free(struct mfc_special_buf *special_buf)
 {
 	struct iosys_map map = IOSYS_MAP_INIT_VADDR(special_buf->vaddr);
 

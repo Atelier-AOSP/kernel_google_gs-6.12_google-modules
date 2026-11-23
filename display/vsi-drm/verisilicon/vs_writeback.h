@@ -21,6 +21,11 @@ struct vs_writeback_funcs {
 	int (*check)(struct vs_writeback_connector *wb_connector, struct drm_framebuffer *fb,
 		     struct drm_display_mode *mode, struct drm_connector_state *state);
 	void (*cleanup)(struct vs_writeback_connector *wb_connector);
+#ifdef CONFIG_DEBUG_FS
+	void (*set_qos)(struct device *dev, struct vs_writeback_connector *vs_wb,
+			const char __user *ubuf, size_t len);
+	int (*show_qos)(struct seq_file *s);
+#endif
 };
 
 struct vs_writeback_connector_state {
@@ -28,6 +33,7 @@ struct vs_writeback_connector_state {
 	struct vs_drm_property_state drm_states[VS_DC_MAX_PROPERTY_NUM];
 
 	u32 wb_point;
+	struct dc_hw_wb_qos qos;
 	enum drm_color_encoding color_encoding;
 	enum drm_color_range color_range;
 };

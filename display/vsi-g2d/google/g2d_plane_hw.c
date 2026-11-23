@@ -5,7 +5,7 @@
 #include <linux/types.h>
 #include <drm/g2d_drm.h>
 
-#include "vs_g2d_reg_sc.h"
+#include "g2d_registers.h"
 #include "g2d_sc_hw.h"
 #include "g2d_plane_hw.h"
 #include "g2d_pvric_hw.h"
@@ -39,7 +39,8 @@ static const u32 default_scaling_coeff_vertical[] = {
 
 #define V_COEF_SIZE (ARRAY_SIZE(default_scaling_coeff_vertical))
 
-void plane_hw_config_load_filter(struct sc_hw *hw, u8 hw_id, const u32 *coef_v, const u32 *coef_h)
+static void plane_hw_config_load_filter(struct sc_hw *hw, u8 hw_id, const u32 *coef_v,
+					const u32 *coef_h)
 {
 	u32 i;
 	const u32 reg_offset = 0x04;

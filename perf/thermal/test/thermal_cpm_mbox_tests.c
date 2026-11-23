@@ -9,6 +9,7 @@
 #include <linux/thermal.h>
 #include <kunit/test.h>
 #include <kunit/test-bug.h>
+#include <dt-bindings/soc/google/google-thermal-def.h>
 
 #include "thermal_cpm_mbox_mock.h"
 #include "thermal_cpm_mbox_helper.h"
@@ -155,67 +156,139 @@ static void thermal_cpm_mbox_send_message_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, __thermal_cpm_send_mbox_msg(mock_drv_data, mock_req), mock_send_ret);
 }
 
-static const struct thermal_cpm_mbox_platform_data test_soc_data = {
-	.tz_cdev_table = {
-		[0] = {.tz_id = HW_THERMAL_ZONE_BIG, .cdev_id = HW_CDEV_BIG, .tz_name="BIG"},
-		[1] = {.tz_id = HW_THERMAL_ZONE_BIG_MID, .cdev_id = HW_CDEV_BIG_MID,
-		       .tz_name="BIG_MID"},
-		[2] = {.tz_id = HW_THERMAL_ZONE_MID, .cdev_id = HW_CDEV_MID, .tz_name="MID"},
-		[3] = {.tz_id = HW_THERMAL_ZONE_LIT, .cdev_id = HW_CDEV_LIT, .tz_name="LITTLE"},
-		[4] = {.tz_id = HW_THERMAL_ZONE_GPU, .cdev_id = HW_CDEV_GPU, .tz_name="GPU"},
-		[5] = {.tz_id = HW_THERMAL_ZONE_TPU, .cdev_id = HW_CDEV_TPU, .tz_name="TPU"},
-		[6] = {.tz_id = HW_THERMAL_ZONE_AUR, .cdev_id = HW_CDEV_AUR, .tz_name="AUR"},
-		[7] = {.tz_id = HW_THERMAL_ZONE_ISP, .cdev_id = HW_CDEV_ISP, .tz_name="ISP"},
-		[8] = {.tz_id = HW_THERMAL_ZONE_MEM, .cdev_id = HW_CDEV_MEM, .tz_name="MEM"},
-		[9] = {.tz_id = HW_THERMAL_ZONE_AOC, .cdev_id = HW_CDEV_AOC, .tz_name="AOC"},
+static const struct tz_cdev_map test_tz_cdev_table[] = {
+	[0] = {
+		.sensor_id = TZ_BIG,
+		.hw_tzid = HW_THERMAL_ZONE_0,
+		.cdev_id = HW_CDEV_BIG,
+		.tz_name = "BIG"
+	},
+	[1] = {
+		.sensor_id = TZ_BIG_MID,
+		.hw_tzid = HW_THERMAL_ZONE_1,
+		.cdev_id = HW_CDEV_BIG_MID,
+		.tz_name = "BIG_MID"
+	},
+	[2] = {
+		.sensor_id = TZ_MID,
+		.hw_tzid = HW_THERMAL_ZONE_2,
+		.cdev_id = HW_CDEV_MID,
+		.tz_name = "MID"
+	},
+	[3] = {
+		.sensor_id = TZ_LIT,
+		.hw_tzid = HW_THERMAL_ZONE_3,
+		.cdev_id = HW_CDEV_LIT,
+		.tz_name = "LITTLE"
+	},
+	[4] = {
+		.sensor_id = TZ_GPU,
+		.hw_tzid = HW_THERMAL_ZONE_4,
+		.cdev_id = HW_CDEV_GPU,
+		.tz_name = "GPU"
+	},
+	[5] = {
+		.sensor_id = TZ_TPU,
+		.hw_tzid = HW_THERMAL_ZONE_5,
+		.cdev_id = HW_CDEV_TPU,
+		.tz_name = "TPU"
 	},
 };
 
-static void tzid_to_rx_cb_type_test(struct kunit *test)
+
+static const struct thermal_cpm_mbox_platform_data test_soc_data = {
+	.tz_max = ARRAY_SIZE(test_tz_cdev_table),
+	.tz_cdev_table = test_tz_cdev_table,
+};
+
+static void sensor_id_to_hw_tzid_test(struct kunit *test)
 {
 	struct thermal_cpm_mbox_driver_data *mock_drv_data = test->priv;
-	enum hw_thermal_zone_id mock_tz_id;
+	enum hw_thermal_zone_id hw_tzid;
+	int mock_sensor_id;
+
+	// Invalid input
+	mock_sensor_id = TZ_BIG;
+	KUNIT_EXPECT_EQ(test,
+			sensor_id_to_hw_tzid(mock_drv_data, mock_sensor_id, NULL),
+			-EINVAL);
+	KUNIT_EXPECT_EQ(test, sensor_id_to_hw_tzid(NULL, mock_sensor_id, &hw_tzid), -EINVAL);
+	mock_sensor_id = -1;
+	KUNIT_EXPECT_EQ(test,
+			sensor_id_to_hw_tzid(mock_drv_data, mock_sensor_id, &hw_tzid),
+			-EINVAL);
+	mock_sensor_id = TZ_MAX;
+	KUNIT_EXPECT_EQ(test,
+			sensor_id_to_hw_tzid(mock_drv_data, mock_sensor_id, &hw_tzid),
+			-EINVAL);
+
+	// Valid
+	for (int i = 0; i < test_soc_data.tz_max; ++i) {
+		mock_sensor_id = test_soc_data.tz_cdev_table[i].sensor_id;
+		KUNIT_EXPECT_EQ(test,
+				sensor_id_to_hw_tzid(mock_drv_data, mock_sensor_id, &hw_tzid),
+				0);
+		KUNIT_EXPECT_EQ(test, hw_tzid, test_soc_data.tz_cdev_table[i].hw_tzid);
+	}
+}
+
+static void hw_tzid_to_rx_cb_type_test(struct kunit *test)
+{
+	struct thermal_cpm_mbox_driver_data *mock_drv_data = test->priv;
+	enum hw_thermal_zone_id mock_hw_tzid;
 	enum hw_dev_type cdev_id_out;
 
 	// Invalid input
-	mock_tz_id = HW_THERMAL_ZONE_BIG;
-	KUNIT_EXPECT_EQ(test, tzid_to_rx_cb_type(mock_drv_data, mock_tz_id, NULL), -EINVAL);
-	mock_tz_id = -1;
-	KUNIT_EXPECT_EQ(test, tzid_to_rx_cb_type(mock_drv_data, mock_tz_id, &cdev_id_out), -EINVAL);
-	mock_tz_id = HW_THERMAL_ZONE_MAX;
-	KUNIT_EXPECT_EQ(test, tzid_to_rx_cb_type(mock_drv_data, mock_tz_id, &cdev_id_out), -EINVAL);
+	mock_hw_tzid = HW_THERMAL_ZONE_0;
+	KUNIT_EXPECT_EQ(test,
+			hw_tzid_to_rx_cb_type(mock_drv_data, mock_hw_tzid, NULL),
+			-EINVAL);
+	mock_hw_tzid = -1;
+	KUNIT_EXPECT_EQ(test,
+			hw_tzid_to_rx_cb_type(mock_drv_data, mock_hw_tzid, &cdev_id_out),
+			-EINVAL);
+	mock_hw_tzid = HW_THERMAL_ZONE_MAX;
+	KUNIT_EXPECT_EQ(test,
+			hw_tzid_to_rx_cb_type(mock_drv_data, mock_hw_tzid, &cdev_id_out),
+			-EINVAL);
 
 	// Valid
-	for (int i = 0; i < ARRAY_SIZE(test_soc_data.tz_cdev_table); ++i) {
-		mock_tz_id = test_soc_data.tz_cdev_table[i].tz_id;
+	for (int i = 0; i < test_soc_data.tz_max; ++i) {
+		mock_hw_tzid = test_soc_data.tz_cdev_table[i].hw_tzid;
 		KUNIT_EXPECT_EQ(test,
-				tzid_to_rx_cb_type(mock_drv_data, mock_tz_id, &cdev_id_out),
+				hw_tzid_to_rx_cb_type(mock_drv_data, mock_hw_tzid, &cdev_id_out),
 				0);
 		KUNIT_EXPECT_EQ(test, cdev_id_out, test_soc_data.tz_cdev_table[i].cdev_id);
 	}
 }
 
-static void hw_cdev_id_to_tzid_test(struct kunit *test)
+static void hw_cdev_id_to_hw_tzid_test(struct kunit *test)
 {
 	struct thermal_cpm_mbox_driver_data *mock_drv_data = test->priv;
 	enum hw_dev_type mock_cdev_id;
-	enum hw_thermal_zone_id tz_id_out;
+	enum hw_thermal_zone_id hw_tzid_out;
 
 	// Invalid input
 	mock_cdev_id = HW_CDEV_BIG;
-	KUNIT_EXPECT_EQ(test, hw_cdev_id_to_tzid(mock_drv_data, mock_cdev_id, NULL), -EINVAL);
+	KUNIT_EXPECT_EQ(test,
+			hw_cdev_id_to_hw_tzid(mock_drv_data, mock_cdev_id, NULL),
+			-EINVAL);
 	mock_cdev_id = -1;
-	KUNIT_EXPECT_EQ(test, hw_cdev_id_to_tzid(mock_drv_data, mock_cdev_id, &tz_id_out), -EINVAL);
+	KUNIT_EXPECT_EQ(test,
+			hw_cdev_id_to_hw_tzid(mock_drv_data, mock_cdev_id, &hw_tzid_out),
+			-EINVAL);
 	mock_cdev_id = HW_DEV_MAX;
-	KUNIT_EXPECT_EQ(test, hw_cdev_id_to_tzid(mock_drv_data, mock_cdev_id, &tz_id_out), -EINVAL);
+	KUNIT_EXPECT_EQ(test,
+			hw_cdev_id_to_hw_tzid(mock_drv_data, mock_cdev_id, &hw_tzid_out),
+			-EINVAL);
 
 	// Valid
-	for (int i = 0; i < ARRAY_SIZE(test_soc_data.tz_cdev_table); ++i) {
+	for (int i = 0; i < test_soc_data.tz_max; ++i) {
 		mock_cdev_id = test_soc_data.tz_cdev_table[i].cdev_id;
 		KUNIT_EXPECT_EQ(test,
-				hw_cdev_id_to_tzid(mock_drv_data, mock_cdev_id, &tz_id_out),
-				0);
-		KUNIT_EXPECT_EQ(test, tz_id_out, test_soc_data.tz_cdev_table[i].tz_id);
+				hw_cdev_id_to_hw_tzid(mock_drv_data, mock_cdev_id, &hw_tzid_out),
+			0);
+		KUNIT_EXPECT_EQ(test, hw_tzid_out, test_soc_data.tz_cdev_table[i].hw_tzid);
 	}
 }
 
@@ -323,6 +396,9 @@ static void get_tz_name_test(struct kunit *test)
 
 	// success test
 	for (enum hw_thermal_zone_id i = 0; i < HW_THERMAL_ZONE_MAX; ++i) {
+		if (!get_tz_name(mock_drv_data, i))
+			continue;
+
 		KUNIT_EXPECT_STREQ_MSG(test,
 				       get_tz_name(mock_drv_data, i),
 				       test_soc_data.tz_cdev_table[i].tz_name,
@@ -358,8 +434,9 @@ static struct kunit_case thermal_cpm_mbox_test[] = {
 	KUNIT_CASE(thermal_cpm_mbox_send_request_test),
 	KUNIT_CASE(thermal_cpm_mbox_send_message_test),
 	KUNIT_CASE(thermal_cpm_mbox_rx_callback_test),
-	KUNIT_CASE(tzid_to_rx_cb_type_test),
-	KUNIT_CASE(hw_cdev_id_to_tzid_test),
+	KUNIT_CASE(sensor_id_to_hw_tzid_test),
+	KUNIT_CASE(hw_tzid_to_rx_cb_type_test),
+	KUNIT_CASE(hw_cdev_id_to_hw_tzid_test),
 	KUNIT_CASE(get_tz_name_test),
 	{},
 };

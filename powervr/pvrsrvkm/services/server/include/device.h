@@ -111,6 +111,11 @@ typedef PVRSRV_ERROR (*AllocUFOBlockCallback)(struct _PVRSRV_DEVICE_NODE_ *psDev
 */ /**************************************************************************/
 typedef void (*FreeUFOBlockCallback)(struct _PVRSRV_DEVICE_NODE_ *psDeviceNode,
 									 DEVMEM_MEMDESC *psMemDesc);
+typedef enum
+{
+	MMU_CACHE_INVAL_FLAGS_NONE,
+	MMU_CACHE_INVAL_FLAGS_FORCE_ALL_CTX
+} MMU_CACHE_INVAL_FLAGS;
 
 typedef struct _PVRSRV_DEVICE_IDENTIFIER_
 {
@@ -322,7 +327,6 @@ typedef struct _PVRSRV_DEVICE_NODE_
 {
 	PVRSRV_DEVICE_IDENTIFIER	sDevId;
 	PVRSRV_DEVICE_STATE			eDevState; /* Set using PVRSRVDeviceSetState, not directly. */
-	PVRSRV_DEVICE_FABRIC_TYPE	eDevFabricType;
 
 	ATOMIC_T					eHealthStatus; /* Holds values from PVRSRV_DEVICE_HEALTH_STATUS */
 	ATOMIC_T					eHealthReason; /* Holds values from PVRSRV_DEVICE_HEALTH_REASON */
@@ -385,7 +389,8 @@ typedef struct _PVRSRV_DEVICE_NODE_
 	PVRSRV_ERROR (*pfnMMUCacheInvalidateKick)(struct _PVRSRV_DEVICE_NODE_ *psDevNode,
 	                                          IMG_UINT32 *pui32NextMMUInvalidateUpdate);
 
-	PVRSRV_ERROR (*pfnMMUCacheInvalidateKickAndWait)(struct _PVRSRV_DEVICE_NODE_ *psDevNode);
+	PVRSRV_ERROR (*pfnMMUCacheInvalidateKickAndWait)(struct _PVRSRV_DEVICE_NODE_ *psDevNode,
+	                                                 MMU_CACHE_INVAL_FLAGS eFlags);
 
 	IMG_UINT32 (*pfnMMUCacheGetInvalidateCounter)(struct _PVRSRV_DEVICE_NODE_ *psDevNode);
 
@@ -422,7 +427,7 @@ typedef struct _PVRSRV_DEVICE_NODE_
 	void (*pfnUpdateAutoVzWatchdog)(struct _PVRSRV_DEVICE_NODE_ *psDevNode);
 #endif
 
-	PVRSRV_ERROR (*pfnValidationGPUUnitsPowerChange)(struct _PVRSRV_DEVICE_NODE_ *psDevNode, IMG_UINT32 ui32NewState, IMG_BOOL bCallerHasPowerLock);
+	PVRSRV_ERROR (*pfnValidationGPUUnitsPowerChange)(struct _PVRSRV_DEVICE_NODE_ *psDevNode, IMG_UINT32 ui32NewState);
 
 	PVRSRV_ERROR (*pfnResetHWRLogs)(struct _PVRSRV_DEVICE_NODE_ *psDevNode);
 
@@ -562,13 +567,7 @@ typedef struct _PVRSRV_DEVICE_NODE_
 	struct SYNC_RECORD		*apsSyncServerRecordsFreed[PVRSRV_FULL_SYNC_TRACKING_HISTORY_LEN];
 	IMG_UINT32				uiSyncServerRecordFreeIdx;
 
-	IMG_HANDLE				hSyncCheckpointRecordNotify;
-	POS_LOCK				hSyncCheckpointRecordLock;
-	IMG_UINT32				ui32SyncCheckpointRecordCount;
-	IMG_UINT32				ui32SyncCheckpointRecordCountHighWatermark;
-	DLLIST_NODE				sSyncCheckpointRecordList;
-	SYNC_CHECKPOINT_RECORD	*apsSyncCheckpointRecordsFreed[PVRSRV_FULL_SYNC_TRACKING_HISTORY_LEN];
-	IMG_UINT32				uiSyncCheckpointRecordFreeIdx;
+	SYNC_CHECKPOINT_RECORD_DATA *psSyncCheckpointRecordData;
 
 	IMG_HANDLE				hSyncCheckpointNotify;
 	POS_SPINLOCK			hSyncCheckpointListLock; /*!< Protects sSyncCheckpointSyncsList */
@@ -667,7 +666,7 @@ typedef struct _PVRSRV_DEVICE_NODE_
 	ATOMIC_T                uiPMRZombieCountInCleanup; /*!< Number of elements in cleanup items */
 #else
 	DLLIST_NODE             sPMRZombieList;       /*!< List of PMRs to free */
-	POS_LOCK                hPMRZombieListLock;   /*!< List lock */
+	POS_SPINLOCK            hPMRZombieListLock;   /*!< List lock */
 	IMG_UINT32              uiPMRZombieCount;     /*!< Number of elements in the list */
 	IMG_UINT32              uiPMRZombieCountInCleanup; /*!< Number of elements in cleanup items */
 #endif
@@ -689,26 +688,6 @@ typedef struct _PVRSRV_DEVICE_NODE_
 	IMG_UINT32              *pui32RTContextCount;
 #endif
 } PVRSRV_DEVICE_NODE;
-
-#if !defined(PVRSRV_USE_LOCKLESS_PMR_ZOMBIE_LIST)
-/* Protects:
- * - `psDevNode->sPMRZombieList`
- * - `uiPMRZombieCount`
- * - `uiPMRZombieCountInCleanup`
- */
-
-INLINE void
-_ZombieListLock(PPVRSRV_DEVICE_NODE psDevNode)
-{
-	OSLockAcquire(psDevNode->hPMRZombieListLock);
-}
-
-INLINE void
-_ZombieListUnlock(PPVRSRV_DEVICE_NODE psDevNode)
-{
-	OSLockRelease(psDevNode->hPMRZombieListLock);
-}
-#endif
 
 /*
  * Macros to be used instead of calling directly the pfns since these macros

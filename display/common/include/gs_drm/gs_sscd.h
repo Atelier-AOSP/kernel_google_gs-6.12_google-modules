@@ -39,7 +39,7 @@ enum display_sscd_segment_type {
  * information tied to both the common display_sscd repository and the client
  * driver repository
  *
- * @major: major version of framework
+ * @major: major verson of framework
  * @minor: minor version of framework
  * @common_scmversion: commit version of the common display_sscd repository
  * @driver_scmversion: commit version of the client driver repository

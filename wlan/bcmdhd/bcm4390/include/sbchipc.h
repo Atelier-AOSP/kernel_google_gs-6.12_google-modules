@@ -2822,6 +2822,7 @@ typedef volatile struct chipcregs chipcregs_t;
 #define CR4_4378_RAM_BASE                    (0x352000)
 // Please leave this UNRELEASEDCHIP MOG wrapper in place even if there is nothing inside it
 /* Based on the 4383 BackPlane Acrhitecture, RAM address base updated as 0x6E_0000 */
+#define CR4_4381_RAM_BASE                    (0x740000)
 #define CR4_4383_RAM_BASE                    (0x6E0000)
 #define CR4_4384_RAM_BASE                    (0x700000)
 #define CR4_4387_RAM_BASE                    (0x740000)
@@ -3643,7 +3644,7 @@ cncb2rdig_scan2G_dedicated_path_en_core1_ovr_en	13
 #define LHL_WL_ARMTIM0_INTRP_EDGE_TRIGGER	0x00000002
 
 /* WL ARM Timer0 Interrupt Status (lhl_wl_armtim0_st_adr) */
-#define LHL_WL_ARMTIM0_ST_WL_ARMTIM_INT_ST	0x00000001
+#define LHL_WL_ARMTIM0_ST_WL_ARMTIM_INT_ST	0x00000001u
 
 /* WL ARM Timer1 Interrupt Mask (lhl_wl_armtim1_intrp_adr) */
 #define LHL_WL_ARMTIM1_INTRP_EN			0x00000001

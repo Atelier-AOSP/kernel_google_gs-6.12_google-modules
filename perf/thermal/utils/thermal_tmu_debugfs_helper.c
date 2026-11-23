@@ -5,6 +5,7 @@
  * Copyright (c) 2024, Google LLC. All rights reserved.
  */
 
+#include <kunit/visibility.h>
 #include "thermal_tmu_debugfs_helper.h"
 #include "thermal_tmu_mock.h"
 
@@ -31,7 +32,7 @@ int thermal_tmu_debugfs_##__gov##_##__param##_set(void *data, u64 val)			\
 	int ret;									\
 	if (!tmu_data)									\
 		return -EINVAL;								\
-	tz_id = sensor_data->sensor_id;							\
+	tz_id = (u8)tmu_data->hw_tzid;							\
 	ret = tmu_set_gov_param(tz_id, __type, val);					\
 	if (!ret)									\
 		tmu_data->__gov##_param.__param = val;					\
@@ -77,7 +78,7 @@ int thermal_tmu_debugfs_##__gov##_select_set(void *data, u64 val)			\
 	int ret;									\
 	if (!tmu_data)									\
 		return -EINVAL;								\
-	tz_id = sensor_data->sensor_id;							\
+	tz_id = (u8)tmu_data->hw_tzid;							\
 	gov_select = tmu_data->gov_select;						\
 	if (val == 0)									\
 		clear_bit(__bitmask, &gov_select);					\
@@ -276,6 +277,163 @@ static const struct file_operations junction_offset_fops = {
 };
 
 /*
+ * __thermal_tmu_debugfs_temp_state_table_set - internal setter for temp_state_table
+ *
+ * @sensor pointer to the target google TMU sensor
+ * @write_buf kernel space write buffer
+ * @count the length of write_buf in byte
+ */
+VISIBLE_IF_KUNIT ssize_t __thermal_tmu_debugfs_temp_state_table_set(
+		struct google_sensor_data *sensor, char *write_buf, size_t count)
+{
+	if (!sensor || !write_buf)
+		return -EINVAL;
+
+	char **argv;
+	int argc, ret;
+	int table_len = 0;
+	struct tmu_temp_state_st *table = NULL;
+
+	argv = argv_split(GFP_KERNEL, write_buf, &argc);
+	if (!argv) {
+		dev_err(sensor->dev, "TZ %s: Failed to read input buffer",
+			thermal_zone_device_type(sensor->tzd));
+		ret = -ENODEV;
+		goto exit;
+	}
+
+	if (argc % 2) {
+		dev_err(sensor->dev, "TZ %s: odd number of elements: %d",
+			thermal_zone_device_type(sensor->tzd), argc);
+		ret = -EINVAL;
+		goto exit_free_argv;
+	}
+
+	table_len = argc / 2;
+	table = kcalloc(table_len, sizeof(*table), GFP_KERNEL);
+	if (!table) {
+		ret = -ENOMEM;
+		goto exit_free_argv;
+	}
+	for (int i = 0; i < table_len; ++i) {
+		u8 temp, state;
+
+		ret = kstrtou8(argv[2 * i], 10, &temp);
+		if (ret) {
+			dev_err(sensor->dev, "TZ %s: Failed to parse temp_state_table: %s",
+				thermal_zone_device_type(sensor->tzd), argv[2 * i]);
+			goto exit_free_table;
+		}
+		ret = kstrtou8(argv[2 * i + 1], 10, &state);
+		if (ret) {
+			dev_err(sensor->dev, "TZ %s: Failed to parse temp_state_table: %s",
+				thermal_zone_device_type(sensor->tzd), argv[2 * i + 1]);
+			goto exit_free_table;
+		}
+		table[i].temp = temp;
+		table[i].state = state;
+	}
+
+	ret = thermal_tmu_set_temp_state_table(sensor, table, table_len);
+	if (ret) {
+		dev_err(sensor->dev, "TZ %s: Failed to set temp_state_table: ret=%d",
+			thermal_zone_device_type(sensor->tzd), ret);
+		goto exit_free_table;
+	}
+
+	ret = count;
+exit_free_table:
+	kfree(table);
+exit_free_argv:
+	argv_free(argv);
+exit:
+	return ret;
+}
+
+/*
+ * thermal_tmu_debugfs_temp_state_table_set - setter for temp_state_table
+ *	copy from user and use __thermal_tmu_debugfs_temp_state_table_set
+ */
+static ssize_t thermal_tmu_debugfs_temp_state_table_set(struct file *filp,
+							const char __user *buf,
+							size_t count, loff_t *ppos)
+{
+	struct google_sensor_data *sensor = filp->private_data;
+	char *write_buf;
+	int ret;
+
+	write_buf = kzalloc(count, GFP_KERNEL);
+	if (!write_buf)
+		return -ENOMEM;
+
+	/* copy from user */
+	ret = simple_write_to_buffer(write_buf, count, ppos, buf, count);
+	if (ret <= 0) {
+		dev_err(sensor->dev, "TZ %s: Failed to write debugfs offset data: ret=%d",
+			thermal_zone_device_type(sensor->tzd), ret);
+		goto exit_free_buf;
+	}
+
+	ret = __thermal_tmu_debugfs_temp_state_table_set(sensor, write_buf, count);
+exit_free_buf:
+	kfree(write_buf);
+	return ret;
+}
+
+/*
+ * __thermal_tmu_debugfs_temp_state_table_get - internal getter for temp_state_table
+ *
+ * @sensor pointer to the target google TMU sensor
+ * @read_buf kernel space read buffer
+ * @read_buf_size the length of read_buf in byte
+ */
+VISIBLE_IF_KUNIT int __thermal_tmu_debugfs_temp_state_table_get(
+		struct google_sensor_data *sensor, char *read_buf, size_t read_buf_size)
+{
+	if (!sensor || !read_buf || !read_buf_size)
+		return -EINVAL;
+
+	int table_len = 0, ret, len = 0;
+	struct tmu_temp_state_st table[THERMAL_TEMP_LUT_MAX_ENTRIES] = {0};
+
+	ret = thermal_tmu_get_temp_state_table(sensor, &table[0], &table_len);
+	if (ret || table_len == 0 || table_len > THERMAL_TEMP_LUT_MAX_ENTRIES) {
+		dev_warn(sensor->dev, "TZ %s: Failed to get temp_state_table from TMU: ret=%d",
+			thermal_zone_device_type(sensor->tzd), ret);
+		len = scnprintf(read_buf,
+			read_buf_size, "n/a\n");
+	} else {
+		for (int i = 0; i < table_len; ++i)
+			len += scnprintf(read_buf + len, read_buf_size - len, "%d %d\n",
+					table[i].temp, table[i].state);
+	}
+
+	return len;
+}
+
+/*
+ * thermal_tmu_debugfs_temp_state_table_get - getter for temp_state_table
+ *	use __thermal_tmu_debugfs_temp_state_table_get then copy to user
+ */
+static ssize_t thermal_tmu_debugfs_temp_state_table_get(struct file *filp,
+							char __user *buf,
+							size_t count, loff_t *ppos)
+{
+	struct google_sensor_data *sensor = filp->private_data;
+	char read_buf[TMU_DEBUGFS_TEMP_STATE_TABLE_BUF_SIZE];
+	int len = __thermal_tmu_debugfs_temp_state_table_get(sensor, read_buf,
+					TMU_DEBUGFS_TEMP_STATE_TABLE_BUF_SIZE);
+
+	return simple_read_from_buffer(buf, count, ppos, read_buf, len);
+}
+
+static const struct file_operations temp_state_table_fops = {
+	.open = simple_open,
+	.write = thermal_tmu_debugfs_temp_state_table_set,
+	.read = thermal_tmu_debugfs_temp_state_table_get,
+};
+
+/*
  * thermal_tmu_debugfs_sensor_init
  *
  * This function adds debugfs nodes to debug_root/tmu directory.
@@ -327,6 +485,7 @@ int thermal_tmu_debugfs_sensor_init(struct google_sensor_data *sensor)
 			    &gov_early_throttle_select);
 	debugfs_create_file("polling_delay_ms", 0660, sens_root, sensor, &polling_delay_ms);
 	debugfs_create_file("junction_offset", 0660, sens_root, sensor, &junction_offset_fops);
+	debugfs_create_file("temp_state_table", 0660, sens_root, sensor, &temp_state_table_fops);
 
 	return 0;
 }

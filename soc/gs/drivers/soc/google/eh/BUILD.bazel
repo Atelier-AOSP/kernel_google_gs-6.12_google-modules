@@ -6,6 +6,11 @@ load(
     "ddk_module",
 )
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 string_flag(
     name = "ip_idle",
     build_setting_default = "undefined",
@@ -40,21 +45,33 @@ ddk_module(
     includes = ["include"],
     kconfig = "Kconfig",
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
         "//private/google-modules/soc/gs:headers",
     ] + select({
         ":ip_idle_exynos": [
-            "//private/google-modules/soc/gs:gs_soc_module",
         ],
         ":ip_idle_google": [
             "//private/google-modules/perf/infra/mbfs",
             "//private/google-modules/soc/rdo:rdo_soc_headers",
-            "//private/google-modules/soc/rdo:rdo_soc_module",
         ],
+    }) + select({
+        "//private/devices/google/common:soc_is_laguna": [
+            "//private/google-modules/soc/rdo/ip-idle-notifier:google_ip_idle_notifier",
+        ],
+        "//conditions:default": [],
+    }) + select({
+        "//private/devices/google/common:soc_is_zumapro_or_before": [
+            "//private/google-modules/soc/gs/drivers/soc/google:exynos-cpupm",
+        ],
+        "//conditions:default": [],
+    }) + select({
+        "//private/devices/google/common:soc_is_zuma_or_zumapro": [
+            "//private/google-modules/soc/gs/drivers/soc/google/pkvm-s2mpu:pkvm-s2mpu-v9",
+        ],
+        "//private/devices/google/common:soc_is_gs201_or_before": [
+            "//private/google-modules/soc/gs/drivers/soc/google/pkvm-s2mpu",
+        ],
+        "//conditions:default": [],
     }),
 )

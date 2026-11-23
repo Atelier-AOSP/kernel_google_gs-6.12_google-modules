@@ -73,42 +73,64 @@ static bool ltm_luma_config_hw(struct dc_hw *hw, u8 hw_id, bool enable, const vo
 {
 	const struct drm_vs_ltm_luma *ltm_luma = data;
 
-	switch (ltm_luma->mode) {
-	case VS_LTM_LUMA_GRAY:
-		dc_write(hw, VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id, LTM_RGBY_COEFF0_Address),
-			 ltm_luma->coef[0]);
-		dc_write(hw, VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id, LTM_RGBY_COEFF1_Address),
-			 ltm_luma->coef[1]);
-		dc_write(hw, VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id, LTM_RGBY_COEFF2_Address),
-			 ltm_luma->coef[2]);
-		dc_write(hw, VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id, LTM_GRAY_WEIGHT_Address),
-			 255);
-		break;
+	if (enable) {
+		switch (ltm_luma->mode) {
+		case VS_LTM_LUMA_GRAY:
+			dc_write(hw,
+				 VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id,
+						      LTM_RGBY_COEFF0_Address),
+				 ltm_luma->coef[0]);
+			dc_write(hw,
+				 VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id,
+						      LTM_RGBY_COEFF1_Address),
+				 ltm_luma->coef[1]);
+			dc_write(hw,
+				 VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id,
+						      LTM_RGBY_COEFF2_Address),
+				 ltm_luma->coef[2]);
+			dc_write(hw,
+				 VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id,
+						      LTM_GRAY_WEIGHT_Address),
+				 255);
+			break;
 
-	case VS_LTM_LUMA_LIGHTNESS:
-		dc_write(hw,
-			 VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id, LTM_LIGHTNESS_WEIGHT_Address),
-			 ltm_luma->coef[0]);
-		dc_write(hw, VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id, LTM_GRAY_WEIGHT_Address),
-			 0);
-		break;
+		case VS_LTM_LUMA_LIGHTNESS:
+			dc_write(hw,
+				 VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id,
+						      LTM_LIGHTNESS_WEIGHT_Address),
+				 ltm_luma->coef[0]);
+			dc_write(hw,
+				 VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id,
+						      LTM_GRAY_WEIGHT_Address),
+				 0);
+			break;
 
-	case VS_LTM_LUMA_MIXED:
-		dc_write(hw, VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id, LTM_RGBY_COEFF0_Address),
-			 ltm_luma->coef[0]);
-		dc_write(hw, VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id, LTM_RGBY_COEFF1_Address),
-			 ltm_luma->coef[1]);
-		dc_write(hw, VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id, LTM_RGBY_COEFF2_Address),
-			 ltm_luma->coef[2]);
-		dc_write(hw,
-			 VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id, LTM_LIGHTNESS_WEIGHT_Address),
-			 ltm_luma->coef[3]);
-		dc_write(hw, VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id, LTM_GRAY_WEIGHT_Address),
-			 ltm_luma->coef[4]);
-		break;
+		case VS_LTM_LUMA_MIXED:
+			dc_write(hw,
+				 VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id,
+						      LTM_RGBY_COEFF0_Address),
+				 ltm_luma->coef[0]);
+			dc_write(hw,
+				 VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id,
+						      LTM_RGBY_COEFF1_Address),
+				 ltm_luma->coef[1]);
+			dc_write(hw,
+				 VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id,
+						      LTM_RGBY_COEFF2_Address),
+				 ltm_luma->coef[2]);
+			dc_write(hw,
+				 VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id,
+						      LTM_LIGHTNESS_WEIGHT_Address),
+				 ltm_luma->coef[3]);
+			dc_write(hw,
+				 VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id,
+						      LTM_GRAY_WEIGHT_Address),
+				 ltm_luma->coef[4]);
+			break;
 
-	default:
-		break;
+		default:
+			break;
+		}
 	}
 
 	return true;
@@ -719,7 +741,6 @@ static bool ltm_ds_config_hw(struct dc_hw *hw, u8 hw_id, bool enable, const void
 {
 	u32 config = 0;
 	const struct drm_vs_ltm_ds *ltm_ds = data;
-
 	config = dc_read(hw, VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id, LTM_CONFIG_Address));
 	config = VS_SET_FIELD(config, DCREG_SH_PANEL0_LTM_CONFIG, DSCALER, enable);
 	dc_write(hw, VS_SET_PANEL01_FIELD(DCREG_SH_PANEL, hw_id, LTM_CONFIG_Address), config);

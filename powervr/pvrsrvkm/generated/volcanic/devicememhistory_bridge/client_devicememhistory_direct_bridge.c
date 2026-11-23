@@ -47,8 +47,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "pvr_debug.h"
 
 /* Module specific includes */
-#include "img_types.h"
-#include "img_defs.h"
 #include "devicemem_typedefs.h"
 
 #include "pmr.h"

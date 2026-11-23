@@ -690,7 +690,7 @@ static int pvr_events_enable(struct devfreq_event_dev *edev)
 {
 	/* Enable counters */
 
-	dev_dbg(&edev->dev, "%s (Enable)\n", edev->desc->name);
+	PVR_DPF((PVR_DBG_CUSTOMER, "%s (Enable)\n", edev->desc->name));
 
 	return 0;
 }
@@ -699,7 +699,7 @@ static int pvr_events_disable(struct devfreq_event_dev *edev)
 {
 	/* Disable counters */
 
-	dev_dbg(&edev->dev, "%s (Disable)\n", edev->desc->name);
+	PVR_DPF((PVR_DBG_CUSTOMER, "%s (Disable)\n", edev->desc->name));
 
 	return 0;
 }

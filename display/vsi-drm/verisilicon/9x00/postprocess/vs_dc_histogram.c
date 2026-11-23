@@ -153,7 +153,8 @@ static void vs_dc_hist_chan_update(struct dc_hw *hw, struct dc_hw_display *displ
 		 * workaround for the h/w b/362424832: max weight value cannot be
 		 * VS_HIST_BIN_MODE_WEIGHTS_SUM
 		 */
-		if (hw->info->cid == 0x316 || hw->info->cid == 0x32a) {
+		if (hw->info->cid == VS_CHIP_CID_316 || hw->info->cid == VS_CHIP_CID_32A ||
+		    hw->info->cid == VS_CHIP_CID_20000005) {
 			if (config->weights[1] == 0 && config->weights[2] == 0)
 				hw_hist_chan_config->weights[0] = VS_HIST_BIN_MODE_WEIGHTS_SUM - 1;
 			else if (config->weights[0] == 0 && config->weights[2] == 0)

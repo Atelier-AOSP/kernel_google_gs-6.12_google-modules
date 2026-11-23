@@ -5,16 +5,20 @@
 #include <linux/init.h>
 #include <linux/list.h>
 #include <linux/module.h>
+#include <linux/pm_opp.h>
 #include <linux/pm_qos.h>
 #include <linux/seq_file.h>
 #include <linux/string.h>
 #include <linux/units.h>
 #include <perf/core/google_vote_manager.h>
 #include <perf/core/google_pm_qos.h>
+#include <perf/mbfs.h>
 #include <trace/events/power.h>
 
 #define to_devfreq(device)\
 container_of((device), struct devfreq, dev)
+
+#define HZ_TO_KHZ(hz) DIV_ROUND_UP(hz, HZ_PER_KHZ)
 
 enum vote_idx {
 	SOFT_MIN_FREQ_IDX,
@@ -62,6 +66,8 @@ struct vote_data {
 		struct freq_qos_request cpu_reqs[NUM_VOTE_REQ];
 		struct dev_pm_qos_request dev_reqs[NUM_VOTE_REQ];
 	} reqs;
+
+	union mbfs_client_handle mbfs_handles[NUM_VOTE_REQ];
 	struct list_head list;
 };
 
@@ -112,12 +118,12 @@ static void add_request(struct vote_data *data, enum vote_idx idx,
 	}
 }
 
-static void add_votes_from_dt(struct vote_data *data)
+static void vote_manager_add_votes(struct vote_data *data)
 {
 	struct device_node *vote_mgr_node;
+	struct device_node *dev_node;
+	struct device *ancestor;
 	struct device *dev;
-	unsigned int val;
-	int ret = 0;
 
 	switch (data->type) {
 	case CPUFREQ_VOTE:
@@ -128,27 +134,94 @@ static void add_votes_from_dt(struct vote_data *data)
 		break;
 	default:
 		WARN(1, "Unknown vote type in %s\n", __func__);
-		break;
+		return;
+	}
+	dev_node = of_node_get(dev_of_node(dev));
+	if (!dev_node) {
+		ancestor = dev ? dev->parent : NULL;
+		while (ancestor && !dev_of_node(ancestor))
+			ancestor = ancestor->parent;
+
+		if (ancestor) {
+			dev_node = of_get_child_by_name(dev_of_node(ancestor), dev_name(dev));
+			if (!dev_node)
+				dev_node = of_node_get(dev_of_node(ancestor));
+		}
 	}
 
-	vote_mgr_node = of_get_child_by_name(dev->of_node, "vote_manager");
+	if (dev_node) {
+		vote_mgr_node = of_get_child_by_name(dev_node, "vote_manager");
+		of_node_put(dev_node);
+	} else {
+		vote_mgr_node = NULL;
+	}
+
 	if (!vote_mgr_node)
 		dev_dbg(dev, "vote_manager node not defined.\n");
 
 	for (int i = 0; i < NUM_VOTE_REQ; i++) {
-		ret = of_property_read_u32(vote_mgr_node, vote_meta_infos[i].name, &val);
-		if (ret < 0) {
-			val = vote_meta_infos[i].type == VOTE_MIN_FREQ ? 0 : S32_MAX;
-		} else if (data->type == DEVFREQ_VOTE) {
-			/*
-			 * Only round for devfreq values from dtsi; otherwise, max_freq might
-			 * be capped at S32_MAX
-			 */
-			val = DIV_ROUND_UP(val, HZ_PER_KHZ);
+		u32 freq_KHz = 0;
+		u32 dt_freq = 0;
+
+		if (vote_mgr_node != NULL &&
+		    of_property_read_u32(vote_mgr_node, vote_meta_infos[i].name, &dt_freq) == 0) {
+			if (data->type == DEVFREQ_VOTE) {
+				/*
+				 * Devfreq vote_manager values from the DT are specified in Hz ->
+				 * converting to KHz to match pm_qos expectations. Cpufreq values
+				 * are already specified in KHz, so no conversion is needed there.
+				 */
+				dt_freq = HZ_TO_KHZ(dt_freq);
+			}
+
+			freq_KHz = dt_freq;
 		}
-		add_request(data, i, vote_meta_infos[i].type, val);
+
+		/*
+		 * If a valid MBFS handle exists for this domain, read the frequency
+		 * from the CPM performance domain through MBFS API and overwrite
+		 * val.
+		 */
+		if (!is_mbfs_handle_invalid(data->mbfs_handles[i])) {
+			enum mbfs_error_code mbfs_ret;
+			union val64 op_level;
+			u64 freq_Hz;
+			struct dev_pm_opp *opp;
+
+			mbfs_ret = mbfs_read_file(data->mbfs_handles[i], &op_level);
+			if (mbfs_ret != MBFS_OK) {
+				dev_err(dev, "Failed to read %s info from mbfs (err: %s)\n",
+					vote_meta_infos[i].name, get_mbfs_error_string(mbfs_ret));
+				goto add_req;
+			}
+
+			opp = dev_pm_opp_find_level_exact(dev, op_level.number);
+			if (IS_ERR(opp)) {
+				dev_err(dev,
+					"failed to find OPP.requested op_lvl: %llu, err: %ld\n",
+					op_level.number, PTR_ERR(opp));
+				goto add_req;
+			}
+
+			freq_Hz = dev_pm_opp_get_freq(opp);
+			freq_KHz = HZ_TO_KHZ(freq_Hz);
+
+			dev_pm_opp_put(opp);
+		}
+add_req:
+		if (vote_meta_infos[i].type == VOTE_MAX_FREQ && !freq_KHz) {
+			/*
+			 * Use an arbitrarily high max frequency if no valid constraint was
+			 * retrieved from either the DT or MBFS.
+			 */
+			freq_KHz = 9999999;
+		}
+
+		add_request(data, i, vote_meta_infos[i].type, freq_KHz);
 	}
 
+	if (vote_mgr_node != NULL)
+		of_node_put(vote_mgr_node);
 }
 
 static void remove_vote_data(struct device *dev, struct vote_data *data)
@@ -290,8 +363,7 @@ static ssize_t file_name ## _store							\
 	mutex_lock(&vote_manager_lock);							\
 	data = get_devfreq_vote_data(df);						\
 											\
-	ret = dev_pm_qos_update_request(&data->reqs.dev_reqs[index],			\
-				DIV_ROUND_UP(val, HZ_PER_KHZ));				\
+	ret = dev_pm_qos_update_request(&data->reqs.dev_reqs[index], HZ_TO_KHZ(val));	\
 	mutex_unlock(&vote_manager_lock);						\
 	return ret >= 0 ? count : ret;							\
 }
@@ -336,6 +408,134 @@ static struct attribute_group devfreq_attr_group = {
 	.attrs = devfreq_sysfs_entries,
 };
 
+static int __vote_manager_init_devfreq(struct devfreq *devfreq,
+				       union mbfs_client_handle perf_domain_h)
+{
+	struct vote_data *data = NULL;
+	enum mbfs_error_code mbfs_ret;
+	int ret = 0;
+	struct device *dev = devfreq->dev.parent;
+
+	mutex_lock(&vote_manager_lock);
+	data = get_devfreq_vote_data(devfreq);
+	if (data) {
+		dev_err(dev, "%s: devfreq device already exists!\n", __func__);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	data = kzalloc(sizeof(struct vote_data), GFP_KERNEL);
+	if (!data) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	data->type = DEVFREQ_VOTE;
+	data->domain.devfreq = devfreq;
+	for (int i = 0; i < NUM_VOTE_REQ; i++)
+		data->mbfs_handles[i] = MBFS_INVALID_HANDLE;
+
+	if (!is_mbfs_handle_invalid(perf_domain_h)) {
+		mbfs_ret = mbfs_get_child_by_name(perf_domain_h, "SoftMinFreqOpp",
+						  &data->mbfs_handles[SOFT_MIN_FREQ_IDX]);
+		if (mbfs_ret) {
+			dev_err(dev, "Failed to get handle for SoftMinFreqOpp: %d\n", mbfs_ret);
+			ret = mbfs_error2linux(mbfs_ret);
+			goto free_data;
+		}
+		mbfs_ret = mbfs_get_child_by_name(perf_domain_h, "SoftMaxFreqOpp",
+						  &data->mbfs_handles[SOFT_MAX_FREQ_IDX]);
+		if (mbfs_ret) {
+			dev_err(dev, "Failed to get handle for SoftMaxFreqOpp: %d\n", mbfs_ret);
+			ret = mbfs_error2linux(mbfs_ret);
+			goto free_data;
+		}
+	}
+
+	list_add_tail(&data->list, &google_vote_data_list);
+	vote_manager_add_votes(data);
+
+	ret = sysfs_create_group(&devfreq->dev.kobj, &devfreq_attr_group);
+	if (ret) {
+		dev_warn(&devfreq->dev, "failed create sysfs for devfreq data: %d\n", ret);
+		remove_vote_data(dev, data);
+		goto out;
+	}
+
+	goto out;
+
+free_data:
+	kfree(data);
+	data = NULL;
+
+out:
+	mutex_unlock(&vote_manager_lock);
+	return ret;
+}
+
+static int __vote_manager_init_cpufreq(struct cpufreq_policy *policy,
+				       union mbfs_client_handle perf_domain_h)
+{
+	struct vote_data *data = NULL;
+	enum mbfs_error_code mbfs_ret;
+	int ret;
+	struct device *dev = get_cpu_device(policy->cpu);
+	union mbfs_client_handle soft_min_freq_h = MBFS_INVALID_HANDLE;
+	union mbfs_client_handle soft_max_freq_h = MBFS_INVALID_HANDLE;
+
+	mutex_lock(&vote_manager_lock);
+	data = get_cpufreq_vote_data(policy);
+	if (data) {
+		dev_err(dev, "%s: cpu device already exists!\n",__func__);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	if (!is_mbfs_handle_invalid(perf_domain_h)) {
+		mbfs_ret = mbfs_get_child_by_name(perf_domain_h, "SoftMinFreqOpp",
+						  &soft_min_freq_h);
+		if (mbfs_ret) {
+			dev_err(dev, "Failed to get handle for SoftMinFreqOpp: %d\n", mbfs_ret);
+			ret = mbfs_error2linux(mbfs_ret);
+			goto out;
+		}
+		mbfs_ret = mbfs_get_child_by_name(perf_domain_h, "SoftMaxFreqOpp",
+						  &soft_max_freq_h);
+		if (mbfs_ret) {
+			dev_err(dev, "Failed to get handle for SoftMaxFreqOpp: %d\n", mbfs_ret);
+			ret = mbfs_error2linux(mbfs_ret);
+			goto out;
+		}
+	}
+
+	data = devm_kzalloc(dev, sizeof(struct vote_data), GFP_KERNEL);
+	if (!data) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	data->type = CPUFREQ_VOTE;
+	data->domain.cpufreq_policy = policy;
+	for (int i = 0; i < NUM_VOTE_REQ; i++)
+		data->mbfs_handles[i] = MBFS_INVALID_HANDLE;
+
+	data->mbfs_handles[SOFT_MIN_FREQ_IDX] = soft_min_freq_h;
+	data->mbfs_handles[SOFT_MAX_FREQ_IDX] = soft_max_freq_h;
+
+	list_add_tail(&data->list, &google_vote_data_list);
+
+	vote_manager_add_votes(data);
+	ret = sysfs_create_group(get_governor_parent_kobj(policy), &cpufreq_attr_group);
+	if (ret) {
+		dev_warn(dev, "failed create sysfs for cpufreq data\n");
+		remove_vote_data(dev, data);
+		goto out;
+	}
+
+out:
+	mutex_unlock(&vote_manager_lock);
+	return ret;
+}
 /**
  * vote_manager_init_cpufreq - expose sysfs for userland cpu frequency voting
  * @policy: cpufreq policy
@@ -348,44 +548,20 @@ static struct attribute_group devfreq_attr_group = {
  */
 int vote_manager_init_cpufreq(struct cpufreq_policy *policy)
 {
-	struct vote_data *data;
-	int ret;
-	struct device *dev = get_cpu_device(policy->cpu);
-
 	if (!policy)
 		return -EINVAL;
-
-	mutex_lock(&vote_manager_lock);
-	data = get_cpufreq_vote_data(policy);
-	if (data) {
-		dev_err(dev, "%s: cpu device already exists!\n",__func__);
-		ret = -EINVAL;
-		goto out;
-	}
-
-	data = devm_kzalloc(dev, sizeof(struct vote_data), GFP_KERNEL);
-	if (!data) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	data->type = CPUFREQ_VOTE;
-	data->domain.cpufreq_policy = policy;
-
-	list_add_tail(&data->list, &google_vote_data_list);
-
-	add_votes_from_dt(data);
-	ret = sysfs_create_group(get_governor_parent_kobj(policy), &cpufreq_attr_group);
-	if (ret) {
-		dev_warn(dev, "failed create sysfs for cpufreq data\n");
-		remove_vote_data(dev, data);
-	}
-
-out:
-	mutex_unlock(&vote_manager_lock);
-	return ret;
+	return __vote_manager_init_cpufreq(policy, MBFS_INVALID_HANDLE);
 }
 EXPORT_SYMBOL_GPL(vote_manager_init_cpufreq);
+
+int vote_manager_init_cpufreq_with_mbfs(struct cpufreq_policy *policy,
+				union mbfs_client_handle perf_domain_h)
+{
+	if (!policy)
+		return -EINVAL;
+	return __vote_manager_init_cpufreq(policy, perf_domain_h);
+}
+EXPORT_SYMBOL_GPL(vote_manager_init_cpufreq_with_mbfs);
 
 /**
  * vote_manager_init_devfreq - expose sysfs for userland device frequency voting
@@ -399,44 +575,21 @@ EXPORT_SYMBOL_GPL(vote_manager_init_cpufreq);
  */
 int vote_manager_init_devfreq(struct devfreq *devfreq)
 {
-	struct vote_data *data;
-	int ret;
-	struct device *dev = devfreq->dev.parent;
-
 	if (!devfreq)
 		return -EINVAL;
-
-	mutex_lock(&vote_manager_lock);
-	data = get_devfreq_vote_data(devfreq);
-	if (data) {
-		dev_err(dev, "%s: devfreq device already exists!\n",__func__);
-		ret = -EINVAL;
-		goto out;
-	}
-
-	data = kzalloc(sizeof(struct vote_data), GFP_KERNEL);
-	if (!data) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	data->type = DEVFREQ_VOTE;
-	data->domain.devfreq = devfreq;
-
-	list_add_tail(&data->list, &google_vote_data_list);
-
-	add_votes_from_dt(data);
-	ret = sysfs_create_group(&devfreq->dev.kobj, &devfreq_attr_group);
-	if (ret) {
-		dev_warn(&devfreq->dev, "failed create sysfs for devfreq data\n");
-		remove_vote_data(dev, data);
-	}
-
-out:
-	mutex_unlock(&vote_manager_lock);
-	return ret;
+	return __vote_manager_init_devfreq(devfreq, MBFS_INVALID_HANDLE);
 }
 EXPORT_SYMBOL_GPL(vote_manager_init_devfreq);
+
+
+int vote_manager_init_devfreq_with_mbfs(struct devfreq *devfreq,
+				union mbfs_client_handle perf_domain_h)
+{
+	if (!devfreq)
+		return -EINVAL;
+	return __vote_manager_init_devfreq(devfreq, perf_domain_h);
+}
+EXPORT_SYMBOL_GPL(vote_manager_init_devfreq_with_mbfs);
 
 /**
  * vote_manager_remove_cpufreq - remove sysfs for userland cpu frequency voting

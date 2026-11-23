@@ -12,13 +12,11 @@
 #include <linux/of_gpio.h>
 #include <linux/pm_runtime.h>
 #include <linux/suspend.h>
+#include <linux/string.h>
 #include <linux/memblock.h>
 #include <linux/completion.h>
 #include <linux/version.h>
 #include <linux/sched.h>
-#ifdef CONFIG_WCN_GOOGLE
-#include <linux/dma-direct.h>
-#endif
 
 #include "main.h"
 #include "bus.h"
@@ -561,10 +559,6 @@ static struct cnss_print_optimize print_optimize;
 #define SYSPM_REG_SIZE ARRAY_SIZE(syspm_reg_access_seq)
 
 static int cnss_pci_update_fw_name(struct cnss_pci_data *pci_priv);
-
-#if IS_ENABLED(CONFIG_WCN_GOOGLE)
-extern void crash_info_handler(u8 *info);
-#endif //CONFIG_WCN_GOOGLE
 
 #if IS_ENABLED(CONFIG_MHI_BUS_MISC)
 static void cnss_mhi_debug_reg_dump(struct cnss_pci_data *pci_priv)
@@ -3878,15 +3872,9 @@ int cnss_pci_alloc_fw_mem(struct cnss_pci_data *pci_priv)
 		if (!fw_mem[i].va && fw_mem[i].size) {
 retry:
 			fw_mem[i].va =
-#ifdef CONFIG_WCN_USE_DMA_DIRECT
-				dma_direct_alloc(dev, fw_mem[i].size,
-						&fw_mem[i].pa, GFP_KERNEL,
-						fw_mem[i].attrs);
-#else
 				dma_alloc_attrs(dev, fw_mem[i].size,
 						&fw_mem[i].pa, GFP_KERNEL,
 						fw_mem[i].attrs);
-#endif
 
 			if (!fw_mem[i].va) {
 				if ((fw_mem[i].attrs &
@@ -3922,15 +3910,9 @@ static void cnss_pci_free_fw_mem(struct cnss_pci_data *pci_priv)
 			cnss_pr_dbg("Freeing memory for FW, va: 0x%pK, pa: %pa, size: 0x%zx, type: %u\n",
 				    fw_mem[i].va, &fw_mem[i].pa,
 				    fw_mem[i].size, fw_mem[i].type);
-#ifdef CONFIG_WCN_USE_DMA_DIRECT
-			dma_direct_free(dev, fw_mem[i].size,
-				       fw_mem[i].va, fw_mem[i].pa,
-				       fw_mem[i].attrs);
-#else
 			dma_free_attrs(dev, fw_mem[i].size,
 				       fw_mem[i].va, fw_mem[i].pa,
 				       fw_mem[i].attrs);
-#endif
 			fw_mem[i].va = NULL;
 			fw_mem[i].pa = 0;
 			fw_mem[i].size = 0;
@@ -4275,7 +4257,7 @@ int cnss_get_soc_info(struct device *dev, struct cnss_soc_info *info)
 	info->board_id = plat_priv->board_info.board_id;
 	info->soc_id = plat_priv->soc_info.soc_id;
 	info->fw_version = plat_priv->fw_version_info.fw_version;
-	strlcpy(info->fw_build_timestamp,
+	strscpy(info->fw_build_timestamp,
 		plat_priv->fw_version_info.fw_build_timestamp,
 		sizeof(info->fw_build_timestamp));
 	memcpy(&info->device_version, &plat_priv->device_version,

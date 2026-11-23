@@ -29,7 +29,7 @@
 #include <qdf_lock.h>        /* qdf_spinlock */
 #include <qdf_time.h>
 #include <qdf_timer.h>
-#include <qdf_str.h>         /* qdf_str_lcopy */
+#include <qdf_str.h>         /* qdf_str_scopy */
 
 #include <wlan_dfs_ioctl.h>
 #include "dfs_structs.h"

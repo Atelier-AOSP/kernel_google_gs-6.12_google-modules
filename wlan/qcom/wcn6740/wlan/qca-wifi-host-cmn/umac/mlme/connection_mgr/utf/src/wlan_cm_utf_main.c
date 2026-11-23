@@ -324,7 +324,7 @@ wlan_cm_utf_default_connect_param(struct wlan_cm_utf *cm_utf)
 	cm_utf->req.bssid.bytes[4] = 0x5;
 	cm_utf->req.bssid.bytes[5] = 0x6;
 	cm_utf->req.ssid.length = 6;
-	qdf_str_lcopy(cm_utf->req.ssid.ssid, "CM_STA", cm_utf->req.ssid.length);
+	qdf_str_scopy(cm_utf->req.ssid.ssid, "CM_STA", cm_utf->req.ssid.length);
 	cm_utf->req.chan_freq = 5200;
 	cm_utf->req.crypto.wep_keys.key_len = 0;
 	return QDF_STATUS_SUCCESS;

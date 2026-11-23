@@ -353,7 +353,7 @@ void dqe_reg_set_histogram_threshold(u32 dqe_id, enum exynos_histogram_id hist_i
 void dqe_reg_set_histogram(u32 dqe_id, enum exynos_histogram_id hist_id,
 			   enum histogram_state state);
 void dqe_reg_get_histogram_bins(struct device *dev, u32 dqe_id, enum exynos_histogram_id hist_id,
-				struct histogram_bins *bins);
+				struct histogram_bins *aligned_bins);
 static inline void dqe_reg_set_histogram_pos(u32 dqe_id, enum exynos_histogram_id hist_id,
 					     enum histogram_prog_pos pos)
 {

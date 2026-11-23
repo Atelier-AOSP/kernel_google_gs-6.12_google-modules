@@ -226,6 +226,17 @@ typedef struct _FPF_BLOCK_DESC_
 } FPF_BLOCK_DESC;
 #endif /* defined(SUPPORT_FASTPATH_FENCE) */
 
+struct SYNC_CHECKPOINT_RECORD_DATA_TAG
+{
+	IMG_HANDLE				hNotify;
+	POS_LOCK				hLock;
+	IMG_UINT32				ui32Count;
+	IMG_UINT32				ui32CountHighWatermark;
+	DLLIST_NODE				sRecordsList;
+	SYNC_CHECKPOINT_RECORD	*apsFreeRecords[PVRSRV_FULL_SYNC_TRACKING_HISTORY_LEN];
+	IMG_UINT32				uiFreeRecordsIdx;
+};
+
 struct SYNC_CHECKPOINT_CONTEXT_TAG
 {
 #if defined(PDUMP)
@@ -488,36 +499,77 @@ fail_alloc:
 	return eError;
 }
 
-static IMG_BOOL
-_FreeSyncCheckpointBlock(SYNC_CHECKPOINT_BLOCK *psSyncBlk)
+static INLINE void _FreeSyncCheckpointBlock(SYNC_CHECKPOINT_BLOCK *psSyncBlk)
 {
-	OSLockAcquire(psSyncBlk->hLock);
-	if (0 == OSAtomicDecrement(&psSyncBlk->hRefCount))
-	{
-		_SYNC_CHECKPOINT_CONTEXT *psContext = (_SYNC_CHECKPOINT_CONTEXT*)psSyncBlk->psContext;
-		PVRSRV_DEVICE_NODE *psDevNode = psContext->psContextCtl->psDeviceNode;
+	_SYNC_CHECKPOINT_CONTEXT *psContext = (_SYNC_CHECKPOINT_CONTEXT*)psSyncBlk->psContext;
+	PVRSRV_DEVICE_NODE *psDevNode = psContext->psContextCtl->psDeviceNode;
 
 #if defined(PDUMP)
-		OSLockAcquire(psSyncBlk->psContext->hSyncCheckpointBlockListLock);
-		dllist_remove_node(&psSyncBlk->sListNode);
-		OSLockRelease(psSyncBlk->psContext->hSyncCheckpointBlockListLock);
+	OSLockAcquire(psSyncBlk->psContext->hSyncCheckpointBlockListLock);
+	dllist_remove_node(&psSyncBlk->sListNode);
+	OSLockRelease(psSyncBlk->psContext->hSyncCheckpointBlockListLock);
 #endif
-		DevmemReleaseCpuVirtAddr(psSyncBlk->hMemDesc);
-		psDevNode->pfnFreeUFOBlock(psDevNode, psSyncBlk->hMemDesc);
-		OSLockRelease(psSyncBlk->hLock);
-		OSLockDestroy(psSyncBlk->hLock);
-		psSyncBlk->hLock = NULL;
-		OSFreeMem(psSyncBlk);
+	DevmemReleaseCpuVirtAddr(psSyncBlk->hMemDesc);
+	psDevNode->pfnFreeUFOBlock(psDevNode, psSyncBlk->hMemDesc);
+	OSLockDestroy(psSyncBlk->hLock);
+	psSyncBlk->hLock = NULL;
+	OSFreeMem(psSyncBlk);
+}
+
+static IMG_BOOL
+_UnrefMaybeFreeSyncCheckpointBlock(SYNC_CHECKPOINT_BLOCK *psSyncBlk)
+{
+	if (0 == OSAtomicDecrement(&psSyncBlk->hRefCount))
+	{
+		_FreeSyncCheckpointBlock(psSyncBlk);
+		return IMG_TRUE;
+	}
+
+	return IMG_FALSE;
+}
+
+#if defined(SUPPORT_FASTPATH_FENCE)
+
+static PVRSRV_ERROR
+_FPFUpdateBlockLookupHash(PVRSRV_RGXDEV_INFO *psDevInfo,
+                          IMG_UINT32 uiBlockOffset,
+                          IMG_UINT32 uiFWAddr)
+{
+	PVRSRV_ERROR eError;
+	RGXFWIF_DEV_VIRTADDR *psBlockLookupAddrs = psDevInfo->psRGXFWIfFwFPFLookupTable->auiBlockAddrs;
+
+	psBlockLookupAddrs[uiBlockOffset].ui32Addr = uiFWAddr;
+	eError = SyncPrimSet(psDevInfo->psRGXFWIfFwFPFLookupTableMMUSync,
+	                     psDevInfo->ui32NextFPFInvalidateUpdate++);
+	if (eError != PVRSRV_OK)
+	{
+		PVR_DPF((PVR_DBG_ERROR,"Failed to request cache maint for FPF lookup hash."));
+		psBlockLookupAddrs[uiBlockOffset].ui32Addr = 0;
+	}
+
+	return eError;
+}
+
+static IMG_BOOL
+_FPFUnrefMaybeFreeSyncCheckpointBlock(SYNC_CHECKPOINT_BLOCK *psSyncBlk,
+                                      PVRSRV_RGXDEV_INFO *psDevInfo,
+                                      IMG_UINT32 uiBlockOffset)
+{
+	if (0 == OSAtomicDecrement(&psSyncBlk->hRefCount))
+	{
+		PVRSRV_ERROR eError = _FPFUpdateBlockLookupHash(psDevInfo,
+		                                                uiBlockOffset,
+		                                                0);
+		PVR_LOG_IF_ERROR(eError, "_FPFUpdateBlockLookupHash");
+
+		_FreeSyncCheckpointBlock(psSyncBlk);
 
 		return IMG_TRUE;
 	}
-	else
-	{
-		OSLockRelease(psSyncBlk->hLock);
 
-		return IMG_FALSE;
-	}
+	return IMG_FALSE;
 }
+#endif
 
 static PVRSRV_ERROR
 _SyncCheckpointBlockImport(RA_PERARENA_HANDLE hArena,
@@ -574,7 +626,7 @@ _SyncCheckpointBlockImport(RA_PERARENA_HANDLE hArena,
 	return PVRSRV_OK;
 
 fail_spanalloc:
-	(void) _FreeSyncCheckpointBlock(psSyncBlock);
+	(void) _UnrefMaybeFreeSyncCheckpointBlock(psSyncBlock);
 fail_syncblockalloc:
 	SyncCheckpointContextUnref((PSYNC_CHECKPOINT_CONTEXT)psContext);
 
@@ -597,7 +649,7 @@ _SyncCheckpointBlockUnimport(RA_PERARENA_HANDLE hArena,
 	RA_Free(psContext->psSpanRA, uiBase);
 
 	/* Free the sync checkpoint block */
-	(void) _FreeSyncCheckpointBlock(psSyncBlock);
+	(void) _UnrefMaybeFreeSyncCheckpointBlock(psSyncBlock);
 
 	/*	Drop our reference to the sync checkpoint context */
 	SyncCheckpointContextUnref((PSYNC_CHECKPOINT_CONTEXT)psContext);
@@ -1663,7 +1715,6 @@ _FPFAllocSyncCheckpoint(_SYNC_CHECKPOINT_CONTEXT *psContext,
 	SYNC_CHECKPOINT *psNewSyncCheckpoint = NULL;
 	FPF_BLOCK_DESC *psFpfBlockDesc;
 	SYNC_CHECKPOINT_BLOCK *psSyncBlock;
-	RGXFWIF_DEV_VIRTADDR *psBlockLookupAddrs = psDevInfo->psRGXFWIfFwFPFLookupTable->auiBlockAddrs;
 	PVRSRV_ERROR eError;
 
 	psFpfBlockDesc = &psContext->pasFpfBlockDesc[uiBlockOffset];
@@ -1684,8 +1735,12 @@ _FPFAllocSyncCheckpoint(_SYNC_CHECKPOINT_CONTEXT *psContext,
 
 		psSyncBlock->uiSpanBase = 0;
 
+		eError = _FPFUpdateBlockLookupHash(psDevInfo,
+		                                   uiBlockOffset,
+		                                   psSyncBlock->ui32FirmwareAddr);
+		PVR_LOG_GOTO_IF_ERROR(eError, "_FPFUpdateBlockLookupHash", fail_free_checkpoint_block);
+
 		psFpfBlockDesc->psSyncBlock = psSyncBlock;
-		psBlockLookupAddrs[uiBlockOffset].ui32Addr = psSyncBlock->ui32FirmwareAddr;
 
 #if ENABLE_FPF_SYNC_CHECKPOINT_BLOCK_ALLOC_AND_FREE_DEBUG == 1
 		PVR_DPF((PVR_DBG_WARNING,
@@ -1738,7 +1793,8 @@ _FPFAllocSyncCheckpoint(_SYNC_CHECKPOINT_CONTEXT *psContext,
 	*ppsSyncCheckpoint = psNewSyncCheckpoint;
 
 	return PVRSRV_OK;
-
+fail_free_checkpoint_block:
+	_UnrefMaybeFreeSyncCheckpointBlock(psSyncBlock);
 fail_unref_context:
 	SyncCheckpointContextUnref(psContext);
 fail_free_checkpoint:
@@ -1905,6 +1961,7 @@ fail_alloc:
 static void _FPFFreeSyncCheckpoint(SYNC_CHECKPOINT *psSyncCheckpoint)
 {
 	_SYNC_CHECKPOINT_CONTEXT *psContext = psSyncCheckpoint->psSyncCheckpointBlock->psContext;
+	PVRSRV_RGXDEV_INFO *psDevInfo = psContext->psContextCtl->psDeviceNode->pvDevice;
 	FPF_BLOCK_DESC *psFpfBlockDesc = NULL;
 	IMG_UINT32 uiBlockOffset, uiCheckpointOffset;
 	IMG_UINT32 uiUserData = psSyncCheckpoint->psSyncCheckpointFwObj->ui32UserData;
@@ -1937,13 +1994,11 @@ static void _FPFFreeSyncCheckpoint(SYNC_CHECKPOINT *psSyncCheckpoint)
 		/* mark sync checkpoint unused within the block */
 		psFpfBlockDesc->auiSyncBlockMap[uiCheckpointOffset] = NULL;
 
-		if (_FreeSyncCheckpointBlock(psFpfBlockDesc->psSyncBlock))
+		if (_FPFUnrefMaybeFreeSyncCheckpointBlock(psFpfBlockDesc->psSyncBlock,
+		                                          psDevInfo,
+		                                          uiBlockOffset))
 		{
-			PVRSRV_RGXDEV_INFO *psDevInfo = psContext->psContextCtl->psDeviceNode->pvDevice;
-			RGXFWIF_DEV_VIRTADDR *psBlockLookupAddrs = psDevInfo->psRGXFWIfFwFPFLookupTable->auiBlockAddrs;
-
 			psFpfBlockDesc->psSyncBlock = NULL;
-			psBlockLookupAddrs[uiBlockOffset].ui32Addr = 0;
 
 #if ENABLE_FPF_SYNC_CHECKPOINT_BLOCK_ALLOC_AND_FREE_DEBUG == 1
 			PVR_DPF((PVR_DBG_WARNING,
@@ -1969,7 +2024,8 @@ static void _FPFFreeSyncCheckpoint(SYNC_CHECKPOINT *psSyncCheckpoint)
                 The reference count held for the synchronisation checkpoint is
                 decremented - if it has become zero, it is also freed.
 @Input          psSyncCheckpointInt     The synchronisation checkpoint to free
-@Return         None
+@Return         PVRSRV_OK - If success
+                PVRSRV_ERROR_NOT_READY - If not ready to free.
 */ /***************************************************************************/
 static PVRSRV_ERROR
 FPFSyncCheckpointFree(PSYNC_CHECKPOINT psSyncCheckpointInt)
@@ -2024,15 +2080,7 @@ FPFSyncCheckpointFree(PSYNC_CHECKPOINT psSyncCheckpointInt)
 	}
 	else
 	{
-		OS_SPINLOCK_FLAGS uiFlags = 0;
-
-		/* Add the FPF sync checkpoint to the deferred free list */
-		OSSpinLockAcquire(psContext->psContextCtl->hDeferredCleanupListLock, uiFlags);
-		dllist_add_to_tail(&psContext->psContextCtl->sDeferredCleanupListHead,
-		                   &psSyncCheckpointInt->sDeferredFreeListNode);
-		OSSpinLockRelease(psContext->psContextCtl->hDeferredCleanupListLock, uiFlags);
-
-		bDeferredFree = IMG_TRUE;
+		return PVRSRV_ERROR_NOT_READY;
 	}
 
 	OSSpinLockAcquire(psContextCtl->hSyncCheckpointStatsLock, uiFlags);
@@ -2056,11 +2104,12 @@ FPFSyncCheckpointFree(PSYNC_CHECKPOINT psSyncCheckpointInt)
 }
 #endif
 
+
+#if defined(SUPPORT_FASTPATH_FENCE) || defined(SUPPORT_FOREIGN_FENCE_TOKEN)
 static IMG_BOOL SyncCheckpointExtractFFToken(PSYNC_CHECKPOINT_CONTEXT psSyncContext,
                                          IMG_HANDLE hEnvFenceObjPtr,
                                          IMG_UINT16 *puiFFToken)
 {
-#if defined(SUPPORT_NATIVE_FENCE_SYNC)
 	PVRSRV_DEVICE_NODE *psDevNode;
 	PVRSRV_DEVICE_CONFIG *psDevCfg;
 
@@ -2080,14 +2129,6 @@ static IMG_BOOL SyncCheckpointExtractFFToken(PSYNC_CHECKPOINT_CONTEXT psSyncCont
 	}
 
 	return psDevCfg->pfnSysDevExtractFFToken(psDevCfg->hSysData, hEnvFenceObjPtr, puiFFToken);
-
-#else
-	PVR_UNREFERENCED_PARAMETER(psSyncContext);
-	PVR_UNREFERENCED_PARAMETER(hEnvFenceObjPtr);
-	PVR_UNREFERENCED_PARAMETER(puiFFToken);
-
-	return IMG_FALSE;
-#endif
 }
 
 void SyncCheckpointInjectFFToken(PSYNC_CHECKPOINT psSyncCheckpoint,
@@ -2114,6 +2155,7 @@ static void SyncCheckpointClearFWUserData(PSYNC_CHECKPOINT psSyncCheckpoint)
 
 	*pui32UserData = 0;
 }
+#endif
 
 PVRSRV_ERROR SyncCheckpointAllocProxy(PSYNC_CHECKPOINT_CONTEXT psSyncContext,
                                       PVRSRV_FENCE hFence,
@@ -2132,6 +2174,7 @@ PVRSRV_ERROR SyncCheckpointAllocProxy(PSYNC_CHECKPOINT_CONTEXT psSyncContext,
 	 * will handle a NULL pszCheckpointName, and hFence determines if the
 	 * foreign fence should have a token injected into the sync checkpoint. */
 
+#if defined(SUPPORT_FASTPATH_FENCE) || defined(SUPPORT_FOREIGN_FENCE_TOKEN)
 	if (!bIsPVRSWFence && hFence != PVRSRV_NO_FENCE)
 	{
 		IMG_UINT16 uiExtractedToken;
@@ -2155,7 +2198,6 @@ PVRSRV_ERROR SyncCheckpointAllocProxy(PSYNC_CHECKPOINT_CONTEXT psSyncContext,
 			PVR_LOG_RETURN_IF_ERROR(eError, "SyncCheckpointAlloc");
 			SyncCheckpointInjectFFToken(*ppsSyncCheckpoint, uiExtractedToken);
 #endif
-
 		}
 		else
 		{
@@ -2169,6 +2211,7 @@ PVRSRV_ERROR SyncCheckpointAllocProxy(PSYNC_CHECKPOINT_CONTEXT psSyncContext,
 		}
 	}
 	else
+#endif
 	{
 		eError = SyncCheckpointAlloc(psSyncContext,
 									 SYNC_CHECKPOINT_FOREIGN_CHECKPOINT,
@@ -2205,14 +2248,6 @@ static void SyncCheckpointFreeInternal(SYNC_CHECKPOINT *psSyncCheckpointInt)
 		PVR_DPF((PVR_DBG_WARNING,
 				"%s No outstanding FW ops and hRef is zero, deleting SyncCheckpoint..",
 				__func__));
-#endif
-#if defined(SUPPORT_NATIVE_FENCE_SYNC)
-			if (psDevNode->psDevConfig->pfnSysDevReleaseFF != NULL &&
-				(psSyncCheckpointInt->psSyncCheckpointFwObj->ui32UserData & SYNC_CHECKPOINT_FW_UD_FF_TOKEN_VALID_EN))
-			{
-				psDevNode->psDevConfig->pfnSysDevReleaseFF(psDevNode->psDevConfig->hSysData,
-						psSyncCheckpointInt->psSyncCheckpointFwObj->ui32UserData);
-			}
 #endif
 
 		if ((GetInfoPageDebugFlagsKM() & DEBUG_FEATURE_FULL_SYNC_TRACKING_ENABLED)
@@ -2299,7 +2334,7 @@ static void SyncCheckpointFreeInternal(SYNC_CHECKPOINT *psSyncCheckpointInt)
 
 }
 
-static void SyncCheckpointUnref(SYNC_CHECKPOINT *psSyncCheckpointInt)
+static PVRSRV_ERROR SyncCheckpointUnref(SYNC_CHECKPOINT *psSyncCheckpointInt)
 {
 	_SYNC_CHECKPOINT_CONTEXT *psContext;
 
@@ -2309,7 +2344,7 @@ static void SyncCheckpointUnref(SYNC_CHECKPOINT *psSyncCheckpointInt)
 	if (!OSAtomicRead(&psSyncCheckpointInt->hRefCount))
 	{
 		PVR_DPF((PVR_DBG_FATAL, "SyncCheckpointUnref sync checkpoint already freed"));
-		return;
+		return PVRSRV_ERROR_INVALID_REQUEST;
 	}
 
 	psContext = psSyncCheckpointInt->psSyncCheckpointBlock->psContext;
@@ -2327,11 +2362,29 @@ static void SyncCheckpointUnref(SYNC_CHECKPOINT *psSyncCheckpointInt)
 #if defined(SUPPORT_FASTPATH_FENCE)
 		if (psSyncCheckpointInt->eCheckpointType == SYNC_CHECKPOINT_TYPE_FPF)
 		{
-			FPFSyncCheckpointFree(psSyncCheckpointInt);
+			PVRSRV_ERROR eError = FPFSyncCheckpointFree(psSyncCheckpointInt);
+			if (eError == PVRSRV_ERROR_NOT_READY)
+			{
+				/* Reverse checkpoint refcount */
+				OSAtomicIncrement(&psSyncCheckpointInt->hRefCount);
+				SyncCheckpointContextUnref((PSYNC_CHECKPOINT_CONTEXT)psContext);
+				return eError;
+			}
 		}
 		else
 #endif
 		{
+#if defined(SUPPORT_FOREIGN_FENCE_TOKEN)
+			PVRSRV_DEVICE_NODE *psDevNode = (PVRSRV_DEVICE_NODE *)psContext->psContextCtl->psDeviceNode;
+
+			if (psDevNode->psDevConfig->pfnSysDevReleaseFF != NULL &&
+				(psSyncCheckpointInt->psSyncCheckpointFwObj->ui32UserData & SYNC_CHECKPOINT_FW_UD_FF_TOKEN_VALID_EN))
+			{
+				psDevNode->psDevConfig->pfnSysDevReleaseFF(psDevNode->psDevConfig->hSysData,
+						psSyncCheckpointInt->psSyncCheckpointFwObj->ui32UserData);
+			}
+#endif
+
 			SyncCheckpointFreeInternal(psSyncCheckpointInt);
 		}
 	}
@@ -2351,13 +2404,16 @@ static void SyncCheckpointUnref(SYNC_CHECKPOINT *psSyncCheckpointInt)
 	_CheckDeferredCleanupList(psContext);
 
 	SyncCheckpointContextUnref((PSYNC_CHECKPOINT_CONTEXT)psContext);
+
+	return PVRSRV_OK;
 }
 
 void SyncCheckpointFree(PSYNC_CHECKPOINT psSyncCheckpoint)
 {
 	SYNC_CHECKPOINT *psSyncCheckpointInt = (SYNC_CHECKPOINT*)psSyncCheckpoint;
+	PVRSRV_ERROR eError;
 
-	PVR_LOG_RETURN_VOID_IF_FALSE((psSyncCheckpoint != NULL), "psSyncCheckpoint invalid");
+	PVR_LOG_IF_FALSE((psSyncCheckpoint != NULL), "psSyncCheckpoint invalid");
 
 #if (ENABLE_SYNC_CHECKPOINT_ALLOC_AND_FREE_DEBUG == 1)
 #if defined(DEBUG)
@@ -2377,7 +2433,37 @@ void SyncCheckpointFree(PSYNC_CHECKPOINT psSyncCheckpoint)
 			(IMG_UINT32)(OSAtomicRead(&psSyncCheckpointInt->hRefCount))));
 #endif
 #endif
-	SyncCheckpointUnref(psSyncCheckpointInt);
+	eError = SyncCheckpointUnref(psSyncCheckpointInt);
+	PVR_LOG_IF_ERROR(eError, "SyncCheckpointUnref");
+	PVR_ASSERT(eError == PVRSRV_OK);
+}
+
+PVRSRV_ERROR SyncCheckpointFreeProxy(PSYNC_CHECKPOINT psSyncCheckpoint)
+{
+	SYNC_CHECKPOINT *psSyncCheckpointInt = (SYNC_CHECKPOINT*)psSyncCheckpoint;
+
+	PVR_LOG_RETURN_IF_FALSE((psSyncCheckpoint != NULL), "psSyncCheckpoint invalid", PVRSRV_ERROR_INVALID_PARAMS);
+
+#if (ENABLE_SYNC_CHECKPOINT_ALLOC_AND_FREE_DEBUG == 1)
+#if defined(DEBUG)
+	PVR_DPF((PVR_DBG_WARNING,
+			"%s Entry,  psSyncCheckpoint(ID:%d)<%p>, hRefCount=%d, psSyncCheckpoint->ui32ValidationCheck=0x%x",
+			__func__,
+			psSyncCheckpointInt->uiUID,
+			(void*)psSyncCheckpoint,
+			(IMG_UINT32)(OSAtomicRead(&psSyncCheckpointInt->hRefCount)),
+			psSyncCheckpointInt->ui32ValidationCheck));
+#else
+	PVR_DPF((PVR_DBG_WARNING,
+			"%s Entry,  psSyncCheckpoint(ID:%d)<%p>, hRefCount=%d",
+			__func__,
+			psSyncCheckpointInt->uiUID,
+			(void*)psSyncCheckpoint,
+			(IMG_UINT32)(OSAtomicRead(&psSyncCheckpointInt->hRefCount))));
+#endif
+#endif
+
+	return SyncCheckpointUnref(psSyncCheckpointInt);
 }
 
 void
@@ -2693,7 +2779,7 @@ SyncCheckpointDropRef(PSYNC_CHECKPOINT psSyncCheckpoint)
 			OSAtomicRead(&psSyncCheckpointInt->hRefCount)-1,
 			psSyncCheckpointInt->psSyncCheckpointFwObj->ui32FwRefCount));
 #endif
-	SyncCheckpointUnref(psSyncCheckpointInt);
+	eRet = SyncCheckpointUnref(psSyncCheckpointInt);
 
 	return eRet;
 }
@@ -3189,10 +3275,16 @@ void SyncCheckpointRecordLookup(PPVRSRV_DEVICE_NODE psDevNode, IMG_UINT32 ui32Fw
 		return;
 	}
 
+	if (!psDevNode->psSyncCheckpointRecordData)
+	{
+		OSSNPrintf(pszSyncInfo, len, "(Not initialised)");
+		return;
+	}
+
 	pszSyncInfo[0] = '\0';
 
-	OSLockAcquire(psDevNode->hSyncCheckpointRecordLock);
-	dllist_foreach_node(&psDevNode->sSyncCheckpointRecordList, psNode, psNext)
+	OSLockAcquire(psDevNode->psSyncCheckpointRecordData->hLock);
+	dllist_foreach_node(&psDevNode->psSyncCheckpointRecordData->sRecordsList, psNode, psNext)
 	{
 		SYNC_CHECKPOINT_RECORD *psSyncCheckpointRec =
 				IMG_CONTAINER_OF(psNode, SYNC_CHECKPOINT_RECORD, sNode);
@@ -3224,9 +3316,9 @@ void SyncCheckpointRecordLookup(PPVRSRV_DEVICE_NODE psDevNode, IMG_UINT32 ui32Fw
 			break;
 		}
 	}
-	OSLockRelease(psDevNode->hSyncCheckpointRecordLock);
+	OSLockRelease(psDevNode->psSyncCheckpointRecordData->hLock);
 
-	if (!bFound && (psDevNode->ui32SyncCheckpointRecordCountHighWatermark == SYNC_CHECKPOINT_RECORD_LIMIT))
+	if (!bFound && (psDevNode->psSyncCheckpointRecordData->ui32CountHighWatermark == SYNC_CHECKPOINT_RECORD_LIMIT))
 	{
 		OSSNPrintf(pszSyncInfo, len, "(Record may be lost)");
 	}
@@ -3240,9 +3332,10 @@ static PVRSRV_ERROR _SyncCheckpointRecordAdd(PSYNC_CHECKPOINT pSyncCheckpt)
 	PVRSRV_ERROR eError = PVRSRV_OK;
 
 	PVR_ASSERT(pSyncCheckpt != NULL);
-
 	psSyncCheckpointBlock = pSyncCheckpt->psSyncCheckpointBlock;
 	psDevNode = psSyncCheckpointBlock->psContext->psContextCtl->psDeviceNode;
+
+	PVR_LOG_GOTO_IF_FALSE(psDevNode->psSyncCheckpointRecordData, "*psSyncCheckpointRecordData has not been initialised.", fail_no_init);
 
 	psSyncRec = OSAllocZMem(sizeof(*psSyncRec));
 	PVR_LOG_GOTO_IF_NOMEM(psSyncRec, eError, fail_alloc); /* Sets OOM error code */
@@ -3261,33 +3354,37 @@ static PVRSRV_ERROR _SyncCheckpointRecordAdd(PSYNC_CHECKPOINT pSyncCheckpt)
 		memcpy(psSyncRec->szClassName, pSyncCheckpt->azName, PVRSRV_SYNC_NAME_LENGTH);
 	}
 
-	OSLockAcquire(psDevNode->hSyncCheckpointRecordLock);
-	if (psDevNode->ui32SyncCheckpointRecordCount < SYNC_CHECKPOINT_RECORD_LIMIT)
+	OSLockAcquire(psDevNode->psSyncCheckpointRecordData->hLock);
+	if (psDevNode->psSyncCheckpointRecordData->ui32Count < SYNC_CHECKPOINT_RECORD_LIMIT)
 	{
-		dllist_add_to_head(&psDevNode->sSyncCheckpointRecordList, &psSyncRec->sNode);
-		psDevNode->ui32SyncCheckpointRecordCount++;
+		dllist_add_to_head(&psDevNode->psSyncCheckpointRecordData->sRecordsList, &psSyncRec->sNode);
+		psDevNode->psSyncCheckpointRecordData->ui32Count++;
 
-		if (psDevNode->ui32SyncCheckpointRecordCount > psDevNode->ui32SyncCheckpointRecordCountHighWatermark)
+		if (psDevNode->psSyncCheckpointRecordData->ui32Count > psDevNode->psSyncCheckpointRecordData->ui32CountHighWatermark)
 		{
-			psDevNode->ui32SyncCheckpointRecordCountHighWatermark = psDevNode->ui32SyncCheckpointRecordCount;
+			psDevNode->psSyncCheckpointRecordData->ui32CountHighWatermark = psDevNode->psSyncCheckpointRecordData->ui32Count;
 		}
-		OSLockRelease(psDevNode->hSyncCheckpointRecordLock);
+		OSLockRelease(psDevNode->psSyncCheckpointRecordData->hLock);
 	}
 	else
 	{
-		OSLockRelease(psDevNode->hSyncCheckpointRecordLock);
+		OSLockRelease(psDevNode->psSyncCheckpointRecordData->hLock);
 
 		PVR_DPF((PVR_DBG_ERROR, "%s: Failed to add sync checkpoint record \"%s\". %u records already exist.",
 				__func__,
 				psSyncRec->szClassName,
-				psDevNode->ui32SyncCheckpointRecordCount));
+				psDevNode->psSyncCheckpointRecordData->ui32Count));
 		OSFreeMem(psSyncRec);
 		psSyncRec = NULL;
 		eError = PVRSRV_ERROR_TOOMANYBUFFERS;
 	}
 
 	pSyncCheckpt->psRecord = psSyncRec;
+	return eError;
 
+fail_no_init:
+	eError = PVRSRV_ERROR_NOT_INITIALISED;
+	return eError;
 fail_alloc:
 	return eError;
 }
@@ -3300,22 +3397,23 @@ static PVRSRV_ERROR _SyncCheckpointRecordRemove(SYNC_CHECKPOINT_RECORD *psSyncRe
 	PVR_RETURN_IF_INVALID_PARAM(psSyncRecord != NULL);
 
 	psDevNode = psSyncRecord->psSyncCheckpointBlock->psContext->psContextCtl->psDeviceNode;
+	PVR_LOG_GOTO_IF_FALSE(psDevNode->psSyncCheckpointRecordData, "*psSyncCheckpointRecordData has not been initialised.", fail_no_init);
 
-	OSLockAcquire(psDevNode->hSyncCheckpointRecordLock);
+	OSLockAcquire(psDevNode->psSyncCheckpointRecordData->hLock);
 
 	dllist_remove_node(&psSyncRecord->sNode);
 
-	if (psDevNode->uiSyncCheckpointRecordFreeIdx >= PVRSRV_FULL_SYNC_TRACKING_HISTORY_LEN)
+	if (psDevNode->psSyncCheckpointRecordData->uiFreeRecordsIdx >= PVRSRV_FULL_SYNC_TRACKING_HISTORY_LEN)
 	{
 		PVR_DPF((PVR_DBG_ERROR,
 				"%s: psDevNode->uiSyncCheckpointRecordFreeIdx out of range",
 				__func__));
-		psDevNode->uiSyncCheckpointRecordFreeIdx = 0;
+		psDevNode->psSyncCheckpointRecordData->uiFreeRecordsIdx = 0;
 	}
 
-	ppFreedSync = &psDevNode->apsSyncCheckpointRecordsFreed[psDevNode->uiSyncCheckpointRecordFreeIdx];
-	psDevNode->uiSyncCheckpointRecordFreeIdx =
-			(psDevNode->uiSyncCheckpointRecordFreeIdx + 1) % PVRSRV_FULL_SYNC_TRACKING_HISTORY_LEN;
+	ppFreedSync = &psDevNode->psSyncCheckpointRecordData->apsFreeRecords[psDevNode->psSyncCheckpointRecordData->uiFreeRecordsIdx];
+	psDevNode->psSyncCheckpointRecordData->uiFreeRecordsIdx =
+			(psDevNode->psSyncCheckpointRecordData->uiFreeRecordsIdx + 1) % PVRSRV_FULL_SYNC_TRACKING_HISTORY_LEN;
 
 	if (*ppFreedSync)
 	{
@@ -3325,11 +3423,13 @@ static PVRSRV_ERROR _SyncCheckpointRecordRemove(SYNC_CHECKPOINT_RECORD *psSyncRe
 	psSyncRecord->ui64OSTime = OSClockns64();
 	*ppFreedSync = psSyncRecord;
 
-	psDevNode->ui32SyncCheckpointRecordCount--;
+	psDevNode->psSyncCheckpointRecordData->ui32Count--;
 
-	OSLockRelease(psDevNode->hSyncCheckpointRecordLock);
-
+	OSLockRelease(psDevNode->psSyncCheckpointRecordData->hLock);
 	return PVRSRV_OK;
+
+fail_no_init:
+	return PVRSRV_ERROR_NOT_INITIALISED;
 }
 
 #define NS_IN_S (1000000000UL)
@@ -3388,20 +3488,23 @@ static void _SyncCheckpointRecordRequest(PVRSRV_DBGREQ_HANDLE hDebugRequestHandl
 	IMG_UINT64 ui64TimeNow = OSClockns64();
 	DLLIST_NODE *psNode, *psNext;
 
+	/* Callers must ensure the record data is initialised before calling this function */
+	PVR_ASSERT(psDevNode->psSyncCheckpointRecordData != NULL);
+
 	ui64TimeNowS = OSDivide64By32Rem(ui64TimeNow, NS_IN_S, &ui32TimeNowF);
 
 	if (DD_VERB_LVL_ENABLED(ui32VerbLevel, DEBUG_REQUEST_VERBOSITY_MEDIUM))
 	{
 		IMG_UINT32 i;
 
-		OSLockAcquire(psDevNode->hSyncCheckpointRecordLock);
+		OSLockAcquire(psDevNode->psSyncCheckpointRecordData->hLock);
 
 		PVR_DUMPDEBUG_LOG("Dumping allocated sync checkpoints. Allocated: %u High watermark: %u (time ref %05" IMG_UINT64_FMTSPEC ".%09u)",
-		                  psDevNode->ui32SyncCheckpointRecordCount,
-		                  psDevNode->ui32SyncCheckpointRecordCountHighWatermark,
+		                  psDevNode->psSyncCheckpointRecordData->ui32Count,
+		                  psDevNode->psSyncCheckpointRecordData->ui32CountHighWatermark,
 		                  ui64TimeNowS,
 		                  ui32TimeNowF);
-		if (psDevNode->ui32SyncCheckpointRecordCountHighWatermark == SYNC_CHECKPOINT_RECORD_LIMIT)
+		if (psDevNode->psSyncCheckpointRecordData->ui32CountHighWatermark == SYNC_CHECKPOINT_RECORD_LIMIT)
 		{
 			PVR_DUMPDEBUG_LOG("Warning: Record limit (%u) was reached. Some sync checkpoints may not have been recorded in the debug information.",
 			                  SYNC_CHECKPOINT_RECORD_LIMIT);
@@ -3409,7 +3512,7 @@ static void _SyncCheckpointRecordRequest(PVRSRV_DBGREQ_HANDLE hDebugRequestHandl
 		PVR_DUMPDEBUG_LOG("\t%-5s %-15s %-10s %-17s %-14s (%s)",
 		                  "PID", "Time Delta (s)", "UID", "Address", "State", "Annotation");
 
-		dllist_foreach_node(&psDevNode->sSyncCheckpointRecordList, psNode, psNext)
+		dllist_foreach_node(&psDevNode->psSyncCheckpointRecordData->sRecordsList, psNode, psNext)
 		{
 			SYNC_CHECKPOINT_RECORD *psSyncCheckpointRec =
 					IMG_CONTAINER_OF(psNode, SYNC_CHECKPOINT_RECORD, sNode);
@@ -3422,13 +3525,13 @@ static void _SyncCheckpointRecordRequest(PVRSRV_DBGREQ_HANDLE hDebugRequestHandl
 		                  ui32TimeNowF);
 		PVR_DUMPDEBUG_LOG("\t%-5s %-15s %-10s %-17s %-14s (%s)",
 		                  "PID", "Time Delta (s)", "UID", "Address", "State", "Annotation");
-		for (i = DECREMENT_WITH_WRAP(psDevNode->uiSyncCheckpointRecordFreeIdx, PVRSRV_FULL_SYNC_TRACKING_HISTORY_LEN);
-				i != psDevNode->uiSyncCheckpointRecordFreeIdx;
+		for (i = DECREMENT_WITH_WRAP(psDevNode->psSyncCheckpointRecordData->uiFreeRecordsIdx, PVRSRV_FULL_SYNC_TRACKING_HISTORY_LEN);
+				i != psDevNode->psSyncCheckpointRecordData->uiFreeRecordsIdx;
 				i = DECREMENT_WITH_WRAP(i, PVRSRV_FULL_SYNC_TRACKING_HISTORY_LEN))
 		{
-			if (psDevNode->apsSyncCheckpointRecordsFreed[i])
+			if (psDevNode->psSyncCheckpointRecordData->apsFreeRecords[i])
 			{
-				_SyncCheckpointRecordPrint(psDevNode->apsSyncCheckpointRecordsFreed[i],
+				_SyncCheckpointRecordPrint(psDevNode->psSyncCheckpointRecordData->apsFreeRecords[i],
 				                           ui64TimeNow, pfnDumpDebugPrintf, pvDumpDebugFile);
 			}
 			else
@@ -3436,7 +3539,7 @@ static void _SyncCheckpointRecordRequest(PVRSRV_DBGREQ_HANDLE hDebugRequestHandl
 				break;
 			}
 		}
-		OSLockRelease(psDevNode->hSyncCheckpointRecordLock);
+		OSLockRelease(psDevNode->psSyncCheckpointRecordData->hLock);
 	}
 }
 #undef NS_IN_S
@@ -3444,14 +3547,17 @@ static PVRSRV_ERROR _SyncCheckpointRecordListInit(PVRSRV_DEVICE_NODE *psDevNode)
 {
 	PVRSRV_ERROR eError;
 
-	eError = OSLockCreate(&psDevNode->hSyncCheckpointRecordLock);
+	psDevNode->psSyncCheckpointRecordData = OSAllocMem(sizeof(*psDevNode->psSyncCheckpointRecordData));
+	PVR_GOTO_IF_NOMEM(psDevNode->psSyncCheckpointRecordData, eError, fail_alloc_mem);
+
+	eError = OSLockCreate(&psDevNode->psSyncCheckpointRecordData->hLock);
 	PVR_GOTO_IF_ERROR(eError, fail_lock_create);
-	dllist_init(&psDevNode->sSyncCheckpointRecordList);
+	dllist_init(&psDevNode->psSyncCheckpointRecordData->sRecordsList);
 
-	psDevNode->ui32SyncCheckpointRecordCount = 0;
-	psDevNode->ui32SyncCheckpointRecordCountHighWatermark = 0;
+	psDevNode->psSyncCheckpointRecordData->ui32Count = 0;
+	psDevNode->psSyncCheckpointRecordData->ui32CountHighWatermark = 0;
 
-	eError = PVRSRVRegisterDeviceDbgRequestNotify(&psDevNode->hSyncCheckpointRecordNotify,
+	eError = PVRSRVRegisterDeviceDbgRequestNotify(&psDevNode->psSyncCheckpointRecordData->hNotify,
 	                                              psDevNode,
 	                                              _SyncCheckpointRecordRequest,
 	                                              DEBUG_REQUEST_SYNCCHECKPOINT,
@@ -3461,8 +3567,10 @@ static PVRSRV_ERROR _SyncCheckpointRecordListInit(PVRSRV_DEVICE_NODE *psDevNode)
 	return PVRSRV_OK;
 
 fail_dbg_register:
-	OSLockDestroy(psDevNode->hSyncCheckpointRecordLock);
+	OSLockDestroy(psDevNode->psSyncCheckpointRecordData->hLock);
 fail_lock_create:
+	return eError;
+fail_alloc_mem:
 	return eError;
 }
 
@@ -3471,8 +3579,13 @@ static void _SyncCheckpointRecordListDeinit(PVRSRV_DEVICE_NODE *psDevNode)
 	DLLIST_NODE *psNode, *psNext;
 	int i;
 
-	OSLockAcquire(psDevNode->hSyncCheckpointRecordLock);
-	dllist_foreach_node(&psDevNode->sSyncCheckpointRecordList, psNode, psNext)
+	if (psDevNode->psSyncCheckpointRecordData == NULL)
+	{
+		return;
+	}
+
+	OSLockAcquire(psDevNode->psSyncCheckpointRecordData->hLock);
+	dllist_foreach_node(&psDevNode->psSyncCheckpointRecordData->sRecordsList, psNode, psNext)
 	{
 		SYNC_CHECKPOINT_RECORD *pSyncCheckpointRec =
 				IMG_CONTAINER_OF(psNode, SYNC_CHECKPOINT_RECORD, sNode);
@@ -3483,19 +3596,19 @@ static void _SyncCheckpointRecordListDeinit(PVRSRV_DEVICE_NODE *psDevNode)
 
 	for (i = 0; i < PVRSRV_FULL_SYNC_TRACKING_HISTORY_LEN; i++)
 	{
-		if (psDevNode->apsSyncCheckpointRecordsFreed[i])
+		if (psDevNode->psSyncCheckpointRecordData->apsFreeRecords[i])
 		{
-			OSFreeMem(psDevNode->apsSyncCheckpointRecordsFreed[i]);
-			psDevNode->apsSyncCheckpointRecordsFreed[i] = NULL;
+			OSFreeMem(psDevNode->psSyncCheckpointRecordData->apsFreeRecords[i]);
+			psDevNode->psSyncCheckpointRecordData->apsFreeRecords[i] = NULL;
 		}
 	}
-	OSLockRelease(psDevNode->hSyncCheckpointRecordLock);
+	OSLockRelease(psDevNode->psSyncCheckpointRecordData->hLock);
 
-	if (psDevNode->hSyncCheckpointRecordNotify)
+	if (psDevNode->psSyncCheckpointRecordData->hNotify)
 	{
-		PVRSRVUnregisterDeviceDbgRequestNotify(psDevNode->hSyncCheckpointRecordNotify);
+		PVRSRVUnregisterDeviceDbgRequestNotify(psDevNode->psSyncCheckpointRecordData->hNotify);
 	}
-	OSLockDestroy(psDevNode->hSyncCheckpointRecordLock);
+	OSLockDestroy(psDevNode->psSyncCheckpointRecordData->hLock);
 }
 
 #if defined(PDUMP)

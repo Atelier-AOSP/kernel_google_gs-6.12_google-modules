@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
 #undef TRACE_SYSTEM
-#define TRACE_SYSTEM i2c
+#define TRACE_SYSTEM i2c_dw
 
 #if !defined(_TRACE_I2C_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_I2C_H
@@ -188,35 +188,37 @@ TRACE_EVENT(i2c_dw_set_sda_hold,
 #ifdef I2C_PLAT_TRACES
 
 DECLARE_EVENT_CLASS(i2c_power_group_event,
-	TP_PROTO(struct dw_i2c_dev *dev),
-	TP_ARGS(dev),
+	TP_PROTO(struct dw_i2c_dev *dev, int ret),
+	TP_ARGS(dev, ret),
 	TP_STRUCT__entry(
 		__array(char, label, MAX_LABEL_SIZE)
+		__field(int, ret)
 	),
 	TP_fast_assign(
 		scnprintf(__entry->label, MAX_LABEL_SIZE, "%s", dev_name(dev->dev));
+		__entry->ret = ret;
 	),
-	TP_printk("%s", __entry->label)
+	TP_printk("%s ret=%d", __entry->label, ret)
 );
 
 DEFINE_EVENT(i2c_power_group_event, i2c_dw_suspend,
-	TP_PROTO(struct dw_i2c_dev *dev),
-	TP_ARGS(dev)
+	TP_PROTO(struct dw_i2c_dev *dev, int ret),
+	TP_ARGS(dev, ret)
 );
 
 DEFINE_EVENT(i2c_power_group_event, i2c_dw_resume,
-	TP_PROTO(struct dw_i2c_dev *dev),
-	TP_ARGS(dev)
+	TP_PROTO(struct dw_i2c_dev *dev, int ret),
+	TP_ARGS(dev, ret)
 );
 
 DEFINE_EVENT(i2c_power_group_event, i2c_dw_runtime_suspend,
-	TP_PROTO(struct dw_i2c_dev *dev),
-	TP_ARGS(dev)
+	TP_PROTO(struct dw_i2c_dev *dev, int ret),
+	TP_ARGS(dev, ret)
 );
 
 DEFINE_EVENT(i2c_power_group_event, i2c_dw_runtime_resume,
-	TP_PROTO(struct dw_i2c_dev *dev),
-	TP_ARGS(dev)
+	TP_PROTO(struct dw_i2c_dev *dev, int ret),
+	TP_ARGS(dev, ret)
 );
 
 #endif /* I2C_PLAT_TRACES */

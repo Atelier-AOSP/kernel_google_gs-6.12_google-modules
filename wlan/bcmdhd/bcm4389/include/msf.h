@@ -39,7 +39,7 @@ struct wl_segment_info {
 	uint32       crc32;
 	uint32       file_type;
 	uint32       num_segments;
-	BCM_DECLARE_FLEX_ARRAY(wl_segment_t, segments);
+	wl_segment_t segments[BCM_FLEX_ARRAY];
 };
 typedef struct wl_segment_info wl_segment_info_t;
 

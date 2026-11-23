@@ -18,19 +18,21 @@
 #define CPM_STATUS_FAILED_PRECONDITION (-17)
 #define CPM_STATUS_BAD_STATE (-31)
 
-/* Thermal zone id, it must be algin with CPM side */
-/* dt-bindings/google-thermal-def.h should align with the thermal zone definition here */
+/* HW thermal zone id, it must be algin with CPM side */
 enum hw_thermal_zone_id {
-	HW_THERMAL_ZONE_BIG = 0x0,
-	HW_THERMAL_ZONE_BIG_MID,
-	HW_THERMAL_ZONE_MID,
-	HW_THERMAL_ZONE_LIT,
-	HW_THERMAL_ZONE_GPU,
-	HW_THERMAL_ZONE_TPU,
-	HW_THERMAL_ZONE_AUR,
-	HW_THERMAL_ZONE_ISP,
-	HW_THERMAL_ZONE_MEM,
-	HW_THERMAL_ZONE_AOC,
+	HW_THERMAL_ZONE_0 = 0x0,
+	HW_THERMAL_ZONE_1,
+	HW_THERMAL_ZONE_2,
+	HW_THERMAL_ZONE_3,
+	HW_THERMAL_ZONE_4,
+	HW_THERMAL_ZONE_5,
+	HW_THERMAL_ZONE_6,
+	HW_THERMAL_ZONE_7,
+	HW_THERMAL_ZONE_8,
+	HW_THERMAL_ZONE_9,
+	HW_THERMAL_ZONE_10,
+	HW_THERMAL_ZONE_11,
+	HW_THERMAL_ZONE_12,
 	HW_THERMAL_ZONE_MAX,
 };
 
@@ -46,6 +48,13 @@ enum hw_dev_type {
 	HW_CDEV_ISP,
 	HW_CDEV_MEM,
 	HW_CDEV_AOC,
+	HW_CDEV_MIDLL,
+	HW_CDEV_CME,
+	HW_CDEV_DSU,
+	HW_CDEV_ISPFE,
+	HW_CDEV_ISPBE,
+	HW_CDEV_C3P,
+	HW_CDEV_AOSS,
 	HW_CDEV_MAX,
 	/* Reserve for NTC Driver */
 	HW_RX_CB_NTC = 0x50,
@@ -175,13 +184,15 @@ union thermal_cpm_message {
 };
 
 struct tz_cdev_map {
-	enum hw_thermal_zone_id tz_id;
+	unsigned int sensor_id;
+	enum hw_thermal_zone_id hw_tzid;
 	enum hw_dev_type cdev_id;
 	char tz_name[THERMAL_NAME_LENGTH];
 };
 
 struct thermal_cpm_mbox_platform_data {
-	struct tz_cdev_map tz_cdev_table[HW_THERMAL_ZONE_MAX];
+	int tz_max;
+	const struct tz_cdev_map *tz_cdev_table;
 };
 
 struct thermal_cpm_mbox_rx_work {
@@ -258,23 +269,33 @@ int thermal_cpm_mbox_register_notification(enum hw_dev_type type,
 void thermal_cpm_mbox_unregister_notification(enum hw_dev_type type,
 					      struct notifier_block *nb);
 
-/* thermal_cpm_mbox_cdev_to_tz_id - find the mapped hw tz_id of a cdev_id
+/* thermal_cpm_mbox_cdev_to_hw_tzid - find the mapped hw tz_id of a cdev_id
  *
  * @cdev_id: the cdev_id to look up
- * @tz_id: output of found tz_id
+ * @hw_tzid: output of HW tz_id
  *
  * Return: 0 on success
  * 	-EINVAL: invalid cdev_id or no mapped tz_id found
  */
-int thermal_cpm_mbox_cdev_to_tz_id(enum hw_dev_type cdev_id, enum hw_thermal_zone_id *tz_id);
+int thermal_cpm_mbox_cdev_to_hw_tzid(enum hw_dev_type cdev_id, enum hw_thermal_zone_id *hw_tzid);
 
 /*
- * thermal_cpm_mbox_tz_name(enum hw_thermal_zone_id)
+ * thermal_cpm_mbox_get_tz_name(enum hw_thermal_zone_id hw_tzid)
  *
- * @tz_id: id of the demanded thermal zone
+ * @ hw_tzid: HW TZ id
  *
  * Return: thermal zone name
  */
-const char *thermal_cpm_mbox_get_tz_name(enum hw_thermal_zone_id tz_id);
+const char *thermal_cpm_mbox_get_tz_name(enum hw_thermal_zone_id hw_tzid);
+
+/* thermal_cpm_mbox_sensor_id_to_hw_tzid - map thermal sensor id to HW TZ id
+ *
+ * @ sensor_id: thermal sensor id
+ * @ hw_tzid: mapped HW TZ id
+ *
+ * Return: 0 on success.
+ *	-EINVAL: no mapped TZ id found in CPM
+ */
+int thermal_cpm_mbox_sensor_id_to_hw_tzid(int sensor_id, enum hw_thermal_zone_id *hw_tzid);
 
 #endif /* _THERMAL_CPM_MBOX_H */

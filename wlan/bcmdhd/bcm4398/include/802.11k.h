@@ -8,7 +8,7 @@
  * RM - same as RRM?
  * NGBR - Neighbor Report
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -39,6 +39,8 @@
 #include <packed_section_start.h>
 
 /* ************* 802.11k related definitions. ************* */
+
+#define DOT11_CHLOAD_SCALE_UNIT 255u
 
 /* Radio measurements enabled capability ie */
 #define DOT11_RRM_CAP_LEN		5	/* length of rrm cap bitmap */
@@ -235,6 +237,7 @@ typedef struct dot11_rmrep_bcn dot11_rmrep_bcn_t;
 #define DOT11_RMREQ_BCN_REPINFO_ID	1
 #define DOT11_RMREQ_BCN_REPDET_ID	2
 #define DOT11_RMREQ_BCN_REQUEST_ID	10
+#define DOT11_RMREQ_BCN_EXT_REQ_ID	11
 #define DOT11_RMREQ_BCN_APCHREP_ID	DOT11_MNG_AP_CHREP_ID
 #define DOT11_RMREQ_BCN_WIDE_BWCS_ID	163u	/* Wide Bandwidth Channel Switch */
 #define DOT11_RMREQ_BCN_LAST_RPT_IND_REQ_ID 164
@@ -442,6 +445,8 @@ BWL_PRE_PACKED_STRUCT struct dot11_rmrep_stat {
 	uint8 group_id;
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_rmrep_stat dot11_rmrep_stat_t;
+#define DOT11_RMREP_STAT_LEN 3
+
 
 /* Statistics Group Report: Group IDs */
 enum {
@@ -780,11 +785,12 @@ typedef struct dot11_rmreq_ftm_range dot11_rmreq_ftm_range_t;
 #define DOT11_RMREQ_FTM_RANGE_LEN 8
 
 #define DOT11_FTM_RANGE_LEN		3
+/* From IEEE Std 802.11-2020 spec section: 9.4.2.21.18 */
 BWL_PRE_PACKED_STRUCT struct dot11_ftm_range_entry {
 	uint32 start_tsf;		/* 4 lsb of tsf */
 	struct ether_addr bssid;
 	uint8 range[DOT11_FTM_RANGE_LEN];
-	uint8 max_err[DOT11_FTM_RANGE_LEN];
+	uint8 max_err_exp;
 	uint8  rsvd;
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_ftm_range_entry dot11_ftm_range_entry_t;
@@ -848,7 +854,7 @@ typedef struct dot11_rmreq_pause_time dot11_rmreq_pause_time_t;
 /* From Draft P802.11be_D2.2.pdf */
 #define DOT11_NGBR_EHT_CAP_SE_ID		198
 #define DOT11_NGBR_EHT_OP_SE_ID			199
-#define DOT11_NGBR_BASIC_MULTI_LINK_SE_ID	200
+#define DOT11_NGBR_BASIC_MULTI_LINK_SE_ID	201
 
 /** Neighbor Report, BSS Transition Candidate Preference subelement */
 BWL_PRE_PACKED_STRUCT struct dot11_ngbr_bsstrans_pref_se {

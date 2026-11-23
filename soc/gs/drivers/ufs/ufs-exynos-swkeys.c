@@ -12,21 +12,18 @@
  * (also called the traditional FMP mode or legacy FMP mode).
  */
 
-#include <asm/unaligned.h>
 #include <crypto/aes.h>
 #include <crypto/algapi.h>
+#include <linux/unaligned.h>
+#include <trace/hooks/ufshcd.h>
+
 #include <linux/soc/samsung/exynos-smc.h>
-#include <core/ufshcd-crypto.h>
+
+#include <drivers/ufs/core/ufshcd-crypto.h>
+
 #include "ufs-exynos-gs.h"
 #include "ufs-pixel-crypto.h"
 #include "ufs-pixel-fips.h"
-
-#undef CREATE_TRACE_POINTS
-#include <trace/hooks/ufshcd.h>
-
-static void exynos_ufs_swkeys_fill_prdt(void *unused, struct ufs_hba *hba,
-				     struct ufshcd_lrb *lrbp,
-				     unsigned int segments, int *err);
 
 static int exynos_ufs_swkeys_register_fips_self_test(void);
 
@@ -91,18 +88,13 @@ int exynos_ufs_crypto_init_sw_keys_mode(struct ufs_hba *hba)
 	if (ret)
 		return ret;
 
-	ret = register_trace_android_vh_ufs_fill_prdt(
-				exynos_ufs_swkeys_fill_prdt, NULL);
-	if (ret)
-		return ret;
-
 	/* Advertise crypto support to ufshcd-core. */
 	hba->caps |= UFSHCD_CAP_CRYPTO;
 
 	/* Advertise crypto quirks to ufshcd-core. */
-	hba->android_quirks |= UFSHCD_ANDROID_QUIRK_CUSTOM_CRYPTO_PROFILE |
-		               UFSHCD_ANDROID_QUIRK_BROKEN_CRYPTO_ENABLE |
-		               UFSHCD_ANDROID_QUIRK_KEYS_IN_PRDT;
+	hba->quirks |= (UFSHCD_QUIRK_CUSTOM_CRYPTO_PROFILE |
+			UFSHCD_QUIRK_BROKEN_CRYPTO_ENABLE |
+			UFSHCD_QUIRK_KEYS_IN_PRDT);
 	hba->sg_entry_size = sizeof(struct fmp_sg_entry);
 
 	/* Advertise crypto capabilities to the block layer. */
@@ -115,6 +107,19 @@ int exynos_ufs_crypto_init_sw_keys_mode(struct ufs_hba *hba)
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_SCSI_UFS_PIXEL_FIPS140)
+static void exynos_ufs_swkeys_fips_self_test(void *data, struct ufs_hba *hba)
+{
+	if (ufs_pixel_fips_verify(hba))
+		panic("FMP self test failed");
+}
+
+static int exynos_ufs_swkeys_register_fips_self_test(void)
+{
+	return register_trace_android_rvh_ufs_complete_init(
+		exynos_ufs_swkeys_fips_self_test, NULL);
+}
+#else
 static inline __be32 fmp_key_word(const u8 *key, int j)
 {
 	return cpu_to_be32(get_unaligned_le32(
@@ -192,21 +197,13 @@ static void exynos_ufs_swkeys_fill_prdt(void *unused, struct ufs_hba *hba,
 	}
 }
 
-#if IS_ENABLED(CONFIG_SCSI_UFS_PIXEL_FIPS140) && IS_ENABLED(CONFIG_SOC_GS101)
-static void exynos_ufs_swkeys_fips_self_test(void *data, struct ufs_hba *hba)
-{
-	if (ufs_pixel_fips_verify(hba))
-		panic("FMP self test failed");
-}
-
 static int exynos_ufs_swkeys_register_fips_self_test(void)
 {
-	return register_trace_android_rvh_ufs_complete_init(
-		exynos_ufs_swkeys_fips_self_test, NULL);
-}
-#else
-static int exynos_ufs_swkeys_register_fips_self_test(void)
-{
-	return 0;
+	/*
+	 * The fips module will register internal fill_prdt implementation.
+	 * If the module is not enabled, then register fill_rdt here.
+	 */
+	return register_trace_android_vh_ufs_fill_prdt(
+		exynos_ufs_swkeys_fill_prdt, NULL);
 }
 #endif

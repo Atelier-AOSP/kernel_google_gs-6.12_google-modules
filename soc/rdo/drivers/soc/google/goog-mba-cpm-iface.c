@@ -240,10 +240,16 @@ static int cpm_iface_add_pending_resp(struct cpm_iface_req *req)
  */
 static struct cpm_iface_req *cpm_iface_remove_pending_resp(struct cpm_iface_payload *msg_payload)
 {
+	u32 token = goog_mba_q_xport_get_token(&msg_payload->header);
 	struct cpm_iface_req *req;
-	int token = goog_mba_q_xport_get_token(&msg_payload->header);
+
+	if (WARN_ON_ONCE(token >= ARRAY_SIZE(cpm_iface_data->resp_pending)))
+		return NULL;
 
 	req = cpm_iface_data->resp_pending[token];
+	if (WARN_ON_ONCE(!req))
+		return NULL;
+
 	cpm_iface_data->resp_pending[token] = NULL;
 	cpm_iface_data->resp_pending_size--;
 
@@ -307,24 +313,20 @@ static struct cpm_iface_session *cpm_iface_create_session_pool(struct device *de
 static struct cpm_iface_session *cpm_iface_get_session(void)
 {
 	struct cpm_iface_session *session;
-	unsigned long flags;
 	int i;
 
 	for (i = 0; i < MAX_CLIENT_SESSION; i++) {
 		session = &cpm_iface_data->session_pool[i];
 
-		if (!spin_trylock_irqsave(&session->lock, flags))
-			continue;
+		scoped_guard(spinlock_irqsave_try, &session->lock) {
+			if (session->status ==
+			    (SESSION_CLIENT_DONE | SESSION_CPM_IFACE_DONE)) {
+				session->status = SESSION_RESERVE_STATUS;
+				reinit_completion(&session->complete);
 
-		if (session->status == (SESSION_CLIENT_DONE | SESSION_CPM_IFACE_DONE)) {
-			session->status = SESSION_RESERVE_STATUS;
-			reinit_completion(&session->complete);
-			spin_unlock_irqrestore(&session->lock, flags);
-
-			return session;
+				return session;
+			}
 		}
-
-		spin_unlock_irqrestore(&session->lock, flags);
 	}
 
 	return NULL;
@@ -340,17 +342,15 @@ static struct cpm_iface_session *cpm_iface_get_session(void)
 static void cpm_iface_cpm_put_session(struct cpm_iface_req *req,
 				      struct cpm_iface_payload *msg_payload)
 {
-	unsigned long flags;
-	struct cpm_iface_session *session;
+	struct cpm_iface_session *session =
+		container_of(req, struct cpm_iface_session, req);
 
-	session = container_of(req, struct cpm_iface_session, req);
-	spin_lock_irqsave(&session->lock, flags);
+	guard(spinlock_irqsave)(&session->lock);
 	if (!(session->status & SESSION_CLIENT_DONE) && msg_payload)
 		memcpy(req->resp_msg, msg_payload, sizeof(*req->resp_msg));
 
 	complete(&session->complete);
 	session->status |= SESSION_CPM_IFACE_DONE;
-	spin_unlock_irqrestore(&session->lock, flags);
 }
 
 /*
@@ -359,32 +359,27 @@ static void cpm_iface_cpm_put_session(struct cpm_iface_req *req,
  */
 static void cpm_iface_client_put_session(struct cpm_iface_session *session)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&session->lock, flags);
-	session->status |= SESSION_CLIENT_DONE;
-	spin_unlock_irqrestore(&session->lock, flags);
+	scoped_guard(spinlock_irqsave, &session->lock)
+		session->status |= SESSION_CLIENT_DONE;
 }
 
 static struct cpm_iface_session *cpm_iface_req_enqueue(struct cpm_iface_req *req)
 {
 	struct cpm_iface_q *q = cpm_iface_data->req_q;
 	struct device *dev = cpm_iface_data->dev;
-	struct cpm_iface_session *session = ERR_PTR(-EBUSY);
-	unsigned long flags;
+	struct cpm_iface_session *session;
 
-	spin_lock_irqsave(&cpm_iface_data->lock, flags);
+	guard(spinlock_irqsave)(&cpm_iface_data->lock);
 
 	if (cpm_iface_is_q_full(q)) {
 		dev_dbg(dev, "Try increasing MAX_REQ_Q_SIZE\n");
-		goto exit;
+		return ERR_PTR(-EBUSY);
 	}
 
 	session = cpm_iface_get_session();
 	if (!session) {
 		dev_dbg(dev, "Failed to get session\n");
-		session = ERR_PTR(-EBUSY);
-		goto exit;
+		return ERR_PTR(-EBUSY);
 	}
 
 	/*
@@ -393,7 +388,9 @@ static struct cpm_iface_session *cpm_iface_req_enqueue(struct cpm_iface_req *req
 	 */
 	session->req = *req;
 	session->req_msg = *req->req_msg;
+	memset(&session->timestamps, 0, sizeof(session->timestamps));
 	session->req.req_msg = &session->req_msg;
+	session->req.timestamps = &session->timestamps;
 
 	trace_cpm_iface_req_enqueue(cpm_iface_get_session_idx(session), session,
 				    q->wr_idx, q->size + 1);
@@ -402,9 +399,8 @@ static struct cpm_iface_session *cpm_iface_req_enqueue(struct cpm_iface_req *req
 	q->wr_idx = (q->wr_idx + 1) % q->capacity;
 	q->size++;
 
-exit:
-	spin_unlock_irqrestore(&cpm_iface_data->lock, flags);
-
+	cpm_iface_record_timestamp(session->req.timestamps,
+				   CPM_IFACE_REQ_ENQUEUE);
 	return session;
 }
 
@@ -522,6 +518,16 @@ static struct cpm_iface_client *cpm_iface_search_client_by_id(int id)
 	return NULL;
 }
 
+static void cpm_iface_kfree_client(void *res)
+{
+	struct cpm_iface_client *client = res;
+
+	if (WARN_ONCE(!list_empty(&client->entry), "dev %s\n",
+		      dev_name(client->dev)))
+		cpm_iface_free_client(client);
+	kfree(client);
+}
+
 struct cpm_iface_client *cpm_iface_request_client(struct device *dev,
 						  int src_id,
 						  cpm_iface_cb_t cpm_iface_cb,
@@ -530,7 +536,6 @@ struct cpm_iface_client *cpm_iface_request_client(struct device *dev,
 	struct cpm_iface_client *client;
 	struct platform_device *pdev;
 	struct device_node *node = NULL;
-	unsigned long flags;
 	struct of_phandle_iterator mboxes_iter;
 	int ret;
 
@@ -543,9 +548,8 @@ struct cpm_iface_client *cpm_iface_request_client(struct device *dev,
 		return ERR_PTR(-EPROBE_DEFER);
 
 	if (src_id) {
-		spin_lock_irqsave(&cpm_iface_data->lock, flags);
-		client = cpm_iface_search_client_by_id(src_id);
-		spin_unlock_irqrestore(&cpm_iface_data->lock, flags);
+		scoped_guard(spinlock_irqsave, &cpm_iface_data->lock)
+			client = cpm_iface_search_client_by_id(src_id);
 		if (IS_ERR(client)) {
 			dev_err(dev, "src_id(%d) out of valid range\n", src_id);
 			return client;
@@ -577,22 +581,23 @@ struct cpm_iface_client *cpm_iface_request_client(struct device *dev,
 		goto exit_put_node;
 	}
 
-	client = devm_kzalloc(dev, sizeof(*client), GFP_KERNEL);
+	client = kzalloc(sizeof(*client), GFP_KERNEL);
 	if (!client) {
 		ret = -ENOMEM;
 		goto exit_put_pdev;
 	}
+
+	ret = devm_add_action(dev, cpm_iface_kfree_client, client);
+	if (ret < 0)
+		goto exit_free_client;
 
 	client->dev = dev;
 	client->src_id = src_id;
 	client->host_tx_cb = cpm_iface_cb;
 	client->prv_data = prv_data;
 
-	if (client) {
-		spin_lock_irqsave(&cpm_iface_data->lock, flags);
+	scoped_guard(spinlock_irqsave, &cpm_iface_data->lock)
 		list_add(&client->entry, &cpm_iface_data->client_list_head);
-		spin_unlock_irqrestore(&cpm_iface_data->lock, flags);
-	}
 
 	of_node_put(node);
 
@@ -600,6 +605,8 @@ struct cpm_iface_client *cpm_iface_request_client(struct device *dev,
 
 	return client;
 
+exit_free_client:
+	kfree(client);
 exit_put_pdev:
 	platform_device_put(pdev);
 exit_put_node:
@@ -611,11 +618,10 @@ EXPORT_SYMBOL_GPL(cpm_iface_request_client);
 
 void cpm_iface_free_client(struct cpm_iface_client *client)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&cpm_iface_data->lock, flags);
-	list_del(&client->entry);
-	spin_unlock_irqrestore(&cpm_iface_data->lock, flags);
+	scoped_guard(spinlock_irqsave, &cpm_iface_data->lock) {
+		if (!WARN_ON_ONCE(list_empty(&client->entry)))
+			list_del_init(&client->entry);
+	}
 
 	trace_cpm_iface_free_client(client);
 }
@@ -639,10 +645,10 @@ static int cpm_iface_try_to_submit(void)
 	struct cpm_iface_req *req;
 	struct cpm_iface_payload *req_msg;
 	struct cpm_iface_session *session;
-	unsigned long flags;
-	int ret = 0;
+	int ret;
 
-	spin_lock_irqsave(&cpm_iface_data->lock, flags);
+	guard(spinlock_irqsave)(&cpm_iface_data->lock);
+
 	/*
 	 * We need to satify all conditions to send a message.
 	 *  - Request in queue
@@ -652,11 +658,12 @@ static int cpm_iface_try_to_submit(void)
 	if (cpm_iface_is_q_empty(cpm_iface_data->req_q) ||
 	    cpm_iface_is_q_full(cpm_iface_data->req_chans_q) ||
 	    !cpm_iface_pending_resp_available())
-		goto exit;
+		return 0;
 
 	req = cpm_iface_req_dequeue(cpm_iface_data->req_q);
 	session = container_of(req, struct cpm_iface_session, req);
-	spin_lock(&session->lock);
+
+	guard(spinlock)(&session->lock);
 
 	req_msg = req->req_msg;
 	if (!cpm_iface_is_init_header(req_msg)) {
@@ -685,23 +692,15 @@ static int cpm_iface_try_to_submit(void)
 		dev_err(dev, "[mbox_chan] msg_count:%u, msg_free:%u\n",
 			mbox_chan_info->chan->msg_count,
 			mbox_chan_info->chan->msg_free);
-		goto unlock_session;
+		return ret;
 	}
+
+	cpm_iface_record_timestamp(req->timestamps, CPM_IFACE_SUBMIT_MSG);
 	trace_cpm_iface_submit_msg(cpm_iface_get_session_idx(session),
 				      cpm_iface_get_mbox_chan_info_idx(mbox_chan_info),
 				      req);
 
-	spin_unlock(&session->lock);
-	spin_unlock_irqrestore(&cpm_iface_data->lock, flags);
-
 	return 0;
-
-unlock_session:
-	spin_unlock(&session->lock);
-exit:
-	spin_unlock_irqrestore(&cpm_iface_data->lock, flags);
-
-	return ret;
 }
 
 static u32 cpm_iface_req_get_header(struct cpm_iface_client *client,
@@ -734,7 +733,6 @@ static int __cpm_send_message(struct cpm_iface_req *cpm_iface_req, u32 header)
 				    cpm_iface_req->tout_ms : MAX_ENQUEUE_REQ_TIMEOUT_MS;
 	unsigned long timeout = jiffies + msecs_to_jiffies(req_tout_ms);
 
-
 	cpm_iface_req->req_msg->header = header;
 
 	while (IS_ERR(session = cpm_iface_req_enqueue(cpm_iface_req))) {
@@ -761,6 +759,10 @@ static int __cpm_send_message(struct cpm_iface_req *cpm_iface_req, u32 header)
 
 	if (wait_for_completion_timeout(&session->complete, wait) == 0)
 		ret = -ETIME;
+
+	cpm_iface_record_timestamp(session->req.timestamps, CPM_IFACE_SEND_MESSAGE);
+	if (cpm_iface_req->timestamps)
+		*cpm_iface_req->timestamps = *session->req.timestamps;
 
 	trace_cpm_send_message(cpm_iface_get_session_idx(session), ret);
 
@@ -826,21 +828,15 @@ int cpm_send_message(struct cpm_iface_client *client, struct cpm_iface_req *cpm_
 }
 EXPORT_SYMBOL_GPL(cpm_send_message);
 
-/*
- * cpm_iface_req_tx_done - callback function from request channels
- */
-static void cpm_iface_req_tx_done(struct mbox_client *client, void *msg, int r)
+static int
+__cpm_iface_req_tx_done(struct cpm_iface_mbox_chan_info *mbox_chan_info,
+			struct cpm_iface_req *req)
 {
 	struct device *dev = cpm_iface_data->dev;
-	struct cpm_iface_mbox_chan_info *mbox_chan_info;
-	struct cpm_iface_req *req;
-	unsigned long flags;
 	struct cpm_iface_session *session;
 
-	mbox_chan_info = container_of(client, struct cpm_iface_mbox_chan_info, client);
-	req = mbox_chan_info->req;
+	lockdep_assert_held(&cpm_iface_data->lock);
 
-	spin_lock_irqsave(&cpm_iface_data->lock, flags);
 	if (mbox_chan_info != cpm_iface_mbox_chan_get_front(cpm_iface_data->req_chans_q)) {
 		struct cpm_iface_q *q = cpm_iface_data->req_chans_q;
 		int idx = mbox_chan_info - q->mbox_chan_info;
@@ -848,19 +844,35 @@ static void cpm_iface_req_tx_done(struct mbox_client *client, void *msg, int r)
 		dev_err(dev, "Received tx_done in-between req_chans_q (idx: %d)\n", idx);
 		dev_err(dev, "[req_chans_q] capacity:%d wr_idx:%d rd_idx:%d size:%d\n",
 			q->capacity, q->wr_idx, q->rd_idx, q->size);
-		spin_unlock_irqrestore(&cpm_iface_data->lock, flags);
-		return;
+		return -EINVAL;
 	}
 
 	session = container_of(req, struct cpm_iface_session, req);
 	trace_cpm_iface_req_tx_done(cpm_iface_get_session_idx(session),
 				    cpm_iface_get_mbox_chan_info_idx(mbox_chan_info));
 
-	if (cpm_iface_is_oneway_msg(req) || cpm_iface_is_response_msg(req))
+	if (cpm_iface_is_oneway_msg(req) || cpm_iface_is_response_msg(req)) {
+		cpm_iface_record_timestamp(req->timestamps, CPM_IFACE_TX_DONE);
 		cpm_iface_cpm_put_session(req, NULL);
+	}
 
 	cpm_iface_free_mbox_chan(cpm_iface_data->req_chans_q);
-	spin_unlock_irqrestore(&cpm_iface_data->lock, flags);
+
+	return 0;
+}
+
+/*
+ * cpm_iface_req_tx_done - callback function from request channels
+ */
+static void cpm_iface_req_tx_done(struct mbox_client *client, void *msg, int r)
+{
+	struct cpm_iface_mbox_chan_info *mbox_chan_info =
+		container_of(client, struct cpm_iface_mbox_chan_info, client);
+	struct cpm_iface_req *req = mbox_chan_info->req;
+
+	scoped_guard(spinlock_irqsave, &cpm_iface_data->lock)
+		if (__cpm_iface_req_tx_done(mbox_chan_info, req) < 0)
+			return;
 
 	cpm_iface_try_to_submit();
 }
@@ -880,12 +892,10 @@ static void cpm_iface_handle_host_tx(void *msg)
 	struct cpm_iface_client *client;
 	int dst_id = goog_mba_q_xport_get_dst_id(msg);
 	struct cpm_iface_payload *msg_payload = msg;
-	unsigned long flags;
 	u32 resp_context = 0;
 
-	spin_lock_irqsave(&cpm_iface_data->lock, flags);
-	client = cpm_iface_search_client_by_id(dst_id);
-	spin_unlock_irqrestore(&cpm_iface_data->lock, flags);
+	scoped_guard(spinlock_irqsave, &cpm_iface_data->lock)
+		client = cpm_iface_search_client_by_id(dst_id);
 
 	if (IS_ERR_OR_NULL(client) || !client->host_tx_cb) {
 		dev_err(dev, "No available client callback (id:%d).\n Payload Info:\n", dst_id);
@@ -929,26 +939,31 @@ static void cpm_iface_resp_cb(struct mbox_client *mbox_client, void *msg)
 	if (cpm_iface_is_response_header(msg)) {
 		struct cpm_iface_payload *msg_payload = msg;
 		struct cpm_iface_req *req;
-		unsigned long flags;
 		struct cpm_iface_session *session;
 
-		spin_lock_irqsave(&cpm_iface_data->lock, flags);
-		req = cpm_iface_remove_pending_resp(msg_payload);
-		if (!req) {
-			dev_err(dev,
-				"No token:%u found for response payload: %#10x %#10x %#10x %#10x\n",
-				goog_mba_q_xport_get_token(&msg_payload->header),
-				msg_payload->header, msg_payload->payload[0],
-				msg_payload->payload[1], msg_payload->payload[2]);
-			spin_unlock_irqrestore(&cpm_iface_data->lock, flags);
-			return;
+		scoped_guard(spinlock_irqsave, &cpm_iface_data->lock) {
+			req = cpm_iface_remove_pending_resp(msg_payload);
+			if (!req) {
+				dev_err(dev,
+					"No token:%u found for response payload: %#10x %#10x %#10x %#10x\n",
+					goog_mba_q_xport_get_token(
+						&msg_payload->header),
+					msg_payload->header,
+					msg_payload->payload[0],
+					msg_payload->payload[1],
+					msg_payload->payload[2]);
+				return;
+			}
+
+			session = container_of(req, struct cpm_iface_session,
+					       req);
+
+			cpm_iface_record_timestamp(req->timestamps,
+						   CPM_IFACE_RESP_CB);
+			trace_cpm_iface_resp_cb(cpm_iface_get_session_idx(session),
+						msg_payload);
+			cpm_iface_cpm_put_session(req, msg_payload);
 		}
-
-		session = container_of(req, struct cpm_iface_session, req);
-
-		trace_cpm_iface_resp_cb(cpm_iface_get_session_idx(session), msg_payload);
-		cpm_iface_cpm_put_session(req, msg_payload);
-		spin_unlock_irqrestore(&cpm_iface_data->lock, flags);
 
 		cpm_iface_try_to_submit();
 	} else if (cpm_iface_is_request_header(msg) || cpm_iface_is_oneway_header(msg)) {
@@ -1041,7 +1056,7 @@ static int cpm_iface_init_q_mode(struct cpm_iface_data *ci_data)
 	return 0;
 }
 
-const char *cpm_iface_default_events[] = {
+static const char * const cpm_iface_default_events[] = {
 	"cpm_iface_request_client",
 	"cpm_iface_free_client",
 	"cpm_iface_req_enqueue",
@@ -1062,7 +1077,7 @@ static void cpm_iface_create_ftrace_instance(struct cpm_iface_data *ci_data)
 	int i;
 	int ret;
 
-	ta = trace_array_get_by_name_ext("goog_cpm_mailbox", "goog_mba_ctrl,goog_mba_cpm_iface");
+	ta = trace_array_get_by_name("goog_cpm_mailbox", "goog_mba_ctrl,goog_mba_cpm_iface");
 	if (!ta) {
 		dev_err(dev, "Failed to create trace array\n");
 		return;
@@ -1140,7 +1155,7 @@ static int cpm_iface_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int cpm_iface_remove(struct platform_device *pdev)
+static void cpm_iface_remove(struct platform_device *pdev)
 {
 	struct cpm_iface_mbox_chan_info *minfo;
 
@@ -1149,8 +1164,6 @@ static int cpm_iface_remove(struct platform_device *pdev)
 
 	for_each_mbox_chan_in_q(minfo, cpm_iface_data->resp_chans_q)
 		mbox_free_channel(minfo->chan);
-
-	return 0;
 }
 
 static const struct of_device_id cpm_iface_of_match_table[] = {

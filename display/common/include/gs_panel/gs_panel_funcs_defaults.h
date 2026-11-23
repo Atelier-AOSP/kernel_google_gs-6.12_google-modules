@@ -13,6 +13,7 @@
 
 struct gs_panel;
 struct gs_panel_mode;
+struct gs_panel_detect_fault_desc;
 
 /*
  * DOC: gs_panel_funcs_defaults theory
@@ -49,7 +50,7 @@ void gs_panel_get_panel_rev(struct gs_panel *ctx, u8 rev);
  *
  * @ctx: Handle for gs_panel private data. In particular, it will update the
  *       `panel_rev_id` member variable of this struct.
- * @id: 4-byte panel id read from panel DDIC
+ * @id: 4-byte panel id. See &gs_panel.panel_id for format and byte layout.
  */
 void gs_panel_get_panel_rev_full(struct gs_panel *ctx, u32 id);
 
@@ -63,7 +64,7 @@ void gs_panel_get_panel_rev_full(struct gs_panel *ctx, u32 id);
  *
  * @ctx: Handle for gs_panel private data. In particular, it will update the
  *       `panel_rev_id` member variable of this struct.
- * @id: 4-byte panel id read from panel DDIC
+ * @id: 4-byte panel id. See &gs_panel.panel_id for format and byte layout.
  */
 void gs_panel_get_panel_rev_no_variant(struct gs_panel *ctx, u32 id);
 
@@ -162,6 +163,22 @@ ssize_t gs_panel_get_te2_edges_helper(struct gs_panel *ctx, char *buf, bool lp_m
 int gs_panel_set_te2_edges_helper(struct gs_panel *ctx, u32 *timings, bool lp_mode);
 
 /**
+ * gs_panel_detect_fault_helper - Common logic for DDIC fault detection
+ * @ctx: handle for gs_panel
+ * @desc: description of fault detection specific to each panel
+ *
+ * Reads panel fault registers (ERR_FG and/or ERR_DSI) based on configuration,
+ * maps bits to panel errors.
+ *
+ * Return:
+ *   0: Success
+ *   -EIO: Read failure
+ *   -EINVAL: Configuration error
+ */
+int gs_panel_detect_fault_helper(struct gs_panel *ctx,
+				 const struct gs_panel_detect_fault_desc *desc, bool irq_triggered);
+
+/**
  * gs_panel_set_binned_lp_helper() - Execute command sequences for LP modes
  * @ctx: Reference to panel data
  * @brightness: Brightness value to which the panel is being set
@@ -229,5 +246,21 @@ bool gs_panel_refresh_ctrl_full_helper(struct gs_panel *ctx, const struct gs_pan
  */
 bool gs_panel_refresh_ctrl_lite_helper(struct gs_panel *ctx, const struct gs_panel_mode *pmode,
 				       u8 min_rr_supported);
+
+/**
+ * gs_panel_trace_settings_full_helper() - trace settings on full panels
+ * @ctx: Reference to panel data
+ *
+ * This helper will trace common settings on full panels in each commit.
+ */
+void gs_panel_trace_settings_full_helper(struct gs_panel *ctx);
+
+/**
+ * gs_panel_trace_settings_lite_helper() - trace settings on lite panels
+ * @ctx: Reference to panel data
+ *
+ * This helper will trace common settings on lite panels in each commit.
+ */
+void gs_panel_trace_settings_lite_helper(struct gs_panel *ctx);
 
 #endif // _GS_PANEL_FUNCS_DEFAULTS_H_

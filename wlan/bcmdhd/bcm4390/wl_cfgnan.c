@@ -50,6 +50,7 @@
 #include <wl_cfg_cellavoid.h>
 #endif /* WL_CELLULAR_CHAN_AVOID */
 
+
 #define NAN_RANGE_REQ_EVNT 1
 #define NAN_SCAN_DWELL_TIME_DELTA_MS 10
 
@@ -153,6 +154,7 @@ typedef struct nan_csid_map {
 	uint16 fw_csid;
 	uint16 host_csid;
 } nan_csid_map_t;
+
 
 nan_csid_map_t nan_csid_map_table[] = {
 	{NAN_SEC_ALGO_NONE, 0},
@@ -301,6 +303,12 @@ nan_event_to_str(u16 cmd)
 		break;
 	C2S(WL_NAN_EVENT_PAIRING_END);
 		break;
+	C2S(WL_NAN_EVENT_SYNC_PS_IND);
+		break;
+	C2S(WL_NAN_EVENT_SCHED_PS_IND);
+		break;
+	C2S(WL_NAN_EVENT_ADSDC_IND);
+		break;
 	C2S(WL_NAN_EVENT_INVALID);
 		break;
 
@@ -394,11 +402,6 @@ nan_event_cause_to_str(u8 cause)
 	return id2str;
 }
 
-static int wl_cfgnan_execute_ioctl(struct net_device *ndev,
-	struct bcm_cfg80211 *cfg, bcm_iov_batch_buf_t *nan_buf,
-	uint16 nan_buf_size, uint32 *status, uint8 *resp_buf,
-	uint16 resp_buf_len);
-
 static int wl_cfgnan_build_execute_ioctl(struct net_device *ndev, struct bcm_cfg80211 *cfg,
 	uint8 *input_data, uint8 size_of_iov, uint16 cmd_type, uint32 *status);
 
@@ -452,16 +455,13 @@ s32 wl_cfgnan_parse_sdea_data(struct bcm_cfg80211 *cfg, const uint8 *p_attr,
 	s32 ret = BCME_OK;
 	osl_t *osh = cfg->osh;
 
-	(void)memset_s(&tlv_data->sde_svc_info, sizeof(tlv_data->sde_svc_info),
-			0, sizeof(tlv_data->sde_svc_info));
-	if (len < sizeof(*nan_svc_desc_ext_attr)) {
-		WL_ERR(("Invalid event buffer len\n"));
-		return BCME_BUFTOOSHORT;
-	}
+	/* service descriptor ext attributes */
 	nan_svc_desc_ext_attr = (const wifi_nan_svc_desc_ext_attr_t *)p_attr;
 
-	/* Attribute ID and length */
+	/* attribute ID */
 	WL_TRACE(("> attr id: 0x%02x\n", nan_svc_desc_ext_attr->id));
+
+	/* attribute length */
 	WL_TRACE(("> attr len: 0x%x\n", nan_svc_desc_ext_attr->len));
 	if (nan_svc_desc_ext_attr->instance_id == tlv_data->pub_id) {
 		tlv_data->sde_control_flag = nan_svc_desc_ext_attr->control;
@@ -480,11 +480,6 @@ s32 wl_cfgnan_parse_sdea_data(struct bcm_cfg80211 *cfg, const uint8 *p_attr,
 	}
 	if (tlv_data->sde_control_flag & NAN_SDE_CF_SVC_UPD_IND_PRESENT) {
 		WL_TRACE(("> svc_control: sdea svc specific info present\n"));
-		if (len < SDEA_INFO_LEN_FIELD_SIZE) {
-			WL_ERR(("Not enough data for sdea svc info len\n"));
-			ret = BCME_BUFTOOSHORT;
-			goto fail;
-		}
 		tlv_data->sde_svc_info.dlen = (p_attr[1] | (p_attr[2] << 8));
 		WL_TRACE(("> sdea svc info len: 0x%02x\n", tlv_data->sde_svc_info.dlen));
 		if (!tlv_data->sde_svc_info.dlen ||
@@ -496,30 +491,36 @@ s32 wl_cfgnan_parse_sdea_data(struct bcm_cfg80211 *cfg, const uint8 *p_attr,
 			goto fail;
 		}
 
-		if (len < SDEA_INFO_LEN_FIELD_SIZE + tlv_data->sde_svc_info.dlen) {
-		   WL_ERR(("Not enough data for sdea svc info\n"));
-		   ret = BCME_BUFTOOSHORT;
-		   goto fail;
-		}
-		tlv_data->sde_svc_info.data = MALLOCZ(osh, tlv_data->sde_svc_info.dlen);
-		if (!tlv_data->sde_svc_info.data) {
-			WL_ERR(("%s: memory allocation failed\n", __FUNCTION__));
+		if (tlv_data->sde_svc_info.dlen > 0) {
+			tlv_data->sde_svc_info.data = MALLOCZ(osh,
+					tlv_data->sde_svc_info.dlen);
+			if (!tlv_data->sde_svc_info.data) {
+				WL_ERR(("%s: memory allocation failed\n", __FUNCTION__));
+				tlv_data->sde_svc_info.dlen = 0;
+				ret = BCME_NOMEM;
+				goto fail;
+			}
+			/* advance read pointer, consider sizeof of Service Update Indicator */
+			offset = sizeof(tlv_data->sde_svc_info.dlen) - 1;
+			if (offset > len) {
+				WL_ERR(("Invalid event buffer len\n"));
+				ret = BCME_BUFTOOSHORT;
+				goto fail;
+			}
+			p_attr += offset;
+			len -= offset;
+			ret = memcpy_s(tlv_data->sde_svc_info.data, tlv_data->sde_svc_info.dlen,
+				p_attr, tlv_data->sde_svc_info.dlen);
+			if (ret != BCME_OK) {
+				WL_ERR(("Failed to copy sde_svc_info\n"));
+				goto fail;
+			}
+		} else {
+			/* must be able to handle null msg which is not error */
 			tlv_data->sde_svc_info.dlen = 0;
-			ret = BCME_NOMEM;
-			goto fail;
+			WL_DBG(("%s: sdea svc info length is zero, null info data\n",
+				__FUNCTION__));
 		}
-		/* advance read pointer, consider sizeof of Service Update Indicator */
-		offset = SDEA_INFO_LEN_FIELD_SIZE;
-		p_attr += offset;
-		len -= offset;
-		ret = memcpy_s(tlv_data->sde_svc_info.data, tlv_data->sde_svc_info.dlen,
-			p_attr, tlv_data->sde_svc_info.dlen);
-		if (ret != BCME_OK) {
-			WL_ERR(("Failed to copy sde_svc_info\n"));
-			goto fail;
-		}
-		p_attr += tlv_data->sde_svc_info.dlen;
-		len -= tlv_data->sde_svc_info.dlen;
 	}
 	if (tlv_data->sde_control_flag & NAN_SDE_CF_GTK_REQUIRED) {
 		tlv_data->gtk_required = true;
@@ -530,6 +531,7 @@ fail:
 		MFREE(osh, tlv_data->sde_svc_info.data, tlv_data->sde_svc_info.dlen);
 		tlv_data->sde_svc_info.data = NULL;
 	}
+
 	WL_DBG(("Parse SDEA event data, status = %d\n", ret));
 	return ret;
 }
@@ -1568,7 +1570,7 @@ wl_cfgnan_config_eventmask(struct net_device *ndev, struct bcm_cfg80211 *cfg,
 		 * Android framework event mask configuration.
 		 */
 		nan_buf->is_set = false;
-		(void)memset_s(resp_buf, sizeof(resp_buf), 0, sizeof(resp_buf));
+		memset(resp_buf, 0, sizeof(resp_buf));
 		ret = wl_cfgnan_execute_ioctl(ndev, cfg, nan_buf, nan_buf_size, &status,
 				(void*)resp_buf, NAN_IOCTL_BUF_SIZE);
 		if (unlikely(ret) || unlikely(status)) {
@@ -2136,7 +2138,7 @@ exit:
 	return status;
 }
 
-static int
+int
 wl_cfgnan_execute_ioctl(struct net_device *ndev, struct bcm_cfg80211 *cfg,
 	bcm_iov_batch_buf_t *nan_buf, uint16 nan_buf_size, uint32 *status,
 	uint8 *resp_buf, uint16 resp_buf_size)
@@ -3933,15 +3935,13 @@ static int
 wl_cfgnan_bootstrapping_prep_npba_attr(struct bcm_cfg80211 *cfg,
 	nan_discover_cmd_data_t *cmd_data, uint32 cmd)
 {
-	uint16 total_len = 0;
-	uint16 cookie_len = 0;
-	uint16 comeback_delay_len = 0;
-	uint16 cookie_hdr_len = 0;
-	uint16 comeback_hdr_len = 0;
+	uint16	total_len = 0;
+	uint16	cookie_len = 0;
+	uint16	comeback_delay_len = 0;
 	wifi_nan_npba_attr_t *attr;
-	uint8 *p;
-	uint8 type_status = 0;
-	int ret = BCME_OK;
+	uint8	*p;
+	uint8	type_status = 0;
+	int	ret = BCME_OK;
 
 	total_len = NAN_NPBA_ATTR_MIN_LEN;
 
@@ -3953,7 +3953,7 @@ wl_cfgnan_bootstrapping_prep_npba_attr(struct bcm_cfg80211 *cfg,
 		if ((cmd_data->response == NAN_BOOTSTRAPPING_STATUS_COMEBACK) ||
 				(cmd_data->cookie.data)) {
 			cookie_len += cmd_data->cookie.dlen;
-			cookie_hdr_len = NAN_NPBA_ATTR_COOKIE_HDR_LEN;
+			cookie_len += NAN_NPBA_ATTR_COOKIE_HDR_LEN;
 			cmd_data->response = NAN_BOOTSTRAPPING_STATUS_COMEBACK;
 		}
 	} else if (cmd == NAN_WIFI_SUBCMD_BOOTSTRAPPING_RESPONSE) {
@@ -3963,17 +3963,16 @@ wl_cfgnan_bootstrapping_prep_npba_attr(struct bcm_cfg80211 *cfg,
 				WL_ERR(("Comeback delay not found \n"));
 				goto fail;
 			}
-			comeback_delay_len = NAN_NPBA_ATTR_COMEBACK_LEN;
-			comeback_hdr_len = NAN_NPBA_ATTR_COOKIE_HDR_LEN;
+			comeback_delay_len += NAN_NPBA_ATTR_COMEBACK_LEN;
+			comeback_delay_len += NAN_NPBA_ATTR_COOKIE_HDR_LEN;
 
 			if (cmd_data->cookie.dlen) {
 				cookie_len += cmd_data->cookie.dlen;
-				cookie_hdr_len = NAN_NPBA_ATTR_COOKIE_HDR_LEN;
 			}
 		}
 	}
 
-	total_len += cookie_len + cookie_hdr_len + comeback_delay_len + comeback_hdr_len;
+	total_len += cookie_len + comeback_delay_len;
 
 	/* Alloc NPBA and populate fields */
 	cmd_data->npba_info.data = MALLOCZ(cfg->osh, total_len);
@@ -3993,12 +3992,12 @@ wl_cfgnan_bootstrapping_prep_npba_attr(struct bcm_cfg80211 *cfg,
 
 	if (comeback_delay_len) {
 		htol16_ua_store(cmd_data->comeback_delay, p);
-		p += comeback_delay_len;
+		p += NAN_NPBA_ATTR_COMEBACK_LEN;
 	}
 
 	if (cookie_len) {
 		htol16_ua_store(cookie_len, p);
-		p += cookie_hdr_len;
+		p += NAN_NPBA_ATTR_COOKIE_HDR_LEN;
 
 		/* copy cookie info */
 		ret = memcpy_s(p, cookie_len, cmd_data->cookie.data, cmd_data->cookie.dlen);
@@ -4032,42 +4031,22 @@ wl_cfgnan_parse_npba_attr(struct bcm_cfg80211 *cfg, const uint8 *p_attr, uint16 
 	uint8 offset;
 	s32 ret = BCME_OK;
 
-	/* Zero out output fields */
-	(void)memset_s(&tlv_data->npba_info, sizeof(tlv_data->npba_info),
-			0, sizeof(tlv_data->npba_info));
-	(void)memset_s(&tlv_data->cookie, sizeof(tlv_data->cookie),
-			0, sizeof(tlv_data->cookie));
-
-	/* Bounds check for attribute header */
-	if (len < sizeof(*npba_attr)) {
-		WL_ERR(("Invalid event buffer len\n"));
-		return BCME_BUFTOOSHORT;
-	}
+	/* service descriptor ext attributes */
 	npba_attr = (const wifi_nan_npba_attr_t *)p_attr;
 
-	/* Bounds check for attribute length */
-	if ((npba_attr->len + NAN_ATTR_HDR_LEN) > len) {
-		WL_ERR(("NPBA attribute length out of bounds\n"));
-		return BCME_BADLEN;
-	}
+	/* attribute ID */
+	WL_TRACE(("> attr id: 0x%02x\n", npba_attr->id));
 
-	/* Allocate and copy NPBA info */
-	tlv_data->npba_info.dlen = npba_attr->len + NAN_ATTR_HDR_LEN;
-	tlv_data->npba_info.data = MALLOCZ(cfg->osh, tlv_data->npba_info.dlen);
-	if (!tlv_data->npba_info.data) {
-		WL_ERR(("memory allocation failed\n"));
-		return BCME_NOMEM;
-	}
-	ret = memcpy_s(tlv_data->npba_info.data, tlv_data->npba_info.dlen,
-			npba_attr, tlv_data->npba_info.dlen);
-	if (ret != BCME_OK) {
-		WL_ERR(("Failed to copy npba info\n"));
+	/* attribute length */
+	WL_TRACE(("> attr len: 0x%x\n", npba_attr->len));
+	offset = sizeof(*npba_attr);
+	if (offset > len) {
+		WL_ERR(("Invalid event buffer len\n"));
+		ret = BCME_BUFTOOSHORT;
 		goto fail;
 	}
-
-	offset = sizeof(*npba_attr);
-	p_attr += offset;
-	len -= offset;
+	tlv_data->npba_info.data = MALLOCZ(cfg->osh, (npba_attr->len + NAN_ATTR_HDR_LEN));
+	tlv_data->status = NAN_BOOTSTRAPPING_STATUS_ACCEPT;
 
 	if (npba_attr->type_status & NAN_BOOTSTRAPPING_ADVERTISE) {
 		tlv_data->type = NAN_BOOTSTRAPPING_ADVERTISE;
@@ -4093,35 +4072,26 @@ wl_cfgnan_parse_npba_attr(struct bcm_cfg80211 *cfg, const uint8 *p_attr, uint16 
 		}
 	}
 
+	tlv_data->npba_info.dlen = (npba_attr->len + NAN_ATTR_HDR_LEN);
+	ret = memcpy_s(tlv_data->npba_info.data, tlv_data->npba_info.dlen,
+			npba_attr, (npba_attr->len + NAN_ATTR_HDR_LEN));
+	if (ret != BCME_OK) {
+		WL_ERR(("Failed to copy npba info\n"));
+		goto fail;
+	}
+	p_attr += offset;
+	len -= offset;
 	if (comeback) {
-		if (len < NAN_NPBA_ATTR_COMEBACK_LEN) {
-			WL_ERR(("Not enough data for comeback_delay\n"));
-			goto fail;
-		}
 		if (npba_attr->type_status & NAN_BOOTSTRAPPING_RESPONSE) {
 			tlv_data->bs_comeback_delay = *(uint16 *)p_attr;
+			p_attr += NAN_NPBA_ATTR_COMEBACK_LEN;
+			len -= NAN_NPBA_ATTR_COMEBACK_LEN;
 		}
-		p_attr += NAN_NPBA_ATTR_COMEBACK_LEN;
-		len -= NAN_NPBA_ATTR_COMEBACK_LEN;
 
-		if (len < NAN_NPBA_ATTR_COOKIE_HDR_LEN) {
-			WL_ERR(("Not enough data for cookie header\n"));
-			goto fail;
-		}
 		tlv_data->cookie.dlen = *(uint8 *)p_attr;
 		p_attr += NAN_NPBA_ATTR_COOKIE_HDR_LEN;
 		len -= NAN_NPBA_ATTR_COOKIE_HDR_LEN;
-
-		/* cookie data: must have enough bytes */
-		if (tlv_data->cookie.dlen > 0) {
-			if (tlv_data->cookie.dlen > NAN_MAX_COOKIE_LEN) {
-				WL_ERR(("Cookie length too large: %u\n", tlv_data->cookie.dlen));
-				goto fail;
-			}
-			if (len < tlv_data->cookie.dlen) {
-				WL_ERR(("Not enough data for cookie\n"));
-				goto fail;
-			}
+		if (tlv_data->cookie.dlen) {
 			tlv_data->cookie.data = MALLOCZ(cfg->osh, tlv_data->cookie.dlen);
 			if (!tlv_data->cookie.data) {
 				WL_ERR(("memory allocation failed\n"));
@@ -4140,15 +4110,9 @@ wl_cfgnan_parse_npba_attr(struct bcm_cfg80211 *cfg, const uint8 *p_attr, uint16 
 			len -= tlv_data->cookie.dlen;
 		}
 	}
-
-	if (len < sizeof(uint16)) {
-		WL_ERR(("Not enough data for peer_bs_methods\n"));
-		goto fail;
-	}
 	tlv_data->peer_bs_methods = *(uint16 *)p_attr;
 	WL_INFORM_MEM(("Peer BS_methods : 0x%02x\n", tlv_data->peer_bs_methods));
-	return BCME_OK;
-
+	return ret;
 fail:
 	if (tlv_data->cookie.data) {
 		MFREE(cfg->osh, tlv_data->cookie.data, tlv_data->cookie.dlen);
@@ -5180,7 +5144,7 @@ wl_cfgnan_start_handler(struct net_device *ndev, struct bcm_cfg80211 *cfg,
 	nan_buf->is_set = true;
 
 	nan_buf_size -= nan_iov_data->nan_iov_len;
-	(void)memset_s(resp_buf, sizeof(resp_buf), 0, sizeof(resp_buf));
+	memset(resp_buf, 0, sizeof(resp_buf));
 	/* Reset conditon variable */
 	ret = wl_cfgnan_execute_ioctl(ndev, cfg, nan_buf, nan_buf_size,
 			&(cmd_data->status), (void*)resp_buf, NAN_IOCTL_BUF_SIZE);
@@ -5249,7 +5213,7 @@ wl_cfgnan_start_handler(struct net_device *ndev, struct bcm_cfg80211 *cfg,
 	}
 
 	/* NAN 3.1 Instant communication config mode */
-	if (cmd_data->instant_mode_en) {
+	if (cfg->nancfg->instant_mode_en) {
 		cfg_ctrl2_flags1 |= WL_NAN_CTRL2_FLAG1_INSTANT_MODE;
 	} else {
 		/* reset NAN 3.1 Instant communication mode in FW */
@@ -5560,13 +5524,10 @@ wl_cfgnan_stop_handler(struct net_device *ndev,
 fail:
 	/* Resetting instance ID mask */
 	nancfg->inst_id_start = 0;
-	(void)memset_s(nancfg->svc_inst_id_mask, sizeof(nancfg->svc_inst_id_mask),
-			0, sizeof(nancfg->svc_inst_id_mask));
-	(void)memset_s(nancfg->svc_info, NAN_MAX_SVC_INST * sizeof(nan_svc_info_t),
-			0, NAN_MAX_SVC_INST * sizeof(nan_svc_info_t));
+	memset(nancfg->svc_inst_id_mask, 0, sizeof(nancfg->svc_inst_id_mask));
+	memset(nancfg->svc_info, 0, NAN_MAX_SVC_INST * sizeof(nan_svc_info_t));
 	nancfg->nan_enable = false;
 	wl_cfgnan_clear_pairing_timeout(cfg);
-
 	WL_INFORM_MEM(("[NAN] Disable done\n"));
 
 	if (nan_buf) {
@@ -5592,6 +5553,7 @@ wl_cfgnan_config_handler(struct net_device *ndev, struct bcm_cfg80211 *cfg,
 	uint8 resp_buf[NAN_IOCTL_BUF_SIZE];
 	wl_nancfg_t *nancfg = cfg->nancfg;
 	uint32 status;
+	uint32 flags1 = 0;
 
 	NAN_DBG_ENTER();
 
@@ -5601,6 +5563,7 @@ wl_cfgnan_config_handler(struct net_device *ndev, struct bcm_cfg80211 *cfg,
 		ret = BCME_NOTENABLED;
 		goto fail;
 	}
+
 
 	/* get nan ctrl config values */
 	ret = wl_cfgnan_config_control_flags_get(ndev, cfg,
@@ -5760,13 +5723,12 @@ wl_cfgnan_config_handler(struct net_device *ndev, struct bcm_cfg80211 *cfg,
 
 	/* NAN 3.1 Instant communication config mode */
 	if (nan_attr_mask & NAN_ATTR_INSTANT_MODE_CONFIG) {
-		uint32 flags1;
-
-		if (cmd_data->instant_mode_en) {
-			flags1 = (nancfg->nan_ctrl2_flag1 | WL_NAN_CTRL2_FLAG1_INSTANT_MODE);
+		if (cfg->nancfg->instant_mode_en) {
+			flags1 = nancfg->nan_ctrl2_flag1 | WL_NAN_CTRL2_FLAG1_INSTANT_MODE;
 		} else {
-			flags1 = (nancfg->nan_ctrl2_flag1 & ~WL_NAN_CTRL2_FLAG1_INSTANT_MODE);
+			flags1 = nancfg->nan_ctrl2_flag1 & ~WL_NAN_CTRL2_FLAG1_INSTANT_MODE;
 		}
+
 		/* trigger nan ctrl2 iovar to config NAN 3.1 instant mode */
 		ret = wl_cfgnan_config_control_flags_set(ndev, cfg, flags1,
 				nancfg->nan_ctrl2_flag2, WL_NAN_CMD_CFG_NAN_CONFIG2,
@@ -6144,7 +6106,7 @@ wl_cfgnan_clear_svc_cache(struct bcm_cfg80211 *cfg,
 	svc = wl_cfgnan_get_svc_inst(cfg, svc_id, 0);
 	if (svc) {
 		WL_DBG(("clearing cached svc info for svc id %d\n", svc_id));
-		(void)memset_s(svc, sizeof(*svc), 0, sizeof(*svc));
+		memset(svc, 0, sizeof(*svc));
 	}
 }
 
@@ -8676,7 +8638,7 @@ wl_cfgnan_get_capability(struct net_device *ndev,
 	nan_buf->count = 1;
 
 	nan_buf->is_set = false;
-	(void)memset_s(resp_buf, sizeof(resp_buf), 0, sizeof(resp_buf));
+	memset(resp_buf, 0, sizeof(resp_buf));
 	ret = wl_cfgnan_execute_ioctl(ndev, cfg, nan_buf, nan_buf_size, &status,
 			(void*)resp_buf, NAN_IOCTL_BUF_SIZE);
 	if (unlikely(ret) || unlikely(status)) {
@@ -8717,8 +8679,7 @@ wl_cfgnan_get_capability(struct net_device *ndev,
 		}
 	} while ((xtlv = bcm_next_xtlv(xtlv, &len, BCM_XTLV_OPTION_ALIGN32)));
 
-	(void)memset_s(capabilities, sizeof(nan_hal_capabilities_t),
-		0, sizeof(nan_hal_capabilities_t));
+	memset(capabilities, 0, sizeof(nan_hal_capabilities_t));
 	capabilities->max_publishes = fw_cap->max_svc_publishes;
 	capabilities->max_subscribes = fw_cap->max_svc_subscribes;
 	capabilities->max_ndi_interfaces = fw_cap->max_lcl_ndi_interfaces;
@@ -8799,6 +8760,11 @@ wl_cfgnan_get_capablities_handler(struct net_device *ndev,
 	} else {
 		/* Initialize NAN before sending iovar */
 		WL_ERR(("Initializing NAN\n"));
+		if (FW_SUPPORTED(dhdp, sdb_modesw)) {
+			/* cancel scan to sync the mode for 4383 */
+			WL_DBG_MEM(("sdb_modesw: Aborting Scan for initializing NAN\n"));
+			wl_cfgscan_cancel_scan(cfg);
+		}
 		ret = wl_cfgnan_init(cfg);
 		if (ret != BCME_OK) {
 			WL_ERR(("failed to initialize NAN[%d]\n", ret));
@@ -9203,7 +9169,7 @@ wl_cfgnan_data_remove_peer(struct bcm_cfg80211 *cfg,
 	peer->dp_count--;
 	if (peer->dp_count == 0) {
 		/* No more NDPs, delete entry */
-		(void)memset_s(peer, sizeof(nan_ndp_peer_t), 0, sizeof(nan_ndp_peer_t));
+		memset(peer, 0, sizeof(nan_ndp_peer_t));
 	} else {
 		/* Set peer dp state to connected if any ndp still exits */
 		peer->peer_dp_state = NAN_PEER_DP_CONNECTED;
@@ -10592,6 +10558,11 @@ wl_cfgnan_handle_directed_rtt_report(struct bcm_cfg80211 *cfg,
 		WL_ERR(("nan range cancel failed ret = %d status = %d\n", ret, status));
 	}
 #endif
+	/* For legacy, session needs to be handled here */
+	if (dhd->wlc_ver_major < FTM_11AZ_MIN_WLC_API) {
+		dhd_rtt_handle_nan_rtt_session_end(dhd, &rng_inst->peer_addr);
+	}
+
 	dhd_rtt_nan_update_directed_sessions_cnt(dhd, FALSE);
 	wl_cfgnan_reset_remove_ranging_instance(cfg, rng_inst);
 
@@ -11267,6 +11238,9 @@ wl_cfgnan_notify_nan_status(struct bcm_cfg80211 *cfg,
 		return -EINVAL;
 	}
 
+	NAN_MUTEX_LOCK();
+
+
 #ifdef RTT_SUPPORT
 	if (event_num == WL_NAN_EVENT_RNG_REQ_IND)
 	{
@@ -11280,8 +11254,6 @@ wl_cfgnan_notify_nan_status(struct bcm_cfg80211 *cfg,
 		flush_work(&rtt_status->work);
 	}
 #endif /* RTT_SUPPORT */
-
-	NAN_MUTEX_LOCK();
 
 	if (NAN_INVALID_EVENT(event_num)) {
 		WL_ERR(("unsupported event, num: %d, event type: %d\n", event_num, event_type));
@@ -13053,4 +13025,5 @@ void wl_cfgnan_inst_chan_support(struct bcm_cfg80211 *cfg,
 	return;
 }
 #endif /* WL_NAN_INSTANT_MODE */
+
 #endif /* WL_NAN */

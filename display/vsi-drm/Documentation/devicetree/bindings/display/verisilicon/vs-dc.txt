@@ -28,6 +28,7 @@ Optional properties:
 - min-wr-peak-bw: minimum real-time peak write bandwidth in MBps
 - min-core-clk: minimum core clock in Hz.
 - tzprot-device: trust zone kernel device, for secure mode.
+- fab-bus-name: Name of the dpu fabric devfreq provider.
 - boost-fab-freq: target dpu fabric frequency in kHz during frequency boost stage.
 - boost-core-freq: target dpu core frequency in kHz during frequency boost stage.
 
@@ -40,6 +41,11 @@ dc9400@90c0000 {
 	interrupt-names = "dc9400_irq";
 	clocks = <&vout_clk>, <&disp_clk>, <&axi_clk>;
 	clock-names = "core_clk", "pix_clk", "axi_clk";
+
+	fab-bus-name = "fabdisp";
+	boost-fabrt-freq = <480000>;
+	boost-core-freq = <666000>
+
 	ports {
 		#address-cells = <1>;
 		#size-cells = <0>;

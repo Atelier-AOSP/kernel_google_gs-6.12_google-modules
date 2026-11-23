@@ -312,7 +312,7 @@ static void fwol_parse_probe_req_ouis(struct wlan_objmgr_psoc *psoc,
 	int ret;
 	uint32_t hex_value;
 
-	qdf_str_lcopy(probe_req_ouis, cfg_get(psoc, CFG_PROBE_REQ_OUI),
+	qdf_str_scopy(probe_req_ouis, cfg_get(psoc, CFG_PROBE_REQ_OUI),
 		      MAX_PRB_REQ_VENDOR_OUI_INI_LEN);
 	str = probe_req_ouis;
 	whitelist->no_of_probe_req_ouis = 0;

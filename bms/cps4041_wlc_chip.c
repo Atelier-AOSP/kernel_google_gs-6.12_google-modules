@@ -13,6 +13,7 @@
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
+#include <misc/logbuffer.h>
 
 static const struct regmap_config cps4041_fwupdate_regmap_config = {
 	.reg_bits = 32,
@@ -25,65 +26,17 @@ static int cps4041_get_vout_set(struct google_wlc_data *chgr, u32 *mv)
 	int ret;
 
 	ret = chgr->chip->reg_read_adc(chgr, CPS4041_VOUT_SET_REG, &val);
-	if (ret == 0)
+	if (ret == 0) {
+		if (val > GOOGLE_WLC_READING_MAX_VOLT_MV)
+			return -EINVAL;
 		*mv = val;
+	}
 	return ret;
 }
 
 static int cps4041_set_vout(struct google_wlc_data *chgr, u32 mv)
 {
-	u32 vout;
-	u32 vrect;
-	u32 vout_set;
-	u32 iout;
-	s8 xce;
-	u16 prev_vout_set;
-	u32 pout, pout_low = 0, vout_delta = 0;
-	int ret;
-	u8 val8;
-
-	ret = chgr->chip->chip_get_sys_mode(chgr, &val8);
-	if (ret == 0 && (val8 == RX_MODE_WPC_EPP || val8 == RX_MODE_WPC_EPP_NEGO)) {
-		chgr->chip->reg_write_16(chgr, CPS4041_VOUT_SET_REG, mv);
-	}
-
-	if (mv < GOOGLE_WLC_VOUT_MIN || mv > GOOGLE_WLC_VOUT_MAX) {
-		dev_info(chgr->dev, "Invalid vout setting: %d, skip", mv);
-		return -EINVAL;
-	}
-
-	ret = chgr->chip->reg_read_16(chgr, CPS4041_VOUT_SET_REG, &prev_vout_set);
-	ret |= chgr->chip->reg_read_8(chgr, CPS4041_CE_VAL_REG, (u8 *) &xce);
-	ret |= chgr->chip->chip_get_vout(chgr, &vout);
-	ret |= chgr->chip->chip_get_vrect(chgr, &vrect);
-	ret |= chgr->chip->chip_get_vout_set(chgr, &vout_set);
-	ret |= chgr->chip->chip_get_iout(chgr, &iout);
-	if (ret != 0)
-		return ret;
-	pout = vout * iout / 1000;
-
-	if ((xce > 1 && mv > prev_vout_set && prev_vout_set != CPS4041_DEFAULT_VOUT_SET)) {
-		dev_info(chgr->dev, "Fail to set vout %d->%d due to XCE %d, vout: %d, vrect: %d, iout: %d, pout: %d",
-			 prev_vout_set, mv, xce, vout, vrect, iout, pout);
-		return -EAGAIN;
-	}
-
-	if (chgr->nego_power > chgr->wlc_dc_max_pout_delta)
-		pout_low = chgr->nego_power - chgr->wlc_dc_max_pout_delta;
-
-	if (prev_vout_set > vout)
-		vout_delta = prev_vout_set - vout;
-
-	if (pout > pout_low && mv > prev_vout_set && vout_delta > chgr->wlc_dc_max_vout_delta) {
-		dev_info(chgr->dev, "Fail to set vout %d->%d due to vout delta %d, vout: %d, vrect: %d, iout: %d, xce: %d, pout: %d",
-			prev_vout_set, mv, vout_delta, vout, vrect, iout, xce, pout);
-		return -EAGAIN;
-	}
-
-	dev_info(chgr->dev,
-		 "Setting vout to %d. vout: %d, vrect: %d, prev vout_set: %d, iout: %d, xce: %d, pout: %d\n",
-		 mv, vout, vrect, vout_set, iout, xce, pout);
-
+	dev_dbg(chgr->dev, "vout is set to %u", mv);
 	return chgr->chip->reg_write_16(chgr, CPS4041_VOUT_SET_REG, mv);
 }
 
@@ -177,6 +130,9 @@ static int cps4041_add_info_string(struct google_wlc_data *chgr, char *buf)
 	if (ret == 0)
 		count += scnprintf(buf + count, PAGE_SIZE - count,
 				   "fw minor     : %hhu\n", val8);
+	if (chgr->fw_data.ver.crc > 0)
+		count += scnprintf(buf + count, PAGE_SIZE - count,
+				   "fw crc       : %04llx\n", chgr->fw_data.ver.crc);
 
 	count += scnprintf(buf + count, PAGE_SIZE - count,
 			   "project id (dt): %02x\n", chgr->pdata->project_id);
@@ -189,12 +145,14 @@ static int cps4041_add_info_string(struct google_wlc_data *chgr, char *buf)
 	if (ret == 0 && mode_is_mpp(val8)) {
 		u32 device_id, mfg_id, unique_id;
 		u16 ptmc;
+		u8 product_id;
 
 		ret = chgr->chip->chip_get_ptmc_id(chgr, &ptmc);
 		if (ret == 0)
 			count += scnprintf(buf + count, PAGE_SIZE - count,
 				   "TX PTMC      : %04x\n", ptmc);
-		ret = chgr->chip->chip_get_mpp_xid(chgr, &device_id, &mfg_id, &unique_id);
+		ret = chgr->chip->chip_get_mpp_xid(chgr, &device_id, &mfg_id, &unique_id,
+						   &product_id);
 		if (ret == 0) {
 			count += scnprintf(buf + count, PAGE_SIZE - count,
 					"TX XID/dev_id: %06x\n", device_id);
@@ -202,6 +160,8 @@ static int cps4041_add_info_string(struct google_wlc_data *chgr, char *buf)
 					"TX XID/mfg_id: %06x\n", mfg_id);
 			count += scnprintf(buf + count, PAGE_SIZE - count,
 					"TX unique id : %08x\n", unique_id);
+			count += scnprintf(buf + count, PAGE_SIZE - count,
+					"TX product id: %08x\n", product_id);
 		}
 	}
 
@@ -242,6 +202,8 @@ static int cps4041_get_interrupts(struct google_wlc_data *chgr, u32 *int_val,
 		int_fields->over_voltage = 1;
 	if (*int_val & CPS4041_INTERRUPT_RX_MODE_SWITCH_BIT)
 		int_fields->operation_mode = 1;
+	if (*int_val & CPS4041_INTERRUPT_SYS_MODE_CHG_BIT)
+		int_fields->sys_mode = 1;
 	if (*int_val & CPS4041_INTERRUPT_POWER_ON_BIT)
 		int_fields->stat_vrect = 1;
 	if (*int_val & CPS4041_INTERRUPT_RX_READY_BIT)
@@ -308,14 +270,17 @@ static int cps4041_get_interrupts(struct google_wlc_data *chgr, u32 *int_val,
 		if (ret == 0)
 			dev_dbg(chgr->dev, "real modulation depth: %d", val8);
 	}
+	if (*int_val & CPS4041_INTERRUPT_CLOAK_ERROR_BIT)
+		int_fields->cloak_error = 1;
 
 	if (*int_val & CPS4041_INTERRUPT_DEBUG_INFO_BIT) {
-		u32 val32;
+		u32 val32 = 0;
 
 		ret = chgr->chip->reg_read_n(chgr, CPS4041_DEBUG_INFO_REG, buf, 4);
-		chgr->chip->reg_write_8(chgr, CPS4041_DEBUG_INFO_REG, 0);
+		chgr->chip->reg_write_n(chgr, CPS4041_DEBUG_INFO_REG, &val32, 4);
 		if (ret != 0)
 			return ret;
+
 		val32 = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
 		dev_info(chgr->dev, "CPS4041 DEBUG_INFO IRQ, val: 0x%08x", val32);
 
@@ -324,6 +289,10 @@ static int cps4041_get_interrupts(struct google_wlc_data *chgr, u32 *int_val,
 			dev_dbg(chgr->dev, "CPS4041 IRQ MLDO off bit\n");
 		if (val32 & CPS4041_INTERRUPT_MLDO_ON_BIT)
 			dev_dbg(chgr->dev, "CPS4041 IRQ MLDO on bit\n");
+		if (val32 & CPS4041_INTERRUPT_VDD_ERR_BIT) {
+			int_fields->vdd_err = 1;
+			dev_dbg(chgr->dev, "CPS4041 IRQ VDD ERR on bit\n");
+		}
 		if (val32 & CPS4041_INTERRUPT_HEAVY_LOAD_BIT)
 			dev_dbg(chgr->dev, "CPS4041 IRQ Heavy Load bit\n");
 		if (val32 & CPS4041_INTERRUPT_LIGHT_LOAD_BIT)
@@ -415,13 +384,9 @@ static int cps4041_chip_set_cmd_reg(struct google_wlc_data *chgr, u32 cmd, int t
 		msleep(sleep_ms);
 	}
 
-	if (retry_ms >= timeout_ms && (cmd_val & cmd) != 0) {
-		dev_err(chgr->dev,
-			"Failed to send command 0x%x. cmd reg stuck at 0x%x\n", cmd, cmd_val);
-		ret = -EINVAL;
-		goto exit;
-	}
-	dev_dbg(chgr->dev, "Send cmd: %08x in %d ms\n", cmd, retry_ms);
+	if (retry_ms >= timeout_ms && (cmd_val & cmd) != 0)
+		dev_warn(chgr->dev,
+			"Long time to send command 0x%x. cmd reg stuck at 0x%x\n", cmd, cmd_val);
 exit:
 	mutex_unlock(&chgr->cmd_lock);
 	return ret;
@@ -438,8 +403,6 @@ static int cps4041_clear_interrupts(struct google_wlc_data *chgr, u32 int_val)
 	ret = cps4041_chip_set_cmd_reg(chgr, CPS4041_COMMAND_INT_CLR_EN, 10);
 	if (ret)
 		return ret;
-
-	dev_dbg(chgr->dev, "Cleared interrupts: %08x, ret: %d\n", int_val, ret);
 
 	return ret;
 }
@@ -478,14 +441,15 @@ static int cps4041_set_cloak_mode(struct google_wlc_data *chgr, bool enable, u8 
 	ret = cps4041_get_sys_mode(chgr, &val8);
 	if (ret)
 		return ret;
-	if (enable && mode_is_mpp(val8)) {
+	if (enable && mode_is_mpp(val8) && val8 != RX_MODE_WPC_MPP_NEGO) {
 		dev_info(chgr->dev, "Entering Cloak Mode, reason=%d", reason);
 		ret = chgr->chip->reg_write_8(chgr, CPS4041_CLOAK_REASON_REG, reason);
 		return cps4041_chip_set_cmd_reg(chgr, CPS4041_COMMAND_MPP_CLOAK_ENTER, 1000);
 	}
 	if (!enable && val8 == RX_MODE_MPP_CLOAK) {
 		dev_info(chgr->dev, "Exiting Cloak Mode");
-		return cps4041_chip_set_cmd_reg(chgr, CPS4041_COMMAND_MPP_CLOAK_EXIT, 1000);
+		return cps4041_chip_set_cmd_reg(chgr, CPS4041_COMMAND_MPP_CLOAK_EXIT,
+						chgr->cloak_ping_delay_ms + 1000);
 	}
 	if (!enable && val8 == RX_MODE_AC_MISSING) {
 		dev_info(chgr->dev, "Turning off VDD");
@@ -557,7 +521,9 @@ static int cps4041_send_ept(struct google_wlc_data *chgr, enum ept_reason reason
 	if (ret)
 		dev_err(chgr->dev, "Failed to set ept reason:%d, ret=%d\n", reason, ret);
 
-	return cps4041_chip_set_cmd_reg(chgr, CPS4041_COMMAND_SEND_EPT, 10);
+	ret = cps4041_chip_set_cmd_reg(chgr, CPS4041_COMMAND_SEND_EPT, 10);
+
+	return ret;
 }
 
 static int cps4041_get_cloak_reason(struct google_wlc_data *chgr, u8 *reason)
@@ -572,6 +538,50 @@ static int cps4041_get_cloak_reason(struct google_wlc_data *chgr, u8 *reason)
 	if (ret)
 		return ret;
 	*reason = val8;
+	return 0;
+}
+
+static int cps4041_get_cloak_exit_reason(struct google_wlc_data *chgr, u8 *reason)
+{
+	int ret;
+	u8 val8;
+
+	ret = chgr->chip->reg_read_8(chgr, CPS4041_EXIT_CLOAK_REASON_REG, &val8);
+	if (ret)
+		return ret;
+
+	switch (val8) {
+	case CPS4041_CLOAK_EXIT_NORMAL:
+		*reason = CLOAK_EXIT_NORMAL;
+		break;
+	case CPS4041_CLOAK_EXIT_FSK_FAIL:
+		*reason = CPS4041_CLOAK_EXIT_FSK_FAIL;
+		break;
+	case CPS4041_CLOAK_DET_PING_TIMEOUT:
+		*reason = CLOAK_DET_PING_TIMEOUT;
+		break;
+	case CPS4041_CLOAK_PING_TIMEOUT:
+		*reason = CLOAK_PING_TIMEOUT;
+		break;
+	case CPS4041_CLOAK_EXIT_PTX_XID_CHECK_FAIL:
+		*reason = CLOAK_EXIT_PTX_XID_CHECK_FAIL;
+		break;
+	case CPS4041_CLOAK_PTX_POWER_DOWN_TIMEOUT:
+		*reason = CLOAK_PTX_POWER_DOWN_TIMEOUT;
+		break;
+	case CPS4041_CLOAK_PTX_POWER_DOWN_FAILURE:
+		*reason = CLOAK_PTX_POWER_DOWN_FAILURE;
+		break;
+	case CPS4041_CLOAK_PTX_FSK_MISSING:
+		*reason = CLOAK_PTX_FSK_MISSING;
+		break;
+	case CPS4041_CLOAK_PING_FREQ_INCORRECT:
+		*reason = CLOAK_PING_FREQ_INCORRECT;
+		break;
+	default:
+		*reason = val8;
+		break;
+	}
 	return 0;
 }
 
@@ -696,13 +706,12 @@ static int cps4041_fw_reg_write_n(struct google_wlc_data *chgr, u32 reg, const c
 	return ret;
 }
 
-static int cps4041_get_mpp_xid(struct google_wlc_data *chgr, u32 *device_id,
-				       u32 *mfg_rsvd_id, u32 *unique_id)
+static int cps4041_get_mpp_xid(struct google_wlc_data *chgr, u32 *device_id, u32 *mfg_rsvd_id,
+			       u32 *unique_id, u8 *product_id)
 {
 	int ret;
 	u8 buf[3];
 	u8 mode;
-	u16 ptmc = 0;
 
 	ret = chgr->chip->chip_get_sys_mode(chgr, &mode);
 	if (ret != 0 || !mode_is_mpp(mode))
@@ -719,9 +728,15 @@ static int cps4041_get_mpp_xid(struct google_wlc_data *chgr, u32 *device_id,
 		return ret;
 	*mfg_rsvd_id |= (buf[1] << 8) | buf[0];
 
-	chgr->chip->chip_get_ptmc_id(chgr, &ptmc);
-	if (ptmc == CPS8200_PTMC_ID)
+	if (chgr->ptmc == CPS8200_PTMC_ID) {
 		*unique_id = *device_id << 12 | *mfg_rsvd_id >> 7;
+		*product_id = (*mfg_rsvd_id >> 1) & 0x3F;
+		chgr->txsrc = *mfg_rsvd_id & 0x1;
+	} else {
+		*unique_id = 0;
+		*product_id = 0;
+		chgr->txsrc = 0;
+	}
 
 	return 0;
 }
@@ -892,27 +907,21 @@ static int cps4041_set_mod_mode(struct google_wlc_data *chgr, enum ask_mod_mode 
 	int ret;
 	int to_select;
 
-	if (chgr->wlc_dc_debug_ask_custom == CPS4041_ASK_DEBUG_DISABLE) {
-		dev_info(chgr->dev, "ASK modulation control disabled");
-		return 0;
-	}
-	if (mode == ASK_MOD_MODE_SWC_MOD) {
-		if (chgr->wlc_dc_debug_ask_custom == CPS4041_ASK_DEBUG_CUSTOM)
-			to_select = chgr->wlc_dc_debug_ask_swc;
-		else
-			to_select = CPS4041_ASK_MOD_CAP_CMB_NEGATIVE;
-	} else if (mode == ASK_MOD_MODE_BUCK_MOD) {
-		if (chgr->wlc_dc_debug_ask_custom == CPS4041_ASK_DEBUG_CUSTOM)
-			to_select = chgr->wlc_dc_debug_ask_buck;
-		else
-			to_select = CPS4041_ASK_MOD_DC_LOAD_ADAPTIVE;
-	} else {
+	if (mode == ASK_MOD_MODE_NEG_CAP_MOD)
+		to_select = CPS4041_ASK_MOD_CAP_CMB_NEGATIVE;
+	else if (mode == ASK_MOD_MODE_ADAPTIVE_LOAD_MOD)
+		to_select = CPS4041_ASK_MOD_DC_LOAD_ADAPTIVE;
+	else if (mode == ASK_MOD_MODE_POS_CAP_MOD)
+		to_select = CPS4041_ASK_MOD_CAP_CMB_POSITIVE;
+	else if (mode == ASK_MOD_MODE_LOAD_MOD)
+		to_select = CPS4041_ASK_MOD_DC_LOAD;
+	else
 		return -EINVAL;
-	}
+
 	ret = cps4041_select_ask_mode(chgr, to_select);
 
 	dev_info(chgr->dev, "Modulation set: %s, num=%d, ret=%d",
-		 mode == ASK_MOD_MODE_SWC_MOD ? "SWC" : "Buck",  to_select, ret);
+		 ask_mod_str[mode],  to_select, ret);
 	return ret;
 
 }
@@ -922,7 +931,7 @@ static int cps4041_enable_auto_vout(struct google_wlc_data *chgr, bool enable)
 	int ret;
 
 	if (enable)
-		chgr->chip->reg_write_16(chgr, CPS4041_VOUT_SET_REG, CPS4041_DEFAULT_VOUT_SET);
+		chgr->chip->reg_write_16(chgr, CPS4041_VOUT_SET_REG, chgr->chip->val_default_vout);
 	ret = cps4041_chip_set_func_reg(chgr, CPS4041_FUNCTION_MLDO_AUTO_CTRL_EN, enable);
 	dev_info(chgr->dev, "auto vout enable: %d, ret: %d", enable, ret);
 
@@ -1077,6 +1086,19 @@ static int cps4041_chip_set_dynamic_mod(struct google_wlc_data *chgr)
 	return 0;
 }
 
+static int cps4041_get_xce(struct google_wlc_data *chgr, s8 *xce)
+{
+	int ret;
+	u8 val8;
+
+	ret = chgr->chip->reg_read_8(chgr, CPS4041_CE_VAL_REG, &val8);
+
+	if (ret == 0)
+		*xce = (s8)val8;
+
+	return ret;
+}
+
 static int cps4041_write_poweron_params(struct google_wlc_data *chgr)
 {
 
@@ -1107,7 +1129,7 @@ static int cps4041_do_dploss_event(struct google_wlc_data *chgr,
 		break;
 	case DPLOSS_CAL_EXTEND:
 		ret = cps4041_chip_set_func_reg(chgr,
-						CPS4041_FUNCTION_DPLOSS_CALI_EXTEND_EN, 1000);
+						CPS4041_FUNCTION_DPLOSS_CALI_EXTEND_EN, true);
 		if (ret == 0)
 			ret = cps4041_chip_set_cmd_reg(chgr,
 						       CPS4041_COMMAND_DPLOSS_CALI_ENTER, 1000);
@@ -1117,7 +1139,7 @@ static int cps4041_do_dploss_event(struct google_wlc_data *chgr,
 			chgr->pdata->dploss_points_num);
 		if (ret == 0)
 			ret = cps4041_chip_set_func_reg(chgr, CPS4041_FUNCTION_DPLOSS_CALI_CAP_EN,
-							1);
+							true);
 		break;
 	case DPLOSS_CAL_COMMIT:
 		ret = cps4041_chip_set_cmd_reg(chgr, CPS4041_COMMAND_DPLOSS_CALI_CMT, 1000);
@@ -1126,7 +1148,7 @@ static int cps4041_do_dploss_event(struct google_wlc_data *chgr,
 		ret = cps4041_chip_set_cmd_reg(chgr, CPS4041_COMMAND_DPLOSS_CALI_EXIT, 1000);
 		break;
 	case DPLOSS_CAL_ABORT:
-		cps4041_chip_set_func_reg(chgr, CPS4041_FUNCTION_DPLOSS_CALI_CAP_EN, 0);
+		cps4041_chip_set_func_reg(chgr, CPS4041_FUNCTION_DPLOSS_CALI_CAP_EN, false);
 		break;
 	default:
 		dev_err(chgr->dev, "Unable to handle dploss event: %d", event);
@@ -1467,7 +1489,8 @@ static int cps4041_firmware_request(struct google_wlc_data *chgr,
 		chgr->fw_data.needs_update = false;
 		break;
 	case FWUPDATE_FORCE:
-	case FWUPDATE_FORCE_NO_TAG:
+	case FWUPDATE_FORCE_MANUAL:
+		chgr->fwupdate_state = FWU_STATE_IN_PROGRESS;
 		chgr->fw_data.needs_update = true;
 		break;
 	case FWUPDATE_DIFF:
@@ -1613,6 +1636,7 @@ static int cps4041_chip_fwupdate(struct google_wlc_data *chgr, int step)
 		}
 		ret = cps4041_firmware_request(chgr, &bl_data, &fw_data);
 		if (ret < 0 || !chgr->fw_data.needs_update) {
+			chgr->fwupdate_state = FWU_STATE_FAIL;
 			mutex_unlock(&chgr->fwupdate_lock);
 			break;
 		}
@@ -1621,6 +1645,7 @@ static int cps4041_chip_fwupdate(struct google_wlc_data *chgr, int step)
 		ret = cps4041_bootloader_download(chgr, bl_data);
 		ret |= cps4041_bootloader_verification(chgr);
 		if (ret < 0) {
+			chgr->fwupdate_state = FWU_STATE_FAIL;
 			ret = -FWUPDATE_ERROR_BOOTLOADER;
 			mutex_unlock(&chgr->fwupdate_lock);
 			break;
@@ -1631,6 +1656,7 @@ static int cps4041_chip_fwupdate(struct google_wlc_data *chgr, int step)
 		DEBUG_I2C_LOG(chgr, "program the firmware");
 		ret = cps4041_program_firmware(chgr, fw_data);
 		if (ret < 0) {
+			chgr->fwupdate_state = FWU_STATE_FAIL;
 			ret = -FWUPDATE_ERROR_FLASH;
 			mutex_unlock(&chgr->fwupdate_lock);
 			break;
@@ -1666,9 +1692,13 @@ static int cps4041_chip_fwupdate(struct google_wlc_data *chgr, int step)
 			ret = cps4041_crc_check(chgr, &chgr->fw_data.ver.crc);
 			if (ret == 0 && chgr->fw_data.ver.crc == 0)
 				ret = -FWUPDATE_ERROR_CRC;
-			if (ret < 0)
+			if (ret < 0) {
+				chgr->fwupdate_state = FWU_STATE_FAIL;
 				logbuffer_devlog(chgr->fw_log, chgr->dev,
 						 "fail to read crc, ret=%d", ret);
+			} else {
+				chgr->fwupdate_state = FWU_STATE_SUCCESS;
+			}
 
 			logbuffer_devlog(chgr->fw_log, chgr->dev,
 					 "major=%02x,minor=%02x,project_id=%02x,crc=%04llx",
@@ -1705,7 +1735,8 @@ static int cps4041_chip_fwupdate(struct google_wlc_data *chgr, int step)
 		if (ret < 0) {
 			chgr->fw_data.update_done = false;
 			chgr->fw_data.cur_ver.project_id = chgr->pdata->project_id;
-			if (ret == -FWUPDATE_ERROR_CRC)
+			if (chgr->fw_data.update_option != FWUPDATE_FORCE_MANUAL &&
+			    ret == -FWUPDATE_ERROR_CRC)
 				chgr->fw_data.update_option = FWUPDATE_FORCE;
 			logbuffer_devlog(chgr->fw_log, chgr->dev,
 					 "CRC check failed,ret=%d,crc=0x%04llx\n",
@@ -1895,6 +1926,7 @@ int cps4041_chip_init(struct google_wlc_data *chgr)
 	chip->reg_alpha_fm_itx = CPS4041_ALPHA_FM_ITX_REG;
 	chip->reg_alpha_fm_vrect = CPS4041_ALPHA_FM_VRECT_REG;
 	chip->reg_alpha_fm_irect = CPS4041_ALPHA_FM_IRECT_REG;
+	chip->val_default_vout = CPS4041_DEFAULT_VOUT_SET;
 	chip->reg_qi_id = CPS4041_QI_ID_REG;
 
 	chip->chip_get_sys_mode = cps4041_get_sys_mode;
@@ -1910,6 +1942,7 @@ int cps4041_chip_init(struct google_wlc_data *chgr)
 	chip->chip_send_csp = cps4041_send_csp;
 	chip->chip_send_ept = cps4041_send_ept;
 	chip->chip_get_cloak_reason = cps4041_get_cloak_reason;
+	chip->chip_get_cloak_exit_reason = cps4041_get_cloak_exit_reason;
 	chip->chip_send_sadt = cps4041_send_sadt;
 	chip->chip_eds_reset = cps4041_eds_reset;
 	chip->chip_get_negotiated_power = cps4041_get_negotiated_power;
@@ -1931,6 +1964,7 @@ int cps4041_chip_init(struct google_wlc_data *chgr)
 	chip->chip_get_vinv = cps4041_get_vinv;
 	chip->chip_get_mode_capabilities = cps4041_get_mode_capabilities;
 	chip->chip_set_dynamic_mod = cps4041_chip_set_dynamic_mod;
+	chip->chip_get_xce = cps4041_get_xce;
 
 	debugfs_create_file("pdet_en", 0200, chgr->debug_entry, chgr, &debug_pdet_fops);
 	debugfs_create_file("wlc_dc_powermode", 0644, chgr->debug_entry, chgr,
@@ -1938,12 +1972,6 @@ int cps4041_chip_init(struct google_wlc_data *chgr)
 	debugfs_create_file("wlc_dc_gain_linear", 0644, chgr->debug_entry, chgr,
 				&debug_gain_linear_fops);
 	debugfs_create_file("enable_fsk_log", 0200, chgr->debug_entry, chgr, &debug_fsk_log_fops);
-	debugfs_create_u8("wlc_dc_custom_mod", 0644, chgr->debug_entry,
-			   &chgr->wlc_dc_debug_ask_custom);
-	debugfs_create_u8("wlc_dc_buck_mod", 0644, chgr->debug_entry,
-			   &chgr->wlc_dc_debug_ask_buck);
-	debugfs_create_u8("wlc_dc_swc_mod", 0644, chgr->debug_entry,
-			   &chgr->wlc_dc_debug_ask_swc);
 	debugfs_create_u8("cal_power_log", 0644, chgr->debug_entry,
 			   &chgr->debug_cal_power);
 	debugfs_create_u8("dynamic_mod", 0644, chgr->debug_entry, &chgr->pdata->mod_depth_max);

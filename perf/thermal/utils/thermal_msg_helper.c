@@ -449,7 +449,7 @@ int msg_tmu_set_power_table(enum hw_dev_type cdev_id, u8 idx, int val)
 	enum hw_thermal_zone_id tz_id;
 	int ret;
 
-	ret = thermal_cpm_mbox_cdev_to_tz_id(cdev_id, &tz_id);
+	ret = thermal_msg_cdev_to_hw_tzid(cdev_id, &tz_id);
 	if (ret) {
 		pr_err("Invalid cdev ID:%d.\n", cdev_id);
 		return ret;
@@ -484,7 +484,7 @@ int msg_tmu_get_power_table(enum hw_dev_type cdev_id, u8 idx, int *val,
 	if (!val)
 		return -EINVAL;
 
-	ret = thermal_cpm_mbox_cdev_to_tz_id(cdev_id, &tz_id);
+	ret = thermal_msg_cdev_to_hw_tzid(cdev_id, &tz_id);
 	if (ret) {
 		pr_err("Invalid cdev ID:%d.\n", cdev_id);
 		return ret;
@@ -504,6 +504,63 @@ int msg_tmu_get_power_table(enum hw_dev_type cdev_id, u8 idx, int *val,
 	*val = message.data[1];
 	if (max_state_idx != NULL)
 		*max_state_idx = message.data[2];
+
+	return 0;
+}
+
+/*
+ * msg_tmu_set_temp_lut - Set temp lut entry of a thermal zone
+ *
+ * @tz_id: thermal zone id
+ * @temperature: the temperature threshold below which cdev_state is allowed to use
+ * @cdev_state: The lowest cdev_state allowed to use
+ * @append: 0 to restart setting a new temp lut; 1 to append an entry to current table
+ *
+ * Return: 0 on success
+ *	Other the error message sent by thermal_cpm_send_mbox_request().
+ */
+int msg_tmu_set_temp_lut(u8 tz_id, u8 temperature, u8 cdev_state, bool append)
+{
+	union thermal_cpm_message message;
+
+	message.req.type = THERMAL_SERVICE_COMMAND_SET_TEMP_LUT;
+	message.req.tzid = tz_id;
+	message.req.req_rsvd0 = temperature;
+	message.req.req_rsvd1 = cdev_state;
+	message.req.req_rsvd2 = append;
+
+	return __msg_gen_send_req_with_status_check(&message);
+}
+
+/*
+ * msg_tmu_get_temp_lut - Get temp lut entry of a thermal zone
+ *
+ * @tz_id: thermal zone id
+ * @index: The index of the temp lut to get
+ * @temperature: pointer to the temperature value
+ * @cdev_state: pointer to the cdev_state
+ *
+ * Return: 0 on success
+ *	Other the error message sent by thermal_cpm_send_mbox_request().
+ */
+int msg_tmu_get_temp_lut(u8 tz_id, u8 index, u8 *temperature, u8 *cdev_state)
+{
+	union thermal_cpm_message message;
+	int ret;
+
+	if (!temperature || !cdev_state || index >= THERMAL_TEMP_LUT_MAX_ENTRIES)
+		return -EINVAL;
+
+	message.req.type = THERMAL_SERVICE_COMMAND_GET_TEMP_LUT;
+	message.req.tzid = tz_id;
+	message.req.req_rsvd0 = index;
+
+	ret = __msg_gen_send_req_with_status_check(&message);
+	if (ret)
+		return ret;
+
+	*temperature = message.resp.temp;
+	*cdev_state = message.resp.status;
 
 	return 0;
 }

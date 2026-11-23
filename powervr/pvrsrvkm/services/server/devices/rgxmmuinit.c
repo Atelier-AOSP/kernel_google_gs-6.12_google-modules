@@ -69,11 +69,18 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define RGX_MMUCTRL_PT_DATA_ENTRY_PENDING_EN (0U)
 #endif
 
+#if defined(RGX_MMUCTRL_PT_DATA_NON_RESIDENT_EN)
+#define RGX_MMUCTRL_PTE_PROTMASK_NON_RESIDENT_EN RGX_MMUCTRL_PT_DATA_NON_RESIDENT_EN
+#else
+#define RGX_MMUCTRL_PTE_PROTMASK_NON_RESIDENT_EN 0U
+#endif
+
 /* protection bits for MMU_VERSION <= 3 */
 #define RGX_MMUCTRL_PTE_PROTMASK	(RGX_MMUCTRL_PT_DATA_PM_META_PROTECT_EN | \
 		~RGX_MMUCTRL_PT_DATA_AXCACHE_CLRMSK | \
 		RGX_MMUCTRL_PT_DATA_ENTRY_PENDING_EN | \
 		RGX_MMUCTRL_PT_DATA_PM_SRC_EN | \
+		RGX_MMUCTRL_PTE_PROTMASK_NON_RESIDENT_EN | \
 		RGX_MMUCTRL_PT_DATA_CC_EN | \
 		RGX_MMUCTRL_PT_DATA_READ_ONLY_EN | \
 		RGX_MMUCTRL_PT_DATA_VALID_EN)
@@ -260,46 +267,6 @@ PVRSRV_ERROR RGXMMUInit_Register(PVRSRV_DEVICE_NODE *psDeviceNode)
 #define RGX_GET_MMUCTRL_PROTMASK(entry) RGX_MMUCTRL_##entry##_PROTMASK
 #endif
 
-	/* Setup of Px Entries:
-	 *
-	 *
-	 * PAGE TABLE (8 Byte):
-	 *
-	 * | 62              | 61...40         | 39...12 (varies) | 11...6          | 5             | 4      | 3               | 2               | 1         | 0     |
-	 * | PM/Meta protect | VP Page (39:18) | Physical Page    | VP Page (17:12) | Entry Pending | PM src | SLC Bypass Ctrl | Cache Coherency | Read Only | Valid |
-	 *
-	 *
-	 * PAGE DIRECTORY (8 Byte):
-	 *
-	 *  | 40            | 39...5  (varies)        | 4          | 3...1     | 0     |
-	 *  | Entry Pending | Page Table base address | (reserved) | Page Size | Valid |
-	 *
-	 *
-	 * PAGE CATALOGUE (4 Byte):
-	 *
-	 *  | 31...4                      | 3...2      | 1             | 0     |
-	 *  | Page Directory base address | (reserved) | Entry Pending | Valid |
-	 *
-	 */
-
-
-	/* Example how to get the PD address from a PC entry.
-	 * The procedure is the same for PD and PT entries to retrieve PT and Page addresses:
-	 *
-	 * 1) sRGXMMUPCEConfig.uiAddrMask applied to PC entry with '&':
-	 *  | 31...4   | 3...2      | 1             | 0     |
-	 *  | PD Addr  | 0          | 0             | 0     |
-	 *
-	 * 2) sRGXMMUPCEConfig.uiAddrShift applied with '>>':
-	 *  | 27...0   |
-	 *  | PD Addr  |
-	 *
-	 * 3) sRGXMMUPCEConfig.uiAddrLog2Align applied with '<<':
-	 *  | 39...0   |
-	 *  | PD Addr  |
-	 *
-	 */
-
 
 	sRGXMMUDeviceAttributes.pszMMUPxPDumpMemSpaceName =
 			PhysHeapPDumpMemspaceName(psDeviceNode->apsPhysHeap[PVRSRV_PHYS_HEAP_GPU_LOCAL]);
@@ -335,14 +302,6 @@ PVRSRV_ERROR RGXMMUInit_Register(PVRSRV_DEVICE_NODE *psDeviceNode)
 	sRGXMMUTopLevelDevVAddrConfig.uiNumEntriesPD = TRUNCATE_64BITS_TO_32BITS(UNITS_IN_BITFIELD(sRGXMMUTopLevelDevVAddrConfig.uiPDIndexMask,
 			sRGXMMUTopLevelDevVAddrConfig.uiPDIndexShift));
 
-	/*
-	 *
-	 *  Configuration for heaps with 4kB Data-Page size
-	 *
-	 * Bit  39      30   29   21   20   12   11        0
-	 *      |         \ /       \ /       \ /           \
-	 *      |....PCE...|...PDE...|...PTE...|....VAddr...|
-	 */
 
 	/*
 	 * Setup sRGXMMUPDEConfig_4KBDP
@@ -422,16 +381,6 @@ PVRSRV_ERROR RGXMMUInit_Register(PVRSRV_DEVICE_NODE *psDeviceNode)
 
 
 	/*
-	 *
-	 *  Configuration for heaps with 16kB Data-Page size
-	 *
-	 * Bit  39      30   29   21   20 14   13          0
-	 *      |         \ /       \ /     \ /             \
-	 *      |....PCE...|...PDE...|..PTE..|.....VAddr....|
-	 *
-	 */
-
-	/*
 	 * Setup sRGXMMUPDEConfig_16KBDP
 	 */
 	sRGXMMUPDEConfig_16KBDP.ePxLevel = MMU_LEVEL_2;
@@ -509,16 +458,6 @@ PVRSRV_ERROR RGXMMUInit_Register(PVRSRV_DEVICE_NODE *psDeviceNode)
 	gsPageSizeConfig16KB.uiRefCount = 0;
 	gsPageSizeConfig16KB.uiMaxRefCount = 0;
 
-
-	/*
-	 *
-	 *  Configuration for heaps with 64kB Data-Page size
-	 *
-	 * Bit  39      30   29   21  20 16 15             0
-	 *      |         \ /       \ /   \ /               \
-	 *      |....PCE...|...PDE...|.PTE.|.....VAddr......|
-	 *
-	 */
 
 	/*
 	 * Setup sRGXMMUPDEConfig_64KBDP
@@ -601,16 +540,6 @@ PVRSRV_ERROR RGXMMUInit_Register(PVRSRV_DEVICE_NODE *psDeviceNode)
 
 
 	/*
-	 *
-	 *  Configuration for heaps with 256kB Data-Page size
-	 *
-	 * Bit  39      30   29   21 20 18 17              0
-	 *      |         \ /       \|   |/                 \
-	 *      |....PCE...|...PDE...|PTE|.......VAddr......|
-	 *
-	 */
-
-	/*
 	 * Setup sRGXMMUPDEConfig_256KBDP
 	 */
 	sRGXMMUPDEConfig_256KBDP.ePxLevel = MMU_LEVEL_2;
@@ -689,15 +618,6 @@ PVRSRV_ERROR RGXMMUInit_Register(PVRSRV_DEVICE_NODE *psDeviceNode)
 	gsPageSizeConfig256KB.uiRefCount = 0;
 	gsPageSizeConfig256KB.uiMaxRefCount = 0;
 
-	/*
-	 *
-	 *  Configuration for heaps with 1MB Data-Page size
-	 *
-	 * Bit  39      30   29   21 20  19               0
-	 *      |         \ /       \ | /                  \
-	 *      |....PCE...|...PDE...|.|........VAddr.......|
-	 *                           PTE
-	 */
 
 	/*
 	 * Setup sRGXMMUPDEConfig_1MBDP
@@ -782,15 +702,6 @@ PVRSRV_ERROR RGXMMUInit_Register(PVRSRV_DEVICE_NODE *psDeviceNode)
 	gsPageSizeConfig1MB.uiRefCount = 0;
 	gsPageSizeConfig1MB.uiMaxRefCount = 0;
 
-	/*
-	 *
-	 *  Configuration for heaps with 2MB Data-Page size
-	 *
-	 * Bit  39      30   29   21   20                0
-	 *      |         \ /       \ /                   \
-	 *      |....PCE...|...PDE...|.........VAddr.......|
-	 *
-	 */
 
 	/*
 	 * Setup sRGXMMUPDEConfig_2MBDP
@@ -882,6 +793,14 @@ PVRSRV_ERROR RGXMMUInit_Register(PVRSRV_DEVICE_NODE *psDeviceNode)
 	sRGXMMUDeviceAttributes.ui32BaseAlign = RGX_MMUCTRL_PC_DATA_PD_BASE_ALIGNSHIFT;
 	sRGXMMUDeviceAttributes.psBaseConfig = &sRGXMMUPCEConfig;
 	sRGXMMUDeviceAttributes.psTopLevelDevVAddrConfig = &sRGXMMUTopLevelDevVAddrConfig;
+
+	/* `MMU_FEATURE_NON_RESIDENT_SUPPORT` feature is supported only on some
+	 * architectures (like Meteoric) while other architectures don't implement it.
+	 * The support of this feature is determined by the presence of
+	 * `RGX_MMUCTRL_PT_DATA_NON_RESIDENT_EN` definition. */
+#if defined(RGX_MMUCTRL_PT_DATA_NON_RESIDENT_EN)
+	sRGXMMUDeviceAttributes.eFeatures |= MMU_FEATURE_NON_RESIDENT_SUPPORT;
+#endif
 
 #if defined(PVRSRV_MMU_PARITY_ON_PTALLOC_AND_PTEUNMAP)
 	{
@@ -1142,6 +1061,13 @@ static IMG_UINT64 RGXDerivePTEProt8(IMG_UINT32 uiProtFlags, IMG_UINT32 uiLog2Dat
 	{
 		ui64MMUFlags |= RGX_MMUCTRL_PT_DATA_CC_EN;
 	}
+
+#if defined(RGX_MMUCTRL_PT_DATA_NON_RESIDENT_EN)
+	if (MMU_PROTFLAGS_NON_RESIDENT & uiProtFlags)
+	{
+		ui64MMUFlags |= RGX_MMUCTRL_PT_DATA_NON_RESIDENT_EN;
+	}
+#endif
 
 #if defined(RGX_MMUCTRL_PT_DATA_SLC_BYPASS_CTRL_EN)
 	/* cache setup */

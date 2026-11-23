@@ -21,9 +21,21 @@ properties:
     enum:
       - google,chip-info
 
+  reg:
+    maxItems: 4
+    description: register ranges for OTP shadow registers.
+
+  reg-names:
+    maxItems: 4
+    description: names for register ranges.
+
   "google,syscon-phandle":
     type: object
     description: device node of syscon phandle to access global OTP registers.
+
+  "google,reg-index":
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: index of the reg range in the parent node to be used for this feature.
 
   "feature-name":
     type: string
@@ -68,19 +80,20 @@ properties:
 
 required:
   - compatible
-  - google,syscon-phandle
   - feature-name
 
 additionalProperties: false
 
 examples:
   - |
-    goog_chip_info: goog_chip_info {
+    goog_chip_info: goog_chip_info@ebd2000 {
       compatible = "google,chip-info";
+      reg = <0xebd2000 0x1000>;
+      reg-names = "cpm";
 
       device_table: device_table {
         compatible = "google,lga_a0_ptde";
-        google,syscon-phandle = <&otp_cpm_shadow_syscon 0>;
+        google,reg-index = <0>;
         feature-name = "Device table";
         device-table;
         visible-in-prod;

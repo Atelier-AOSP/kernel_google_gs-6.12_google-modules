@@ -69,6 +69,11 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define DEVMEM_REFCOUNT_PRINT(fmt, ...)
 #endif
 
+#if defined(PVRSRV_ENABLE_PHYSHEAP_PERPID_STATS) && !defined(__KERNEL__)
+#define PVRSRV_ENABLE_PHYSHEAP_PERPID_UM_STATS
+#endif
+
+
 /* If we need a reservation but we don't have a server-side reservation, we poison
  * the entry with this value so that it's easily recognised in the debugger.
  * Note that this is potentially a valid handle, but then so is NULL, which is
@@ -255,7 +260,7 @@ typedef struct DEVMEM_IMPORT_TAG
 {
 	SHARED_DEV_CONNECTION hDevConnection;
 	IMG_DEVMEM_ALIGN_T uiAlign;         /*!< Alignment of the PMR */
-	DEVMEM_SIZE_T uiSize;               /*!< Size of import */
+	DEVMEM_SIZE_T uiSize;               /*!< Logical size of import */
 	ATOMIC_T hRefCount;                 /*!< Refcount for this import */
 	DEVMEM_PROPERTIES_T uiProperties;   /*!< Stores properties of an import like if
 	                                         it is exportable, pinned or suballocatable */
@@ -265,6 +270,11 @@ typedef struct DEVMEM_IMPORT_TAG
 
 	DEVMEM_DEVICE_IMPORT sDeviceImport; /*!< Device specifics of the import */
 	DEVMEM_CPU_IMPORT sCPUImport;       /*!< CPU specifics of the import */
+
+	/* -- The following are only set by AllocateDeviceMemory() -- */
+	IMG_UINT32 ui32LogicalPageLog2; /*!< The logical page shift of the PMR */
+	IMG_UINT32 ui32LogicalChunkCount; /*!< The number of logical chunks */
+	IMG_UINT32 ui32PhysicalChunkCount; /*!< The number of allocated physical chunks */
 } DEVMEM_IMPORT;
 
 typedef struct DEVMEM_DEVICE_MEMDESC_TAG
@@ -407,7 +417,7 @@ PVRSRV_ERROR DevmemImportStructAlloc(SHARED_DEV_CONNECTION hDevConnection,
                 Set it's refcount to 1!
 
 @Input          psImport     The import to initialise.
-@Input          uiSize       Size of the import.
+@Input          uiSize       Logical size of the import.
 @Input          uiAlign      Alignment of allocations in the import.
 @Input          uiMapFlags
 @Input          hPMR         Reference to the PMR of this import struct.
@@ -415,11 +425,11 @@ PVRSRV_ERROR DevmemImportStructAlloc(SHARED_DEV_CONNECTION hDevConnection,
                               imported, suballocatable?
 ******************************************************************************/
 void DevmemImportStructInit(DEVMEM_IMPORT *psImport,
-                             IMG_DEVMEM_SIZE_T uiSize,
-                             IMG_DEVMEM_ALIGN_T uiAlign,
-                             PVRSRV_MEMALLOCFLAGS_T uiMapFlags,
-                             IMG_HANDLE hPMR,
-                             DEVMEM_PROPERTIES_T uiProperties);
+                            IMG_DEVMEM_SIZE_T uiSize,
+                            IMG_DEVMEM_ALIGN_T uiAlign,
+                            PVRSRV_MEMALLOCFLAGS_T uiMapFlags,
+                            IMG_HANDLE hPMR,
+                            DEVMEM_PROPERTIES_T uiProperties);
 
 /******************************************************************************
 @Function       DevmemImportStructDevMap
@@ -631,5 +641,57 @@ static INLINE PVRSRV_ERROR DevmemCPUMapCheckImportProperties(DEVMEM_MEMDESC *psM
 
 	return PVRSRV_OK;
 }
+
+#if !defined(__KERNEL__)
+PVRSRV_ERROR DevmemAllocPhysicalWithRetries(SHARED_DEV_CONNECTION hDevConnection,
+                                            IMG_DEVMEM_SIZE_T uiSize,
+                                            IMG_UINT32 ui32NumPhysChunks,
+                                            IMG_UINT32 ui32NumVirtChunks,
+                                            IMG_UINT32 *pui32MappingTable,
+                                            IMG_UINT32 ui32Log2PageSize,
+                                            PVRSRV_MEMALLOCFLAGS_T uiFlags,
+                                            const IMG_CHAR *pszAnnotation,
+                                            IMG_HANDLE *phPMRPtr,
+                                            PVRSRV_MEMALLOCFLAGS_T *puiOutFlags);
+#endif /* defined(__KERNEL__) */
+
+#if defined(PVRSRV_ENABLE_PHYSHEAP_PERPID_UM_STATS)
+/******************************************************************************
+@Function       DevmemPhysHeapStatsIncr
+@Description    Increments the tracked number of bytes allocated in a physheap.
+@Input          hDevConnection The connection used to allocate the memory.
+@Input          ePhysHeap      The physheap the allocation was made from.
+@Input          uiAllocSize    The number of bytes that were allocated.
+@Return         PVRSRV_OK on success, else PVRSRV_ERROR_...
+******************************************************************************/
+PVRSRV_ERROR DevmemPhysHeapStatsIncr(SHARED_DEV_CONNECTION hDevConnection,
+                                     PVRSRV_PHYS_HEAP ePhysHeap,
+                                     IMG_DEVMEM_SIZE_T uiAllocSize);
+
+/******************************************************************************
+@Function       DevmemPhysHeapStatsDecr
+@Description    Decrements the tracked number of bytes allocated in a physheap.
+@Input          hDevConnection The connection used to allocate the memory.
+@Input          ePhysHeap      The physheap the allocation was made from.
+@Input          uiAllocSize    The number of bytes that were freed.
+@Return         PVRSRV_OK on success, else PVRSRV_ERROR_...
+******************************************************************************/
+PVRSRV_ERROR DevmemPhysHeapStatsDecr(SHARED_DEV_CONNECTION hDevConnection,
+                                     PVRSRV_PHYS_HEAP ePhysHeap,
+                                     IMG_DEVMEM_SIZE_T uiAllocSize);
+
+/******************************************************************************
+@Function       DevmemPhysHeapStatsGet
+@Description    Retrieves the number of bytes allocated by the process in a
+                particular heap.
+@Input          hDevConnection A connection object.
+@Input          ePhysHeap      The physheap to retrieve the stats from.
+@Output         puiAllocSize   The number of bytes that have been allocated.
+@Return         PVRSRV_OK on success, else PVRSRV_ERROR_...
+******************************************************************************/
+PVRSRV_ERROR DevmemPhysHeapStatsGet(SHARED_DEV_CONNECTION hDevConnection,
+                                    PVRSRV_PHYS_HEAP ePhysHeap,
+                                    IMG_DEVMEM_SIZE_T *puiAllocSize);
+#endif
 
 #endif /* DEVICEMEM_UTILS_H */

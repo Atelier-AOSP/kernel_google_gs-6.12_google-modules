@@ -12,8 +12,6 @@
 #include <linux/gpio/driver.h>
 #endif
 
-#include "max77779_usecase.h"
-
 #define MAX77779_COP_SENSE_RESISTOR_VAL 2 /* 2mOhm */
 #define MAX77779_COP_MAX_VALUE (0xffff * 1000 / MAX77779_COP_SENSE_RESISTOR_VAL)
 #define MAX77779_COP_WARN_THRESHOLD 105 /* Percentage */
@@ -24,14 +22,17 @@
 #define MAX77779_WCIN_EMA_ALPHA_THOUSANDTHS 400
 #define MAX77779_DC_ICL_STEP 25000
 
+#define MAX77779_WLC_SPOOF_VBYP_OF_STRING "max77779,wlc-spoof-vbyp"
+
 struct max77779_chgr_data {
 	struct device *dev;
+
+	struct delayed_work init_work;
 
 	/* Charger sub-IRQ routing for COP */
 	struct irq_domain	*domain;
 	uint32_t		mask;
 	uint32_t		mask_u;  /* pending updates */
-	uint32_t		trig_type;
 	struct mutex 		irq_lock;
 
 	struct power_supply *psy;
@@ -43,12 +44,10 @@ struct max77779_chgr_data {
 	struct regmap *regmap;
 
 	struct gvotable_election *mode_votable;
-	struct max77779_usecase_data uc_data;
-	struct delayed_work mode_rerun_work;
 
 	struct delayed_work check_fet_work;
-	struct delayed_work usecase_work;
 
+	bool wlcin_is_child;
 	struct gvotable_election *dc_icl_votable;
 	struct gvotable_election *dc_suspend_votable;
 	struct gvotable_election *wlc_spoof_votable;
@@ -56,6 +55,9 @@ struct max77779_chgr_data {
 	struct delayed_work cop_enable_work;
 	uint32_t cop_warn;
 	uint32_t cc_max;
+	int input_uv;
+	uint32_t orig_ilim;
+	struct mutex ilim_lock;
 
 	/* wcin inlim tracking */
 	struct delayed_work wcin_inlim_work;
@@ -68,6 +70,7 @@ struct max77779_chgr_data {
 	uint32_t wcin_inlim_debounce_thresh;
 	uint32_t wcin_soft_icl;
 	uint32_t wcin_inlim_en;
+	uint32_t wcin_inlim_avail;
 	uint32_t dc_icl;
 	int wcin_ema;
 	bool wcin_ema_disable;
@@ -82,8 +85,8 @@ struct max77779_chgr_data {
 	bool charge_done;
 	bool chgin_input_suspend;
 	bool wcin_input_suspend;
-	bool wlc_spoof;
 	bool thm2_sts;
+	bool cpm_exists;
 
 	int irq_gpio;
 	int irq_int;
@@ -100,9 +103,7 @@ struct max77779_chgr_data {
 
 	struct mutex io_lock;
 	struct mutex prot_lock;
-	struct mutex mode_lock;
 	bool init_complete;
-	struct wakeup_source *usecase_wake_lock;
 	//struct wakeup_source *inlim_wake_lock;
 
 	int fship_dtls;
@@ -119,6 +120,8 @@ struct max77779_chgr_data {
 	int chg_term_voltage;
 	int chg_term_volt_debounce;
 
+	bool msc_pwr_voter_active;
+
 	struct thermal_zone_device *chg_vs_thm2_tz;
 
 	/* control cv reporting in wlc inlim */
@@ -132,10 +135,10 @@ struct max77779_chgr_data {
 int max77779_charger_init(struct max77779_chgr_data *data);
 void max77779_charger_remove(struct max77779_chgr_data *data);
 bool max77779_chg_is_reg(struct device *dev, unsigned int reg);
-int max77779_get_usecase(struct max77779_foreach_cb_data *cb_data,
-			 struct max77779_usecase_data *uc_data);
+int max77779_wcin_is_online(struct max77779_chgr_data *data);
 #if IS_ENABLED(CONFIG_PM)
 int max77779_charger_pm_suspend(struct device *dev);
 int max77779_charger_pm_resume(struct device *dev);
 #endif
+int max77779_get_charge_enabled(struct max77779_chgr_data *data, int *enabled);
 #endif

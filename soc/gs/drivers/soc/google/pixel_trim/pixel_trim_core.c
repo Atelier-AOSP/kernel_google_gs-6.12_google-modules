@@ -10,6 +10,7 @@
 #include <linux/kthread.h>
 #include <linux/wait.h>
 #include <pixel_trim.h>
+#include "pixel_trim_core.h"
 #include "pixel_trim_sysfs.h"
 
 static cpumask_t trim_task_cpu_affinity;
@@ -67,7 +68,7 @@ EXPORT_SYMBOL_GPL(unregister_trim);
  * Success or failure of the trimming process depends on the implementation
  * of each registered 'trim' callback function.
  */
-void execute_trim(void)
+static void execute_trim(void)
 {
 	struct pixel_trim *trim;
 
@@ -76,7 +77,6 @@ void execute_trim(void)
 		trim->trim(trim->private);
 	mutex_unlock(&trim_lock);
 }
-EXPORT_SYMBOL_GPL(execute_trim);
 
 void run_trim(void)
 {
@@ -112,7 +112,7 @@ static int pixel_trim_thread(void *data)
 	return 0;
 }
 
-int __init pixel_trim_init(void)
+static int __init pixel_trim_init(void)
 {
 	int err;
 	struct task_struct *task;

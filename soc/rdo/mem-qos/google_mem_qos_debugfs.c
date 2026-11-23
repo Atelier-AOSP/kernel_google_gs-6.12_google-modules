@@ -4,6 +4,7 @@
 #include <linux/mutex.h>
 
 #include "google_mem_qos.h"
+#include "google_mem_qos_debugfs.h"
 
 static struct google_mem_qos_desc *mem_qos_desc;
 

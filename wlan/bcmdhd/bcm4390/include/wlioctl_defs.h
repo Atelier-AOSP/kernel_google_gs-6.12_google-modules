@@ -575,6 +575,9 @@ typedef uint32 ratespec_t;
 #define FIPS_ENABLED	0x0080
 #endif /* WLFIPS */
 
+#ifdef BCMWAPI_WPI
+#define SMS4_ENABLED		0x0100
+#endif /* BCMWAPI_WPI */
 
 /* wsec macros for operating on the above definitions */
 #ifdef WLWSEC
@@ -599,6 +602,11 @@ typedef uint32 ratespec_t;
 #define WSEC_CKIP_MIC_ENABLED(wsec)	((wsec) & CKIP_MIC_ENABLED)
 #define WSEC_CKIP_ENABLED(wsec)	((wsec) & (CKIP_KP_ENABLED|CKIP_MIC_ENABLED))
 
+#ifdef BCMWAPI_WPI
+#define WSEC_ENABLED(wsec) \
+	((wsec) & (WEP_ENABLED | TKIP_ENABLED | AES_ENABLED | CKIP_KP_ENABLED |	\
+	  CKIP_MIC_ENABLED | SMS4_ENABLED))
+#endif /* BCMWAPI_WPI */
 
 #ifndef BCMWAPI_WPI /* BCMWAPI_WPI */
 #define WSEC_ENABLED(wsec) \
@@ -607,6 +615,9 @@ typedef uint32 ratespec_t;
 #endif /* BCMWAPI_WPI */
 #else /* defined BCMCCX */
 
+#ifdef BCMWAPI_WPI
+#define WSEC_ENABLED(wsec)	((wsec) & (WEP_ENABLED | TKIP_ENABLED | AES_ENABLED | SMS4_ENABLED))
+#endif /* BCMWAPI_WPI */
 
 #ifndef BCMWAPI_WPI /* BCMWAPI_WPI */
 #define WSEC_ENABLED(wsec)	((wsec) & (WEP_ENABLED | TKIP_ENABLED | AES_ENABLED))
@@ -618,6 +629,9 @@ typedef uint32 ratespec_t;
 
 #define WSEC_SES_OW_ENABLED(wsec)	((wsec) & SES_OW_ENABLED)
 
+#ifdef BCMWAPI_WAI
+#define WSEC_SMS4_ENABLED(wsec)	((wsec) & SMS4_ENABLED)
+#endif /* BCMWAPI_WAI */
 
 /* Following macros are not used any more. Just kept here to
  * avoid build issue in BISON/CARIBOU branch
@@ -670,7 +684,7 @@ typedef uint32 ratespec_t;
 
 #ifdef MACOSX
 /* Macos limits ioctl maxlen for TX to 1864 and for RX to 2004 */
-#define WLC_IOCTL_MAXLEN            2000    /* "max" length ioctl buffer */
+#define WLC_IOCTL_MAXLEN            2000u    /* "max" length ioctl buffer */
 #else
 #define WLC_IOCTL_MAXLEN            8192u   /* "max" length ioctl buffer */
 #endif /* MACOSX */
@@ -2400,12 +2414,6 @@ typedef uint32 ratespec_t;
 #define WL_DFRTS_LOGIC_OR	1	/* OR all non-zero threshold conditions */
 #define WL_DFRTS_LOGIC_AND	2	/* AND all non-zero threshold conditions */
 
-/* Definitions for Reliable Multicast */
-#define WL_RELMCAST_MAX_CLIENT		32
-#define WL_RELMCAST_FLAG_INBLACKLIST	1
-#define WL_RELMCAST_FLAG_ACTIVEACKER	2
-#define WL_RELMCAST_FLAG_RELMCAST	4
-
 /* structures for proximity detection device role */
 #define WL_PROXD_MODE_DISABLE	0
 #define WL_PROXD_MODE_NEUTRAL	1
@@ -3141,6 +3149,16 @@ enum wlc_capext_eht_subfeature_bitpos {
 	WLC_CAPEXT_EHT_BITPOS_MAX
 };
 
+/* New SET2 Features cap bits should be added here */
+#define WLC_CAPEXT_FEATURE_SET2_BUCKET WLC_CAPEXT_FEATURE_SET1_MAX, \
+	WLC_CAPEXT_FEATURE_SET2_BUCKET_START		= 200, \
+	WLC_CAPEXT_FEATURE_BITPOS_CSI_DMA               = 201, \
+	WLC_CAPEXT_FEATURE_BITPOS_LPCAP                 = 202, \
+	WLC_CAPEXT_FEATURE_BITPOS_MRSNO_AP              = 203, \
+	WLC_CAPEXT_FEATURE_BITPOS_P2P2		        = 204, \
+	/* Add here */ \
+	WLC_CAPEXT_FEATURE_SET2_BUCKET_END
+
 /* WLC features bit positions in top level WLC feature id. Features mentioned below are reported */
 enum wlc_capext_feature_bitpos {
 	WLC_CAPEXT_FEATURE_BITPOS_AP			= 0,	/* feature with sub-features */
@@ -3308,7 +3326,13 @@ enum wlc_capext_feature_bitpos {
 	WLC_CAPEXT_FEATURE_BITPOS_MPF_SCAN		= 138,
 	WLC_CAPEXT_FEATURE_BITPOS_MRSNO			= 139,
 	WLC_CAPEXT_FEATURE_BITPOS_AOP_SCAN		= 140,
-
+	WLC_CAPEXT_FEATURE_BITPOS_TXSHAPER		= 141,
+	WLC_CAPEXT_FEATURE_BITPOS_SLIMEMLSR		= 142,
+	WLC_CAPEXT_FEATURE_BITPOS_SCF			= 143,
+	WLC_CAPEXT_FEATURE_BITPOS_AP_BCN_SSID_MITIGATE	= 144,
+	WLC_CAPEXT_FEATURE_BITPOS_SCAN_QUEUE_SUPPORT	= 145,
+	/* Please add SET2 features in WLC_CAPEXT_FEATURE_SET2_BUCKET */
+	WLC_CAPEXT_FEATURE_SET2_BUCKET,
 	WLC_CAPEXT_FEATURE_BITPOS_MAX
 };
 

@@ -28,7 +28,6 @@ struct tmu_test_data {
 	int read_dt_prop_ret;
 	int mock_dt_prop;
 	int parse_dt_ret;
-	int get_tzd_trip_ret;
 	int set_gov_param_ret;
 	int set_trip_temp_ret;
 	int set_trip_hyst_ret;
@@ -36,6 +35,7 @@ struct tmu_test_data {
 	int set_polling_delay_ret;
 	int set_gov_select_ret;
 	int get_trip_counter_ret;
+	int get_tzd_trip_ret;
 	int sm_init_ret;
 	int sm_read_trip_counter_ret;
 	unsigned long mock_gov_select;
@@ -45,6 +45,8 @@ struct tmu_test_data {
 	u8 trip_hyst_set_values[THERMAL_TMU_NR_TRIPS];
 	u8 trip_type_set_values[THERMAL_TMU_NR_TRIPS];
 	struct thermal_sm_trip_counter_data trip_counter_values;
+	int set_temp_state_table_len;
+	struct tmu_temp_state_st set_temp_state_table[THERMAL_TEMP_LUT_MAX_ENTRIES];
 };
 
 static struct thermal_trip mock_trips[THERMAL_TMU_NR_TRIPS] = {
@@ -178,11 +180,59 @@ int mock_msg_tmu_get_temp(u8 tz_id, u8 *temperature)
 	return tmu_test_data->get_temp_ret;
 }
 
-int mock_thermal_zone_get_trip(struct thermal_zone_device *tzd, int idx, struct thermal_trip *trip)
+int mock_msg_tmu_set_temp_lut(u8 tz_id, u8 temperature, u8 cdev_state, bool append)
 {
 	struct kunit *test = kunit_get_current_test();
 	struct tmu_test_data *tmu_test_data = test->priv;
-	int ret = __thermal_zone_get_trip(tzd, idx, trip);
+
+	if (append) {
+		int len = tmu_test_data->set_temp_state_table_len;
+
+		if (len == THERMAL_TEMP_LUT_MAX_ENTRIES)
+			return -ENOMEM;
+
+		/* unit test only, it does not maintain mononicity. */
+		tmu_test_data->set_temp_state_table[len].temp = temperature;
+		tmu_test_data->set_temp_state_table[len].state = cdev_state;
+		tmu_test_data->set_temp_state_table_len++;
+	} else {
+		memset(&tmu_test_data->set_temp_state_table[0], 0,
+			sizeof(struct tmu_temp_state_st)*THERMAL_TEMP_LUT_MAX_ENTRIES);
+		tmu_test_data->set_temp_state_table[0].temp = temperature;
+		tmu_test_data->set_temp_state_table[0].state = cdev_state;
+		tmu_test_data->set_temp_state_table_len = 1;
+	}
+
+	return 0;
+}
+
+int mock_msg_tmu_get_temp_lut(u8 tz_id, u8 index, u8 *temperature, u8 *cdev_state)
+{
+	struct kunit *test = kunit_get_current_test();
+	struct tmu_test_data *tmu_test_data = test->priv;
+
+	if (!temperature || !cdev_state)
+		return -EINVAL;
+
+	if (index >= tmu_test_data->set_temp_state_table_len) {
+		*temperature = 0;
+		*cdev_state = __UINT8_MAX__;
+		return 0;
+	}
+
+	*temperature = tmu_test_data->set_temp_state_table[index].temp;
+	*cdev_state = tmu_test_data->set_temp_state_table[index].state;
+
+	return 0;
+}
+
+int mock_thermal_zone_for_each_trip(struct thermal_zone_device *tzd,
+				    int (*cb)(struct thermal_trip *, void *),
+				    void *data)
+{
+	struct kunit *test = kunit_get_current_test();
+	struct tmu_test_data *tmu_test_data = test->priv;
+	int ret = thermal_zone_for_each_trip(tzd, cb, data);
 
 	if (tmu_test_data->get_tzd_trip_ret)
 		return tmu_test_data->get_tzd_trip_ret;
@@ -472,70 +522,60 @@ static void thermal_tmu_get_temp_test(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, temp, THERMAL_TEMP_INVALID);
 }
 
+struct thermal_tmu_set_trip_test_walk_data {
+	struct kunit *test;
+	int index;
+};
+
+static int thermal_tmu_set_trip_test_walk_cb(struct thermal_trip *trip, void *data)
+{
+	struct thermal_tmu_set_trip_test_walk_data * const twd = data;
+	struct kunit *test = twd->test;
+	struct tmu_test_data *tmu_test_data = test->priv;
+	struct thermal_zone_device *tzd = tmu_test_data->fake_tzd;
+	int trip_idx = twd->index;
+	int mock_trip_temp = 95000;
+
+	tmu_test_data->set_trip_temp_ret = 0;
+	// success
+	KUNIT_EXPECT_EQ_MSG(test,
+			    __thermal_tmu_set_trip_temp(tzd, trip, mock_trip_temp),
+			    0, "set_trip_temp: idx=%d", trip_idx);
+	for (int i = 0; i < THERMAL_TMU_NR_TRIPS; ++i) {
+		int valid_temp;
+
+		if (i == trip_idx) {
+			valid_temp = mock_trip_temp / MILLI;
+		} else {
+			valid_temp = mock_trips[i].temperature / MILLI;
+		}
+
+		KUNIT_EXPECT_EQ_MSG(test, tmu_test_data->trip_temp_set_values[i],
+				    valid_temp, "validate trip temp %d of test idx=%d",
+				    i, trip_idx);
+	}
+
+	// error thermal msg ret
+	tmu_test_data->set_trip_temp_ret = -ENODEV;
+	KUNIT_EXPECT_EQ_MSG(test,
+			    __thermal_tmu_set_trip_temp(tzd, trip, mock_trip_temp),
+			    -ENODEV, "set_trip_temp: idx=%d: thermal msg err", trip_idx);
+
+	twd->index++;
+	return 0;
+}
+
 static void thermal_tmu_set_trip_test(struct kunit *test)
 {
 	struct tmu_test_data *tmu_test_data = test->priv;
 	struct thermal_zone_device *tzd = tmu_test_data->fake_tzd;
-	int mock_trip_temp = 95000, mock_trip_hyst = 2000;
+	struct thermal_tmu_set_trip_test_walk_data twd = {
+		.test = test,
+	};
 
-	for (int trip_idx = 0; trip_idx < THERMAL_TMU_NR_TRIPS; ++trip_idx) {
-		tmu_test_data->get_tzd_trip_ret = 0;
-		tmu_test_data->set_trip_temp_ret = 0;
-		tmu_test_data->set_trip_hyst_ret = 0;
-		// success
-		KUNIT_EXPECT_EQ_MSG(test,
-				__thermal_tmu_set_trip_temp(tzd, trip_idx, mock_trip_temp),
-				0, "set_trip_temp: idx=%d", trip_idx);
-		KUNIT_EXPECT_EQ_MSG(test,
-				__thermal_tmu_set_trip_hyst(tzd, trip_idx, mock_trip_hyst),
-				0, "set_trip_hyst: idx=%d", trip_idx);
-		for (int i = 0; i < THERMAL_TMU_NR_TRIPS; ++i) {
-			int valid_temp, valid_hyst;
+	thermal_zone_for_each_trip(tzd, thermal_tmu_set_trip_test_walk_cb, &twd);
 
-			if (i == trip_idx) {
-				valid_temp = mock_trip_temp / MILLI;
-				valid_hyst = mock_trip_hyst / MILLI;
-			} else {
-				valid_temp = mock_trips[i].temperature / MILLI;
-				valid_hyst = mock_trips[i].hysteresis / MILLI;
-			}
-
-			KUNIT_EXPECT_EQ_MSG(test, tmu_test_data->trip_temp_set_values[i],
-					    valid_temp, "validate trip temp %d of test idx=%d",
-					    i, trip_idx);
-			KUNIT_EXPECT_EQ_MSG(test, tmu_test_data->trip_hyst_set_values[i],
-					    valid_hyst, "validate trip hyst %d of test idx=%d",
-					    i, trip_idx);
-		}
-
-		// error get tzd trip
-		tmu_test_data->get_tzd_trip_ret = -EINVAL;
-		KUNIT_EXPECT_EQ_MSG(test,
-				    __thermal_tmu_set_trip_temp(tzd, trip_idx, mock_trip_temp),
-				    -EINVAL, "set_trip_temp: idx=%d: get tzd err", trip_idx);
-		KUNIT_EXPECT_EQ_MSG(test,
-				    __thermal_tmu_set_trip_hyst(tzd, trip_idx, mock_trip_temp),
-				    -EINVAL, "set_trip_hyst: idx=%d: get tzd err", trip_idx);
-		tmu_test_data->get_tzd_trip_ret = 0;
-
-		// error thermal msg ret
-		tmu_test_data->set_trip_temp_ret = -ENODEV;
-		KUNIT_EXPECT_EQ_MSG(test,
-				    __thermal_tmu_set_trip_temp(tzd, trip_idx, mock_trip_temp),
-				    -ENODEV, "set_trip_temp: idx=%d: thermal msg err", trip_idx);
-		tmu_test_data->set_trip_hyst_ret = -ENODEV;
-		KUNIT_EXPECT_EQ_MSG(test,
-				    __thermal_tmu_set_trip_hyst(tzd, trip_idx, mock_trip_hyst),
-				    -ENODEV, "set_trip_hyst: idx=%d: thermal msg err", trip_idx);
-	}
-
-	// Invalid trip_id
-	KUNIT_EXPECT_EQ(test,
-			__thermal_tmu_set_trip_temp(tzd, THERMAL_TMU_NR_TRIPS, mock_trip_temp),
-			-EINVAL);
-	KUNIT_EXPECT_EQ(test,
-			__thermal_tmu_set_trip_hyst(tzd, THERMAL_TMU_NR_TRIPS, mock_trip_hyst),
-			-EINVAL);
+	// TODO: b/401000969 and b/411443456 unit test coverage check on for_each_trip
 }
 
 static void thermal_tmu_get_polling_delay_test(struct kunit *test)
@@ -781,7 +821,7 @@ static void thermal_tmu_offset_enable_test(struct kunit *test)
 
 	for (int i = 0; i < THERMAL_TMU_NR_TRIPS; ++i) {
 		mock_offsets[i] = (i + 1) * mock_offset_base;
-		__thermal_tmu_set_trip_temp(tzd, i, mock_trips[i].temperature);
+		__thermal_tmu_set_trip_temp(tzd, &tzd->trips[i].trip, mock_trips[i].temperature);
 	}
 
 	// invalid thermal sensor list
@@ -859,11 +899,6 @@ static void thermal_tmu_offset_enable_test(struct kunit *test)
 		KUNIT_EXPECT_EQ(test, valid_temp, tmu_test_data->trip_temp_set_values[i]);
 	}
 
-	// offset_enable: get_thermal_zone_trip error
-	tmu_test_data->get_tzd_trip_ret = -ENODEV;
-	KUNIT_EXPECT_EQ(test, __thermal_tmu_offset_enable(true), -ENODEV);
-	tmu_test_data->get_tzd_trip_ret = 0;
-
 	// offset_enable: set trip temp error
 	tmu_test_data->set_trip_temp_ret = -EINVAL;
 	KUNIT_EXPECT_EQ(test, __thermal_tmu_offset_enable(true), -EINVAL);
@@ -908,6 +943,268 @@ static void thermal_tmu_get_trip_counter_test(struct kunit *test)
 			-EOPNOTSUPP);
 }
 
+/**
+ * thermal_tmu_temp_lut_test
+ * Test cases for the following functions:
+ *	__thermal_tmu_gov_temp_lut_init
+ *	thermal_tmu_get_temp_state_table
+ */
+static void thermal_tmu_temp_lut_test(struct kunit *test)
+{
+	struct tmu_test_data *tmu_test_data = test->priv;
+	struct device *dev = tmu_test_data->fake_dev;
+	struct google_sensor_data *sensor = tmu_test_data->mock_sens_data;
+	struct tmu_sensor_data *tmu = sensor->sens_priv_data;
+	struct tmu_temp_state_st mock_temp_state_table[10];
+	int mock_table_len;
+
+	/* test for NULL parameters */
+	KUNIT_EXPECT_EQ(test, __thermal_tmu_gov_temp_lut_init(NULL, 0, NULL), -EINVAL);
+	KUNIT_EXPECT_EQ(test, __thermal_tmu_gov_temp_lut_init(NULL, 0, tmu), -EINVAL);
+	KUNIT_EXPECT_EQ(test, __thermal_tmu_gov_temp_lut_init(dev, 0, NULL), -EINVAL);
+
+	/* test for empty temp state table */
+	tmu->temp_state_table_len = 0;
+	tmu->temp_state_table = NULL;
+	set_bit(TMU_GOV_TEMP_LUT_SELECT, &tmu->gov_select);
+	KUNIT_EXPECT_EQ(test, __thermal_tmu_gov_temp_lut_init(dev, 0, tmu), 0);
+	KUNIT_EXPECT_TRUE(test, test_bit(TMU_GOV_TEMP_LUT_SELECT, &tmu->gov_select));
+	clear_bit(TMU_GOV_TEMP_LUT_SELECT, &tmu->gov_select);
+	KUNIT_EXPECT_EQ(test, __thermal_tmu_gov_temp_lut_init(dev, 0, tmu), 0);
+	KUNIT_EXPECT_FALSE(test, test_bit(TMU_GOV_TEMP_LUT_SELECT, &tmu->gov_select));
+
+	/* test for a valid temp state table */
+	tmu->temp_state_table_len = 2;
+	/* tmu->temp_state_table is devm_kfreed after calling
+	 * __thermal_tmu_gov_temp_lut_init and thermal_tmu_set_temp_state_table
+	 */
+	tmu->temp_state_table = devm_kcalloc(dev,
+		tmu->temp_state_table_len, sizeof(*tmu->temp_state_table), GFP_KERNEL);
+	if (!tmu->temp_state_table) {
+		KUNIT_FAIL(test, "Failed to allocate tmu->temp_state_table");
+		return;
+	}
+
+	tmu->temp_state_table[0].temp = 85;
+	tmu->temp_state_table[0].state = 0;
+	tmu->temp_state_table[1].temp = 255;
+	tmu->temp_state_table[1].state = 1;
+	KUNIT_EXPECT_EQ(test, __thermal_tmu_gov_temp_lut_init(dev, 0, tmu), 0);
+	KUNIT_EXPECT_EQ(test, tmu->temp_state_table_len, 0);
+	KUNIT_EXPECT_NULL(test, tmu->temp_state_table);
+	KUNIT_EXPECT_EQ(test, tmu_test_data->set_temp_state_table_len, 2);
+	KUNIT_EXPECT_EQ(test, tmu_test_data->set_temp_state_table[0].temp, 85);
+	KUNIT_EXPECT_EQ(test, tmu_test_data->set_temp_state_table[0].state, 0);
+	KUNIT_EXPECT_EQ(test, tmu_test_data->set_temp_state_table[1].temp, 255);
+	KUNIT_EXPECT_EQ(test, tmu_test_data->set_temp_state_table[1].state, 1);
+
+	/* test for NULL parameters */
+	KUNIT_EXPECT_EQ(test, thermal_tmu_get_temp_state_table(NULL, NULL, NULL), -EINVAL);
+	KUNIT_EXPECT_EQ(test, thermal_tmu_get_temp_state_table(sensor, NULL, NULL), -EINVAL);
+	KUNIT_EXPECT_EQ(test,
+		thermal_tmu_get_temp_state_table(sensor, &mock_temp_state_table[0], NULL), -EINVAL);
+	KUNIT_EXPECT_EQ(test,
+		thermal_tmu_get_temp_state_table(sensor, NULL, &mock_table_len), -EINVAL);
+
+	/* test for a valid table*/
+	memset(mock_temp_state_table, 0, sizeof(mock_temp_state_table));
+	mock_table_len = 0;
+	tmu_test_data->set_temp_state_table_len = 2;
+	tmu_test_data->set_temp_state_table[0].temp = 85;
+	tmu_test_data->set_temp_state_table[0].state = 0;
+	tmu_test_data->set_temp_state_table[1].temp = 255;
+	tmu_test_data->set_temp_state_table[1].state = 1;
+	KUNIT_EXPECT_EQ(test,
+		thermal_tmu_get_temp_state_table(sensor,
+			&mock_temp_state_table[0], &mock_table_len), 0);
+	KUNIT_EXPECT_EQ(test, mock_table_len, 2);
+	KUNIT_EXPECT_EQ(test, mock_temp_state_table[0].temp, 85);
+	KUNIT_EXPECT_EQ(test, mock_temp_state_table[0].state, 0);
+	KUNIT_EXPECT_EQ(test, mock_temp_state_table[1].temp, 255);
+	KUNIT_EXPECT_EQ(test, mock_temp_state_table[1].state, 1);
+	KUNIT_EXPECT_EQ(test, tmu->temp_state_table_len, 0);
+	KUNIT_EXPECT_NULL(test, tmu->temp_state_table);
+}
+
+/**
+ * thermal_tmu_temp_lut_debugfs_test
+ * Test cases for the following functions:
+ *	thermal_tmu_set_temp_state_table
+ */
+static void thermal_tmu_temp_lut_debugfs_test(struct kunit *test)
+{
+	struct tmu_test_data *tmu_test_data = test->priv;
+	struct google_sensor_data *sensor = tmu_test_data->mock_sens_data;
+	struct tmu_sensor_data *tmu = sensor->sens_priv_data;
+	struct tmu_temp_state_st mock_temp_state_table[10];
+
+	mock_temp_state_table[0].temp = 90;
+	mock_temp_state_table[0].state = 0;
+	mock_temp_state_table[1].temp = 125;
+	mock_temp_state_table[1].state = 1;
+	/* test for NULL parameters */
+	KUNIT_EXPECT_EQ(test, thermal_tmu_set_temp_state_table(NULL, NULL, 0), -EINVAL);
+	KUNIT_EXPECT_EQ(test, thermal_tmu_set_temp_state_table(sensor, NULL, 0), -EINVAL);
+	KUNIT_EXPECT_EQ(test, thermal_tmu_set_temp_state_table(
+		NULL, &mock_temp_state_table[0], 0), -EINVAL);
+	KUNIT_EXPECT_EQ(test, thermal_tmu_set_temp_state_table(
+		sensor, &mock_temp_state_table[0], THERMAL_TEMP_LUT_MAX_ENTRIES+1), -EINVAL);
+
+	/* test for a valid table*/
+	KUNIT_EXPECT_EQ(test, thermal_tmu_set_temp_state_table(
+		sensor, &mock_temp_state_table[0], 2), 0);
+	KUNIT_EXPECT_EQ(test, tmu->temp_state_table_len, 0);
+	KUNIT_EXPECT_NULL(test, tmu->temp_state_table);
+	KUNIT_EXPECT_EQ(test, tmu_test_data->set_temp_state_table_len, 2);
+	KUNIT_EXPECT_EQ(test, tmu_test_data->set_temp_state_table[0].temp, 90);
+	KUNIT_EXPECT_EQ(test, tmu_test_data->set_temp_state_table[0].state, 0);
+	KUNIT_EXPECT_EQ(test, tmu_test_data->set_temp_state_table[1].temp, 125);
+	KUNIT_EXPECT_EQ(test, tmu_test_data->set_temp_state_table[1].state, 1);
+}
+
+struct debugfs_temp_lut_test_case {
+	const char *msg;
+	const char *input;
+	const char *output;
+	int setter_ret;
+	uint8_t table_len;
+	uint8_t temp_table[THERMAL_TEMP_LUT_MAX_ENTRIES];
+	uint8_t state_table[THERMAL_TEMP_LUT_MAX_ENTRIES];
+};
+
+static const struct debugfs_temp_lut_test_case debugfs_temp_lut_test_case[] = {
+	{
+		.msg = "dbgfs lut: incomplete table",
+		.input = "70 0 80",
+		.setter_ret = -EINVAL,
+	},
+	{
+		.msg = "dbgfs lut: non-decimal",
+		.input = "abc def 80 2",
+		.setter_ret = -EINVAL,
+	},
+	{
+		.msg = "dbgfs lut: out of uint8_t range",
+		.input = "70 0 256 2",
+		.setter_ret = -ERANGE,
+	},
+	{
+		.msg = "dbgfs lut: valid table of len 6",
+		.input = "70 0 80 2 90 4 100 6 110 8 255 10",
+		.output = "70 0\n80 2\n90 4\n100 6\n110 8\n255 10\n",
+		.setter_ret = 33,
+		.table_len = 6,
+		.temp_table = {70, 80, 90, 100, 110, 255},
+		.state_table = {0, 2, 4, 6, 8, 10},
+	},
+	{
+		.msg = "dbgfs lut: valid table of len 2",
+		.input = "85 0 255 3",
+		.output = "85 0\n255 3\n",
+		.setter_ret = 10,
+		.table_len = 2,
+		.temp_table = {85, 255},
+		.state_table = {0, 3},
+	},
+	{
+		.msg = "dbgfs lut: valid table of max len 24",
+		.input = "10 0 20 1 30 2 40 3 50 4 60 5 70 6 80 7 90 8 "
+			"100 9 110 10 120 11 130 12 140 13 150 14 160 15 170 16 "
+			"180 17 190 18 200 19 210 20 220 21 230 22 240 23",
+		.output = "10 0\n20 1\n30 2\n40 3\n50 4\n60 5\n70 6\n80 7\n90 8\n"
+			"100 9\n110 10\n120 11\n130 12\n140 13\n150 14\n160 15\n170 16\n"
+			"180 17\n190 18\n200 19\n210 20\n220 21\n230 22\n240 23\n",
+		.setter_ret = 148,
+		.table_len = 24,
+		.temp_table = {10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140,
+			150, 160, 170, 180, 190, 200, 210, 220, 230, 240},
+		.state_table = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+			17, 18, 19, 20, 21, 22, 23},
+	},
+};
+
+/**
+ * thermal_tmu_debugfs_temp_state_table_test
+ * Test cases for the following functions:
+ *	__thermal_tmu_debugfs_temp_state_table_set
+ *	__thermal_tmu_debugfs_temp_state_table_get
+ */
+static void thermal_tmu_debugfs_temp_state_table_test(struct kunit *test)
+{
+	struct tmu_test_data *tmu_test_data = test->priv;
+	struct google_sensor_data *sensor = tmu_test_data->mock_sens_data;
+	char *write_buf, *read_buf;
+	ssize_t write_len = 0, read_len;
+
+	write_buf = kunit_kzalloc(test,
+			TMU_DEBUGFS_TEMP_STATE_TABLE_BUF_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, write_buf);
+	read_buf = kunit_kzalloc(test,
+			TMU_DEBUGFS_TEMP_STATE_TABLE_BUF_SIZE, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, read_buf);
+
+	/* test for NULL parameters */
+	KUNIT_EXPECT_EQ(test, __thermal_tmu_debugfs_temp_state_table_set(
+				NULL, write_buf, write_len), -EINVAL);
+	KUNIT_EXPECT_EQ(test, __thermal_tmu_debugfs_temp_state_table_set(
+				sensor, NULL, write_len), -EINVAL);
+
+	for (int i = 0; i < ARRAY_SIZE(debugfs_temp_lut_test_case); ++i) {
+		write_len = scnprintf(write_buf, TMU_DEBUGFS_TEMP_STATE_TABLE_BUF_SIZE,
+				debugfs_temp_lut_test_case[i].input);
+		/* test for setting the table */
+		read_len = __thermal_tmu_debugfs_temp_state_table_set(
+				sensor, write_buf, write_len);
+		KUNIT_EXPECT_EQ_MSG(test, read_len, debugfs_temp_lut_test_case[i].setter_ret,
+				debugfs_temp_lut_test_case[i].msg);
+		if (debugfs_temp_lut_test_case[i].setter_ret <= 0)
+			continue;
+
+		KUNIT_EXPECT_EQ_MSG(test, read_len, write_len,
+				debugfs_temp_lut_test_case[i].msg);
+		KUNIT_EXPECT_EQ_MSG(test, tmu_test_data->set_temp_state_table_len,
+				debugfs_temp_lut_test_case[i].table_len,
+				debugfs_temp_lut_test_case[i].msg);
+		for (int j = 0; j < debugfs_temp_lut_test_case[i].table_len; ++j) {
+			KUNIT_EXPECT_EQ_MSG(test,
+					tmu_test_data->set_temp_state_table[j].temp,
+					debugfs_temp_lut_test_case[i].temp_table[j],
+					debugfs_temp_lut_test_case[i].msg);
+			KUNIT_EXPECT_EQ_MSG(test,
+					tmu_test_data->set_temp_state_table[j].state,
+					debugfs_temp_lut_test_case[i].state_table[j],
+					debugfs_temp_lut_test_case[i].msg);
+		}
+
+		/* test for getting the table back */
+		memset(read_buf, 0, TMU_DEBUGFS_TEMP_STATE_TABLE_BUF_SIZE);
+		read_len = __thermal_tmu_debugfs_temp_state_table_get(
+				sensor, read_buf, TMU_DEBUGFS_TEMP_STATE_TABLE_BUF_SIZE);
+		KUNIT_EXPECT_EQ_MSG(test, read_len,
+				debugfs_temp_lut_test_case[i].setter_ret + 1,
+				debugfs_temp_lut_test_case[i].msg);
+		KUNIT_EXPECT_STREQ_MSG(test, read_buf,
+				debugfs_temp_lut_test_case[i].output,
+				debugfs_temp_lut_test_case[i].msg);
+	}
+
+	/* test for getting an empty table */
+	tmu_test_data->set_temp_state_table_len = 0;
+	memset(read_buf, 0, TMU_DEBUGFS_TEMP_STATE_TABLE_BUF_SIZE);
+	read_len = __thermal_tmu_debugfs_temp_state_table_get(
+			sensor, read_buf, TMU_DEBUGFS_TEMP_STATE_TABLE_BUF_SIZE);
+	KUNIT_ASSERT_EQ(test, read_len, 4);
+	KUNIT_EXPECT_STREQ(test, read_buf, "n/a\n");
+
+	/* test for invalid param */
+	KUNIT_EXPECT_EQ(test, __thermal_tmu_debugfs_temp_state_table_get(NULL, read_buf,
+				TMU_DEBUGFS_TEMP_STATE_TABLE_BUF_SIZE), -EINVAL);
+	KUNIT_EXPECT_EQ(test, __thermal_tmu_debugfs_temp_state_table_get(sensor, NULL,
+				TMU_DEBUGFS_TEMP_STATE_TABLE_BUF_SIZE), -EINVAL);
+	KUNIT_EXPECT_EQ(test, __thermal_tmu_debugfs_temp_state_table_get(sensor,
+				read_buf, 0), -EINVAL);
+}
+
 static struct kunit_case thermal_tmu_helper_test[] = {
 	KUNIT_CASE(thermal_tmu_read_dt_property_with_default_test),
 	KUNIT_CASE(thermal_tmu_gov_dt_parse_test),
@@ -921,9 +1218,12 @@ static struct kunit_case thermal_tmu_helper_test[] = {
 	KUNIT_CASE(thermal_tmu_get_polling_delay_test),
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	KUNIT_CASE(thermal_tmu_debugfs_test),
+	KUNIT_CASE(thermal_tmu_temp_lut_debugfs_test),
+	KUNIT_CASE(thermal_tmu_debugfs_temp_state_table_test),
 #endif /* CONFIG_DEBUG_FS */
 	KUNIT_CASE(thermal_tmu_offset_enable_test),
 	KUNIT_CASE(thermal_tmu_get_trip_counter_test),
+	KUNIT_CASE(thermal_tmu_temp_lut_test),
 	{},
 };
 
@@ -932,7 +1232,8 @@ static int mock_tzd_get_temp(struct thermal_zone_device *tzd, int *temp)
 	return 0;
 }
 
-static int mock_tzd_set_trip_val(struct thermal_zone_device *tzd, int trip_id, int val)
+static int mock_tzd_set_trip_val(struct thermal_zone_device *tzd, const struct thermal_trip *trip,
+				 int val)
 {
 	return 0;
 }
@@ -960,15 +1261,14 @@ static int thermal_tmu_test_init(struct kunit *test)
 
 static int thermal_tmu_test_suite_init(struct kunit_suite *suite)
 {
-	struct thermal_zone_device_ops *ops;
+	struct thermal_zone_device_ops ops = {
+		.get_temp = mock_tzd_get_temp,
+		.set_trip_temp = mock_tzd_set_trip_val,
+	};
 
-	ops = kzalloc(sizeof(*ops), GFP_KERNEL);
-	ops->get_temp = mock_tzd_get_temp;
-	ops->set_trip_temp = mock_tzd_set_trip_val;
-	ops->set_trip_hyst = mock_tzd_set_trip_val;
 	fake_tzd = thermal_zone_device_register_with_trips("mock_tmu-sensor", mock_trips,
-							   THERMAL_TMU_NR_TRIPS, 0, NULL,
-							   ops, NULL, 200, 200);
+							   THERMAL_TMU_NR_TRIPS, NULL,
+							   &ops, NULL, 200, 200);
 	fake_dev = root_device_register("mock_tmu-device");
 
 	return 0;

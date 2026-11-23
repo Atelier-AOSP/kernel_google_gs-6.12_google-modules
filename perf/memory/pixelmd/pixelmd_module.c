@@ -16,7 +16,7 @@ static int __init pixelmd_init(void)
 
 	ret = pixelmd_kswapd_register_hooks();
 	if (ret) {
-		pr_err("failed to register kswapd hooks: %d\n", ret);
+		pr_err("failed to register hooks: %d\n", ret);
 		return ret;
 	}
 
@@ -44,8 +44,8 @@ unregister_kswapd:
 
 static void __exit pixelmd_exit(void)
 {
-	pixelmd_lmkd_kill_unregister_hooks();
 	pixelmd_kswapd_unregister_hooks();
+	pixelmd_lmkd_kill_unregister_hooks();
 	pixelmd_device_destroy(&pixelmd_device);
 
 	pr_info("unloaded\n");

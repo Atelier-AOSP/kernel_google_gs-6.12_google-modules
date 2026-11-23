@@ -182,214 +182,27 @@ static ssize_t sampling_rate_store(struct device *dev,
 	return count;
 }
 
-static ssize_t thermal_residency_show(struct device *dev,
-				      struct device_attribute *devattr,
-				      char *buf)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct google_powerdashboard *pd = platform_get_drvdata(pdev);
-	ssize_t len = 0;
-	int i;
-
-	if (google_read_section(pd, PD_THERMAL))
-		return sysfs_emit(buf, "Read/Write Collision\n");
-
-	for (i = 0;
-	     i < powerdashboard_iface.attrs.thermal_throttle_names->count;
-	     ++i) {
-		len += sysfs_emit_at(buf, len, "thermal_throttle_level: %s\n",
-				     powerdashboard_iface.attrs
-					     .thermal_throttle_names->values[i]);
-		len += sysfs_emit_at(buf, len, "entry_count: %llu\n",
-				     powerdashboard_iface.sections
-					     .thermal_section
-					     ->thermal_residency[i]
-					     .entry_count);
-		len += sysfs_emit_at(buf, len, "time_in_state: %llu (us)\n",
-				     powerdashboard_iface.sections
-					     .thermal_section
-					     ->thermal_residency[i]
-					     .time_in_state);
-		len += sysfs_emit_at(buf, len, "\n");
-	}
-
-	return len;
-}
-
-static ssize_t thermal_tmss_show(struct device *dev,
-				 struct device_attribute *devattr, char *buf)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct google_powerdashboard *pd = platform_get_drvdata(pdev);
-	ssize_t len = 0;
-	int i, j;
-
-	if (google_read_section(pd, PD_THERMAL))
-		return sysfs_emit(buf, "Read/Write Collision\n");
-
-	for (i = 0; i < powerdashboard_constants.tmss_num_probes; ++i) {
-		for (j = 0; j < powerdashboard_constants.tmss_buff_size; ++j) {
-			len += sysfs_emit_at(
-				buf, len, "tmss[%d][%d]: %u\n", i, j,
-				powerdashboard_iface.sections.thermal_section
-					->tmss_data
-						[i * powerdashboard_constants
-								 .tmss_buff_size +
-						 j]);
-		}
-	}
-
-	return len;
-}
-
-static ssize_t platform_power_residency_show(struct device *dev,
-					     struct device_attribute *devattr,
-					     char *buf)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct google_powerdashboard *pd = platform_get_drvdata(pdev);
-	ssize_t len = 0;
-	int i;
-
-	if (google_read_section(pd, PD_PLATFORM_POWER))
-		return sysfs_emit(buf, "Read/Write Collision\n");
-
-	for (i = 0;
-	     i < powerdashboard_iface.attrs.platform_power_state_names->count;
-	     ++i) {
-		len += sysfs_emit_at(buf, len, "power_state: %s\n",
-				     powerdashboard_iface.attrs
-					     .platform_power_state_names
-					     ->values[i]);
-		len += sysfs_emit_at(buf, len, "entry_count: %llu\n",
-				     powerdashboard_iface.sections
-					     .platform_power_section
-					     ->plat_power_res[i]
-					     .entry_count);
-		len += sysfs_emit_at(
-			buf, len, "time_in_state_ms: %llu\n",
-			get_ms_from_ticks(powerdashboard_iface.sections
-						  .platform_power_section
-						  ->plat_power_res[i]
-						  .time_in_state));
-		len += sysfs_emit_at(buf, len,
-				     "last_entry_timestamp_ticks: %llu\n",
-				     powerdashboard_iface.sections
-					     .platform_power_section
-					     ->plat_power_res[i]
-					     .last_entry_ts);
-		len += sysfs_emit_at(buf, len,
-				     "last_exit_timestamp_ticks: %llu\n",
-				     powerdashboard_iface.sections
-					     .platform_power_section
-					     ->plat_power_res[i]
-					     .last_exit_ts);
-		len += sysfs_emit_at(buf, len, "\n");
-	}
-
-	return len;
-}
-
 static ssize_t platform_power_state_show(struct device *dev,
 					 struct device_attribute *devattr,
 					 char *buf)
 {
+	struct pd_platform_power_section *platform_power_section =
+		powerdashboard_iface.sections.platform_power_section;
+	const struct pd_attr_str *platform_power_state_names = powerdashboard_iface.attrs
+							       .platform_power_state_names;
 	struct platform_device *pdev = to_platform_device(dev);
 	struct google_powerdashboard *pd = platform_get_drvdata(pdev);
 
 	if (google_read_section(pd, PD_PLATFORM_POWER))
 		return sysfs_emit(buf, "Read/Write Collision\n");
 
-	return sysfs_emit(buf, "current_power_state: %s\n",
-			  powerdashboard_iface.attrs.platform_power_state_names
-				  ->values[powerdashboard_iface.sections
-						   .platform_power_section
-						   ->curr_power_state]);
-}
-
-static ssize_t rail_voltage_show(struct device *dev,
-				 struct device_attribute *devattr, char *buf)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct google_powerdashboard *pd = platform_get_drvdata(pdev);
-	ssize_t len = 0;
-	int i;
-
-	if (google_read_section(pd, PD_RAIL))
-		return sysfs_emit(buf, "Read/Write Collision\n");
-
-	for (i = 0; i < powerdashboard_iface.attrs.rail_names->count; ++i) {
-		len += sysfs_emit_at(buf, len, "rail_name: %s\n",
-				     powerdashboard_iface.attrs.rail_names
-					     ->values[i]);
-		len += sysfs_emit_at(buf, len, "current_voltage: %u\n",
-				     powerdashboard_iface.sections.rail_section
-					     ->curr_voltage[i]);
-	}
-
-	return len;
-}
-
-static ssize_t clavs_gpu_current_show(struct device *dev,
-				      struct device_attribute *devattr,
-				      char *buf)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct google_powerdashboard *pd = platform_get_drvdata(pdev);
-
-	if (google_read_section(pd, PD_CLAVS))
-		return sysfs_emit(buf, "Read/Write Collision\n");
-
-	return sysfs_emit(buf, "gpu_current: %u\n",
-			  powerdashboard_iface.sections.clavs_section
-				  ->gpu_current);
-}
-
-static ssize_t curr_volt_buck_ldo_show(struct device *dev,
-				       struct device_attribute *devattr,
-				       char *buf)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct google_powerdashboard *pd = platform_get_drvdata(pdev);
-	ssize_t len = 0;
-	int i;
-
-	if (google_read_section(pd, PD_CURR_VOLT))
-		return sysfs_emit(buf, "Read/Write Collision\n");
-
-	for (i = 0; i < powerdashboard_iface.attrs.bucks_ldo_names->count;
-	     ++i) {
-		len += sysfs_emit_at(buf, len, "buck_ldo_name: %s\n",
-				     powerdashboard_iface.attrs.bucks_ldo_names
-					     ->values[i]);
-		len += sysfs_emit_at(buf, len, "pre_ocp_count: %u\n",
-				     powerdashboard_iface.sections
-					     .curr_volt_section
-					     ->buck_ldo_data[i]
-					     .pre_ocp_count);
-		len += sysfs_emit_at(buf, len, "soft_ocp_count: %u\n",
-				     powerdashboard_iface.sections
-					     .curr_volt_section
-					     ->buck_ldo_data[i]
-					     .soft_ocp_count);
-	}
-
-	return len;
-}
-
-static ssize_t curr_volt_vsys_droop_count_show(struct device *dev,
-					       struct device_attribute *devattr,
-					       char *buf)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct google_powerdashboard *pd = platform_get_drvdata(pdev);
-
-	if (google_read_section(pd, PD_CURR_VOLT))
-		return sysfs_emit(buf, "Read/Write Collision\n");
-
-	return sysfs_emit(buf, "vsys_droop_count: %u\n",
-			  powerdashboard_iface.sections.curr_volt_section
-				  ->vsys_droop_count);
+	if (platform_power_section->curr_power_state < platform_power_state_names->count)
+		return sysfs_emit(buf, "current_power_state: %s\n",
+				  platform_power_state_names->values[platform_power_section
+								     ->curr_power_state]);
+	else
+		return sysfs_emit(buf, "current_power_state: %d\n",
+				  (u32)platform_power_section->curr_power_state);
 }
 
 static ssize_t apc_power_ppu_show(struct device *dev,
@@ -417,6 +230,10 @@ static ssize_t apc_power_ppu_show(struct device *dev,
 static ssize_t cpm_m55_power_show(struct device *dev,
 				  struct device_attribute *devattr, char *buf)
 {
+	struct pd_cpm_m55_power_section *cpm_section =
+		powerdashboard_iface.sections.cpm_m55_power_section;
+	const struct pd_attr_str *cpm_state_names = powerdashboard_iface.attrs
+						    .cpm_m55_power_state_names;
 	struct platform_device *pdev = to_platform_device(dev);
 	struct google_powerdashboard *pd = platform_get_drvdata(pdev);
 	ssize_t len = 0;
@@ -425,21 +242,20 @@ static ssize_t cpm_m55_power_show(struct device *dev,
 	if (google_read_section(pd, PD_CPM_M55))
 		return sysfs_emit(buf, "Read/Write Collision\n");
 
-	len += sysfs_emit(buf, "current power_state: %s\n",
-			  powerdashboard_iface.attrs.cpm_m55_power_state_names
-				  ->values[powerdashboard_iface.sections
-						   .cpm_m55_power_section
-						   ->current_state]);
+	if (cpm_section->current_state < cpm_state_names->count)
+		len += sysfs_emit(buf, "current power_state: %s\n",
+				  cpm_state_names->values[cpm_section->current_state]);
+	else
+		len += sysfs_emit(buf, "current power_state: %d\n",
+				  (u32)cpm_section->current_state);
 
-	for (i = 0;
-	     i < powerdashboard_iface.attrs.cpm_m55_power_state_names->count;
-	     ++i) {
+	for (i = 0; i < cpm_state_names->count; ++i) {
 		len += sysfs_emit_at(buf, len, "power_state: %s\n",
 				     powerdashboard_iface.attrs
 					     .cpm_m55_power_state_names
 					     ->values[i]);
 		len += sysfs_emit_at(buf, len, "entry_count: %llu\n",
-				     powerdashboard_iface.sections
+				     (u64)powerdashboard_iface.sections
 					     .cpm_m55_power_section
 					     ->power_state_res[i]
 					     .entry_count);
@@ -509,28 +325,14 @@ static ssize_t force_refresh_store(struct device *dev,
 #endif
 
 static DEVICE_ATTR_RW(sampling_rate);
-static DEVICE_ATTR_RO(thermal_residency);
-static DEVICE_ATTR_RO(thermal_tmss);
-static DEVICE_ATTR_RO(platform_power_residency);
 static DEVICE_ATTR_RO(platform_power_state);
-static DEVICE_ATTR_RO(rail_voltage);
-static DEVICE_ATTR_RO(clavs_gpu_current);
-static DEVICE_ATTR_RO(curr_volt_buck_ldo);
-static DEVICE_ATTR_RO(curr_volt_vsys_droop_count);
 static DEVICE_ATTR_RO(apc_power_ppu);
 static DEVICE_ATTR_RO(cpm_m55_power);
 static DEVICE_ATTR_WO(force_refresh);
 
 static struct attribute *google_powerdashboard_common_attrs[] = {
 	&dev_attr_sampling_rate.attr,
-	&dev_attr_thermal_residency.attr,
-	&dev_attr_thermal_tmss.attr,
-	&dev_attr_platform_power_residency.attr,
 	&dev_attr_platform_power_state.attr,
-	&dev_attr_rail_voltage.attr,
-	&dev_attr_clavs_gpu_current.attr,
-	&dev_attr_curr_volt_buck_ldo.attr,
-	&dev_attr_curr_volt_vsys_droop_count.attr,
 	&dev_attr_apc_power_ppu.attr,
 	&dev_attr_cpm_m55_power.attr,
 	&dev_attr_force_refresh.attr,
@@ -546,10 +348,14 @@ static struct attribute_group google_powerdashboard_sswrp_group = {
 static struct attribute_group google_powerdashboard_power_state_group = {
 	.attrs = google_powerdashboard_power_state_attrs,
 };
+static struct attribute_group google_powerdashboard_soc_specific_group = {
+	.attrs = google_powerdashboard_soc_specific_attrs,
+};
 static const struct attribute_group *google_powerdashboard_groups[] = {
 	&google_powerdashboard_common_group,
 	&google_powerdashboard_sswrp_group,
 	&google_powerdashboard_power_state_group,
+	&google_powerdashboard_soc_specific_group,
 	NULL
 };
 
@@ -568,10 +374,6 @@ static int google_powerdashboard_setup(struct google_powerdashboard *pd)
 
 	/* Get all section address */
 	for (i = 0; i < PD_SECTION_NUM; ++i) {
-#if !IS_ENABLED(CONFIG_POWER_STATE_BLOCKERS_SECTION)
-		if (i == PD_POWER_STATE_BLOCKERS)
-			continue;
-#endif
 		ret = google_powerdashboard_send_req(pd,
 						     POWER_DASH_GET_SECT_ADDR,
 						     i, 0, &resp_msg);
@@ -579,16 +381,19 @@ static int google_powerdashboard_setup(struct google_powerdashboard *pd)
 			return ret;
 		section_id = resp_msg.payload[1];
 		section_base = resp_msg.payload[2];
-		dev_info(pd->dev, "Get section_id: %d address: %d\n",
+		dev_info(pd->dev, "Get section_id: %d address: %u\n",
 			 section_id, section_base);
 
-		if (!section_base)
-			return -EINVAL;
-
+		/* Section that is not defined shouldn't
+		 * be used and should crash the system otherwise
+		 */
+		if (!section_base) {
+			continue;
+		}
 		powerdashboard_iface.sections.section_bases[section_id] =
 			devm_ioremap(pd->dev, section_base,
-				     powerdashboard_iface.sections
-					     .section_sizes[section_id]);
+						 powerdashboard_iface.sections
+							.section_sizes[section_id]);
 		if (!powerdashboard_iface.sections.section_bases[section_id])
 			return -EINVAL;
 	}
@@ -660,7 +465,7 @@ static int google_powerdashboard_parse_dt(struct device *dev,
 
 	if (of_property_read_u32(np, "mba-dest-channel", &pd->remote_ch)) {
 		dev_err(dev, "Failed to read mba-dest-channel. Defaulting to CPM_AP_NS_POWER_DASH_MB_SERVICE = %d\n",
-			CPM_AP_NS_POWER_DASH_MB_SERVICE);
+						CPM_AP_NS_POWER_DASH_MB_SERVICE);
 		pd->remote_ch = CPM_AP_NS_POWER_DASH_MB_SERVICE;
 	}
 
@@ -738,6 +543,9 @@ static int google_powerdashboard_probe(struct platform_device *pdev)
 	struct google_powerdashboard *pd;
 	int ret;
 
+	if (!plat_dvfs_helper_ready())
+		return -EPROBE_DEFER;
+
 	pd = devm_kzalloc(dev, sizeof(*pd), GFP_KERNEL);
 	if (!pd)
 		return -ENOMEM;
@@ -765,13 +573,11 @@ free_mba:
 	return ret;
 }
 
-static int google_powerdashboard_remove(struct platform_device *pdev)
+static void google_powerdashboard_remove(struct platform_device *pdev)
 {
 	struct google_powerdashboard *pd = platform_get_drvdata(pdev);
 
 	google_powerdashboard_mbox_free(pd);
-
-	return 0;
 }
 
 static const struct of_device_id google_powerdashboard_of_match_table[] = {
@@ -792,6 +598,6 @@ static struct platform_driver google_powerdashboard_driver = {
 };
 module_platform_driver(google_powerdashboard_driver);
 
-MODULE_AUTHOR("Konrad Korczynski <kkorczynski@google.com>");
+MODULE_AUTHOR("Konrad Korczynski");
 MODULE_DESCRIPTION("Google power dashboard driver");
 MODULE_LICENSE("GPL");

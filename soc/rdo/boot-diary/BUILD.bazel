@@ -2,12 +2,18 @@
 
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 filegroup(
     name = "google_boot_diary.kconfig",
     srcs = [
         "Kconfig",
     ],
     visibility = [
+        "//private/devices/google:__subpackages__",
         "//private/google-modules/soc/rdo:__subpackages__",
     ],
 )
@@ -24,9 +30,6 @@ ddk_module(
         },
     },
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
     ],

@@ -29,6 +29,7 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
+#include <misc/gvotable.h>
 #include "gbms_power_supply.h"
 #include "google_bms.h"
 #include "google_psy.h"
@@ -173,7 +174,7 @@ static int dock_has_dc_in(struct dock_drv *dock)
 	int ret;
 
 	if (!dock->dc_psy) {
-		dock->dc_psy = power_supply_get_by_name("dc");
+		dock->dc_psy = power_supply_get_by_name(GOOGLE_WLCIN_MAINS_NAME);
 		if (!dock->dc_psy)
 			return -EINVAL;
 	}
@@ -673,12 +674,12 @@ static int google_dock_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int google_dock_remove(struct platform_device *pdev)
+static void google_dock_remove(struct platform_device *pdev)
 {
 	struct dock_drv *dock = platform_get_drvdata(pdev);
 
 	if (!dock)
-		return 0;
+		return;
 
 	power_supply_unreg_notifier(&dock->nb);
 	cancel_delayed_work(&dock->init_work);
@@ -687,8 +688,6 @@ static int google_dock_remove(struct platform_device *pdev)
 	alarm_try_to_cancel(&dock->icl_ramp_alarm);
 	cancel_delayed_work(&dock->detect_work);
 	wakeup_source_unregister(dock->detect_ws);
-
-	return 0;
 }
 
 static void google_dock_shutdown(struct platform_device *pdev)

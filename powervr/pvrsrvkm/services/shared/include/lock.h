@@ -261,6 +261,7 @@ void OSLockRelease(POS_LOCK hLock);
 IMG_INTERNAL
 IMG_BOOL OSLockIsLocked(POS_LOCK hLock);
 
+/*! Assert that ensures the given OS lock is held */
 #define OSLockHeldAssert(hLock) PVR_ASSERT(OSLockIsLocked((hLock)) == IMG_TRUE)
 
 #if defined(__linux__)
@@ -382,6 +383,16 @@ static inline IMG_INT32 OSAtomicAdd(ATOMIC_T *pCounter, IMG_INT32 incr)
 
 #define OSAtomicSubtract(pCounter, incr) OSAtomicAdd(pCounter, -(incr))
 #define OSAtomicSubtractUnless(pCounter, incr, test) OSAtomicAddUnless(pCounter, -(incr), test)
+
+static inline IMG_UINT64 OSAtomicU64Add(ATOMIC_U64_T *pCounter, IMG_UINT64 ui64Incr)
+{
+	return atomic_fetch_add((&(pCounter)->counter), ui64Incr) + ui64Incr;
+}
+
+static inline IMG_UINT64 OSAtomicU64Subtract(ATOMIC_U64_T *pCounter, IMG_UINT64 ui64Decr)
+{
+	return atomic_fetch_sub((&(pCounter)->counter), ui64Decr) - ui64Decr;
+}
 
 #else
 
@@ -555,6 +566,24 @@ typedef unsigned long OS_SPINLOCK_FLAGS;
 #define OSSpinLockAcquire(pLock, flags) {flags = 0; OSLockAcquire(pLock);}
 /*! Wrapper for OSLockRelease() */
 #define OSSpinLockRelease(pLock, flags) {flags = 0; OSLockRelease(pLock);}
+
+/*************************************************************************/ /*!
+@Function       OSAtomicU64Add
+@Description    Add a 64-bit unsigned value to a unsigned 64-bit atomic
+@Input          pCounter        The atomic variable to be updated
+@Input          ui64Incr        The value to add
+@Return         The new value of *pCounter.
+*/ /**************************************************************************/
+IMG_UINT64 OSAtomicU64Add(ATOMIC_U64_T *pCounter, IMG_UINT64 ui64Incr);
+
+/*************************************************************************/ /*!
+@Function       OSAtomicU64Subtract
+@Description    Subtract a 64-bit unsigned value to a unsigned 64-bit atomic
+@Input          pCounter        The atomic variable to be updated
+@Input          ui64Decr        The value to subtract
+@Return         The new value of *pCounter.
+*/ /**************************************************************************/
+IMG_UINT64 OSAtomicU64Subtract(ATOMIC_U64_T *pCounter, IMG_UINT64 ui64Decr);
 
 #endif /* defined(__linux__) */
 #endif /* defined(__linux__) && defined(__KERNEL__) */

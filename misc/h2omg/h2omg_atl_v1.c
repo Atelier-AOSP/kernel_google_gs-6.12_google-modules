@@ -73,6 +73,9 @@
 #define FLD_ACMP_NONINV_IP GENMASK(1, 0)
 #define FLD_ACMP_GAIN   GENMASK(3, 2)
 
+#define REG_ACMP2_VREFH 0x9402
+#define ACMP2_VREFH_DIV4 0x1a
+
 #define REG_MF16_CTRL_DATA1 0x6102
 #define REG_CMO34 0x2022
 #define REG_CMO96 0x2060
@@ -145,19 +148,21 @@ static int h2omg_atl_v1_update_timing_regs(struct h2omg_info *info)
 		{ REG_MF22_CTRL_DATA, MF22_CTRL_DATA_30MS },
 		{ REG_MF20_CTRL_DATA, MF20_CTRL_DATA_89S },
 		{ REG_MF20_CONF1, MF20_CONF1_65536 },
+		{ REG_ACMP2_VREFH, ACMP2_VREFH_DIV4 },
 	};
+	size_t update_rows = (info->vref_div) ? ARRAY_SIZE(timings) : ARRAY_SIZE(timings) - 1;
 
 	/* only update shipping version */
 	if (info->revision < REVISION_REL)
 		return 0;
 
-	return h2omg_update_regs(info, timings, ARRAY_SIZE(timings));
+	return h2omg_update_regs(info, timings, update_rows);
 }
 
 /* configure chip to trigger either when either sensor is wet (SINGLE_TRIGGER)
  * or only when both sensors get wet at the same time (to the resolution of the chip)
  */
-int h2omg_atl_v1_set_trigger_state(struct h2omg_info *info, enum h2omg_trigger_state state)
+static int h2omg_atl_v1_set_trigger_state(struct h2omg_info *info, enum h2omg_trigger_state state)
 {
 	struct regmap *regmap = info->regmap;
 	int err;
@@ -538,6 +543,9 @@ static int h2omg_atl_v1_sensor_acmp_get(struct h2omg_info *info,
 		return err;
 	msleep(RESET_DELAY_MS);
 	err = h2omg_atl_v1_control_set(info, ctrl);
+	if (err)
+		return err;
+	err = h2omg_atl_v1_update_timing_regs(info);
 	if (err)
 		return err;
 
@@ -932,6 +940,7 @@ static const struct regmap_range h2omg_read_range[] = {
 	regmap_reg_range(REG_MF17_CTRL_DATA, REG_MF17_CTRL_DATA),
 	regmap_reg_range(REG_MF18_CTRL_DATA, REG_MF18_CTRL_DATA),
 	regmap_reg_range(REG_MF19_CTRL_DATA, REG_MF19_CTRL_DATA),
+	regmap_reg_range(REG_ACMP2_VREFH, REG_ACMP2_VREFH),
 
 };
 
@@ -953,6 +962,7 @@ static const struct regmap_range h2omg_write_range[] = {
 	regmap_reg_range(REG_MF17_CTRL_DATA, REG_MF17_CTRL_DATA),
 	regmap_reg_range(REG_MF18_CTRL_DATA, REG_MF18_CTRL_DATA),
 	regmap_reg_range(REG_MF19_CTRL_DATA, REG_MF19_CTRL_DATA),
+	regmap_reg_range(REG_ACMP2_VREFH, REG_ACMP2_VREFH),
 };
 
 static const struct regmap_access_table h2omg_write_table = {
@@ -963,7 +973,7 @@ static const struct regmap_access_table h2omg_write_table = {
 static const struct regmap_config h2omg_regmap_config = {
 	.reg_bits = 16,
 	.val_bits = 8,
-	.max_register = 0x9300,
+	.max_register = 0x9402,
 	.wr_table = &h2omg_write_table,
 	.rd_table = &h2omg_read_table,
 };

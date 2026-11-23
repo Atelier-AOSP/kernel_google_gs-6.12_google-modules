@@ -104,11 +104,6 @@ config QUEUE_DDIC_CMD_CALL_BACK
 	  This will enable sending a notification to exynos panel
 	  when a command is queued on dsim driver.
 
-config DRM_LEGACY
-	bool "drm legacy"
-	help
-	  drm legacy
-
 config DRM_SAMSUNG_CAL_9845
 	bool "cal 9845"
 	help

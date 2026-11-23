@@ -12,7 +12,7 @@
 #include "g2d_sc_hw.h"
 #include "g2d_trace.h"
 #include "g2d_writeback.h"
-#include "vs_g2d_reg_sc.h"
+#include "g2d_registers.h"
 
 #define SW_RESET_INTERVAL_US 1000
 #define SW_RESET_TIMEOUT_US 10000

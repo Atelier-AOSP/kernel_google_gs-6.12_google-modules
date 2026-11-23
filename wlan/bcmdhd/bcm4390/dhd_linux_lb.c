@@ -1151,7 +1151,6 @@ dhd_napi_poll(struct napi_struct *napi, int budget)
 	unsigned long flags;
 	struct dhd_info *dhd;
 	int processed = 0;
-	int dpc_cpu;
 #ifdef DHD_LB_STATS
 	uint32 napi_latency;
 #endif /* DHD_LB_STATS */
@@ -1193,21 +1192,6 @@ dhd_napi_poll(struct napi_struct *napi, int budget)
 		processed++;
 	}
 
-	if (atomic_read(&dhd->pub.lb_rxp_flow_ctrl) &&
-		(dhd_lb_rxp_process_qlen(&dhd->pub) <= dhd->pub.lb_rxp_strt_thr)) {
-		/*
-		 * If the dpc CPU is online Schedule dhd_dpc_dispatcher_work on the dpc cpu which
-		 * in turn will schedule dpc tasklet. Else schedule dpc takslet.
-		 */
-		get_cpu();
-		dpc_cpu = atomic_read(&dhd->dpc_cpu);
-		if (!cpu_online(dpc_cpu)) {
-			dhd_tasklet_schedule(&dhd->tasklet);
-		} else {
-			dhd_delayed_work_schedule_on(&dhd->dhd_dpc_dispatcher_work, dpc_cpu, 0);
-		}
-		put_cpu();
-	}
 	DHD_LB_STATS_UPDATE_NAPI_HISTO(&dhd->pub, processed);
 
 	DHD_INFO(("%s processed %d\n", __FUNCTION__, processed));

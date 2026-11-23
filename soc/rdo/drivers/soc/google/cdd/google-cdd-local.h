@@ -7,7 +7,6 @@
 #ifndef GOOGLE_CDD_LOCAL_H
 #define GOOGLE_CDD_LOCAL_H
 #include <linux/device.h>
-#include <linux/platform_device.h>
 #include <soc/google/google-cdd-log.h>
 
 struct google_cdd_param {
@@ -57,9 +56,7 @@ struct google_cdd_ctx {
 	bool long_press_power;
 	int panic_action;
 	unsigned int reset_reason;
-
-	/* other module handles */
-	struct platform_device *ufs_pdev;
+	void __iomem *apc_wdt_sub_reason;
 };
 
 struct google_cdd_dpm_feature {
@@ -91,6 +88,7 @@ void google_cdd_init_log(void);
 void google_cdd_init_utils(struct device *dev);
 void google_cdd_start_log(struct device *dev);
 void __iomem *google_cdd_get_header_vaddr(void);
+unsigned long google_cdd_get_header_paddr(void);
 void google_cdd_print_log_report(void);
 struct google_cdd_item *google_cdd_get_item_by_index(int index);
 int google_cdd_get_num_items(void);
@@ -151,11 +149,13 @@ extern struct google_cdd_log_misc cdd_log_misc;
 #define CDD_OFFSET_CORE_HARDLOCKUP_MAGIC(n)	(0x1F8 + (0x4 * (n))) /* n=8 */
 #define CDD_OFFSET_SYSTEM_STATUS		(0x218) /* uint32_t system_status[32] */
 #define CDD_OFFSET_CORE_FIQ_PENDING		(0x298)
-/* 0x98 bytes unused, next free: offset 0x29C */
+#define CDD_OFFSET_WDT_PET_TIME_IDX		(0x29C)
+#define CDD_OFFSET_WDT_PET_TIME_STAT(n)		(0x2A0 + (0x10 * (n))) /* n=4 */
+#define CDD_WDT_PET_TIME_STAT_NUM		(4)
+/* 0x54 bytes unused, next free: offset 0x2E0 */
 #define CDD_OFFSET_PCSR				(0x334)
 #define CDD_OFFSET_MEM_PROTECT_REASON		(0x534)
-#define CDD_OFFSET_APC_WDT_SUB_REASON		(0x538)
-/* 0x4 bytes unused, next free: offset 0x540 */
+/* 0xB bytes unused, next free: offset 0x538 */
 #define CDD_OFFSET_MAIN_PMIC_REASON		(0x544)
 #define CDD_OFFSET_SUB_PMIC_REASON		(0x548)
 #define CDD_OFFSET_CORE_PMU_VAL			(0x54C)

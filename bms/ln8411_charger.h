@@ -50,6 +50,8 @@ struct ln8411_platform_data {
 	u32		wcrx_vol_up_step;
 	u32		wcrx_vol_down_step;
 	u32		max_cal_power;
+	bool		higher_ocp;
+	u32		burst_threshold;
 
 #if IS_ENABLED(CONFIG_THERMAL)
 	const char *usb_tz_name;
@@ -193,6 +195,7 @@ struct ln8411_charger {
 	struct device		*dev;
 	struct regmap		*regmap;
 	struct power_supply	*mains;
+	struct power_supply	*wcin_psy;
 
 	struct workqueue_struct	*dc_wq;
 	struct delayed_work	timer_work;
@@ -203,7 +206,6 @@ struct ln8411_charger {
 	bool			mains_online;
 	u32 			charging_state;
 	u32			ret_state;
-	u32			ret_timer_id;
 
 	u32			iin_cc;
 	u32			power;
@@ -236,7 +238,6 @@ struct ln8411_charger {
 	enum ln8411_error	error;
 	s32			retry_cnt;
 	s32			eagain_retry_cnt;
-	u8			eagain_debounce_cnt;
 	s32			low_batt_retry_cnt;
 	u8			wlc_rx_vol_retry_cnt;
 
@@ -286,7 +287,6 @@ struct ln8411_charger {
 	u32			debug_address;
 	s32			debug_adc_channel;
 
-
 	u32			wlc_ramp_out_iin_target;
 	u32 			wlc_ramp_out_delay;
 	u32 			wlc_ramp_out_vout_target;
@@ -319,6 +319,7 @@ struct ln8411_charger {
 	u32			power_stable_cnt_goal;
 	u32			wcrx_vol_delay;
 	bool			maintain_fv_cc_max;
+	bool			wlc_no_ramp_down;
 };
 
 /* Direct Charging State */

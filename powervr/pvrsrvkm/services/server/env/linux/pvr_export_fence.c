@@ -90,10 +90,9 @@ enum export_fence_update_resolve_state {
 
 struct pvr_exp_fence_context {
 	struct kref kref;
-	unsigned int context;
 	char context_name[32];
 	char driver_name[32];
-	atomic_t seqno;
+	atomic_t hwperf_seqno;
 	atomic_t fence_count;
 
 	void *cmd_complete_handle;
@@ -107,6 +106,8 @@ struct pvr_exp_fence_context {
 struct pvr_exp_fence {
 	struct dma_fence base;
 	struct pvr_exp_fence_context *fence_context;
+	/* dma_fence context, needs to be unique for each fence */
+	u64 context;
 	PSYNC_CHECKPOINT checkpoint_handle;
 	/* Resolve state of the export fence */
 	atomic_t resolve_state;
@@ -211,10 +212,10 @@ const char *pvr_exp_fence_context_name(struct pvr_exp_fence_context *fctx)
 	return fctx->context_name;
 }
 
-void pvr_exp_fence_context_value_str(struct pvr_exp_fence_context *fctx,
+static inline void pvr_exp_fence_context_value_str(struct pvr_exp_fence_context *fctx,
 				    char *str, int size)
 {
-	snprintf(str, size, "%d", atomic_read(&fctx->seqno));
+	snprintf(str, size, "%d", atomic_read(&fctx->hwperf_seqno));
 }
 
 static void
@@ -233,10 +234,10 @@ pvr_exp_fence_context_fences_dump(struct pvr_exp_fence_context *fctx,
 }
 
 static inline unsigned
-pvr_exp_fence_context_seqno_next(struct pvr_exp_fence_context *fence_context)
+pvr_exp_fence_context_hwperf_seqno_next(struct pvr_exp_fence_context *fence_context)
 {
 	if (fence_context)
-		return atomic_inc_return(&fence_context->seqno) - 1;
+		return atomic_inc_return(&fence_context->hwperf_seqno) - 1;
 	else
 		return 0xfeedface;
 }
@@ -415,12 +416,11 @@ pvr_exp_fence_context_create(const char *context_name, const char *driver_name)
 	if (!fence_context)
 		return NULL;
 
-	fence_context->context = dma_fence_context_alloc(1);
 	OSStringSafeCopy(fence_context->context_name, context_name,
 		sizeof(fence_context->context_name));
 	OSStringSafeCopy(fence_context->driver_name, driver_name,
 		sizeof(fence_context->driver_name));
-	atomic_set(&fence_context->seqno, 0);
+	atomic_set(&fence_context->hwperf_seqno, 0);
 	atomic_set(&fence_context->fence_count, 0);
 	kref_init(&fence_context->kref);
 
@@ -453,7 +453,7 @@ pvr_exp_fence_create(struct pvr_exp_fence_context *fence_context, int fd, u64 *s
 {
 	struct pvr_exp_fence *pvr_exp_fence;
 	unsigned long flags;
-	unsigned int seqno;
+	unsigned int hwperf_seqno;
 	struct pvr_exp_fence_context *pfence_context = fence_context;
 
 	if (WARN_ON(!fence_context))
@@ -470,6 +470,7 @@ pvr_exp_fence_create(struct pvr_exp_fence_context *fence_context, int fd, u64 *s
 
 	atomic_inc(&pfence_context->fence_count);
 	kref_get(&pfence_context->kref);
+	pvr_exp_fence->context = dma_fence_context_alloc(1);
 	pvr_exp_fence->fd = fd;
 	pvr_exp_fence->fence_context = pfence_context;
 
@@ -477,18 +478,24 @@ pvr_exp_fence_create(struct pvr_exp_fence_context *fence_context, int fd, u64 *s
 	pvr_exp_fence->checkpoint_handle = NULL;
 	pvr_exp_fence_set_state(pvr_exp_fence, EXPORT_FENCE_UPDATE_RESOLVE_STATE_CREATED);
 
-	seqno = pvr_exp_fence_context_seqno_next(pfence_context);
+	/* Since context moved to the fence this is no longer used by the dma fence
+	 * but it's still used for HWPerf events to show per PVR context fence
+	 * "progression". */
+	hwperf_seqno = pvr_exp_fence_context_hwperf_seqno_next(pfence_context);
 
 	pvr_exp_fence->fence = &pvr_exp_fence->base;
 
+	/* Each fence gets a new dma_fence context (pvr_exp_fence::context) therefore
+	 * the `seqno` is always 0 since no other fence will be created against
+	 * that context. */
 	dma_fence_init(&pvr_exp_fence->base, &pvr_exp_fence_ops,
-		       &pvr_exp_fence->lock, pfence_context->context, seqno);
+	               &pvr_exp_fence->lock, pvr_exp_fence->context, 0);
 
 	spin_lock_irqsave(&fence_context->list_lock, flags);
 	list_add_tail(&pvr_exp_fence->fence_head, &fence_context->fence_list);
 	spin_unlock_irqrestore(&fence_context->list_lock, flags);
 
-	*sync_pt_idx = seqno;
+	*sync_pt_idx = hwperf_seqno;
 
 	return &pvr_exp_fence->base;
 }
@@ -574,7 +581,7 @@ pvr_exp_fence_assign_checkpoint(PVRSRV_FENCE fence_to_resolve,
 		pvr_exp_fence_set_state(pvr_exp_fence,
 		                        EXPORT_FENCE_UPDATE_RESOLVE_STATE_RESOLVED);
 	} else {
-		pr_err("%s: Invalid fence_to_resolve\n", __func__);
+		pr_err("%s: Invalid fence state: %u\n", __func__, prev_update_state);
 		err = PVRSRV_ERROR_INVALID_PARAMS;
 		spin_unlock_irqrestore(&pvr_exp_fence->lock, flags);
 		goto out;

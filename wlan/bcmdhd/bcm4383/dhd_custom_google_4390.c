@@ -44,6 +44,7 @@
 #endif /* CONFIG_WIFI_CONTROL_FUNC */
 #include <dhd_dbg.h>
 #include <dhd.h>
+#include <dhd_linux_wq.h>
 
 #if IS_ENABLED(CONFIG_SOC_GOOGLE)
 #if IS_ENABLED(CONFIG_PCI_EXYNOS_GS)
@@ -69,6 +70,7 @@
 #include <net/mac80211.h>
 #include <dhd_linux_priv.h>
 #include "wl_cfg80211.h"
+#include "wl_cfgscan.h"
 #include "bcmwifi_rates.h"
 #endif /* DHD_ART */
 #ifdef WONDERTAP
@@ -159,6 +161,9 @@ static bool is_plat_pcie_resume = FALSE;
 
 uint affinity_big_core;
 uint affinity_small_core;
+
+extern dhd_pub_t *g_dhd_pub;
+
 #if IS_ENABLED(CONFIG_PCI_EXYNOS_GS)
 extern int exynos_pcie_register_event(struct exynos_pcie_register_event *reg);
 extern int exynos_pcie_deregister_event(struct exynos_pcie_register_event *reg);
@@ -180,7 +185,7 @@ extern void exynos_pcie_set_skip_config(int ch_num, bool val);
 #endif /* DHD_TREAT_D3ACKTO_AS_LINKDWN */
 #endif /* CONFIG_PCI_EXYNOS_GS */
 
-#if IS_ENABLED(CONFIG_SOC_LGA)
+#if IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU)
 extern void google_pcie_dump_debug(int num);
 #endif /* CONFIG_SOC_LGA */
 
@@ -961,8 +966,6 @@ dhd_wifi_init_gpio(void)
 		}
 	}
 
-	dhd_goog_pwrctrl_set_ready(true);
-
 	DHD_PRINT(("%s: WL_REG_ON is pulled up\n", __func__));
 
 	/* Wait for WIFI_TURNON_DELAY due to power stability */
@@ -989,6 +992,9 @@ dhd_wifi_init_gpio(void)
 
 	wlan_host_wake_irq = gpio_to_irq(wlan_host_wake_up);
 #endif /* CONFIG_BCMDHD_OOB_HOST_WAKE */
+
+	dhd_goog_pwrctrl_set_ready(true);
+
 	return 0;
 }
 
@@ -1125,6 +1131,8 @@ module_param(dhd_cpufreq_boost, uint, 0660);
 #if IS_ENABLED(CONFIG_SOC_LGA)
 #define DHD_CPUFREQ_BIG         4u
 #define DHD_CPUFREQ_BIGGER      5u
+#elif IS_ENABLED(CONFIG_SOC_MBU)
+#define DHD_CPUFREQ_BIG         5u
 #else
 #define DHD_CPUFREQ_BIG         4u
 #define DHD_CPUFREQ_BIGGER      7u
@@ -1134,6 +1142,9 @@ module_param(dhd_cpufreq_boost, uint, 0660);
 #define DHD_LITTLE_CORE_PERF_FREQ   2016000u
 #define DHD_MID_CORE_PERF_FREQ      2092000u
 #define DHD_BIG_CORE_PERF_FREQ      2092000u
+#elif IS_ENABLED(CONFIG_SOC_MBU)
+#define DHD_LITTLE_CORE_PERF_FREQ  960000u
+#define DHD_MID_CORE_PERF_FREQ  1440000u
 #else
 #define DHD_LITTLE_CORE_PERF_FREQ   1548000u
 #define DHD_MID_CORE_PERF_FREQ      1549000u
@@ -1154,12 +1165,12 @@ typedef struct _dhd_host_cpufreq {
 } dhd_host_cpufreq;
 
 static dhd_host_cpufreq dhd_host_cpufreq_tbl[] = {
-	/* Little Core, 0-3 */
 	{DHD_CPUFREQ_LITTLE, 0, DHD_LITTLE_CORE_PERF_FREQ},
-	/* Big Core, 4-7 */
 	{DHD_CPUFREQ_BIG, 0, DHD_MID_CORE_PERF_FREQ},
-	/* Bigger Core, 8-11 */
+#if !IS_ENABLED(CONFIG_SOC_MBU)
+	/* Use middle core only on MBU platform */
 	{DHD_CPUFREQ_BIGGER, 0, DHD_BIG_CORE_PERF_FREQ}
+#endif
 };
 
 /*
@@ -1895,10 +1906,35 @@ dhd_plat_get_wlan_reg_on_gpio(void)
 		gpio_get_value(wlan_reg_on) : -1;
 }
 
+#if IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU)
+static void
+dhd_plat_pcie_rc_dump(void *handle, void *event_info, u8 event)
+{
+	google_pcie_dump_debug(pcie_ch_num);
+}
+
+void
+dhd_schedule_plat_pcie_rc_dump(dhd_pub_t *dhdp, void *type)
+{
+	DHD_PRINT(("%s: schedule pcie rc dump\n", __func__));
+	dhd_deferred_schedule_work(dhdp->info->dhd_deferred_wq,
+		type, DHD_WQ_WORK_PLAT_PCIE_RC_DUMP,
+		dhd_plat_pcie_rc_dump, DHD_WQ_WORK_PRIORITY_HIGH);
+}
+#endif /* IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU) */
+
 void dhd_plat_pcie_dump_debug(void)
 {
-#if IS_ENABLED(CONFIG_SOC_LGA)
-	google_pcie_dump_debug(pcie_ch_num);
+#if IS_ENABLED(CONFIG_SOC_LGA) || IS_ENABLED(CONFIG_SOC_MBU)
+	dhd_pub_t *dhdp = (dhd_pub_t *)g_dhd_pub;
+
+	if (CAN_SLEEP()) {
+		google_pcie_dump_debug(pcie_ch_num);
+	} else {
+		pr_err("%s(): skipped as in atomic context\n", __func__);
+		pr_err("%s(): schedule pcie rc dump, as in atomic context\n", __func__);
+		dhd_schedule_plat_pcie_rc_dump(dhdp, NULL);
+	}
 #endif
 }
 
@@ -1996,7 +2032,10 @@ dhd_pcie_l1ss_ctrl(int enable, int ch_num)
 
 	DHD_PRINT(("%s: Set aspm link state %x (support_l1ss = %d)\n",
 		__func__, aspm_state, support_l1ss));
+
+	pm_runtime_get_sync(&pci_dev->dev);
 	ret = pci_enable_link_state(pci_dev, aspm_state);
+	pm_runtime_put(&pci_dev->dev);
 
 #ifdef GOOGLE_DAL_NOA_MODE
 	/* Update the local cache state and shared memory state */
@@ -2199,7 +2238,6 @@ dhd_get_chspec_bw_from_wondertap_bw(u16 bw)
 	return BCME_ERROR;
 }
 
-extern dhd_pub_t *g_dhd_pub;
 static int
 dhd_wondertap_ops_set_freq(void *handle, const struct wondertap_set_freq_params *params)
 {
@@ -2330,6 +2368,9 @@ dhd_wondertap_set_fixed_tx_rate(void *vendor_handle,
 	chanspec_t chanspec;
 	struct net_device *monitor_dev;
 	int ifidx;
+#ifdef WL_CFG80211
+	struct bcm_cfg80211 *cfg;
+#endif /* WL_CFG80211 */
 
 	monitor_dev = dhd_get_monitor_ndev(dhdp);
 	if (!monitor_dev) {
@@ -2375,6 +2416,14 @@ dhd_wondertap_set_fixed_tx_rate(void *vendor_handle,
 		DHD_ERROR(("%s ART_SET_CHAN is not set\n", __func__));
 		return -EINVAL;
 	}
+
+#ifdef WL_CFG80211
+	cfg = wl_get_cfg(monitor_dev);
+	if (cfg) {
+		/* abort any scan in progress */
+		wl_cfgscan_scan_abort(cfg);
+	}
+#endif /* WL_CFG80211 */
 
 	if (CHSPEC_BAND(chanspec) == WL_CHANSPEC_BAND_5G) {
 		rspec |= WL_RSPEC_LDPC;

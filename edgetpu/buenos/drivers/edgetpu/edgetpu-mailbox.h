@@ -64,6 +64,8 @@ struct edgetpu_mailbox {
 #if !EDGETPU_USE_CMF
 	/* IRQ number. */
 	int irq;
+	/* Whether the mailbox uses MSI */
+	bool msi_enabled;
 #endif /* EDGETPU_USE_CMF */
 	/*
 	 * IRQ handler.
@@ -258,7 +260,7 @@ struct edgetpu_mailbox *edgetpu_mailbox_alloc(struct edgetpu_dev *etdev,
  */
 /* TODO(b/376971597) remove @index once its only used for external mailboxes. */
 struct edgetpu_mailbox *edgetpu_mailbox_alloc(struct edgetpu_dev *etdev, void __iomem *csr_base,
-					      int irq, uint index);
+					      int irq, uint index, bool msi_enabled);
 #endif /* EDGETPU_USE_CMF */
 
 /*
@@ -509,8 +511,8 @@ static inline void edgetpu_mailbox_trigger_cmd_queue_doorbell_sync(struct edgetp
 {
 	if (IS_ERR_OR_NULL(mailbox->mb_chan)) {
 		etdev_err_ratelimited(mailbox->etdev,
-				       "Error on mailbox channel before sending message %d: %ld",
-				       mailbox->mailbox_id, PTR_ERR(mailbox->mb_chan));
+				      "Error on mailbox channel before sending message %d: %ld",
+				      mailbox->mailbox_id, PTR_ERR(mailbox->mb_chan));
 		return;
 	}
 

@@ -57,6 +57,7 @@
 #else
 #include <drm/drm_gem_framebuffer_helper.h>
 #endif
+#include <drm/drm_print.h>
 
 #include <powervr/img_drm_fourcc.h>
 

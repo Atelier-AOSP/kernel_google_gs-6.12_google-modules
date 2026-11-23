@@ -88,6 +88,11 @@ properties are ignored.
     32-bit address space sizes\>*
 :   This defines the register spaces the LWIS IOREG device can access.
 
+`offset`
+:   Expected input: *a single unsigned 64-bit value, in units of bytes.*
+:   This is an optional offset value for each register block. If defined, it
+    will be subtracted from the register address for read / writes.
+
 ### I2C {#i2c}
 
 `i2c-bus`
@@ -486,6 +491,25 @@ Aggregate Interrupt
             <ISP_AGGREGATE_BIT0>,
             <ISP_AGGREGATE_BIT1>,
             ...;
+    };
+    ```
+
+### Device access mode
+
+`lwis,disable-group-transfer`
+:   Some sensors lack support [repeated-start-condition](https://www.i2c-bus.org/repeated-start-condition/). This property provides a mechanism
+    for selectively disabling group transfer operations. By default,
+    allowing multiple register accesses to be grouped and executed as a
+    single transaction.
+:   Example:
+
+    ```
+    lwis_device@0 {
+    compatible = "vendor,lwis-i2c-device";
+    reg = <0x0>;
+    /* Disable group transfer for this LWiS device */
+    lwis,disable-group-transfer;
+    ...
     };
     ```
 

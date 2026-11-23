@@ -34,8 +34,7 @@
 
 static int lwis_spi_device_enable(struct lwis_device *lwis_dev);
 static int lwis_spi_device_disable(struct lwis_device *lwis_dev);
-static int lwis_spi_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
-				int access_size);
+static int lwis_spi_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entry);
 
 static struct lwis_device_subclass_operations spi_vops = {
 	.register_io = lwis_spi_register_io,
@@ -61,8 +60,7 @@ static int lwis_spi_device_disable(struct lwis_device *lwis_dev)
 	return 0;
 }
 
-static int lwis_spi_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entry,
-				int access_size)
+static int lwis_spi_register_io(struct lwis_device *lwis_dev, struct lwis_io_entry *entry)
 {
 	struct lwis_spi_device *spi_dev;
 
@@ -72,7 +70,7 @@ static int lwis_spi_register_io(struct lwis_device *lwis_dev, struct lwis_io_ent
 	if (in_interrupt())
 		return -EAGAIN;
 
-	lwis_save_register_io_info(lwis_dev, entry, access_size);
+	lwis_save_register_io_info(lwis_dev, entry);
 
 	return lwis_spi_io_entry_rw(spi_dev, entry);
 }

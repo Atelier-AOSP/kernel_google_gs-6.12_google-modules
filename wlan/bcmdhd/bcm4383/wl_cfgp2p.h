@@ -26,6 +26,7 @@
 #include <p2p.h>
 
 struct bcm_cfg80211;
+struct mgmt_tx_ctx;
 extern u32 wl_dbg_level;
 extern u32 wl_log_level;
 
@@ -59,6 +60,7 @@ typedef enum {
 /** normal vendor ies buffer length */
 #define VNDR_IES_BUF_LEN 	512
 
+#define OUI_TYPE_USD		WFA_OUI_TYPE_NAN 	/* P2P NAN USD */
 
 struct p2p_bss {
 	s32 bssidx;
@@ -330,6 +332,8 @@ wl_cfgp2p_is_p2p_action(void *frame, u32 frame_len);
 extern bool
 wl_cfgp2p_is_gas_action(void *frame, u32 frame_len);
 extern bool
+wl_cfgp2p_is_usd_pub_action(void *frame, u32 frame_len);
+extern bool
 wl_cfgp2p_is_p2p_gas_action(void *frame, u32 frame_len);
 extern void
 wl_cfgp2p_print_actframe(bool tx, void *frame, u32 frame_len, u32 channel);
@@ -410,7 +414,12 @@ wl_cfgp2p_action_tx_complete(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev
 
 extern s32
 wl_cfgp2p_tx_action_frame(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
-	struct net_device *dev, wl_af_params_v1_t *af_params, s32 bssidx, const u8 *sa);
+	struct net_device *dev, wl_af_params_v1_t *af_params, s32 bssidx, const u8 *sa,
+	struct mgmt_tx_ctx *mgmt_tx_ctx);
+
+extern s32
+wl_cfgp2p_tx_pasn_auth_handler(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
+	const wl_event_msg_t *e, void *data);
 
 extern void
 wl_cfgp2p_generate_bss_mac(struct bcm_cfg80211 *cfg);
@@ -494,6 +503,9 @@ extern s32
 wl_cfg80211_abort_action_frame(struct bcm_cfg80211 *cfg, struct net_device *dev, s32 bssidx);
 
 extern u32 wl_cfgp2p_vndr_ie_write_len(u32 payload_len);
+
+extern s32
+wl_cfg80211_abort_d11_frame(struct bcm_cfg80211 *cfg, struct net_device *dev, s32 bssidx);
 
 #ifdef WL_CFG80211_P2P_DEV_IF
 extern void wl_cfgp2p_del_p2p_wdev(struct net_device *dev);

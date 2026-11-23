@@ -30,7 +30,7 @@
 #include <perf/core/gs_perf_mon.h>
 #endif
 #else
-#include "../../devfreq/google/governor_memlat.h"
+#include "governor_memlat.h"
 #endif
 
 /*
@@ -107,6 +107,6 @@ TRACE_EVENT(sched_switch_with_ctrs,
 
 #endif
 #undef TRACE_INCLUDE_PATH
-#define TRACE_INCLUDE_PATH ../../drivers/soc/google
+#define TRACE_INCLUDE_PATH .
 #define TRACE_INCLUDE_FILE perf_trace_counters
 #include <trace/define_trace.h>

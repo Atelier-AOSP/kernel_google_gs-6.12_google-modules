@@ -37,6 +37,19 @@
 /* Preprocessor definitions and constants */
 #define QDF_MAX_SGLIST 4
 
+#define __QDF_DECLARE_FLEX_ARRAY(type, name) \
+	struct { \
+		struct {} dummy_struct; \
+		type name[]; \
+	}
+
+/* Define a QDF macro for declaring flexible arrays */
+#define QDF_FLEX_ARRAY(type, name) \
+	union { \
+		type name ## _first_element; \
+		__QDF_DECLARE_FLEX_ARRAY(type, name); \
+	}
+
 #define CPU_CLUSTER_TYPE_LITTLE 0
 #define CPU_CLUSTER_TYPE_PERF 1
 
@@ -134,6 +147,11 @@ typedef __qdf_be64_t qdf_be64_t;
  * typedef qdf_size_t - size of an object
  */
 typedef __qdf_size_t qdf_size_t;
+
+/**
+ * typedef qdf_ssize_t - signed size of an object
+ */
+typedef __qdf_ssize_t qdf_ssize_t;
 
 /**
  * typedef __qdf_off_t - offset for API's that need them.

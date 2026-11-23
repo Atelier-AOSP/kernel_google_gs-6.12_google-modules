@@ -145,10 +145,10 @@ int thermal_stats_register_thermal_metrics(struct platform_device *pdev,
 	if (!pdev || !drv_data || !drv_data->group_name || tz_id >= HW_THERMAL_ZONE_MAX)
 		return -EINVAL;
 
-	tz_name = thermal_cpm_mbox_get_tz_name(tz_id);
+	tz_name = cpm_mbox_get_tz_name(tz_id);
 	if (!tz_name) {
-		dev_err(&pdev->dev, "Failed to get name of tz: %d", tz_id);
-		return -EINVAL;
+		dev_dbg(&pdev->dev, "Unsupported tz_id: %d", tz_id);
+		return 0;
 	}
 
 	/* test if thermal stats is supported by the tz */

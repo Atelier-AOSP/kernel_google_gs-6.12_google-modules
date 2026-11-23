@@ -133,7 +133,7 @@ static void hnd_pktpool_heap_pkt_release(osl_t *osh, pktpool_t *pktp, uint32 fla
 static void hnd_pktpool_heap_pkt_retrieve(pktpool_t *pktp, uint32 flag);
 static int hnd_pktpool_heap_get_cb(uint8 handle, void *ctxt, void *pkt, uint pktsize);
 static void hnd_pktpool_lbuf_free_cb(uint8 poolid);
-static pktpool_heap_cb_reg_t *BCMRAMFN(hnd_pool_get_cb_registry)(void);
+static pktpool_heap_cb_reg_t *BCMACCESSOR_RAMFN(hnd_pool_get_cb_registry)(void);
 #endif /* POOL_HEAP_RECONFIG */
 
 /* Register/Deregister a pktpool with registry during pktpool_init/deinit */
@@ -177,13 +177,14 @@ BCMPOSTTRAPRAMFN(get_pktpools_registry)(int id)
 }
 
 static void
-BCMRAMFN(pktpool_registry_set)(uint id, pktpool_t *pp)
+BCMACCESSOR_RAMFN(pktpool_registry_set)(uint id, pktpool_t *pp)
 {
 	pktpools_registry[id] = pp;
 }
 
+/* Making this function as accessor helper function to be in RAM to access the global variable */
 static bool
-BCMRAMFN(pktpool_registry_cmp)(uint id, pktpool_t *pp)
+BCMACCESSOR_RAMFN(pktpool_registry_cmp)(uint id, pktpool_t *pp)
 {
 	return pktpools_registry[id] == pp;
 }
@@ -2325,7 +2326,7 @@ hnd_pktpool_heap_pkt_release(osl_t *osh, pktpool_t *pktp, uint32 flag)
 }
 
 static pktpool_heap_cb_reg_t *
-BCMRAMFN(hnd_pool_get_cb_registry)(void)
+BCMACCESSOR_RAMFN(hnd_pool_get_cb_registry)(void)
 {
 	return pktpool_heap_cb_reg;
 }

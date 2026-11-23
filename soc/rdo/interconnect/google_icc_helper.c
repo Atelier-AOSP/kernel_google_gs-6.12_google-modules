@@ -8,14 +8,20 @@
 
 #include <interconnect/google_icc_helper.h>
 
-#include "google_icc_internal.h"
+#include "google_icc_vote.h"
 #include "google_icc_provider.h"
-#include "google_irm.h"
 
 #include "soc/google/google_gtc.h"
 
 #define CREATE_TRACE_POINTS
 #include "google_icc_trace.h"
+
+struct google_icc_path {
+	struct icc_path *path;
+	/* protect calling sequences in google_icc_*() */
+	struct mutex mutex;
+	struct icc_vote vote;
+};
 
 struct google_icc_path *google_devm_of_icc_get(struct device *dev, const char *name)
 {
@@ -64,6 +70,7 @@ struct google_icc_path *google_devm_of_icc_get(struct device *dev, const char *n
 
 	return p;
 
+	devm_kfree(dev, p);
 err_icc_put:
 	icc_put(path);
 err:
@@ -271,7 +278,8 @@ static inline void addr_encode(void *ptr, u32 *hi, u32 *lo)
 	*lo = (u32)((addr & 0x00000000ffffffff) >> 0);
 }
 
-static int __google_icc_update_constraint(struct google_icc_path *p, u32 prop)
+static int __google_icc_update_constraint(struct google_icc_path *p,
+					  u32 _vote_sync_type)
 {
 	u32 hi, lo;
 	int ret;
@@ -283,11 +291,11 @@ static int __google_icc_update_constraint(struct google_icc_path *p, u32 prop)
 
 	mutex_lock(&p->mutex);
 
-	p->vote.prop = prop;
+	p->vote.vote_sync_type = _vote_sync_type;
 
 	ret = icc_set_bw(p->path, hi, lo);
 
-	p->vote.prop = 0;
+	p->vote.vote_sync_type = 0;
 
 	mutex_unlock(&p->mutex);
 
@@ -296,30 +304,29 @@ static int __google_icc_update_constraint(struct google_icc_path *p, u32 prop)
 
 int google_icc_update_constraint_async(struct google_icc_path *p)
 {
-	u32 prop = GOOGLE_ICC_UPDATE_ASYNC;
 	int ret = 0;
 
 	trace_google_icc_event(TPS("async_update begin"), goog_gtc_get_counter());
 
-	ret =  __google_icc_update_constraint(p, prop);
+	ret = __google_icc_update_constraint(p, GOOGLE_ICC_UPDATE_ASYNC);
 
 	trace_google_icc_event_with_ret(TPS("async_update end"), ret, goog_gtc_get_counter());
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(google_icc_update_constraint);
+EXPORT_SYMBOL_GPL(google_icc_update_constraint_async);
+
 
 int google_icc_update_constraint(struct google_icc_path *p)
 {
-	u32 prop = GOOGLE_ICC_UPDATE_SYNC;
 	int ret = 0;
 
 	trace_google_icc_event(TPS("sync_update begin"), goog_gtc_get_counter());
 
-	ret = __google_icc_update_constraint(p, prop);
+	ret = __google_icc_update_constraint(p, GOOGLE_ICC_UPDATE_SYNC);
 
 	trace_google_icc_event_with_ret(TPS("sync_update end"), ret, goog_gtc_get_counter());
 
 	return ret;
 }
-EXPORT_SYMBOL_GPL(google_icc_update_constraint_async);
+EXPORT_SYMBOL_GPL(google_icc_update_constraint);

@@ -58,6 +58,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 #include "pvrsrv_apphint.h"
 #include "os_apphint.h"
+#include "vmm_pvz_client.h"
 
 static PVRSRV_ERROR RGXAllocUFOBlock(PVRSRV_DEVICE_NODE *psDeviceNode,
                                      IMG_UINT32 ui32RequestedSize,
@@ -257,7 +258,7 @@ static PVRSRV_ERROR RGXAlignmentCheck(PVRSRV_DEVICE_NODE *psDevNode,
 	paui32FWAlignChecks += ui32UMChecksOffset;
 	/* Invalidate the size value, check the next region size (UM) and invalidate */
 	RGXFwSharedMemCacheOpPtr(paui32FWAlignChecks, INVALIDATE);
-	if (*paui32FWAlignChecks++ != ui32AlignChecksSizeUM)
+	if (*paui32FWAlignChecks != ui32AlignChecksSizeUM)
 	{
 		PVR_DPF((PVR_DBG_ERROR,
 		         "%s: Mismatching sizes of RGXFW_ALIGN_CHECKS_INIT"
@@ -268,6 +269,7 @@ static PVRSRV_ERROR RGXAlignmentCheck(PVRSRV_DEVICE_NODE *psDevNode,
 		eError = PVRSRV_ERROR_INVALID_ALIGNMENT;
 		goto return_;
 	}
+	paui32FWAlignChecks++;
 
 	RGXFwSharedMemCacheOpExec(paui32FWAlignChecks,
 	                          ui32AlignChecksSizeUM * sizeof(IMG_UINT32),
@@ -319,6 +321,7 @@ void RGXDeviceInitCallbacks(PVRSRV_DEVICE_NODE *psDeviceNode)
 	psDeviceNode->pfnGetMMUDeviceAttributes = RGXDevMMUAttributes;
 	psDeviceNode->pfnMMUCacheInvalidate = RGXMMUCacheInvalidate;
 	psDeviceNode->pfnMMUCacheInvalidateKick = RGXMMUCacheInvalidateKick;
+	psDeviceNode->pfnMMUCacheInvalidateKickAndWait = RGXMMUCacheInvalidateKickAndWait;
 
 #if defined(RGX_BRN71422_TARGET_HARDWARE_PHYSICAL_ADDR)
 	psDeviceNode->pfnMMUTopLevelPxWorkarounds = RGXMapBRN71422TargetPhysicalAddress;
@@ -539,19 +542,15 @@ void RGX_WaitForInterruptsTimeout(PVRSRV_RGXDEV_INFO *psDevInfo)
 
 IMG_BOOL RGXAckHwIrq(PVRSRV_RGXDEV_INFO *psDevInfo,
                      IMG_UINT32 ui32IRQStatusReg,
-                     IMG_UINT32 ui32IRQStatusEventMsk,
+                     IMG_UINT32 ui32IRQStatusEventMask,
                      IMG_UINT32 ui32IRQClearReg,
                      IMG_UINT32 ui32IRQClearMask)
 {
-	IMG_UINT32 ui32IRQStatus = OSReadHWReg32(psDevInfo->pvRegsBaseKM, ui32IRQStatusReg);
-
-	/* clear only the pending bit of the thread that triggered this interrupt */
-	ui32IRQClearMask &= ui32IRQStatus;
-
-	if (ui32IRQStatus & ui32IRQStatusEventMsk)
+	if (OSReadHWReg32(psDevInfo->pvRegsBaseKM, ui32IRQStatusReg) & ui32IRQStatusEventMask)
 	{
 		/* acknowledge and clear the interrupt */
 		OSWriteHWReg32(psDevInfo->pvRegsBaseKM, ui32IRQClearReg, ui32IRQClearMask);
+
 		/* Perform a readback as barrier here after clearing the interrupt.
 		 * If host side mem read happens before we clear the interrupt it is possible
 		 * that we read the stale value then fw updates the second interrupt which is
@@ -583,58 +582,332 @@ IMG_BOOL RGXAckIrqDedicated(PVRSRV_RGXDEV_INFO *psDevInfo)
 }
 #endif
 
+PVRSRV_ERROR RGXInitCreateFWKernelMemoryContext(PVRSRV_DEVICE_NODE *psDeviceNode)
+{
+	/* set up fw memory contexts */
+	PVRSRV_RGXDEV_INFO   *psDevInfo = psDeviceNode->pvDevice;
+	__maybe_unused PVRSRV_DEVICE_CONFIG *psDevConfig = psDeviceNode->psDevConfig;
+	PVRSRV_ERROR eError;
+
+#if defined(RGX_PREMAP_FW_HEAPS) || defined(RGX_VZ_STATIC_CARVEOUT_FW_HEAPS)
+	IMG_BOOL  bNativeFwUMAHeap = PVRSRV_VZ_MODE_IS(NATIVE, DEVNODE, psDeviceNode) &&
+	                             (PhysHeapGetType(psDeviceNode->apsPhysHeap[FIRST_PHYSHEAP_MAPPED_TO_FW_MAIN_DEVMEM]) == PHYS_HEAP_TYPE_UMA);
+#endif
+
+#if defined(RGX_PREMAP_FW_HEAPS)
+	PHYS_HEAP *psDefaultPhysHeap = psDeviceNode->psMMUPhysHeap;
+
+	if ((!PVRSRV_VZ_MODE_IS(GUEST, DEVNODE, psDeviceNode)) && (!bNativeFwUMAHeap))
+	{
+		PHYS_HEAP *psFwPageTableHeap =
+				psDeviceNode->apsPhysHeap[PVRSRV_PHYS_HEAP_FW_PREMAP_PT];
+
+		PVR_LOG_GOTO_IF_INVALID_PARAM((psFwPageTableHeap != NULL),
+		                              eError, failed_to_create_ctx);
+
+		/* Temporarily swap the MMU and default GPU physheap to allow the page
+		 * tables of all memory mapped by the FwKernel context to be placed
+		 * in a dedicated memory carveout. This should allow the firmware mappings to
+		 * persist after a Host kernel crash or driver reset. */
+		psDeviceNode->psMMUPhysHeap = psFwPageTableHeap;
+	}
+#endif
+
+#if !defined(SUPPORT_TRUSTED_DEVICE)
+#if defined(RGX_FEATURE_AXI_ACE_BIT_MASK) || defined(RGX_FEATURE_AXI_ACELITE_BIT_MASK)
+	/* Set the GPU device coherency before FW context creation */
+	eError = RGXGetCoreSnoopMode(psDevConfig,
+	                            &psDeviceNode->eGpuSnoopingFeature);
+	if (eError != PVRSRV_OK)
+	{
+		PVR_DPF((PVR_DBG_ERROR,
+		         "%s: Failed RGXGetCoreSnoopMode (%u)",
+		         __func__,
+		         eError));
+		goto failed_to_create_ctx;
+	}
+
+	/* Initializing the cache snooping early, see DDKSERV-91384 */
+	DoRGXInitialiseCacheSnooping(psDeviceNode);
+#endif
+#endif
+
+	RGXFwSharedMemCheckSnoopMode(psDeviceNode);
+
+	/* Create the memory context for the firmware. */
+	eError = DevmemCreateContext(psDeviceNode, DEVMEM_HEAPCFG_FORFW,
+	                             &psDevInfo->psKernelDevmemCtx);
+	if (eError != PVRSRV_OK)
+	{
+		PVR_DPF((PVR_DBG_ERROR,
+		         "%s: Failed DevmemCreateContext (%u)",
+		         __func__,
+		         eError));
+		goto failed_to_create_ctx;
+	}
+
+	if (!PVRSRV_VZ_MODE_IS(GUEST, DEVINFO, psDevInfo))
+	{
+		eError = DevmemFindHeapByName(psDevInfo->psKernelDevmemCtx, RGX_FIRMWARE_CODE_HEAP_IDENT,
+		                              &psDevInfo->psFirmwareCodeHeap);
+		if (eError != PVRSRV_OK)
+		{
+			PVR_DPF((PVR_DBG_ERROR,
+			         "%s: Failed DevmemFindHeapByName (%u)",
+			         __func__,
+			         eError));
+			goto failed_to_find_heap;
+		}
+
+		eError = DevmemFindHeapByName(psDevInfo->psKernelDevmemCtx, RGX_FIRMWARE_PRIV_DATA_HEAP_IDENT,
+		                              &psDevInfo->psFirmwarePrivDataHeap);
+		if (eError != PVRSRV_OK)
+		{
+			PVR_DPF((PVR_DBG_ERROR,
+			         "%s: Failed DevmemFindHeapByName (%u)",
+			         __func__,
+			         eError));
+			goto failed_to_find_heap;
+		}
+
+		eError = DevmemFindHeapByName(psDevInfo->psKernelDevmemCtx, RGX_FIRMWARE_PRIV_RODATA_HEAP_IDENT,
+		                              &psDevInfo->psFirmwarePrivRoDataHeap);
+		if (eError != PVRSRV_OK)
+		{
+			PVR_DPF((PVR_DBG_ERROR,
+			         "%s: Failed DevmemFindHeapByName (%u)",
+			         __func__,
+			         eError));
+			goto failed_to_find_heap;
+		}
+
+		eError = DevmemFindHeapByName(psDevInfo->psKernelDevmemCtx, RGX_FIRMWARE_CUSTOM_HEAP_IDENT,
+		                              &psDevInfo->psFirmwareCustomHeap);
+		if (eError != PVRSRV_OK)
+		{
+			PVR_DPF((PVR_DBG_ERROR,
+			         "%s: Failed DevmemFindHeapByName (%u)",
+			         __func__,
+			         eError));
+			goto failed_to_find_heap;
+		}
+	}
+
+	eError = DevmemFindHeapByName(psDevInfo->psKernelDevmemCtx, RGX_FIRMWARE_MAIN_HEAP_IDENT,
+	                              &psDevInfo->psFirmwareMainHeap);
+	if (eError != PVRSRV_OK)
+	{
+		PVR_DPF((PVR_DBG_ERROR,
+		         "%s: Failed DevmemFindHeapByName (%u)",
+		         __func__,
+		         eError));
+		goto failed_to_find_heap;
+	}
+
+	eError = DevmemFindHeapByName(psDevInfo->psKernelDevmemCtx, RGX_FIRMWARE_CONFIG_HEAP_IDENT,
+	                              &psDevInfo->psFirmwareConfigHeap);
+	if (eError != PVRSRV_OK)
+	{
+		PVR_DPF((PVR_DBG_ERROR,
+		         "%s: Failed DevmemFindHeapByName (%u)",
+		         __func__,
+		         eError));
+		goto failed_to_find_heap;
+	}
+
+#if (defined(RGX_PREMAP_FW_HEAPS)) || (defined(RGX_NUM_DRIVERS_SUPPORTED) && (RGX_NUM_DRIVERS_SUPPORTED > 1))
+	if (!PVRSRV_VZ_MODE_IS(GUEST, DEVNODE, psDeviceNode))
+	{
+		IMG_UINT32 ui32DriverID;
+
+		FOREACH_DRIVER_RAW_DEVMEM_HEAP(ui32DriverID, DEVNODE, psDeviceNode)
+		{
+			IMG_CHAR szHeapName[RA_MAX_NAME_LENGTH];
+
+			OSSNPrintf(szHeapName, sizeof(szHeapName), RGX_FIRMWARE_GUEST_RAW_HEAP_IDENT, ui32DriverID);
+			eError = DevmemFindHeapByName(psDevInfo->psKernelDevmemCtx, szHeapName,
+										  &psDevInfo->psPremappedFwRawHeap[ui32DriverID]);
+			PVR_LOG_GOTO_IF_ERROR(eError, "DevmemFindHeapByName", failed_to_find_heap);
+		}
+	}
+#endif
+
+#if defined(RGX_PREMAP_FW_HEAPS) || defined(RGX_VZ_STATIC_CARVEOUT_FW_HEAPS)
+	if (!PVRSRV_VZ_MODE_IS(GUEST, DEVNODE, psDeviceNode) && !bNativeFwUMAHeap)
+	{
+		IMG_DEV_PHYADDR sPhysHeapBase;
+		IMG_UINT32 ui32DriverID;
+		void *pvAppHintState = NULL;
+		IMG_UINT64 ui64DefaultHeapStride;
+		IMG_UINT64 ui64GuestHeapDevBaseStride;
+
+		OSCreateAppHintState(&pvAppHintState);
+		ui64DefaultHeapStride = PVRSRV_APPHINT_GUESTFWHEAPSTRIDE;
+		OSGetAppHintUINT64(APPHINT_NO_DEVICE,
+							pvAppHintState,
+							GuestFWHeapStride,
+							&ui64DefaultHeapStride,
+							&ui64GuestHeapDevBaseStride);
+		OSFreeAppHintState(pvAppHintState);
+		pvAppHintState = NULL;
+
+#if defined(RGX_PREMAP_FW_HEAPS)
+		eError = RGXPremapHostHeaps(psDeviceNode);
+		PVR_LOG_GOTO_IF_ERROR(eError, "RGXPremapHostHeaps", failed_to_find_heap);
+#endif
+
+		eError = PhysHeapGetDevPAddr(psDeviceNode->apsPhysHeap[FIRST_PHYSHEAP_MAPPED_TO_FW_MAIN_DEVMEM], &sPhysHeapBase);
+		PVR_LOG_GOTO_IF_ERROR(eError, "PhysHeapGetDevPAddr", failed_to_find_heap);
+
+		FOREACH_DRIVER_RAW_PHYS_HEAP(ui32DriverID, DEVNODE, psDeviceNode)
+		{
+			IMG_DEV_PHYADDR sRawFwHeapBase = {sPhysHeapBase.uiAddr + (ui32DriverID * ui64GuestHeapDevBaseStride)};
+
+			eError = RGXFwRawHeapAllocMap(psDeviceNode,
+										  ui32DriverID,
+										  sRawFwHeapBase,
+										  RGX_FIRMWARE_RAW_HEAP_SIZE);
+			if (eError != PVRSRV_OK)
+			{
+				for (; ui32DriverID > RGXFW_GUEST_DRIVER_ID_START; ui32DriverID--)
+				{
+					RGXFwRawHeapUnmapFree(psDeviceNode, ui32DriverID);
+				}
+				PVR_LOG_GOTO_IF_ERROR(eError, "RGXFwRawHeapAllocMap", failed_to_find_heap);
+			}
+		}
+
+#if defined(RGX_PREMAP_FW_HEAPS)
+		/* restore default Px setup */
+		psDeviceNode->psMMUPhysHeap = psDefaultPhysHeap;
+#endif
+	}
+#endif /* defined(RGX_PREMAP_FW_HEAPS) || defined(RGX_VZ_STATIC_CARVEOUT_FW_HEAPS) */
+
+#if !defined(RGX_VZ_STATIC_CARVEOUT_FW_HEAPS)
+	/* On setups with dynamically mapped Guest heaps, the Guest makes
+	 * a PVZ call to the Host to request the mapping during init. */
+	if (PVRSRV_VZ_MODE_IS(GUEST, DEVNODE, psDeviceNode))
+	{
+		eError = PvzClientMapDevPhysHeap(psDevConfig);
+		PVR_LOG_GOTO_IF_ERROR(eError, "PvzClientMapDevPhysHeap", failed_to_find_heap);
+	}
+#endif /* !defined(RGX_VZ_STATIC_CARVEOUT_FW_HEAPS) */
+
+	if (PVRSRV_VZ_MODE_IS(GUEST, DEVNODE, psDeviceNode))
+	{
+		DevmemHeapSetPremapStatus(psDevInfo->psFirmwareMainHeap, IMG_TRUE);
+		DevmemHeapSetPremapStatus(psDevInfo->psFirmwareConfigHeap, IMG_TRUE);
+	}
+
+	return eError;
+
+failed_to_find_heap:
+	/*
+	 * Clear the mem context create callbacks before destroying the RGX firmware
+	 * context to avoid a spurious callback.
+	 */
+	psDeviceNode->pfnRegisterMemoryContext = NULL;
+	psDeviceNode->pfnUnregisterMemoryContext = NULL;
+	DevmemDestroyContext(psDevInfo->psKernelDevmemCtx);
+	psDevInfo->psKernelDevmemCtx = NULL;
+failed_to_create_ctx:
+	return eError;
+}
+
+void RGXDeInitDestroyFWKernelMemoryContext(PVRSRV_DEVICE_NODE *psDeviceNode)
+{
+	PVRSRV_RGXDEV_INFO *psDevInfo = psDeviceNode->pvDevice;
+	PVRSRV_ERROR       eError;
+#if defined(RGX_PREMAP_FW_HEAPS)
+	PHYS_HEAP *psDefaultPhysHeap = psDeviceNode->psMMUPhysHeap;
+#endif
+
+#if defined(RGX_PREMAP_FW_HEAPS) || defined(RGX_VZ_STATIC_CARVEOUT_FW_HEAPS)
+	if (!PVRSRV_VZ_MODE_IS(GUEST, DEVNODE, psDeviceNode))
+	{
+		IMG_UINT32 ui32DriverID;
+#if defined(RGX_PREMAP_FW_HEAPS)
+		IMG_BOOL bNativeFwUMAHeap = PVRSRV_VZ_MODE_IS(NATIVE, DEVNODE, psDeviceNode) &&
+		                            (PhysHeapGetType(psDeviceNode->apsPhysHeap[FIRST_PHYSHEAP_MAPPED_TO_FW_MAIN_DEVMEM]) == PHYS_HEAP_TYPE_UMA);
+
+		if (!bNativeFwUMAHeap)
+		{
+			psDeviceNode->psMMUPhysHeap =
+					psDeviceNode->apsPhysHeap[PVRSRV_PHYS_HEAP_FW_PREMAP_PT];
+		}
+#endif
+
+#if defined(RGX_PREMAP_FW_HEAPS)
+		RGXUnmapHostHeaps(psDeviceNode);
+#endif
+
+		FOREACH_DRIVER_RAW_PHYS_HEAP(ui32DriverID, DEVNODE, psDeviceNode)
+		{
+			RGXFwRawHeapUnmapFree(psDeviceNode, ui32DriverID);
+		}
+	}
+#endif /* defined(RGX_PREMAP_FW_HEAPS) || defined(RGX_VZ_STATIC_CARVEOUT_FW_HEAPS) */
+
+#if !defined(RGX_VZ_STATIC_CARVEOUT_FW_HEAPS)
+	if (PVRSRV_VZ_MODE_IS(GUEST, DEVNODE, psDeviceNode))
+	{
+		(void) PvzClientUnmapDevPhysHeap(psDeviceNode->psDevConfig);
+
+		if (psDevInfo->psFirmwareMainHeap)
+		{
+			DevmemHeapSetPremapStatus(psDevInfo->psFirmwareMainHeap, IMG_FALSE);
+		}
+		if (psDevInfo->psFirmwareConfigHeap)
+		{
+			DevmemHeapSetPremapStatus(psDevInfo->psFirmwareConfigHeap, IMG_FALSE);
+		}
+	}
+#endif
+
+	/*
+	 * Clear the mem context create callbacks before destroying the RGX firmware
+	 * context to avoid a spurious callback.
+	 */
+	psDeviceNode->pfnRegisterMemoryContext = NULL;
+	psDeviceNode->pfnUnregisterMemoryContext = NULL;
+
+	if (psDevInfo->psKernelDevmemCtx)
+	{
+		eError = DevmemDestroyContext(psDevInfo->psKernelDevmemCtx);
+		PVR_ASSERT(eError == PVRSRV_OK);
+	}
+
+#if defined(RGX_PREMAP_FW_HEAPS)
+	psDeviceNode->psMMUPhysHeap = psDefaultPhysHeap;
+#endif
+}
+
 #if !defined(SUPPORT_TRUSTED_DEVICE)
 #if defined(RGX_FEATURE_AXI_ACE_BIT_MASK) || defined(RGX_FEATURE_AXI_ACELITE_BIT_MASK)
 
 void DoRGXInitialiseCacheSnooping(PVRSRV_DEVICE_NODE *psDeviceNode)
 {
-	PVRSRV_DEVICE_CONFIG *psDevConfig;
+	PVRSRV_DEVICE_CONFIG *psDevConfig = psDeviceNode->psDevConfig;
 
-	psDevConfig = psDeviceNode->psDevConfig;
-
-	/* Check App Hint (only available on volcanic cores) */
-#if defined(PVRSRV_APPHINT_FABRICCOHERENCYOVERRIDE)
-#if PVRSRV_APPHINT_FABRICCOHERENCYOVERRIDE == 0
-	/* Cache Snooping mode can only be downgraded by the App Hint */
-	psDeviceNode->eConfirmedCacheSnoopingMode = PVRSRV_DEVICE_SNOOP_NONE;
-	PVR_DPF((PVR_DBG_WARNING,"%s Cache coherency downgraded by app hint", __func__));
-	return;
-#endif
+	/* if the system supports coherency and the device is configured to support coherency (see RGXGetCoreSnoopMode) */
+	if (psDevConfig->eSystemCoherencyMode == PVRSRV_DEVICE_SNOOP_CPU_ONLY)
 	{
-		IMG_UINT32 ui32AppHintFabricCoherency;
-		IMG_UINT32 ui32AppHintDefault = 1;
-		void *pvAppHintState = NULL;
-
-		OSCreateAppHintState(&pvAppHintState);
-		OSGetAppHintUINT32(APPHINT_NO_DEVICE, pvAppHintState, FabricCoherencyOverride,
-		                   &ui32AppHintDefault, &ui32AppHintFabricCoherency);
-		OSFreeAppHintState(pvAppHintState);
-		if (ui32AppHintFabricCoherency == 0)
-		{
-			/* Cache Snooping mode can only be downgraded by the App Hint */
-			psDeviceNode->eConfirmedCacheSnoopingMode = PVRSRV_DEVICE_SNOOP_NONE;
-			PVR_DPF((PVR_DBG_WARNING,"%s Cache coherency downgraded by kernel app hint", __func__));
-			return;
-		}
-	}
-#endif
-	/* if the device supports coherency */
-	if (psDevConfig->eCacheSnoopingMode == PVRSRV_DEVICE_SNOOP_CPU_ONLY)
-	{
-		/* and the device is configured to support coherency (see RGXQueryCoreCoherencyFeature) */
 		if (psDeviceNode->eGpuSnoopingFeature == PVRSRV_DEVICE_SNOOP_CPU_ONLY)
 		{
-			/* and the fabric (e.g. PCIe or AXI bus) supports coherency */
-			if (psDeviceNode->eDevFabricType == PVRSRV_DEVICE_FABRIC_ACELITE)
-			{
-				/* Provisionally initialise cache snooping, as it may be
-				 * downgraded a bit later when we run coherency tests */
-				psDeviceNode->eConfirmedCacheSnoopingMode = psDevConfig->eCacheSnoopingMode;
-				return;
-			}
+			/* Provisionally initialise cache snooping, as it may be
+			* downgraded a bit later when we run coherency tests */
+			psDeviceNode->eConfirmedCacheSnoopingMode = PVRSRV_DEVICE_SNOOP_CPU_ONLY;
+			return;
 		}
+#if defined(DEBUG)
+		else
+		{
+			PVR_DPF((PVR_DBG_ERROR,"%s Device cache coherency feature not supported", __func__));
+		}
+#endif
 	}
-	psDeviceNode->eConfirmedCacheSnoopingMode = PVRSRV_DEVICE_SNOOP_NONE;
+    psDeviceNode->eConfirmedCacheSnoopingMode = PVRSRV_DEVICE_SNOOP_NONE;
 }
 
 void RGXInitialiseCacheSnooping(const void *hPrivate)

@@ -27,6 +27,7 @@
 
 #include <gcip/gcip-dma-fence.h>
 #include <gcip/gcip-fence.h>
+#include <gcip/gcip-memory.h>
 #include <gcip/gcip-pm.h>
 #include <gcip/gcip-resource-accessor.h>
 
@@ -35,7 +36,6 @@
 #include "gxp-core-telemetry.h"
 #include "gxp-dci.h"
 #include "gxp-debug-dump.h"
-#include "gxp-dma-fence.h"
 #include "gxp-dma.h"
 #include "gxp-dmabuf.h"
 #include "gxp-domain-pool.h"
@@ -92,7 +92,6 @@ static struct sscd_platform_data gxp_sscd_pdata;
 
 static void gxp_sscd_release(struct device *dev)
 {
-	pr_debug("%s\n", __func__);
 }
 
 static struct platform_device gxp_sscd_dev = {
@@ -108,16 +107,13 @@ static struct platform_device gxp_sscd_dev = {
 static void gxp_common_platform_reg_sscd(void)
 {
 	/* Registers SSCD platform device */
-	if (gxp_debug_dump_is_enabled()) {
-		if (platform_device_register(&gxp_sscd_dev))
-			pr_err("Unable to register SSCD platform device\n");
-	}
+	if (platform_device_register(&gxp_sscd_dev))
+		pr_err(GXP_NAME " Unable to register SSCD platform device\n");
 }
 
 static void gxp_common_platform_unreg_sscd(void)
 {
-	if (gxp_debug_dump_is_enabled())
-		platform_device_unregister(&gxp_sscd_dev);
+	platform_device_unregister(&gxp_sscd_dev);
 }
 
 #else /* CONFIG_SUBSYSTEM_COREDUMP */
@@ -593,7 +589,7 @@ static int gxp_ioctl_get_specs(struct gxp_client *client, struct gxp_specs_ioctl
 			     GXP_CORE_TELEMETRY_BUFFER_UNIT_SIZE),
 		.max_vd_allocation = GXP_NUM_SHARED_SLICES,
 		.max_vd_activation = gxp_iommu_get_max_vd_activation(gxp),
-		.total_iova_size = gcip_iommu_domain_pool_get_size(gxp->domain_pool) / SZ_1M,
+		.total_iova_size = gxp->iommu_space_size / SZ_1M,
 	};
 
 	if (!IS_ERR_OR_NULL(gxp->core_telemetry_mgr)) {
@@ -1302,7 +1298,7 @@ static int gxp_ioctl_trigger_debug_dump(struct gxp_client *client, __u32 __user 
 	if (!uid_eq(current_euid(), GLOBAL_ROOT_UID))
 		return -EPERM;
 
-	if (!gxp_debug_dump_is_enabled()) {
+	if (!gxp_debug_dump_is_enabled(gxp)) {
 		dev_err(gxp->dev, "Debug dump functionality is disabled\n");
 		return -EINVAL;
 	}
@@ -1347,28 +1343,40 @@ out_unlock_client_semaphore:
 }
 
 static int gxp_ioctl_create_sync_fence(struct gxp_client *client,
-				       struct gxp_create_sync_fence_data __user *datap)
+				       struct gxp_create_sync_fence_data __user *argp)
 {
 	struct gxp_dev *gxp = client->gxp;
-	struct gxp_create_sync_fence_data data;
-	int ret;
+	struct gxp_create_sync_fence_data ibuf;
+	struct gcip_dma_fence *gfence;
+	int fd;
 
-	if (copy_from_user(&data, (void __user *)datap, sizeof(data)))
+	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
 		return -EFAULT;
+
 	down_read(&client->semaphore);
 	if (client->vd) {
-		ret = gxp_dma_fence_create(gxp, client->vd, &data);
+		gfence = gcip_dma_fence_create(client->vd->gfence_mgr, ibuf.seqno,
+					       ibuf.timeline_name);
+		if (IS_ERR(gfence)) {
+			fd = PTR_ERR(gfence);
+		} else {
+			fd = gcip_dma_fence_install_fd(gfence);
+			gcip_dma_fence_put(gfence);
+		}
 	} else {
 		dev_warn(gxp->dev, "client creating sync fence has no VD");
-		ret = -EINVAL;
+		fd = -EINVAL;
 	}
 	up_read(&client->semaphore);
-	if (ret)
-		return ret;
+	if (fd < 0)
+		return fd;
 
-	if (copy_to_user((void __user *)datap, &data, sizeof(data)))
-		ret = -EFAULT;
-	return ret;
+	ibuf.fence = fd;
+
+	if (copy_to_user(argp, &ibuf, sizeof(ibuf)))
+		return -EFAULT;
+
+	return 0;
 }
 
 static int gxp_ioctl_signal_sync_fence(struct gxp_signal_sync_fence_data __user *datap)
@@ -1694,10 +1702,10 @@ static int gxp_set_reg_resources(struct platform_device *pdev, struct gxp_dev *g
 		return -ENODEV;
 	}
 
-	gxp->regs.paddr = r->start;
+	gxp->regs.phys_addr = r->start;
 	gxp->regs.size = resource_size(r);
-	gxp->regs.vaddr = devm_ioremap_resource(dev, r);
-	if (IS_ERR_OR_NULL(gxp->regs.vaddr)) {
+	gxp->regs.virt_addr = devm_ioremap_resource(dev, r);
+	if (IS_ERR_OR_NULL(gxp->regs.virt_addr)) {
 		dev_err(dev, "Failed to map registers\n");
 		return -ENODEV;
 	}
@@ -1711,30 +1719,40 @@ static int gxp_set_reg_resources(struct platform_device *pdev, struct gxp_dev *g
 		dev_err(dev, "Failed to get LPM resource\n");
 		return -ENODEV;
 	}
-	gxp->lpm_regs.paddr = r->start;
+	gxp->lpm_regs.phys_addr = r->start;
 	gxp->lpm_regs.size = resource_size(r);
-	gxp->lpm_regs.vaddr = devm_ioremap_resource(dev, r);
-	if (IS_ERR_OR_NULL(gxp->lpm_regs.vaddr)) {
+	gxp->lpm_regs.virt_addr = devm_ioremap_resource(dev, r);
+	if (IS_ERR_OR_NULL(gxp->lpm_regs.virt_addr)) {
 		dev_err(dev, "Failed to map LPM registers\n");
 		return -ENODEV;
 	}
 #else
-	gxp->lpm_regs.vaddr = gxp->regs.vaddr;
+	gxp->lpm_regs.virt_addr = gxp->regs.virt_addr;
 	gxp->lpm_regs.size = gxp->regs.size;
-	gxp->lpm_regs.paddr = gxp->regs.paddr;
+	gxp->lpm_regs.phys_addr = gxp->regs.phys_addr;
 #endif
 
-	for (i = 0; i < GXP_NUM_MAILBOXES; i++) {
+	gxp->num_mailboxes_compat = GXP_NUM_MAILBOXES;
+	if (GXP_HAS_MCU) {
+		r = platform_get_resource_byname(pdev, IORESOURCE_MEM, "iif_mailbox");
+		if (IS_ERR_OR_NULL(r))
+			/*
+			 * Compensate for @IIF_MAILBOX_ID since it's not available in device tree
+			 * yet.
+			 */
+			gxp->num_mailboxes_compat = GXP_NUM_MAILBOXES - 1;
+	}
+	for (i = 0; i < gxp->num_mailboxes_compat; i++) {
 		r = platform_get_resource(pdev, IORESOURCE_MEM, i + 1);
 		if (IS_ERR_OR_NULL(r)) {
 			dev_err(dev, "Failed to get mailbox%d resource", i);
 			return -ENODEV;
 		}
 
-		gxp->mbx[i].paddr = r->start;
+		gxp->mbx[i].phys_addr = r->start;
 		gxp->mbx[i].size = resource_size(r);
-		gxp->mbx[i].vaddr = devm_ioremap_resource(dev, r);
-		if (IS_ERR_OR_NULL(gxp->mbx[i].vaddr)) {
+		gxp->mbx[i].virt_addr = devm_ioremap_resource(dev, r);
+		if (IS_ERR_OR_NULL(gxp->mbx[i].virt_addr)) {
 			dev_err(dev, "Failed to map mailbox%d's register", i);
 			return -ENODEV;
 		}
@@ -1930,6 +1948,10 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 
 	dev_notice(dev, "Probing gxp driver with commit %s\n", get_driver_commit());
 
+	ret = gcip_iommu_get_space_size(dev, &gxp->iommu_space_size);
+	if (ret)
+		return ret;
+
 	gxp->dev = dev;
 	gxp_create_debugdir(gxp);
 
@@ -1965,7 +1987,7 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 		goto err_put_tpu_dev;
 	}
 
-	gxp->mailbox_mgr = gxp_mailbox_create_manager(gxp, GXP_NUM_MAILBOXES);
+	gxp->mailbox_mgr = gxp_mailbox_create_manager(gxp, gxp->num_mailboxes_compat);
 	if (IS_ERR(gxp->mailbox_mgr)) {
 		ret = PTR_ERR(gxp->mailbox_mgr);
 		dev_err(dev, "Failed to create mailbox manager: %d\n", ret);
@@ -2028,19 +2050,12 @@ static int gxp_common_platform_probe(struct platform_device *pdev, struct gxp_de
 	if (ret)
 		dev_warn(dev, "Failed to init thermal driver: %d\n", ret);
 
-	gxp->gfence_mgr = gcip_dma_fence_manager_create(gxp->dev);
-	if (IS_ERR(gxp->gfence_mgr)) {
-		ret = PTR_ERR(gxp->gfence_mgr);
-		dev_err(dev, "Failed to init DMA fence manager: %d\n", ret);
-		goto err_thermal_destroy;
-	}
-
 	INIT_LIST_HEAD(&gxp->client_list);
 	mutex_init(&gxp->client_list_lock);
 	if (gxp->after_probe) {
 		ret = gxp->after_probe(gxp);
 		if (ret)
-			goto err_dma_fence_destroy;
+			goto err_thermal_destroy;
 	}
 
 #if IS_ENABLED(CONFIG_SUBSYSTEM_COREDUMP)
@@ -2064,8 +2079,6 @@ err_before_remove:
 	gxp_debug_dump_exit(gxp);
 	if (gxp->before_remove)
 		gxp->before_remove(gxp);
-err_dma_fence_destroy:
-	/* DMA fence manager creation doesn't need revert */
 err_thermal_destroy:
 	gxp_thermal_exit(gxp);
 	gxp_core_telemetry_exit(gxp);
@@ -2098,12 +2111,17 @@ err_remove_debugdir:
 static void gxp_common_platform_remove(struct platform_device *pdev)
 {
 	struct gxp_dev *gxp = platform_get_drvdata(pdev);
+	int power_down_retry = 5;
 
 	/*
-	 * This may power off the BLK, so should do it first before releasing
-	 * any resource.
+	 * This may power off the BLK, so should do it first before releasing any resource. Note
+	 * that if the power down request fails even after retry, gcip-pm will give up the request
+	 * and the block might be in a bad state. This case ideally won't happen in the real
+	 * production, but could happen at the development phase. It is inevitable if the kernel
+	 * driver cannot properly power block down, otherwise, any unpredictable error such as
+	 * kernel panic can occur.
 	 */
-	gcip_pm_flush_put_work(gxp->power_mgr->pm);
+	gcip_pm_flush_work(gxp->power_mgr->pm, power_down_retry);
 	gxp_device_remove(gxp);
 	gxp_debug_dump_exit(gxp);
 	if (gxp->before_remove)
@@ -2147,18 +2165,26 @@ static int gxp_platform_suspend(struct device *dev)
 	struct gcip_pm *pm = gxp->power_mgr->pm;
 	struct gxp_client *client;
 	int count;
+	bool suspendable;
 
 	if (!gcip_pm_trylock(pm)) {
-		dev_dbg(gxp->dev, "cannot suspend during power state transition\n");
+		dev_warn_ratelimited(gxp->dev, "cannot suspend during power state transition\n");
 		return -EAGAIN;
 	}
-	count = gcip_pm_get_count(pm);
+
+	suspendable = gcip_pm_suspendable_locked(pm, &count);
 	gcip_pm_unlock(pm);
-	if (!count) {
+
+	if (suspendable) {
 		dev_info_ratelimited(gxp->dev, "suspended\n");
 		return 0;
 	}
 
+	/* Not suspendable but count 0 means there is pending power down transition. */
+	if (!count)
+		return -EAGAIN;
+
+	dev_warn_ratelimited(gxp->dev, "cannot suspend with power up count = %d\n", count);
 	/* Log clients currently holding a wakelock */
 	if (!mutex_trylock(&gxp->client_list_lock)) {
 		dev_warn_ratelimited(

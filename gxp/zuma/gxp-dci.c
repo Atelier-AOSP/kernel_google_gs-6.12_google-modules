@@ -2,7 +2,7 @@
 /*
  * Implementation of DCI (Direct Command Interface) using mailbox.
  *
- * Copyright (C) 2022-2024 Google LLC
+ * Copyright (C) 2022-2026 Google LLC
  */
 
 #include <linux/kthread.h>
@@ -124,7 +124,7 @@ static int gxp_dci_mailbox_manager_wait_async_resp(struct gxp_client *client,
 	spin_unlock_irq(&resp_queue->lock);
 
 	if (resp_seq)
-		*resp_seq = resp_ptr->resp.seq;
+		*resp_seq = gcip_mailbox_awaiter_get_seq(&resp_ptr->gcip_awaiter);
 	if (resp_status)
 		*resp_status = resp_ptr->resp.status;
 
@@ -165,8 +165,8 @@ static int gxp_dci_mailbox_manager_wait_async_resp(struct gxp_client *client,
 	 * handler (which may reference the `gxp_dci_async_response`) has
 	 * been able to exit cleanly.
 	 */
-	gcip_mailbox_cancel_awaiter_timeout(resp_ptr->awaiter);
-	gcip_mailbox_release_awaiter(resp_ptr->awaiter);
+	gcip_mailbox_cancel_timeout_work_sync(&resp_ptr->gcip_awaiter);
+	gcip_mailbox_awaiter_put(&resp_ptr->gcip_awaiter);
 
 	return 0;
 }
@@ -189,7 +189,7 @@ static void gxp_dci_mailbox_manager_release_unconsumed_async_resps(struct gxp_vi
 			cur, nxt, &vd->mailbox_resp_queues[i].dest_queue,
 			list_entry) {
 			list_del(&cur->list_entry);
-			gcip_mailbox_release_awaiter(cur->awaiter);
+			gcip_mailbox_awaiter_put(&cur->gcip_awaiter);
 		}
 		spin_unlock_irqrestore(&vd->mailbox_resp_queues[i].lock, flags);
 	}
@@ -213,42 +213,25 @@ struct gxp_dci {
 	struct gxp_virtual_device *vd;
 };
 
-static u64 gxp_dci_get_cmd_elem_seq(struct gcip_mailbox *mailbox, void *cmd)
+/**
+ * gxp_dci_async_response_release() - The callback function to release the gcip_mailbox_awaiter.
+ * @gcip_awaiter: The pointer to the gcip_mailbox_awaiter to be released.
+ */
+static void gxp_dci_async_response_release(struct gcip_mailbox_awaiter *gcip_awaiter)
 {
-	struct gxp_dci_command *elem = cmd;
+	struct gxp_dci_async_response *async_resp =
+		container_of(gcip_awaiter, struct gxp_dci_async_response, gcip_awaiter);
 
-	return elem->seq;
+	if (async_resp->eventfd)
+		gxp_eventfd_put(async_resp->eventfd);
+	kfree(async_resp);
 }
 
-static void gxp_dci_set_cmd_elem_seq(struct gcip_mailbox *mailbox, void *cmd,
-				     u64 seq)
+static void gxp_dci_async_response_handle_arrived(struct gcip_mailbox_awaiter *gcip_awaiter)
 {
-	struct gxp_dci_command *elem = cmd;
-
-	elem->seq = seq;
-}
-
-static u64 gxp_dci_get_resp_elem_seq(struct gcip_mailbox *mailbox, void *resp)
-{
-	struct gxp_dci_response *elem = resp;
-
-	return elem->seq;
-}
-
-static void gxp_dci_set_resp_elem_seq(struct gcip_mailbox *mailbox, void *resp,
-				      u64 seq)
-{
-	struct gxp_dci_response *elem = resp;
-
-	elem->seq = seq;
-}
-
-static void
-gxp_dci_handle_awaiter_arrived(struct gcip_mailbox *mailbox,
-			       struct gcip_mailbox_resp_awaiter *awaiter)
-{
-	struct gxp_mailbox *mbx = mailbox->data;
-	struct gxp_dci_async_response *async_resp = awaiter->data;
+	struct gxp_mailbox *mbx = gcip_awaiter->mailbox->data;
+	struct gxp_dci_async_response *async_resp =
+		container_of(gcip_awaiter, struct gxp_dci_async_response, gcip_awaiter);
 	unsigned long flags;
 
 	gxp_pm_update_requested_power_states(
@@ -257,6 +240,7 @@ gxp_dci_handle_awaiter_arrived(struct gcip_mailbox *mailbox,
 	spin_lock_irqsave(async_resp->dest_queue_lock, flags);
 
 	async_resp->resp.status = GXP_DCI_RESP_OK;
+	gcip_mailbox_awaiter_get(&async_resp->gcip_awaiter);
 	list_add_tail(&async_resp->list_entry, async_resp->dest_queue);
 	/*
 	 * Marking the dest_queue as NULL indicates the
@@ -274,12 +258,12 @@ gxp_dci_handle_awaiter_arrived(struct gcip_mailbox *mailbox,
 	spin_unlock_irqrestore(async_resp->dest_queue_lock, flags);
 }
 
-static void gxp_dci_handle_awaiter_timedout(struct gcip_mailbox *mailbox,
-					    struct gcip_mailbox_resp_awaiter *awaiter)
+static void gxp_dci_async_response_handle_timedout(struct gcip_mailbox_awaiter *gcip_awaiter)
 {
-	struct gxp_mailbox *mbx = mailbox->data;
+	struct gxp_mailbox *mbx = gcip_awaiter->mailbox->data;
 	struct gxp_dci *dci = mbx->data;
-	struct gxp_dci_async_response *async_resp = awaiter->data;
+	struct gxp_dci_async_response *async_resp =
+		container_of(gcip_awaiter, struct gxp_dci_async_response, gcip_awaiter);
 	struct gxp_dci_response *resp = &async_resp->resp;
 	struct gxp_dev *gxp = mbx->gxp;
 	unsigned long flags;
@@ -295,6 +279,7 @@ static void gxp_dci_handle_awaiter_timedout(struct gcip_mailbox *mailbox,
 	spin_lock_irqsave(async_resp->dest_queue_lock, flags);
 	if (async_resp->dest_queue) {
 		resp->status = GXP_DCI_RESP_TIMEOUT;
+		gcip_mailbox_awaiter_get(&async_resp->gcip_awaiter);
 		list_add_tail(&async_resp->list_entry, async_resp->dest_queue);
 		spin_unlock_irqrestore(async_resp->dest_queue_lock, flags);
 
@@ -322,26 +307,44 @@ static void gxp_dci_handle_awaiter_timedout(struct gcip_mailbox *mailbox,
 	}
 }
 
-static void gxp_dci_handle_awaiter_flushed(struct gcip_mailbox *mailbox,
-					   struct gcip_mailbox_resp_awaiter *awaiter)
+static void gxp_dci_async_response_handle_canceled(struct gcip_mailbox_awaiter *gcip_awaiter)
 {
-	struct gxp_dci_async_response *async_resp = awaiter->data;
+	struct gxp_dci_async_response *async_resp =
+		container_of(gcip_awaiter, struct gxp_dci_async_response, gcip_awaiter);
 	unsigned long flags;
 
 	spin_lock_irqsave(async_resp->dest_queue_lock, flags);
 	async_resp->dest_queue = NULL;
 	spin_unlock_irqrestore(async_resp->dest_queue_lock, flags);
-
-	gcip_mailbox_release_awaiter(async_resp->awaiter);
 }
 
-static void gxp_dci_release_awaiter_data(void *data)
-{
-	struct gxp_dci_async_response *async_resp = data;
+const struct gcip_mailbox_awaiter_ops gxp_dci_async_response_ops = {
+	.release = gxp_dci_async_response_release,
+	.handle_arrived = gxp_dci_async_response_handle_arrived,
+	.handle_timedout = gxp_dci_async_response_handle_timedout,
+	.handle_canceled = gxp_dci_async_response_handle_canceled,
+};
 
-	if (async_resp->eventfd)
-		gxp_eventfd_put(async_resp->eventfd);
-	kfree(async_resp);
+static u64 gxp_dci_get_cmd_elem_seq(struct gcip_mailbox *mailbox, void *cmd)
+{
+	struct gxp_dci_command *elem = cmd;
+
+	return elem->seq;
+}
+
+static void gxp_dci_set_cmd_elem_seq(struct gcip_mailbox *mailbox, void *cmd,
+				     u64 seq)
+{
+	struct gxp_dci_command *elem = cmd;
+
+	elem->seq = seq;
+}
+
+static u64 gxp_dci_get_resp_elem_seq(struct gcip_mailbox *mailbox, void *resp)
+{
+	struct gxp_dci_response *elem = resp;
+
+	return elem->seq;
 }
 
 static const struct gcip_mailbox_ops gxp_dci_gcip_mbx_ops = {
@@ -358,14 +361,9 @@ static const struct gcip_mailbox_ops gxp_dci_gcip_mbx_ops = {
 	.acquire_rx_queue_lock = gxp_mailbox_gcip_ops_acquire_rx_queue_lock,
 	.release_rx_queue_lock = gxp_mailbox_gcip_ops_release_rx_queue_lock,
 	.get_resp_elem_seq = gxp_dci_get_resp_elem_seq,
-	.set_resp_elem_seq = gxp_dci_set_resp_elem_seq,
 	.wait_for_tx_queue_not_full = gxp_mailbox_gcip_ops_wait_for_tx_queue_not_full,
 	.after_enqueue_cmd = gxp_mailbox_gcip_ops_after_enqueue_cmd,
 	.after_fetch_resps = gxp_mailbox_gcip_ops_after_fetch_resps,
-	.handle_awaiter_arrived = gxp_dci_handle_awaiter_arrived,
-	.handle_awaiter_timedout = gxp_dci_handle_awaiter_timedout,
-	.handle_awaiter_flushed = gxp_dci_handle_awaiter_flushed,
-	.release_awaiter_data = gxp_dci_release_awaiter_data,
 	.is_block_off = gxp_mailbox_gcip_ops_is_block_off,
 };
 
@@ -458,6 +456,7 @@ struct gxp_mailbox *gxp_dci_alloc(struct gxp_mailbox_manager *mgr,
 	struct gxp_dci *dci;
 	struct gxp_mailbox_args mbx_args = {
 		.type = GXP_MBOX_TYPE_GENERAL,
+		.mode = GXP_MBOX_FULL_DUPLEX,
 		.ops = &gxp_dci_gxp_mbx_ops,
 		.queue_wrap_bit = DCI_CIRCULAR_QUEUE_WRAP_BIT,
 		.cmd_elem_size = sizeof(struct gxp_dci_command),
@@ -500,7 +499,7 @@ int gxp_dci_execute_cmd(struct gxp_mailbox *mbx, struct gxp_dci_command *cmd,
 {
 	int ret;
 
-	ret = gxp_mailbox_send_cmd(mbx, cmd, resp, 0);
+	ret = gxp_mailbox_send_cmd(mbx, cmd, resp);
 	if (ret || !resp)
 		return ret;
 
@@ -533,11 +532,17 @@ int gxp_dci_execute_cmd_async(struct gxp_mailbox *mbx,
 
 	gxp_pm_update_requested_power_states(mbx->gxp, off_states,
 					     requested_states);
-	async_resp->awaiter = gxp_mailbox_put_cmd(mbx, cmd, &async_resp->resp, async_resp, 0);
-	if (IS_ERR(async_resp->awaiter)) {
-		ret = PTR_ERR(async_resp->awaiter);
+
+	ret = gcip_mailbox_awaiter_init(&async_resp->gcip_awaiter, mbx->mbx_impl.gcip_mbx,
+					&async_resp->resp, &gxp_dci_async_response_ops, NULL);
+	if (ret)
 		goto err_free_resp;
-	}
+
+	ret = gxp_mailbox_put_cmd(mbx, cmd, &async_resp->gcip_awaiter);
+	if (ret)
+		goto err_free_resp;
+
+	gcip_mailbox_awaiter_put(&async_resp->gcip_awaiter);
 
 	return 0;
 

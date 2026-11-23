@@ -331,8 +331,8 @@ DevmemIntReserveRangeAndMapPMR(CONNECTION_DATA *psConnectionData,
                                DEVMEMINT_RESERVATION **ppsReservation);
 
 /*************************************************************************/ /*!
- * @Function       DevmemIntChangeSparse
- * @Description    Changes the sparse allocations of a PMR by allocating and freeing
+ * @Function       DevmemIntSparseAddBacking
+ * @Description    Changes the sparse allocations of a PMR by allocating
  *                 pages and changing their corresponding GPU mapping.
  *
  *                 Prior to calling this function DevmemIntMapPMR
@@ -341,22 +341,32 @@ DevmemIntReserveRangeAndMapPMR(CONNECTION_DATA *psConnectionData,
  * @Input          ui32AllocPageCount    Number of pages to allocate
  * @Input          pai32AllocIndices     The logical PMR indices where pages will
  *                                       be allocated. May be NULL.
- * @Input          ui32FreePageCount     Number of pages to free
- * @Input          pai32FreeIndices      The logical PMR indices where pages will
- *                                       be freed. May be NULL.
- * @Input          uiSparseFlags         Flags passed in to determine which kind
- *                                       of sparse change the user wanted.
- *                                       See devicemem_typedefs.h for details.
  * @Input          psReservation         The reservation that the PMR is mapped to.
  * @Return         PVRSRV_ERROR
 */ /**************************************************************************/
 PVRSRV_ERROR
-DevmemIntChangeSparse(IMG_UINT32 ui32AllocPageCount,
-                      IMG_UINT32 *pai32AllocIndices,
-                      IMG_UINT32 ui32FreePageCount,
-                      IMG_UINT32 *pai32FreeIndices,
-                      SPARSE_MEM_RESIZE_FLAGS uiSparseFlags,
-                      DEVMEMINT_RESERVATION *psReservation);
+DevmemIntSparseAddBacking(IMG_UINT32 ui32AllocPageCount,
+                          IMG_UINT32 *pai32AllocIndices,
+                          DEVMEMINT_RESERVATION *psReservation);
+
+/*************************************************************************/ /*!
+ * @Function       DevmemIntSparseRemoveBacking
+ * @Description    Changes the sparse allocations of a PMR by freeing
+ *                 pages and changing their corresponding GPU mapping.
+ *
+ *                 Prior to calling this function DevmemIntMapPMR
+ *                 or DevmemIntReserveRangeAndMapPMR must be used.
+ *
+ * @Input          ui32FreePageCount     Number of pages to free
+ * @Input          pai32FreeIndices      The logical PMR indices where pages will
+ *                                       be freed. May be NULL.
+ * @Input          psReservation         The reservation that the PMR is mapped to.
+ * @Return         PVRSRV_ERROR
+*/ /**************************************************************************/
+PVRSRV_ERROR
+DevmemIntSparseRemoveBacking(IMG_UINT32 ui32FreePageCount,
+                             IMG_UINT32 *pai32FreeIndices,
+                             DEVMEMINT_RESERVATION *psReservation);
 
 PVRSRV_ERROR
 DevmemIntGetReservationData(DEVMEMINT_RESERVATION* psReservation, PMR** ppsPMR, IMG_DEV_VIRTADDR* psDevVAddr);

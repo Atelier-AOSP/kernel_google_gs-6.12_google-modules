@@ -26,7 +26,15 @@
 #include <linux/bug.h>
 #include <linux/cpumask.h>
 #include <linux/of_address.h>
-#include <asm/unaligned.h>
+#include <linux/unaligned.h>
+#include <linux/amba/pl330.h>
+
+#if IS_ENABLED(CONFIG_DMADEVICES_DEBUG)
+#define DEBUG
+#endif
+#if IS_ENABLED(CONFIG_DMADEVICES_VDEBUG)
+#define VERBOSE_DEBUG
+#endif
 
 #include "dmaengine.h"
 
@@ -3541,10 +3549,7 @@ pl330_probe(struct amba_device *adev, const struct amba_id *id)
 	 * This is the limit for transfers with a buswidth of 1, larger
 	 * buswidths will have larger limits.
 	 */
-	ret = dma_set_max_seg_size(&adev->dev, 1900800);
-	if (ret)
-		dev_err(&adev->dev, "unable to set the seg size\n");
-
+	dma_set_max_seg_size(&adev->dev, 1900800);
 
 	dev_info(&adev->dev,
 		"Loaded driver for PL330 DMAC-%x\n", adev->periphid);

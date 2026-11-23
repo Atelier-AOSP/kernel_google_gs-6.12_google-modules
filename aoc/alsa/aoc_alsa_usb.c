@@ -85,12 +85,10 @@ static int aoc_usb_notifier_call(struct notifier_block *notifier,
 
 	switch (val) {
 	case USB_CONNECT:
-		adev->achip->offload_state = USB_OFFLOAD_STATE_SIDEBAND;
 		aoc_set_usb_offload_state(adev->achip, adev->achip->offload_state);
 		break;
 	case USB_DISCONNECT:
-		adev->achip->offload_state = USB_OFFLOAD_STATE_DISABLED;
-		aoc_set_usb_offload_state(adev->achip, adev->achip->offload_state);
+		aoc_set_usb_offload_state(adev->achip, USB_OFFLOAD_STATE_DISABLED);
 		break;
 	case USB_SUSPEND:
 		break;
@@ -104,11 +102,24 @@ static int aoc_usb_notifier_call(struct notifier_block *notifier,
 	return NOTIFY_OK;
 }
 
+static int aoc_usb_sideband_event(struct usb_interface *intf, struct xhci_sideband_event *evt)
+{
+	switch (evt->type) {
+	case XHCI_SIDEBAND_XFER_RING_FREE:
+		pr_info("%s sideband ring free", __func__);
+		break;
+	default:
+		pr_err("%s invalid event type %d", __func__, evt->type);
+		break;
+	}
+	return 0;
+}
+
 void usb_audio_offload_connect(struct snd_usb_audio *chip)
 {
 	int card_num;
 	struct xhci_sideband *sb;
-	struct usb_device *udev = chip->dev;
+	struct usb_interface *intf;
 
 	if (!chip)
 		return;
@@ -117,8 +128,15 @@ void usb_audio_offload_connect(struct snd_usb_audio *chip)
 	if (card_num >= SNDRV_CARDS)
 		return;
 
+	if (chip->num_interfaces < 1) {
+		pr_err("chip->num_interfaces = %d is invalid\n", chip->num_interfaces);
+		return;
+	}
+
+	intf = chip->intf[chip->num_interfaces - 1];
+
 	if (!uadev[card_num].chip) {
-		sb = xhci_sideband_register(udev);
+		sb = xhci_sideband_register(intf, XHCI_SIDEBAND_VENDOR, aoc_usb_sideband_event);
 		if (!sb) {
 			pr_err("xhci_sideband_register fail");
 			return;
@@ -143,6 +161,7 @@ void usb_audio_offload_connect(struct snd_usb_audio *chip)
 void usb_audio_offload_disconnect(struct snd_usb_audio *chip)
 {
 	struct uaudio_dev *dev;
+	struct usb_device *udev;
 	struct endpoint_info *info = NULL;
 	int card_num;
 	int i;
@@ -159,6 +178,7 @@ void usb_audio_offload_disconnect(struct snd_usb_audio *chip)
 				     USB_DISCONNECT, NULL);
 	mutex_lock(&chip->mutex);
 	dev = &uadev[card_num];
+	udev = chip->dev;
 	dev->udev = NULL;
 	dev->card_num = 0;
 
@@ -166,6 +186,9 @@ void usb_audio_offload_disconnect(struct snd_usb_audio *chip)
 		/* unregister sideband, will remove interrupter and endpoint*/
 		if (dev->sb) {
 			xhci_sideband_unregister(dev->sb);
+			if (udev && (dev->ep_info[SNDRV_PCM_STREAM_PLAYBACK].reference_count > 0 ||
+				     dev->ep_info[SNDRV_PCM_STREAM_CAPTURE].reference_count > 0))
+				usb_offload_put(udev);
 			pr_info("%s xhci sideband unregister", __func__);
 		}
 		dev->chip = NULL;
@@ -192,16 +215,36 @@ int usb_get_endpoint_dir(int aoc_dir)
 	return EP_NONE;
 }
 
-int aoc_setup_event_ring(int card_num, int intr_num, bool enable)
+int aoc_setup_event_ring(struct aoc_chip *achip, struct usb_device *udev, int intr_num, bool enable)
 {
 	int ret = 0;
 
 	if (enable) {
-		ret = xhci_sideband_create_interrupter(uadev[card_num].sb, 1,
-							   intr_num, false);
-		pr_info("%s IRQ create with ret %d", __func__, ret);
+		ret = usb_offload_get(udev);
+		if (ret < 0) {
+			pr_err("usb_offload_get return with ret = %d", ret);
+			return ret;
+		}
+
+		if (achip->usb_skip_event_ring)
+			return 0;
+
+		ret = xhci_sideband_create_interrupter(uadev[achip->usb_card].sb, 1,
+						       false, 0, intr_num);
+		if (ret < 0) {
+			usb_offload_put(udev);
+			pr_err("%s IRQ create fail with ret %d", __func__, ret);
+		} else {
+			pr_info("%s IRQ create with ret %d", __func__, ret);
+		}
 	} else {
-		xhci_sideband_remove_interrupter(uadev[card_num].sb);
+		if (!achip->usb_skip_event_ring)
+			xhci_sideband_remove_interrupter(uadev[achip->usb_card].sb);
+
+		ret = usb_offload_put(udev);
+		if (ret < 0)
+			pr_err("usb_offload_put return with ret = %d", ret);
+
 		pr_info("%s IRQ remove", __func__);
 	}
 	return ret;
@@ -220,13 +263,13 @@ int aoc_setup_transfer_ring(struct aoc_chip *achip, int card_num, int aoc_dir,
 	dir = usb_get_endpoint_dir(aoc_dir);
 
 	if (virt_ep->new_ring) {
-		pr_info("%s: deliver transfer ring from new_ring", __func__);
+		pr_info("%s deliver transfer ring from new_ring", __func__);
 		ep_ring = virt_ep->new_ring;
 	} else if (virt_ep->ring) {
-		pr_info("%s: deliver transfer ring from ring", __func__);
+		pr_info("%s deliver transfer ring from ring", __func__);
 		ep_ring = virt_ep->ring;
 	} else {
-		pr_err("%s: transfer ring not found!", __func__);
+		pr_err("%s transfer ring not found!", __func__);
 		return -EINVAL;
 	}
 
@@ -248,8 +291,11 @@ int aoc_usb_setup_config(struct aoc_chip *achip, unsigned int reference_count,
 	struct snd_usb_substream *subs = NULL;
 	struct snd_usb_audio *chip = NULL;
 	struct endpoint_info *info = NULL;
+	struct endpoint_info *playback_info = NULL;
+	struct endpoint_info *capture_info = NULL;
 	unsigned int card_num;
 	unsigned int device;
+	unsigned int old_ref_count;
 	bool implicit_fb = false;
 	int ret = 0;
 
@@ -262,64 +308,81 @@ int aoc_usb_setup_config(struct aoc_chip *achip, unsigned int reference_count,
 		chip = uadev[card_num].chip;
 
 	if (!chip) {
-		pr_err("%s no device connected (card %u device %u, direction %u)",
-		       __func__, card_num, device, direction);
+		pr_err("%s no device connected (card %u device %u, direction %u)", __func__,
+		       card_num, device, direction);
 		return -ENODEV;
 	}
+
+	ret = snd_usb_lock_shutdown(chip);
+	if (ret < 0) {
+		pr_err("%s: setup skipped. chip is shutting down (shutdown=%d, usage_count=%d)",
+		       __func__, atomic_read(&chip->shutdown), atomic_read(&chip->usage_count));
+		return -ENODEV;
+	}
+
 	pr_debug("%s card %u device %u, direction %u ref_count %d", __func__,
 		 card_num, device, direction, reference_count);
 	if (direction > SNDRV_PCM_STREAM_CAPTURE) {
 		pr_err("%s direction is unexpected %d", __func__, direction);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto unlock_shutdown;
 	}
 
 	mutex_lock(&chip->mutex);
 	if (uadev[card_num].chip != chip || !uadev[card_num].sb) {
-		mutex_unlock(&chip->mutex);
-		return -ENODEV;
+		ret = -ENODEV;
+		goto unlock;
 	}
 
+	playback_info = &uadev[card_num].ep_info[SNDRV_PCM_STREAM_PLAYBACK];
+	capture_info = &uadev[card_num].ep_info[SNDRV_PCM_STREAM_CAPTURE];
+
 	info = &uadev[card_num].ep_info[direction];
+	old_ref_count = info->reference_count;
 	info->reference_count = reference_count;
 	if (info->reference_count != 1) {
 		pr_debug("%s skip", __func__);
-		mutex_unlock(&chip->mutex);
-		return 0;
+		ret = 0;
+		goto unlock;
 	}
 
 	subs = find_substream(card_num, device, direction);
 	if (!subs || !subs->dev) {
 		pr_err("%s subsream dev not found", __func__);
-		mutex_unlock(&chip->mutex);
-		return -ENODEV;
+		ret = -ENODEV;
+		goto err_ref_count;
 	}
 
 	if (!subs->data_endpoint) {
 		pr_err("%s data or sync_endpoint is null", __func__);
-		mutex_unlock(&chip->mutex);
-		return -ENODEV;
+		ret = -ENODEV;
+		goto err_ref_count;
 	}
 
-	ret = aoc_setup_event_ring(card_num, 1, true);
+	if (playback_info->reference_count + capture_info->reference_count == 1) {
+		ret = aoc_setup_event_ring(achip, subs->dev, 1, true);
+		if (ret < 0)
+			goto err_ref_count;
+	}
 
-	achip->offload_state = USB_OFFLOAD_STATE_SIDEBAND;
 	aoc_set_usb_offload_state(achip, achip->offload_state);
 
 	ep = usb_pipe_endpoint(subs->dev, subs->data_endpoint->pipe);
 	if (!ep) {
 		pr_err("%s data ep # %d context is null",
 		       __func__, subs->data_endpoint->ep_num);
-		mutex_unlock(&chip->mutex);
-		return -ENODEV;
+		ret = -ENODEV;
+		goto err_data_ep;
 	}
 
 	ret = xhci_sideband_add_endpoint(uadev[card_num].sb, ep);
 	if (ret < 0 && ret != -EBUSY) {
 		pr_info("%s sideband add data ep with ret %d", __func__, ret);
-		mutex_unlock(&chip->mutex);
-		return ret;
+		goto err_data_ep;
 	}
-	aoc_setup_transfer_ring(achip, card_num, direction, ep);
+	ret = aoc_setup_transfer_ring(achip, card_num, direction, ep);
+	if (ret < 0)
+		goto err_data_ring;
 
 	implicit_fb = snd_usb_is_implicit_feedback(subs->data_endpoint);
 	if (subs->sync_endpoint && !implicit_fb) {
@@ -328,20 +391,21 @@ int aoc_usb_setup_config(struct aoc_chip *achip, unsigned int reference_count,
 			pr_info("%s sync ep # %d context is null",
 			        __func__, subs->sync_endpoint->ep_num);
 			/* TODO: need refine this after enable implicit feedback b/289153968*/
-			mutex_unlock(&chip->mutex);
-			return -ENODEV;
+			ret = -ENODEV;
+			goto err_sync_ep;
 		}
 
 		ret = xhci_sideband_add_endpoint(uadev[card_num].sb, fb_ep);
 		if (ret < 0 && ret != -EBUSY) {
 			pr_info("%s sideband add sync ep with ret %d", __func__, ret);
-			xhci_sideband_remove_endpoint(uadev[card_num].sb, ep);
-			mutex_unlock(&chip->mutex);
-			return ret;
+			goto err_sync_ep;
 		}
 
-		aoc_setup_transfer_ring(achip, card_num,
+		ret = aoc_setup_transfer_ring(achip, card_num,
 					SNDRV_PCM_STREAM_CAPTURE, fb_ep);
+		if (ret < 0)
+			goto err_sync_ring;
+
 		aoc_set_usb_feedback_endpoint(achip, subs->dev, fb_ep);
 	}
 
@@ -351,7 +415,26 @@ int aoc_usb_setup_config(struct aoc_chip *achip, unsigned int reference_count,
 	info->pcm_card_num = card_num;
 	info->pcm_device = device;
 	mutex_unlock(&chip->mutex);
+	snd_usb_unlock_shutdown(chip);
 	return 0;
+
+err_sync_ring:
+	xhci_sideband_remove_endpoint(uadev[card_num].sb, fb_ep);
+err_sync_ep:
+err_data_ring:
+	xhci_sideband_remove_endpoint(uadev[card_num].sb, ep);
+err_data_ep:
+	if (playback_info->reference_count + capture_info->reference_count == 1) {
+		aoc_set_usb_offload_state(achip, USB_OFFLOAD_STATE_DISABLED);
+		aoc_setup_event_ring(achip, subs->dev, 1, false);
+	}
+err_ref_count:
+	info->reference_count = old_ref_count;
+unlock:
+	mutex_unlock(&chip->mutex);
+unlock_shutdown:
+	snd_usb_unlock_shutdown(chip);
+	return ret;
 }
 
 int aoc_usb_cleanup_config(struct aoc_chip *achip, unsigned int reference_count,
@@ -365,6 +448,7 @@ int aoc_usb_cleanup_config(struct aoc_chip *achip, unsigned int reference_count,
 	struct usb_host_endpoint *fb_ep = NULL;
 	unsigned int card_num;
 	unsigned int device;
+	int ret = 0;
 
 	if (!achip)
 		return -ENODEV;
@@ -379,6 +463,13 @@ int aoc_usb_cleanup_config(struct aoc_chip *achip, unsigned int reference_count,
 		return 0;
 	}
 
+	ret = snd_usb_lock_shutdown(chip);
+	if (ret < 0) {
+		pr_info("%s: cleanup skipped. chip is shutting down (shutdown=%d, usage_count=%d)",
+			__func__, atomic_read(&chip->shutdown), atomic_read(&chip->usage_count));
+		return 0;
+	}
+
 	pr_debug("%s card %u device %u, direction %u ref_count %u", __func__,
 		card_num, device, direction, reference_count);
 
@@ -387,14 +478,12 @@ int aoc_usb_cleanup_config(struct aoc_chip *achip, unsigned int reference_count,
 	info->reference_count = reference_count;
 	if (info->reference_count != 0) {
 		pr_debug("%s skip", __func__);
-		mutex_unlock(&chip->mutex);
-		return 0;
+		goto unlock_mutex;
 	}
 
 	if (!uadev[card_num].udev || !uadev[card_num].sb) {
 		pr_info("%s usb device or sideband already removed", __func__);
-		mutex_unlock(&chip->mutex);
-		return 0;
+		goto unlock_mutex;
 	}
 
 	if (info->data_ep_pipe) {
@@ -425,9 +514,29 @@ int aoc_usb_cleanup_config(struct aoc_chip *achip, unsigned int reference_count,
 	playback_info = &uadev[card_num].ep_info[SNDRV_PCM_STREAM_PLAYBACK];
 	capture_info = &uadev[card_num].ep_info[SNDRV_PCM_STREAM_CAPTURE];
 	if (playback_info->reference_count == 0 && capture_info->reference_count == 0)
-		aoc_setup_event_ring(card_num, 1, false);
+		aoc_setup_event_ring(achip, uadev[card_num].udev, 1, false);
+
+unlock_mutex:
 	mutex_unlock(&chip->mutex);
+	snd_usb_unlock_shutdown(chip);
 	return 0;
+}
+
+static void aoc_usb_parse_dts(struct device *dev, struct aoc_chip *achip)
+{
+	int use_legacy_offload = 0;
+
+	use_legacy_offload = device_property_present(dev, "aoc,usb-use-legacy-offload");
+	if (use_legacy_offload) {
+		achip->offload_state = USB_OFFLOAD_STATE_LEGACY;
+		pr_info("%s use USB legacy offload", __func__);
+	} else {
+		achip->offload_state = USB_OFFLOAD_STATE_SIDEBAND;
+	}
+
+	achip->usb_skip_event_ring = device_property_present(dev, "aoc,usb-disable-event-ring");
+	if (achip->usb_skip_event_ring)
+		pr_info("%s AoC handle interrupt skip event ring", __func__);
 }
 
 static int aoc_usb_component_probe(struct snd_soc_component *component)
@@ -442,6 +551,8 @@ static int aoc_usb_component_probe(struct snd_soc_component *component)
 
 	aocdev->nb.notifier_call = aoc_usb_notifier_call;
 	aocdev->achip = achip;
+
+	aoc_usb_parse_dts(component->dev, achip);
 
 	ret = blocking_notifier_chain_register(&aoc_alsa_usb_notifier_list,
 					       &aocdev->nb);
@@ -472,7 +583,7 @@ static int aoc_usb_probe(struct platform_device *pdev)
 
 	ret = devm_snd_soc_register_component(dev, &aoc_usb_component, NULL, 0);
 	if (ret)
-		pr_err("%s: fail to reigster aoc usb component %d", __func__, ret);
+		pr_err("%s fail to reigster aoc usb component %d", __func__, ret);
 
 	return ret;
 }

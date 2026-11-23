@@ -1,7 +1,6 @@
 /*************************************************************************/ /*!
 @File           pvr_sync_fpf_token.h
 @Title          Common functions for fast path fence sync token handling.
-@Codingstyle    LinuxKernel
 @Copyright      Copyright (c) Imagination Technologies Ltd. All Rights Reserved
 @Description    Common functions for fast path fence sync token operations..
 @License        Dual MIT/GPLv2

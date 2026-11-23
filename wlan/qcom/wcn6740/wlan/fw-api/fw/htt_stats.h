@@ -29,6 +29,43 @@
 #include <htt_common.h>
 #include <htt.h> /* HTT stats TLV struct def and tag defs */
 
+
+/* HTT_STATS_VAR_LEN_ARRAY1:
+ * This macro is for converting the definition of existing variable-length
+ * arrays within TLV structs of the form "type name[1];" to use the form
+ * "type name[];" while ensuring that the length of the TLV struct is
+ * unmodified by the conversion.
+ * In general, any new variable-length structs should simply use
+ * "type name[];" directly, rather than using HTT_STATS_VAR_LEN_ARRAY1.
+ * However, if there's a legitimate reason to make the new variable-length
+ * struct appear to not have a variable length, HTT_STATS_VAR_LEN_ARRAY1
+ * can be used for this purpose.
+ */
+
+#if defined(ATH_TARGET) || defined(__WINDOWS__)
+    #define HTT_STATS_VAR_LEN_ARRAY1(type, name) type name[1]
+#else
+    /*
+     * Certain build settings of the Linux kernel don't allow zero-element
+     * arrays, and C++ doesn't allow zero-length empty structs.
+     * Confirm that there's no build that combines kernel with C++.
+     */
+    #ifdef __cplusplus
+        #error unsupported combination of kernel and C plus plus
+    #endif
+    #define HTT_STATS_DUMMY_ZERO_LEN_FIELD struct {} dummy_zero_len_field
+
+    #define HTT_STATS_VAR_LEN_ARRAY1(type, name) \
+        union { \
+            type name ## __first_elem; \
+            struct { \
+                HTT_STATS_DUMMY_ZERO_LEN_FIELD; \
+                type name[]; \
+            };  \
+        }
+#endif
+
+
 /**
  * htt_dbg_ext_stats_type -
  * The base structure for each of the stats_type is only for reference
@@ -663,7 +700,7 @@ typedef enum {
 /* Length should be multiple of DWORD */
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
-    A_UINT32      data[1]; /* Can be variable length */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, data); /* Can be variable length */
 } htt_stats_string_tlv;
 
 #define HTT_TX_PDEV_STATS_CMN_MAC_ID_M 0x000000ff
@@ -859,35 +896,35 @@ typedef struct {
 /* NOTE: Variable length TLV, use length spec to infer array size */
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
-    A_UINT32      urrn_stats[1]; /* HTT_TX_PDEV_MAX_URRN_STATS */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, urrn_stats); /* HTT_TX_PDEV_MAX_URRN_STATS */
 } htt_tx_pdev_stats_urrn_tlv_v;
 
 #define HTT_TX_PDEV_STATS_FLUSH_TLV_SZ(_num_elems) (sizeof(A_UINT32) * (_num_elems))
 /* NOTE: Variable length TLV, use length spec to infer array size */
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
-    A_UINT32      flush_errs[1]; /* HTT_TX_PDEV_MAX_FLUSH_REASON_STATS */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, flush_errs); /* HTT_TX_PDEV_MAX_FLUSH_REASON_STATS */
 } htt_tx_pdev_stats_flush_tlv_v;
 
 #define HTT_TX_PDEV_STATS_SIFS_TLV_SZ(_num_elems) (sizeof(A_UINT32) * (_num_elems))
 /* NOTE: Variable length TLV, use length spec to infer array size */
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
-    A_UINT32      sifs_status[1]; /* HTT_TX_PDEV_MAX_SIFS_BURST_STATS */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, sifs_status); /* HTT_TX_PDEV_MAX_SIFS_BURST_STATS */
 } htt_tx_pdev_stats_sifs_tlv_v;
 
 #define HTT_TX_PDEV_STATS_PHY_ERR_TLV_SZ(_num_elems) (sizeof(A_UINT32) * (_num_elems))
 /* NOTE: Variable length TLV, use length spec to infer array size */
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
-    A_UINT32      phy_errs[1]; /* HTT_TX_PDEV_MAX_PHY_ERR_STATS */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, phy_errs); /* HTT_TX_PDEV_MAX_PHY_ERR_STATS */
 } htt_tx_pdev_stats_phy_err_tlv_v;
 
 #define HTT_TX_PDEV_STATS_SIFS_HIST_TLV_SZ(_num_elems) (sizeof(A_UINT32) * (_num_elems))
 /* NOTE: Variable length TLV, use length spec to infer array size */
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
-    A_UINT32      sifs_hist_status[1]; /* HTT_TX_PDEV_SIFS_BURST_HIST_STATS */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, sifs_hist_status); /* HTT_TX_PDEV_SIFS_BURST_HIST_STATS */
 } htt_tx_pdev_stats_sifs_hist_tlv_v;
 
 typedef struct {
@@ -959,7 +996,7 @@ typedef struct {
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
     A_UINT32      hist_bin_size;
-    A_UINT32      tried_mpdu_cnt_hist[1]; /* HTT_TX_PDEV_TRIED_MPDU_CNT_HIST */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, tried_mpdu_cnt_hist); /* HTT_TX_PDEV_TRIED_MPDU_CNT_HIST */
 } htt_tx_pdev_stats_tried_mpdu_cnt_hist_tlv_v;
 
 typedef struct {
@@ -1156,6 +1193,7 @@ typedef struct {
  * This structure is for documentation, and cannot be safely used directly.
  * Instead, use the constituent TLV structures to fill/parse.
  */
+#ifdef ATH_TARGET
 typedef struct _htt_pdev_err_stats {
     htt_hw_stats_pdev_errs_tlv  pdev_errs;
     htt_hw_stats_intr_misc_tlv  misc_stats[1];
@@ -1163,6 +1201,7 @@ typedef struct _htt_pdev_err_stats {
     htt_hw_stats_whal_tx_tlv    whal_tx_stats;
     htt_hw_war_stats_tlv        hw_war;
 } htt_hw_err_stats_t;
+#endif /* ATH_TARGET */
 
 /* ============ PEER STATS ============ */
 
@@ -1810,6 +1849,7 @@ typedef struct {
  * This structure is for documentation, and cannot be safely used directly.
  * Instead, use the constituent TLV structures to fill/parse.
  */
+#ifdef ATH_TARGET
 typedef struct _htt_peer_stats {
     htt_peer_stats_cmn_tlv cmn_tlv;
 
@@ -1823,6 +1863,7 @@ typedef struct _htt_peer_stats {
     htt_tx_tid_stats_v1_tlv    tx_tid_stats_v1[1];
     htt_peer_sched_stats_tlv   peer_sched_stats;
 } htt_peer_stats_t;
+#endif /* ATH_TARGET */
 
 /* =========== ACTIVE PEER LIST ========== */
 
@@ -1835,7 +1876,7 @@ typedef struct _htt_peer_stats {
  * Instead, use the constituent TLV structures to fill/parse.
  */
 typedef struct {
-    htt_peer_details_tlv peer_details[1];
+    HTT_STATS_VAR_LEN_ARRAY1(htt_peer_details_tlv, peer_details);
 } htt_active_peer_details_list_t;
 
 /* =========== MUMIMO HWQ stats =========== */
@@ -1910,6 +1951,7 @@ typedef struct {
  * This structure is for documentation, and cannot be safely used directly.
  * Instead, use the constituent TLV structures to fill/parse.
  */
+#ifdef ATH_TARGET
 typedef struct {
     struct _hwq_mu_mimo_stats {
         htt_tx_hwq_mu_mimo_cmn_stats_tlv  cmn_tlv;
@@ -1919,6 +1961,7 @@ typedef struct {
         htt_tx_hwq_mu_mimo_mpdu_stats_tlv mu_mimo_mpdu_stats_tlv[1];
     } hwq[1];
 } htt_tx_hwq_mu_mimo_stats_t;
+#endif /* ATH_TARGET */
 
 /* == TX HWQ STATS == */
 #define HTT_TX_HWQ_STATS_CMN_MAC_ID_M 0x000000ff
@@ -2018,7 +2061,7 @@ typedef struct {
     htt_tlv_hdr_t tlv_hdr;
     A_UINT32      hist_intvl;
     /** histogram of ppdu post to hwsch - > cmd status received */
-    A_UINT32 difs_latency_hist[1]; /* HTT_TX_HWQ_MAX_DIFS_LATENCY_BINS */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, difs_latency_hist); /* HTT_TX_HWQ_MAX_DIFS_LATENCY_BINS */
 } htt_tx_hwq_difs_latency_stats_tlv_v;
 
 #define HTT_TX_HWQ_CMD_RESULT_STATS_TLV_SZ(_num_elems) (sizeof(A_UINT32) * (_num_elems))
@@ -2027,7 +2070,7 @@ typedef struct {
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
     /** Histogram of sched cmd result */
-    A_UINT32 cmd_result[1]; /* HTT_TX_HWQ_MAX_CMD_RESULT_STATS */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, cmd_result); /* HTT_TX_HWQ_MAX_CMD_RESULT_STATS */
 } htt_tx_hwq_cmd_result_stats_tlv_v;
 
 #define HTT_TX_HWQ_CMD_STALL_STATS_TLV_SZ(_num_elems) (sizeof(A_UINT32) * (_num_elems))
@@ -2036,7 +2079,7 @@ typedef struct {
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
     /** Histogram of various pause conitions */
-    A_UINT32 cmd_stall_status[1]; /* HTT_TX_HWQ_MAX_CMD_STALL_STATS */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, cmd_stall_status); /* HTT_TX_HWQ_MAX_CMD_STALL_STATS */
 } htt_tx_hwq_cmd_stall_stats_tlv_v;
 
 #define HTT_TX_HWQ_FES_RESULT_STATS_TLV_SZ(_num_elems) (sizeof(A_UINT32) * (_num_elems))
@@ -2045,7 +2088,7 @@ typedef struct {
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
     /** Histogram of number of user fes result */
-    A_UINT32 fes_result[1]; /* HTT_TX_HWQ_MAX_FES_RESULT_STATS */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, fes_result); /* HTT_TX_HWQ_MAX_FES_RESULT_STATS */
 } htt_tx_hwq_fes_result_stats_tlv_v;
 
 #define HTT_TX_HWQ_TRIED_MPDU_CNT_HIST_TLV_SZ(_num_elems) (sizeof(A_UINT32) * (_num_elems))
@@ -2066,7 +2109,7 @@ typedef struct {
     htt_tlv_hdr_t tlv_hdr;
     A_UINT32      hist_bin_size;
     /** Histogram of number of mpdus on tried mpdu */
-    A_UINT32 tried_mpdu_cnt_hist[1]; /* HTT_TX_HWQ_TRIED_MPDU_CNT_HIST */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, tried_mpdu_cnt_hist); /* HTT_TX_HWQ_TRIED_MPDU_CNT_HIST */
 } htt_tx_hwq_tried_mpdu_cnt_hist_tlv_v;
 
 #define HTT_TX_HWQ_TXOP_USED_CNT_HIST_TLV_SZ(_num_elems) (sizeof(A_UINT32) * (_num_elems))
@@ -2084,7 +2127,7 @@ typedef struct {
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
     /** Histogram of txop used cnt */
-    A_UINT32 txop_used_cnt_hist[1]; /* HTT_TX_HWQ_TXOP_USED_CNT_HIST */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, txop_used_cnt_hist); /* HTT_TX_HWQ_TXOP_USED_CNT_HIST */
 } htt_tx_hwq_txop_used_cnt_hist_tlv_v;
 
 /* STATS_TYPE : HTT_DBG_EXT_STATS_PDEV_TX_HWQ
@@ -2473,7 +2516,7 @@ typedef struct {
      * had used.
      */
     A_UINT32 arr_elem_size_ax_ndpa;
-    htt_txbf_ofdma_ax_ndpa_stats_elem_t ax_ndpa[1]; /* variable length */
+    HTT_STATS_VAR_LEN_ARRAY1(htt_txbf_ofdma_ax_ndpa_stats_elem_t, ax_ndpa);
 } htt_txbf_ofdma_ax_ndpa_stats_tlv;
 
 typedef struct {
@@ -2502,7 +2545,7 @@ typedef struct {
      * had used.
      */
     A_UINT32 arr_elem_size_ax_ndp;
-    htt_txbf_ofdma_ax_ndp_stats_elem_t ax_ndp[1]; /* variable length */
+    HTT_STATS_VAR_LEN_ARRAY1(htt_txbf_ofdma_ax_ndp_stats_elem_t, ax_ndp);
 } htt_txbf_ofdma_ax_ndp_stats_tlv;
 
 typedef struct {
@@ -2536,7 +2579,7 @@ typedef struct {
      * had used.
      */
     A_UINT32 arr_elem_size_ax_brp;
-    htt_txbf_ofdma_ax_brp_stats_elem_t ax_brp[1]; /* variable length */
+    HTT_STATS_VAR_LEN_ARRAY1(htt_txbf_ofdma_ax_brp_stats_elem_t, ax_brp);
 } htt_txbf_ofdma_ax_brp_stats_tlv;
 
 typedef struct {
@@ -2576,7 +2619,7 @@ typedef struct {
      * had used.
      */
     A_UINT32 arr_elem_size_ax_steer;
-    htt_txbf_ofdma_ax_steer_stats_elem_t ax_steer[1]; /* variable length */
+    HTT_STATS_VAR_LEN_ARRAY1(htt_txbf_ofdma_ax_steer_stats_elem_t, ax_steer);
 } htt_txbf_ofdma_ax_steer_stats_tlv;
 
 typedef struct {
@@ -2605,7 +2648,7 @@ typedef struct {
      * had used.
      */
     A_UINT32 arr_elem_size_be_ndpa;
-    htt_txbf_ofdma_be_ndpa_stats_elem_t be_ndpa[1]; /* variable length */
+    HTT_STATS_VAR_LEN_ARRAY1(htt_txbf_ofdma_be_ndpa_stats_elem_t, be_ndpa);
 } htt_txbf_ofdma_be_ndpa_stats_tlv;
 
 typedef struct {
@@ -2634,7 +2677,7 @@ typedef struct {
      * had used.
      */
     A_UINT32 arr_elem_size_be_ndp;
-    htt_txbf_ofdma_be_ndp_stats_elem_t be_ndp[1]; /* variable length */
+    HTT_STATS_VAR_LEN_ARRAY1(htt_txbf_ofdma_be_ndp_stats_elem_t, be_ndp);
 } htt_txbf_ofdma_be_ndp_stats_tlv;
 
 typedef struct {
@@ -2668,7 +2711,7 @@ typedef struct {
      * had used
      */
     A_UINT32 arr_elem_size_be_brp;
-    htt_txbf_ofdma_be_brp_stats_elem_t be_brp[1]; /* variable length */
+    HTT_STATS_VAR_LEN_ARRAY1(htt_txbf_ofdma_be_brp_stats_elem_t, be_brp);
 } htt_txbf_ofdma_be_brp_stats_tlv;
 
 typedef struct {
@@ -2710,7 +2753,7 @@ typedef struct {
      * had used.
      */
     A_UINT32 arr_elem_size_be_steer;
-    htt_txbf_ofdma_be_steer_stats_elem_t be_steer[1]; /* variable length */
+    HTT_STATS_VAR_LEN_ARRAY1(htt_txbf_ofdma_be_steer_stats_elem_t, be_steer);
 } htt_txbf_ofdma_be_steer_stats_tlv;
 
 /* STATS_TYPE : HTT_DBG_EXT_STATS_TXBF_OFDMA
@@ -3285,6 +3328,7 @@ typedef struct {
  * This structure is for documentation, and cannot be safely used directly.
  * Instead, use the constituent TLV structures to fill/parse.
  */
+#ifdef ATH_TARGET
 typedef struct {
     htt_tx_pdev_mu_mimo_sch_stats_tlv mu_mimo_sch_stats_tlv[1]; /* WAL_TX_STATS_MAX_GROUP_SIZE */
     htt_tx_pdev_dl_mu_mimo_sch_stats_tlv dl_mu_mimo_sch_stats_tlv[1];
@@ -3298,6 +3342,7 @@ typedef struct {
     htt_tx_pdev_mpdu_stats_tlv mu_mimo_mpdu_stats_tlv[1]; /* WAL_TX_STATS_MAX_NUM_USERS */
     htt_tx_pdev_mumimo_grp_stats_tlv mumimo_grp_stats_tlv;
 } htt_tx_pdev_mu_mimo_stats_t;
+#endif /* ATH_TARGET */
 
 /* == TX SCHED STATS == */
 
@@ -3331,7 +3376,7 @@ typedef struct {
      * to the most recent scheduler invocation, and which corresponds to
      * the (NUM_SCHED_ORDER_LOG-1) most recent scheduler invocation.
      */
-    A_UINT32 sched_order_su[1]; /* HTT_TX_PDEV_NUM_SCHED_ORDER_LOG */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, sched_order_su);
 } htt_sched_txq_sched_order_su_tlv_v;
 
 typedef struct {
@@ -3397,7 +3442,7 @@ typedef struct {
      *
      * Indexed by htt_sched_txq_sched_ineligibility_tlv_enum.
      */
-    A_UINT32 sched_ineligibility[1];
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, sched_ineligibility);
 } htt_sched_txq_sched_ineligibility_tlv_v;
 
 typedef enum {
@@ -3587,7 +3632,8 @@ typedef struct {
 /* NOTE: Variable length TLV, use length spec to infer array size */
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
-    A_UINT32      gen_mpdu_end_reason[1]; /* HTT_TX_TQM_MAX_GEN_MPDU_END_REASON */
+    /* HTT_TX_TQM_MAX_GEN_MPDU_END_REASON */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, gen_mpdu_end_reason);
 } htt_tx_tqm_gen_mpdu_stats_tlv_v;
 
 #define HTT_TX_TQM_LIST_MPDU_STATS_TLV_SZ(_num_elems) (sizeof(A_UINT32) * (_num_elems))
@@ -3595,7 +3641,8 @@ typedef struct {
 /* NOTE: Variable length TLV, use length spec to infer array size */
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
-    A_UINT32      list_mpdu_end_reason[1]; /* HTT_TX_TQM_MAX_LIST_MPDU_END_REASON */
+    /* HTT_TX_TQM_MAX_LIST_MPDU_END_REASON */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, list_mpdu_end_reason);
 } htt_tx_tqm_list_mpdu_stats_tlv_v;
 
 #define HTT_TX_TQM_LIST_MPDU_CNT_TLV_SZ(_num_elems) (sizeof(A_UINT32) * (_num_elems))
@@ -3603,7 +3650,8 @@ typedef struct {
 /* NOTE: Variable length TLV, use length spec to infer array size */
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
-    A_UINT32      list_mpdu_cnt_hist[1]; /* HTT_TX_TQM_MAX_LIST_MPDU_CNT_HISTOGRAM_BINS */
+    /* HTT_TX_TQM_MAX_LIST_MPDU_CNT_HISTOGRAM_BINS */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, list_mpdu_cnt_hist);
 } htt_tx_tqm_list_mpdu_cnt_tlv_v;
 
 typedef struct {
@@ -3805,12 +3853,14 @@ typedef struct {
  * This structure is for documentation, and cannot be safely used directly.
  * Instead, use the constituent TLV structures to fill/parse.
  */
+#ifdef ATH_TARGET
 typedef struct {
     struct _cmdq_stats {
         htt_stats_string_tlv       cmdq_str_tlv;
         htt_tx_tqm_cmdq_status_tlv status_tlv;
     } q[1];
 } htt_tx_tqm_cmdq_stats_t;
+#endif /* ATH_TARGET */
 
 /* == TX-DE STATS == */
 
@@ -3957,7 +4007,7 @@ typedef struct {
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
 
-    A_UINT32 fw2wbm_ring_full_hist[1];
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, fw2wbm_ring_full_hist);
 } htt_tx_de_fw2wbm_ring_full_hist_tlv;
 
 typedef struct {
@@ -4227,6 +4277,7 @@ typedef struct {
  * This structure is for documentation, and cannot be safely used directly.
  * Instead, use the constituent TLV structures to fill/parse.
  */
+#ifdef ATH_TARGET
 typedef struct {
     htt_ring_if_cmn_tlv cmn_tlv;
     /** Variable based on the Number of records. */
@@ -4235,6 +4286,7 @@ typedef struct {
         htt_ring_if_stats_tlv ring_tlv;
     } r[1];
 } htt_ring_if_stats_t;
+#endif /* ATH_TARGET */
 
 /* == SFM STATS == */
 
@@ -4244,7 +4296,7 @@ typedef struct {
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
     /** Number of DWORDS used per user and per client */
-    A_UINT32 dwords_used_by_user_n[1];
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, dwords_used_by_user_n);
 } htt_sfm_client_user_tlv_v;
 
 typedef struct  {
@@ -4313,6 +4365,7 @@ typedef struct {
  * This structure is for documentation, and cannot be safely used directly.
  * Instead, use the constituent TLV structures to fill/parse.
  */
+#ifdef ATH_TARGET
 typedef struct {
     htt_sfm_cmn_tlv cmn_tlv;
     /** Variable based on the Number of records. */
@@ -4322,6 +4375,7 @@ typedef struct {
         htt_sfm_client_user_tlv_v user_tlv;
     } r[1];
 } htt_sfm_stats_t;
+#endif /* ATH_TARGET */
 
 /* == SRNG STATS == */
 /* DWORD mac_id__ring_id__arena__ep */
@@ -4545,6 +4599,7 @@ typedef struct {
  * This structure is for documentation, and cannot be safely used directly.
  * Instead, use the constituent TLV structures to fill/parse.
  */
+#ifdef ATH_TARGET
 typedef struct {
     htt_sring_cmn_tlv cmn_tlv;
     /** Variable based on the Number of records */
@@ -4553,6 +4608,7 @@ typedef struct {
         htt_sring_stats_tlv  sring_stats_tlv;
     } r[1];
 } htt_sring_stats_t;
+#endif /* ATH_TARGET */
 
 /* == PDEV TX RATE CTRL STATS == */
 
@@ -5562,7 +5618,8 @@ typedef struct {
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
     /** Num ring empty encountered */
-    A_UINT32 refill_ring_empty_cnt[1]; /* HTT_RX_STATS_REFILL_MAX_RING */
+    /* HTT_RX_STATS_REFILL_MAX_RING */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, refill_ring_empty_cnt);
 } htt_rx_soc_fw_refill_ring_empty_tlv_v;
 
 #define HTT_RX_SOC_FW_REFILL_RING_EMPTY_TLV_SZ(_num_elems) (sizeof(A_UINT32) * (_num_elems))
@@ -5571,7 +5628,8 @@ typedef struct {
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
     /** Num total buf refilled from refill ring */
-    A_UINT32 refill_ring_num_refill[1]; /* HTT_RX_STATS_REFILL_MAX_RING */
+    /* HTT_RX_STATS_REFILL_MAX_RING */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, refill_ring_num_refill);
 } htt_rx_soc_fw_refill_ring_num_refill_tlv_v;
 
 /* RXDMA error code from WBM released packets */
@@ -5613,7 +5671,8 @@ typedef struct {
      * MAX_ERR_CODE.  The host should ignore any array elements whose
      * indices are >= the MAX_ERR_CODE value the host was compiled with.
      */
-    A_UINT32 rxdma_err[1]; /* HTT_RX_RXDMA_MAX_ERR_CODE */
+    /* HTT_RX_RXDMA_MAX_ERR_CODE */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, rxdma_err);
 } htt_rx_soc_fw_refill_ring_num_rxdma_err_tlv_v;
 
 /* REO error code from WBM released packets */
@@ -5655,7 +5714,8 @@ typedef struct {
      * MAX_ERR_CODE.  The host should ignore any array elements whose
      * indices are >= the MAX_ERR_CODE value the host was compiled with.
      */
-    A_UINT32 reo_err[1]; /* HTT_RX_REO_MAX_ERR_CODE */
+    /* HTT_RX_REO_MAX_ERR_CODE */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, reo_err);
 } htt_rx_soc_fw_refill_ring_num_reo_err_tlv_v;
 
 /* NOTE:
@@ -5867,7 +5927,8 @@ typedef struct {
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
     /** Num error MPDU for each RxDMA error type */
-    A_UINT32 fw_ring_mpdu_err[1]; /* HTT_RX_STATS_RXDMA_MAX_ERR */
+    /* HTT_RX_STATS_RXDMA_MAX_ERR */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, fw_ring_mpdu_err);
 } htt_rx_pdev_fw_ring_mpdu_err_tlv_v;
 
 #define HTT_RX_PDEV_FW_MPDU_DROP_TLV_SZ(_num_elems) (sizeof(A_UINT32) * (_num_elems))
@@ -5876,7 +5937,8 @@ typedef struct {
 typedef struct {
     htt_tlv_hdr_t tlv_hdr;
     /** Num MPDU dropped  */
-    A_UINT32 fw_mpdu_drop[1]; /* HTT_RX_STATS_FW_DROP_REASON_MAX */
+    /* HTT_RX_STATS_FW_DROP_REASON_MAX */
+    HTT_STATS_VAR_LEN_ARRAY1(A_UINT32, fw_mpdu_drop);
 } htt_rx_pdev_fw_mpdu_drop_tlv_v;
 
 /* STATS_TYPE : HTT_DBG_EXT_STATS_PDEV_RX
@@ -5975,7 +6037,7 @@ typedef struct {
      * Then the pdev_cca_stats[0] element contains the oldest CCA stats
      * and pdev_cca_stats[N-1] will have the most recent CCA stats.
      */
-    htt_pdev_stats_cca_counters_tlv cca_hist_tlv[1];
+    HTT_STATS_VAR_LEN_ARRAY1(htt_pdev_stats_cca_counters_tlv, cca_hist_tlv);
 } htt_pdev_cca_stats_hist_tlv;
 
 typedef struct {
@@ -6096,7 +6158,7 @@ typedef struct {
     A_UINT32 pdev_id;
     A_UINT32 num_sessions;
 
-    htt_pdev_stats_twt_session_tlv twt_session[1];
+    HTT_STATS_VAR_LEN_ARRAY1(htt_pdev_stats_twt_session_tlv, twt_session);
 } htt_pdev_stats_twt_sessions_tlv;
 
 /* STATS_TYPE: HTT_DBG_EXT_STATS_TWT_SESSIONS
@@ -6108,9 +6170,11 @@ typedef struct {
  * This structure is for documentation, and cannot be safely used directly.
  * Instead, use the constituent TLV structures to fill/parse.
  */
+#ifdef ATH_TARGET
 typedef struct {
     htt_pdev_stats_twt_sessions_tlv twt_sessions[1];
 } htt_pdev_twt_sessions_stats_t;
+#endif /* ATH_TARGET */
 
 typedef enum {
     /* Global link descriptor queued in REO */
@@ -6471,6 +6535,7 @@ typedef struct {
  * This structure is for documentation, and cannot be safely used directly.
  * Instead, use the constituent TLV structures to fill/parse.
  */
+#ifdef ATH_TARGET
 typedef struct {
     htt_sring_cmn_tlv cmn_tlv;
     struct {
@@ -6478,6 +6543,7 @@ typedef struct {
         htt_ring_backpressure_stats_tlv backpressure_stats_tlv;
     } r[1]; /* variable-length array */
 } htt_ring_backpressure_stats_t;
+#endif /* ATH_TARGET */
 
 #define HTT_LATENCY_PROFILE_MAX_HIST        3
 #define HTT_STATS_MAX_PROF_STATS_NAME_LEN  32

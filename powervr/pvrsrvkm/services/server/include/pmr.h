@@ -816,6 +816,42 @@ void
 PMRMarkForDeferFree(PMR *psPMR);
 
 /*
+ * PMRGetZombieStats
+ *
+ * Get Zombie PMR statistics.
+ *
+ * - puiPMRZombieCountInQueue:   number of PMRs currently in the zombie queue
+ *                               but not yet scheduled for cleanup
+ * - puiPMRZombieCountInCleanup: number of PMRs currently queued for processing
+ *                               in the CleanupThread
+ */
+void
+PMRGetZombieStats(PPVRSRV_DEVICE_NODE psDevNode,
+                  IMG_UINT32 *puiPMRZombieCountInQueue,
+                  IMG_UINT32 *puiPMRZombieCountInCleanup);
+
+/*
+ * PMRQueueZombiesForCleanupAndInvalidateMMUCaches
+ *
+ * Defers cleanup of all zombie PMRs to the CleanupThread.
+ *
+ * Will also attempt to invalidate MMU caches in attempt to encourage
+ * zombies in defer cleanup queue to free.
+ *
+ * bZombiesQueued - Output parameter set IMG_TRUE if Zombies were
+ * successfully queued into the defer free thread, IMG_FALSE otherwise.
+ *
+ * Returns:
+ * PVRSRV_ERROR_RETRY - Retry required from flush attempt.
+ * PVRSRV_ERROR_TIMEOUT - Flush attempt wait timed out.
+ * PVRSRV_OK - Queued zombies and flushed or no zombies to queue.
+ *
+ */
+PVRSRV_ERROR
+PMRQueueZombiesForCleanupAndInvalidateMMUCaches(PPVRSRV_DEVICE_NODE psDevNode,
+                                                IMG_BOOL *bZombiesQueued);
+
+/*
  * PMRQueueZombiesForCleanup
  *
  * Defers cleanup of all zombie PMRs to the CleanupThread.
@@ -851,36 +887,54 @@ IMG_BOOL
 PMR_IsExclusiveUse(PMR *psPMR);
 
 /*
- * PMR_ChangeSparseMemUnlocked()
+ * PMR_GrowSparseMemUnlocked()
  *
  * See note above about Lock/Unlock semantics.
  *
  * This function alters the memory map of the given PMR in device space by
- * adding/deleting the pages as requested. PMR lock must be taken
- * before calling this function.
- *
+ * adding the pages as requested. PMR lock must be taken before calling
+ * this function.
  */
-PVRSRV_ERROR PMR_ChangeSparseMemUnlocked(PMR *psPMR,
-                                 IMG_UINT32 ui32AllocPageCount,
-                                 IMG_UINT32 *pai32AllocIndices,
-                                 IMG_UINT32 ui32FreePageCount,
-                                 IMG_UINT32 *pai32FreeIndices,
-                                 IMG_UINT32 uiSparseFlags);
+PVRSRV_ERROR PMR_GrowSparseMemUnlocked(PMR *psPMR,
+                                       IMG_UINT32 ui32AllocPageCount,
+                                       IMG_UINT32 *pai32AllocIndices);
+
 /*
- * PMR_ChangeSparseMem()
+ * PMR_ShrinkSparseMemUnlocked()
  *
  * See note above about Lock/Unlock semantics.
  *
  * This function alters the memory map of the given PMR in device space by
- *  adding/deleting the pages as requested.
- *
+ * deleting the pages as requested. PMR lock must be taken before calling
+ * this function.
  */
-PVRSRV_ERROR PMR_ChangeSparseMem(PMR *psPMR,
-                                 IMG_UINT32 ui32AllocPageCount,
-                                 IMG_UINT32 *pai32AllocIndices,
+PVRSRV_ERROR PMR_ShrinkSparseMemUnlocked(PMR *psPMR,
+                                         IMG_UINT32 ui32FreePageCount,
+                                         IMG_UINT32 *pai32FreeIndices);
+
+/*
+ * PMR_GrowSparseMem()
+ *
+ * See note above about Lock/Unlock semantics.
+ *
+ * This function alters the memory map of the given PMR in device space by
+ * adding the pages as requested.
+ */
+PVRSRV_ERROR PMR_GrowSparseMem(PMR *psPMR,
+                               IMG_UINT32 ui32AllocPageCount,
+                               IMG_UINT32 *pai32AllocIndices);
+
+/*
+ * PMR_ShrinkSparseMem()
+ *
+ * See note above about Lock/Unlock semantics.
+ *
+ * This function alters the memory map of the given PMR in device space by
+ * deleting the pages as requested.
+ */
+PVRSRV_ERROR PMR_ShrinkSparseMem(PMR *psPMR,
                                  IMG_UINT32 ui32FreePageCount,
-                                 IMG_UINT32 *pai32FreeIndices,
-                                 IMG_UINT32	uiSparseFlags);
+                                 IMG_UINT32 *pai32FreeIndices);
 
 #if defined(PDUMP)
 

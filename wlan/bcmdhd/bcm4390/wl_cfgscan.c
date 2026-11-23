@@ -382,7 +382,7 @@ s32 wl_inform_single_bss(struct bcm_cfg80211 *cfg, wl_bss_info_v109_t *bi, bool 
 
 	aflags = (in_atomic()) ? GFP_ATOMIC : GFP_KERNEL;
 	notif_bss_info = (struct wl_cfg80211_bss_info *)MALLOCZ(cfg->osh,
-		sizeof(*notif_bss_info) + sizeof(*mgmt) - sizeof(u8) + WL_BSS_INFO_MAX);
+		sizeof(*notif_bss_info) + sizeof(*mgmt) + WL_BSS_INFO_MAX);
 	if (unlikely(!notif_bss_info)) {
 		WL_ERR(("notif_bss_info alloc failed\n"));
 		return -ENOMEM;
@@ -395,7 +395,7 @@ s32 wl_inform_single_bss(struct bcm_cfg80211 *cfg, wl_bss_info_v109_t *bi, bool 
 		CHSPEC_IS5G(bi->chanspec) || CHSPEC_IS2G(bi->chanspec))) {
 		WL_ERR(("No valid band"));
 		MFREE(cfg->osh, notif_bss_info, sizeof(*notif_bss_info)
-			+ sizeof(*mgmt) - sizeof(u8) + WL_BSS_INFO_MAX);
+			+ sizeof(*mgmt) + WL_BSS_INFO_MAX);
 		return -EINVAL;
 	}
 
@@ -433,14 +433,14 @@ s32 wl_inform_single_bss(struct bcm_cfg80211 *cfg, wl_bss_info_v109_t *bi, bool 
 	if (freq == 0) {
 		WL_ERR(("Invalid channel, failed to change channel to freq\n"));
 		MFREE(cfg->osh, notif_bss_info, sizeof(*notif_bss_info)
-			+ sizeof(*mgmt) - sizeof(u8) + WL_BSS_INFO_MAX);
+			+ sizeof(*mgmt) + WL_BSS_INFO_MAX);
 		return -EINVAL;
 	}
 	channel = ieee80211_get_channel(wiphy, freq);
 	if (unlikely(!channel)) {
 		WL_ERR(("ieee80211_get_channel error\n"));
 		MFREE(cfg->osh, notif_bss_info, sizeof(*notif_bss_info)
-			+ sizeof(*mgmt) - sizeof(u8) + WL_BSS_INFO_MAX);
+			+ sizeof(*mgmt) + WL_BSS_INFO_MAX);
 		return -EINVAL;
 	}
 	memcpy(tmp_buf, bi->SSID, bi->SSID_len);
@@ -521,7 +521,7 @@ s32 wl_inform_single_bss(struct bcm_cfg80211 *cfg, wl_bss_info_v109_t *bi, bool 
 
 out_err:
 	MFREE(cfg->osh, notif_bss_info, sizeof(*notif_bss_info)
-			+ sizeof(*mgmt) - sizeof(u8) + WL_BSS_INFO_MAX);
+			+ sizeof(*mgmt) + WL_BSS_INFO_MAX);
 	return err;
 }
 
@@ -578,18 +578,24 @@ wl_cfg80211_find_interworking_ie(const u8 *parse, u32 len)
 static s32
 wl_cfg80211_clear_iw_ie(struct bcm_cfg80211 *cfg, struct net_device *ndev, s32 bssidx)
 {
-	ie_setbuf_t ie_setbuf;
+	ie_setbuf_t *ie_setbuf = NULL;
+	int buf_len = 0;
+	s32 err = BCME_OK;
 
 	WL_DBG(("clear interworking IE\n"));
 
-	bzero(&ie_setbuf, sizeof(ie_setbuf_t));
+	buf_len = sizeof(ie_setbuf_t) + sizeof(ie_info_t);
+	ie_setbuf = (ie_setbuf_t *)MALLOCZ(cfg->osh, buf_len);
 
-	ie_setbuf.ie_buffer.iecount = htod32(1);
-	ie_setbuf.ie_buffer.ie_list[0].ie_data.id = DOT11_MNG_INTERWORKING_ID;
-	ie_setbuf.ie_buffer.ie_list[0].ie_data.len = 0;
+	ie_setbuf->ie_buffer.iecount = htod32(1);
+	ie_setbuf->ie_buffer.ie_list[0].ie_data.id = DOT11_MNG_INTERWORKING_ID;
+	ie_setbuf->ie_buffer.ie_list[0].ie_data.len = 0;
 
-	return wldev_iovar_setbuf_bsscfg(ndev, "ie", &ie_setbuf, sizeof(ie_setbuf),
+	err = wldev_iovar_setbuf_bsscfg(ndev, "ie", &ie_setbuf, sizeof(ie_setbuf),
 		cfg->ioctl_buf, WLC_IOCTL_MAXLEN, bssidx, &cfg->ioctl_buf_sync);
+
+	MFREE(cfg->osh, ie_setbuf, buf_len);
+	return err;
 }
 
 static s32
@@ -622,7 +628,7 @@ wl_cfg80211_add_iw_ie(struct bcm_cfg80211 *cfg, struct net_device *ndev, s32 bss
 		return BCME_BADARG;
 	}
 
-	buf_len = sizeof(ie_setbuf_t) + data_len - 1;
+	buf_len = sizeof(ie_setbuf_t) + data_len;
 
 	ie_getbufp.id = DOT11_MNG_INTERWORKING_ID;
 	if (wldev_iovar_getbuf_bsscfg(ndev, "ie", (void *)&ie_getbufp,
@@ -1760,9 +1766,11 @@ wl_cfgscan_populate_scan_channels(struct bcm_cfg80211 *cfg,
 #endif /* WL_HOST_BAND_MGMT */
 
 		if (is_p2p_scan) {
+			{
 				if (CHSPEC_IS6G(chanspec)) {
 					continue;
 				}
+			}
 
 			if (CHSPEC_IS5G(chanspec)) {
 #ifdef P2P_SKIP_DFS
@@ -2490,7 +2498,7 @@ wl_cfgscan_handle_scanbusy(struct bcm_cfg80211 *cfg, struct net_device *ndev, s3
 	}
 
 	if (err == BCME_BUSY || err == BCME_NOTREADY) {
-		WL_ERR(("Scan err = (%d), busy?%d", err, -EBUSY));
+		WL_ERR(("Scan err = (%d), busy?%d\n", err, -EBUSY));
 		scanbusy_err = -EBUSY;
 	} else if ((err == BCME_EPERM) && cfg->scan_suppressed) {
 		WL_ERR(("Scan not permitted due to scan suppress\n"));
@@ -2954,6 +2962,7 @@ wl_cfg80211_scan(struct wiphy *wiphy, struct net_device *ndev,
 	}
 #endif /* WL_NAN */
 
+
 	err = __wl_cfg80211_scan(wiphy, ndev, request, NULL);
 	if (unlikely(err)) {
 		WL_ERR(("scan error (%d)\n", err));
@@ -3014,13 +3023,19 @@ static void _wl_cfgscan_cancel_scan(struct bcm_cfg80211 *cfg)
 {
 	struct wireless_dev *wdev = NULL;
 	struct net_device *ndev = NULL;
+	int ret = 0;
 
 	ndev = wl_cfg80211_get_remain_on_channel_ndev(cfg);
 	if (wl_get_drv_status(cfg, REMAINING_ON_CHANNEL, ndev)) {
 		/* Cancel P2P listen */
 		if (cfg->p2p_supported && cfg->p2p) {
-			wl_cfgp2p_set_p2p_mode(cfg, WL_P2P_DISC_ST_SCAN, 0, 0,
+			ret = wl_cfgp2p_set_p2p_mode(cfg, WL_P2P_DISC_ST_SCAN, 0, 0,
 					wl_to_p2p_bss_bssidx(cfg, P2PAPI_BSSCFG_DEVICE));
+			if (unlikely(ret < 0)) {
+				WL_ERR(("unable to set WL_P2P_DISC_ST_SCAN, ret %d\n", ret));
+			} else {
+				WL_INFORM_MEM(("P2P listen got aborted!!\n"));
+			}
 		}
 	}
 
@@ -3129,6 +3144,7 @@ void wl_cfgscan_scan_abort(struct bcm_cfg80211 *cfg)
 		cfg->tdls_mgmt_frame_len = 0;
 	}
 #endif /* WLTDLS */
+	 WL_DBG_MEM(("Scan abort issued to FW\n"));
 }
 
 static s32
@@ -3269,7 +3285,7 @@ wl_cfg80211_abort_scan(struct wiphy *wiphy, struct wireless_dev *wdev)
 {
 	struct bcm_cfg80211 *cfg;
 
-	WL_DBG(("Enter wl_cfg80211_abort_scan\n"));
+	WL_DBG_MEM(("Enter\n"));
 	cfg = wiphy_priv(wdev->wiphy);
 
 	/* Check if any scan in progress only then abort */
@@ -4266,7 +4282,6 @@ wl_cfgscan_sched_scan_stop_work(struct work_struct *work)
 }
 #endif /* WL_SCHED_SCAN */
 
-#ifdef WES_SUPPORT
 #ifdef CUSTOMER_SCAN_TIMEOUT_SETTING
 s32 wl_cfg80211_custom_scan_time(struct net_device *dev,
 		enum wl_custom_scan_time_type type, int time)
@@ -4304,7 +4319,6 @@ s32 wl_cfg80211_custom_scan_time(struct net_device *dev,
 	return TRUE;
 }
 #endif /* CUSTOMER_SCAN_TIMEOUT_SETTING */
-#endif /* WES_SUPPORT */
 
 #ifdef CUSTOMER_HW4_DEBUG
 uint prev_dhd_console_ms = 0;
@@ -5037,7 +5051,6 @@ wl_cfgscan_remain_on_channel(struct wiphy *wiphy, bcm_struct_cfgdev *cfgdev,
 			goto exit;
 		}
 #endif /* WL_CFG80211_SYNC_GON */
-
 		if (!cfg->p2p->on) {
 		/* In case of p2p_listen command, supplicant may send
 		* remain_on_channel without turning on P2P
@@ -7317,7 +7330,7 @@ wl_cfgscan_get_bw_chspec(chanspec_t *chspec, u32 bw)
 		return BCME_ERROR;
 	}
 
-	WL_INFORM_MEM(("cur_chspec:%x new_chspec:0x%x BW:%d chan:%d\n",
+	WL_DBG(("cur_chspec:%x new_chspec:0x%x BW:%x chan:%d\n",
 			cur_chspec, *chspec, bw,
 			wf_chspec_primary20_chan(*chspec)));
 	return BCME_OK;

@@ -16,6 +16,7 @@
 #include "rst_mng.h"
 #include "regmaps/ctrl_fields.h"
 #include "regmaps/regfields.h"
+#include <aoss-ssr-notifier/aoss_ssr_notifier.h>
 #include "intr.h"
 
 #if IS_ENABLED(CONFIG_DWC_DPTX_AUDIO)
@@ -39,8 +40,11 @@ static struct dptx_clock dptx_pixel_clks[DPTX_NUM_PIXEL_CLKS] = {
 	[GPCM_PLLDP] = {"gpcm_pll_dp_clk", 38400000, 38400000},
 	[HSION_PIX0] = {"hsion_pix_clk0", 2, 38400000},
 	[DPU_PIX0]   = {"dpu_pix_clk0", 2, 38400000},
-	[HSION_PIX1] = {"hsion_pix_clk1", 2, 38400000},
-	[DPU_PIX1]   = {"dpu_pix_clk1", 2, 38400000},
+	[HSION_PIX1] = {"hsion_pix_clk1", 2, 38400000},  // optional
+	[DPU_PIX1]   = {"dpu_pix_clk1", 2, 38400000},    // optional
+	// audio clks
+	[HSION_AUD0] = {"hsion_aud_clk0", 24576000, 38400000},
+	[HSION_AUD1] = {"hsion_aud_clk1", 24576000, 38400000},
 };
 
 static int dptx_parse_clocks(struct dptx *dptx)
@@ -51,7 +55,7 @@ static int dptx_parse_clocks(struct dptx *dptx)
 	for (i = 0; i < DPTX_NUM_PIXEL_CLKS; i++)
 		dptx->pixel_clks[i].id = dptx_pixel_clks[i].id;
 
-	ret = devm_clk_bulk_get(dptx->dev, DPTX_NUM_PIXEL_CLKS, dptx->pixel_clks);
+	ret = devm_clk_bulk_get_optional(dptx->dev, DPTX_NUM_PIXEL_CLKS, dptx->pixel_clks);
 	if (ret)
 		return ret;
 
@@ -69,7 +73,7 @@ static int dptx_dpphy_bringup(struct dptx *dptx)
 		dptx_warn(dptx, "%s, set PIPE clk to 0 failed", __func__);
 
 	/* a. Assert HPD plugin to PHY */
-	dp_cnfg = DP_CONFIG_REG_DP_HPD_VAL(1) | DP_CONFIG_DP_ENCRYPTION_MODE_VAL (1);
+	dp_cnfg = DP_CONFIG_REG_DP_HPD_VAL(1) | DP_CONFIG_DP_ENCRYPTION_MODE_VAL(1);
 	dp_cnfg_mask = DP_CONFIG_REG_DP_HPD_MASK | DP_CONFIG_DP_ENCRYPTION_MODE_MASK;
 	google_dpphy_config_write(dptx->dp_phy, dp_cnfg_mask, dp_cnfg);
 
@@ -92,12 +96,7 @@ static int dptx_dpphy_bringup(struct dptx *dptx)
 	if (ret)
 		return ret;
 
-	/* To-do: Find out if this is needed for DSC enable */
-	if (0) {
-		dp_cnfg = DP_CONFIG_DSC_ENABLE_0_VAL(1) | DP_CONFIG_DSC_ENABLE_1_VAL(1);
-		dp_cnfg_mask = DP_CONFIG_DSC_ENABLE_0_MASK | DP_CONFIG_DSC_ENABLE_1_MASK;
-		google_dpphy_config_write(dptx->dp_phy, dp_cnfg_mask, dp_cnfg);
-	}
+	/* TODO: for DSC to work, might need to enable DSC in dp_top_csr:dp_config_reg here */
 
 	/* g. Change MUX sel to sync powerdown input of PHY */
 	google_dpphy_set_pipe_pclk_on(dptx->dp_phy, 1);
@@ -467,6 +466,21 @@ static int dptx_usb_typec_dp_notification_locked(struct dptx *dptx, enum hotplug
 		return NOTIFY_OK;
 	}
 
+	if (dptx->ssr_in_progress) {
+		dptx_info(dptx, "%s: SSR in progress, deferring DP notification %d\n",
+			__func__, hpd);
+		if (hpd == HPD_PLUG) {
+			dptx->deferred_plug = true;
+		} else if (hpd == HPD_UNPLUG) {
+			dptx->deferred_plug = false;
+			dptx->deferred_irq = false;
+		} else if (hpd == HPD_IRQ) {
+			if (dptx->deferred_plug)
+				dptx->deferred_irq = true;
+		}
+		return NOTIFY_OK;
+	}
+
 	if (hpd == HPD_PLUG) {
 		if (dptx_get_hpd_state(dptx) == HPD_UNPLUG) {
 			dptx_info(dptx, "%s: USB Type-C is HPD PLUG status\n", __func__);
@@ -497,6 +511,56 @@ static int dptx_usb_typec_dp_notification_locked(struct dptx *dptx, enum hotplug
 
 		/* Mark unknown on HPD UNPLUG */
 		dptx_update_link_status(dptx, LINK_TRAINING_UNKNOWN);
+	}
+
+	return NOTIFY_OK;
+}
+
+static int dptx_aoss_ssr_notifier(struct notifier_block *nb,
+				  unsigned long event, void *data)
+{
+	struct dptx *dptx = container_of(nb, struct dptx, aoss_ssr_nb);
+
+	dptx_info(dptx, "Received AOSS SSR event %lu\n", event);
+
+	if (event == AOSS_SSR_EARLY_PREPARE) {
+		dptx_info(dptx, "Early SSR prepare event received.\n");
+
+		dptx->ssr_saved_hpd = dptx_get_hpd_state(dptx);
+		if (dptx->ssr_saved_hpd == HPD_PLUG) {
+			dptx_info(dptx, "DP is active, triggering synchronous unplug for SSR\n");
+			mutex_lock(&dptx->typec_notification_lock);
+			dptx_usb_typec_dp_notification_locked(dptx, HPD_UNPLUG);
+			dptx->ssr_in_progress = true;
+			dptx->deferred_plug = false;
+			dptx->deferred_irq = false;
+			mutex_unlock(&dptx->typec_notification_lock);
+			flush_work(&dptx->hpd_unplug_work);
+		} else {
+			dptx_info(dptx, "DP is inactive, no cleanup needed\n");
+			mutex_lock(&dptx->typec_notification_lock);
+			dptx->ssr_in_progress = true;
+			dptx->deferred_plug = false;
+			dptx->deferred_irq = false;
+			mutex_unlock(&dptx->typec_notification_lock);
+		}
+	} else if (event == AOSS_SSR_ONLINE) {
+		dptx_info(dptx, "ONLINE event received.\n");
+
+		dptx->ssr_in_progress = false;
+
+		mutex_lock(&dptx->typec_notification_lock);
+		if (dptx->deferred_plug) {
+			dptx_info(dptx, "Processing deferred HPD PLUG\n");
+			dptx_usb_typec_dp_notification_locked(dptx, HPD_PLUG);
+			if (dptx->deferred_irq) {
+				dptx_info(dptx, "Processing deferred HPD IRQ\n");
+				dptx_usb_typec_dp_notification_locked(dptx, HPD_IRQ);
+			}
+		}
+		dptx->deferred_plug = false;
+		dptx->deferred_irq = false;
+		mutex_unlock(&dptx->typec_notification_lock);
 	}
 
 	return NOTIFY_OK;
@@ -874,7 +938,6 @@ static const struct drm_bridge_funcs dptx_bridge_funcs = {
 	.detach = dptx_bridge_detach,
 	.detect = dptx_bridge_detect,
 	.edid_read = dptx_bridge_edid_read,
-	.get_edid = dptx_bridge_get_edid,
 	.mode_valid = dptx_bridge_mode_valid,
 	.atomic_get_input_bus_fmts = drm_atomic_helper_bridge_propagate_bus_fmt,
 	.atomic_get_output_bus_fmts = dptx_bridge_get_output_bus_formats,
@@ -1034,6 +1097,12 @@ static int dptx_probe(struct platform_device *pdev)
 	init_completion(&dptx->audio_disable_done);
 	BLOCKING_INIT_NOTIFIER_HEAD(&dptx->audio_notifier_head);
 
+	dptx->aoss_ssr_nb.notifier_call = dptx_aoss_ssr_notifier;
+	retval = aoss_ssr_add_notifier(&dptx->aoss_ssr_nb);
+	if (retval) {
+		dev_err(dev, "failed to add AOSS SSR notifier: %d\n", retval);
+	}
+
 	retval = pm_runtime_put_sync(dptx->pd_dev[HSION_DP_PD]);
 	if (retval)
 		dev_err(dev, "%s: pm_runtime_put_sync() returned %d\n", __func__, retval);
@@ -1062,13 +1131,15 @@ fail_dt:
 	return retval;
 }
 
-static int dptx_remove(struct platform_device *pdev)
+static void dptx_remove(struct platform_device *pdev)
 {
 	struct dptx *dptx = platform_get_drvdata(pdev);
 
 #if IS_ENABLED(CONFIG_DWC_DPTX_AUDIO)
 	dptx_audio_unregister();
 #endif
+
+	aoss_ssr_remove_notifier(&dptx->aoss_ssr_nb);
 
 	dptx_notify_shutdown(dptx);
 	msleep(20);
@@ -1087,7 +1158,6 @@ static int dptx_remove(struct platform_device *pdev)
 	dev_pm_domain_detach(dptx->pd_dev[SSWRP_DPU_PD], false);
 	dev_pm_domain_detach(dptx->pd_dev[DPU_DP_PD], false);
 	dev_pm_domain_detach(dptx->pd_dev[HSION_DP_PD], false);
-	return 0;
 }
 
 static const struct of_device_id dptx_driver_dt_match[] = {

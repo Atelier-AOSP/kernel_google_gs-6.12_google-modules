@@ -524,7 +524,7 @@ typedef struct {
 typedef struct {
 	qdf_net_icmpv6hdr_t nd_icmph;
 	qdf_net_ipv6_addr_t nd_target;
-	uint8_t	nd_opt[0];
+	uint8_t	nd_opt[];
 } qdf_net_nd_msg_t;
 
 

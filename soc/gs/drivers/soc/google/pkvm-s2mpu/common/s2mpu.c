@@ -8,6 +8,7 @@
 #include "kvm_s2mpu.h"
 #include <asm/kvm_host.h>
 #include <asm/kvm_asm.h>
+#include <soc/google/pkvm-s2mpu.h>
 
 /* Token of S2MPU driver, token is the load address of the module. */
 static u64 token;
@@ -18,6 +19,9 @@ static u64 token;
 extern struct kvm_iommu_ops kvm_nvhe_sym(s2mpu_hyp_ops);
 
 extern char __kvm_nvhe___hypmod_text_start[];
+
+extern struct mpt *kvm_nvhe_sym(kvm_hyp_mpt);
+#define kvm_hyp_mpt kvm_nvhe_sym(kvm_hyp_mpt)
 
 static int init_s2mpu_driver(u64 tok)
 {
@@ -62,7 +66,8 @@ static int init_s2mpu_driver(u64 tok)
 	if (ret)
 		goto out_free;
 
-	ret = kvm_iommu_init_hyp(ksym_ref_addr_nvhe(s2mpu_hyp_ops), &atomic_mc, (unsigned long)mpt);
+	kvm_hyp_mpt = mpt;
+	ret = kvm_iommu_init_hyp(ksym_ref_addr_nvhe(s2mpu_hyp_ops), &atomic_mc);
 	if (ret)
 		goto out_unshare;
 

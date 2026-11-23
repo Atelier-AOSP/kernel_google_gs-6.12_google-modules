@@ -164,7 +164,7 @@ int gcip_domain_pool_attach(struct gcip_domain_pool *pool, struct gcip_iommu_dom
 	if (pasid < 0)
 		return pasid;
 
-	ret = iommu_attach_device_pasid(gdomain->domain, pool->dev, pasid);
+	ret = iommu_attach_device_pasid(gdomain->domain, pool->dev, pasid, &gdomain->attach_handle);
 	if (ret) {
 		ida_free(&pool->pasid_pool, pasid);
 		return ret;

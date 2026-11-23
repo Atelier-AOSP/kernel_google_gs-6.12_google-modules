@@ -170,18 +170,6 @@ fail:
 }
 #endif
 
-static INLINE RA_POLICY_T
-_GetVMRAPolicyForHeap(const IMG_CHAR *pszName)
-{
-	if (!OSStringNCompare(pszName, RGX_FBCDC_HEAP_IDENT, sizeof(RGX_FBCDC_HEAP_IDENT)) ||
-	    !OSStringNCompare(pszName, RGX_FBCDC_LARGE_HEAP_IDENT, sizeof(RGX_FBCDC_LARGE_HEAP_IDENT)))
-	{
-		return RA_POLICY_ALLOC_FAST | RA_POLICY_BUCKET_BEST_FIT;
-	}
-
-	return RA_POLICY_DEFAULT;
-}
-
 /*****************************************************************************
  *                    Sub allocation internals                               *
  *****************************************************************************/
@@ -228,6 +216,7 @@ AllocateDeviceMemory(SHARED_DEV_CONNECTION hDevConnection,
 
 	/* Pass only the PMR flags down */
 	uiOutFlags = uiFlags & PVRSRV_MEMALLOCFLAGS_PMRFLAGSMASK;
+#if defined(__KERNEL__)
 	eError = BridgePhysmemNewRamBackedPMR(GetBridgeHandle(hDevConnection),
 			uiSize,
 			ui32NumPhysChunks,
@@ -241,6 +230,22 @@ AllocateDeviceMemory(SHARED_DEV_CONNECTION hDevConnection,
 			&hPMR,
 			PDUMP_NONE,
 			&uiOutFlags);
+#else /* defined(__KERNEL__) */
+	/* In the Client retry the allocation as long as the Server returns RETRY.
+	 * This will happen if an out-of-memory condition has been encountered
+	 * due to substantial number of zombie PMRs being queued for the deferred
+	 * destruction. */
+	eError = DevmemAllocPhysicalWithRetries(hDevConnection,
+	                                        uiSize,
+	                                        ui32NumPhysChunks,
+	                                        ui32NumVirtChunks,
+	                                        pui32MappingTable,
+	                                        uiLog2Quantum,
+	                                        uiOutFlags,
+	                                        pszAnnotation,
+	                                        &hPMR,
+	                                        &uiOutFlags);
+#endif /* defined(__KERNEL__) */
 
 	if (eError != PVRSRV_OK)
 	{
@@ -256,15 +261,41 @@ AllocateDeviceMemory(SHARED_DEV_CONNECTION hDevConnection,
 	uiFlags |= (uiOutFlags & PVRSRV_PHYS_HEAP_HINT_MASK);
 
 	DevmemImportStructInit(psImport,
-			uiSize,
-			uiAlign,
-			uiFlags,
-			hPMR,
-			bExportable ? DEVMEM_PROPERTIES_EXPORTABLE : 0);
+	                       uiSize,
+	                       uiAlign,
+	                       uiFlags,
+	                       hPMR,
+	                       bExportable ? DEVMEM_PROPERTIES_EXPORTABLE : 0);
+
+	psImport->ui32LogicalPageLog2 = uiLog2Quantum;
+	psImport->ui32LogicalChunkCount = ui32NumVirtChunks;
+	psImport->ui32PhysicalChunkCount = ui32NumPhysChunks;
+
+#if defined(PVRSRV_ENABLE_PHYSHEAP_PERPID_UM_STATS)
+	{
+		IMG_UINT64 ui64Incr = uiSize;
+		if (psImport->ui32PhysicalChunkCount < psImport->ui32LogicalChunkCount)
+		{
+			ui64Incr = IMG_PAGES2BYTES64(psImport->ui32PhysicalChunkCount,
+			                             psImport->ui32LogicalPageLog2);
+		}
+
+		eError = DevmemPhysHeapStatsIncr(hDevConnection,
+		                                 PVRSRV_GET_PHYS_HEAP_HINT(psImport->uiFlags),
+		                                 ui64Incr);
+		PVR_LOG_GOTO_IF_ERROR(eError, "DevmemPhysHeapStatsIncr", failStatsIncr);
+	}
+#endif
 
 	*ppsImport = psImport;
 	return PVRSRV_OK;
 
+
+#if defined(PVRSRV_ENABLE_PHYSHEAP_PERPID_UM_STATS)
+failStatsIncr:
+	/* If this fails there is nothing we can do. */
+	(void)DestroyServerResource(hDevConnection, NULL, BridgePMRUnrefPMR, hPMR);
+#endif
 failPMR:
 	DevmemImportDiscard(psImport);
 failAlloc:
@@ -279,12 +310,9 @@ failAlloc:
  *****************************************************************************/
 
 IMG_INTERNAL PVRSRV_ERROR
-DeviceMemChangeSparse(DEVMEM_MEMDESC *psMemDesc,
-                      IMG_UINT32 ui32AllocPageCount,
-                      IMG_UINT32 *paui32AllocPageIndices,
-                      IMG_UINT32 ui32FreePageCount,
-                      IMG_UINT32 *pauiFreePageIndices,
-                      SPARSE_MEM_RESIZE_FLAGS uiSparseFlags)
+DeviceMemSparseAddBacking(DEVMEM_MEMDESC *psMemDesc,
+                       IMG_UINT32 ui32PageCount,
+                       IMG_UINT32 *paui32PageIndices)
 {
 	PVRSRV_ERROR eError;
 	DEVMEM_IMPORT *psImport;
@@ -308,12 +336,6 @@ DeviceMemChangeSparse(DEVMEM_MEMDESC *psMemDesc,
 	PVR_ASSERT(hDevConnection != NULL);
 	PVR_ASSERT(hPMR != NULL);
 	PVR_ASSERT(psHeap != NULL);
-#if defined(PVRSRV_ENABLE_DEPRECATED_SPARSE_BOTH)
-	PVR_ASSERT(BITMASK_ANY(uiSparseFlags, SPARSE_RESIZE_BOTH));
-#else
-	PVR_ASSERT((uiSparseFlags == SPARSE_RESIZE_ALLOC) ||
-	           (uiSparseFlags == SPARSE_RESIZE_FREE));
-#endif
 	PVR_ASSERT(hReservation != LACK_OF_RESERVATION_POISON);
 
 #ifdef PVRSRV_NEED_PVR_ASSERT
@@ -326,18 +348,25 @@ DeviceMemChangeSparse(DEVMEM_MEMDESC *psMemDesc,
 	PVR_ASSERT(psMemDesc->sCPUMemDesc.ui64RefCount == 0);
 
 	OSLockAcquire(psImport->hLock);
+	eError = BridgeSparseAddBacking(GetBridgeHandle(hDevConnection),
+	                                ui32PageCount,
+	                                paui32PageIndices,
+	                                hReservation);
+	if (eError != PVRSRV_OK)
+	{
+		OSLockRelease(psImport->hLock);
+		return eError;
+	}
 
-	eError = BridgeChangeSparseMem(GetBridgeHandle(hDevConnection),
-	                               ui32AllocPageCount,
-	                               paui32AllocPageIndices,
-	                               ui32FreePageCount,
-	                               pauiFreePageIndices,
-	                               uiSparseFlags,
-	                               hReservation);
-
+	psImport->ui32PhysicalChunkCount += ui32PageCount;
 	OSLockRelease(psImport->hLock);
 
-	PVR_RETURN_IF_ERROR(eError);
+#if defined(PVRSRV_ENABLE_PHYSHEAP_PERPID_UM_STATS)
+	eError = DevmemPhysHeapStatsIncr(hDevConnection,
+	                                 PVRSRV_GET_PHYS_HEAP_HINT(psImport->uiFlags),
+	                                 IMG_PAGES2BYTES64(ui32PageCount, psImport->ui32LogicalPageLog2));
+	PVR_LOG_IF_ERROR(eError, "DevmemPhysHeapStatsIncr");
+#endif
 
 	if (GetInfoPageDebugFlags(hDevConnection) & DEBUG_FEATURE_PAGE_FAULT_DEBUG_ENABLED)
 	{
@@ -348,16 +377,96 @@ DeviceMemChangeSparse(DEVMEM_MEMDESC *psMemDesc,
 		                                   psMemDesc->uiAllocSize,
 		                                   psMemDesc->szText,
 		                                   DevmemGetHeapLog2PageSize(psHeap),
-		                                   ui32AllocPageCount,
-		                                   paui32AllocPageIndices,
-		                                   ui32FreePageCount,
-		                                   pauiFreePageIndices,
+		                                   ui32PageCount,
+		                                   paui32PageIndices,
+		                                   0,
+		                                   NULL,
 		                                   psMemDesc->ui32AllocationIndex,
 		                                   &psMemDesc->ui32AllocationIndex);
 	}
 
 	return PVRSRV_OK;
 }
+
+IMG_INTERNAL PVRSRV_ERROR
+DeviceMemSparseRemoveBacking(DEVMEM_MEMDESC *psMemDesc,
+                          IMG_UINT32 ui32PageCount,
+                          IMG_UINT32 *paui32PageIndices)
+{
+	PVRSRV_ERROR eError;
+	DEVMEM_IMPORT *psImport;
+	SHARED_DEV_CONNECTION hDevConnection;
+	IMG_HANDLE hPMR;
+	DEVMEM_HEAP *psHeap;
+	IMG_HANDLE hReservation;
+#ifdef PVRSRV_NEED_PVR_ASSERT
+	DEVMEM_PROPERTIES_T uiProperties;
+#endif /* PVRSRV_NEED_PVR_ASSERT */
+
+	PVR_ASSERT(psMemDesc != NULL);
+	PVR_ASSERT(psMemDesc->psImport != NULL);
+
+	psImport = psMemDesc->psImport;
+	hDevConnection = psImport->hDevConnection;
+	hPMR = psImport->hPMR;
+	psHeap = psImport->sDeviceImport.psHeap;
+	hReservation = psImport->sDeviceImport.hReservation;
+
+	PVR_ASSERT(hDevConnection != NULL);
+	PVR_ASSERT(hPMR != NULL);
+	PVR_ASSERT(psHeap != NULL);
+	PVR_ASSERT(hReservation != LACK_OF_RESERVATION_POISON);
+
+#ifdef PVRSRV_NEED_PVR_ASSERT
+	uiProperties = GetImportProperties(psMemDesc->psImport);
+
+	PVR_ASSERT(!BITMASK_HAS(uiProperties, DEVMEM_PROPERTIES_SECURE));
+	PVR_ASSERT(!BITMASK_HAS(uiProperties, DEVMEM_PROPERTIES_NO_LAYOUT_CHANGE));
+#endif /* PVRSRV_NEED_PVR_ASSERT */
+
+	PVR_ASSERT(psMemDesc->sCPUMemDesc.ui64RefCount == 0);
+
+	OSLockAcquire(psImport->hLock);
+	eError = BridgeSparseRemoveBacking(GetBridgeHandle(hDevConnection),
+	                                ui32PageCount,
+	                                paui32PageIndices,
+	                                hReservation);
+	if (eError != PVRSRV_OK)
+	{
+		OSLockRelease(psImport->hLock);
+		return eError;
+	}
+
+	psImport->ui32PhysicalChunkCount -= ui32PageCount;
+	OSLockRelease(psImport->hLock);
+
+#if defined(PVRSRV_ENABLE_PHYSHEAP_PERPID_UM_STATS)
+	eError = DevmemPhysHeapStatsDecr(hDevConnection,
+	                                 PVRSRV_GET_PHYS_HEAP_HINT(psImport->uiFlags),
+	                                 IMG_PAGES2BYTES64(ui32PageCount, psImport->ui32LogicalPageLog2));
+	PVR_LOG_IF_ERROR(eError, "DevmemPhysHeapStatsDecr");
+#endif
+
+	if (GetInfoPageDebugFlags(hDevConnection) & DEBUG_FEATURE_PAGE_FAULT_DEBUG_ENABLED)
+	{
+		BridgeDevicememHistorySparseChange(GetBridgeHandle(hDevConnection),
+		                                   hPMR,
+		                                   psMemDesc->uiOffset,
+		                                   psMemDesc->sDeviceMemDesc.sDevVAddr,
+		                                   psMemDesc->uiAllocSize,
+		                                   psMemDesc->szText,
+		                                   DevmemGetHeapLog2PageSize(psHeap),
+		                                   0,
+		                                   NULL,
+		                                   ui32PageCount,
+		                                   paui32PageIndices,
+		                                   psMemDesc->ui32AllocationIndex,
+		                                   &psMemDesc->ui32AllocationIndex);
+	}
+
+	return PVRSRV_OK;
+}
+
 
 static void
 FreeDeviceMemory(DEVMEM_IMPORT *psImport)
@@ -536,6 +645,8 @@ PopulateContextFromBlueprint(struct DEVMEM_CONTEXT_TAG *psCtx,
 	IMG_DEVMEM_SIZE_T uiReservedRegionLength;
 	IMG_DEVMEM_LOG2ALIGN_T uiLog2DataPageSize;
 	IMG_DEVMEM_LOG2ALIGN_T uiLog2ImportAlignment;
+	IMG_UINT32 uiHeapManagerFlags;
+	IMG_UINT32 uiPolicyVMRA;
 
 	eError = DevmemHeapCount(psCtx->hDevConnection,
 			uiHeapBlueprintID,
@@ -565,7 +676,9 @@ PopulateContextFromBlueprint(struct DEVMEM_CONTEXT_TAG *psCtx,
 				&uiHeapLength,
 				&uiReservedRegionLength,
 				&uiLog2DataPageSize,
-				&uiLog2ImportAlignment);
+				&uiLog2ImportAlignment,
+				&uiHeapManagerFlags,
+				&uiPolicyVMRA);
 		PVR_GOTO_IF_ERROR(eError, e1);
 
 		eError = DevmemCreateHeap(psCtx,
@@ -577,6 +690,8 @@ PopulateContextFromBlueprint(struct DEVMEM_CONTEXT_TAG *psCtx,
 				aszHeapName,
 				uiHeapBlueprintID,
 				uiHeapIndex,
+				uiHeapManagerFlags,
+				uiPolicyVMRA,
 				&ppsHeapArray[uiHeapIndex]);
 		PVR_GOTO_IF_ERROR(eError, e1);
 
@@ -869,7 +984,9 @@ DevmemHeapDetails(SHARED_DEV_CONNECTION hDevConnection,
 		IMG_DEVMEM_SIZE_T *puiHeapLengthOut,
 		IMG_DEVMEM_SIZE_T *puiReservedRegionLengthOut,
 		IMG_UINT32 *puiLog2DataPageSizeOut,
-		IMG_UINT32 *puiLog2ImportAlignmentOut)
+		IMG_UINT32 *puiLog2ImportAlignmentOut,
+		IMG_UINT32 *puiHeapManagerFlags,
+		IMG_UINT32 *puiPolicyVMRA)
 {
 	PVRSRV_ERROR eError;
 
@@ -882,7 +999,9 @@ DevmemHeapDetails(SHARED_DEV_CONNECTION hDevConnection,
 			puiHeapLengthOut,
 			puiReservedRegionLengthOut,
 			puiLog2DataPageSizeOut,
-			puiLog2ImportAlignmentOut);
+			puiLog2ImportAlignmentOut,
+			puiHeapManagerFlags,
+			puiPolicyVMRA);
 
 	VG_MARK_INITIALIZED(pszHeapNameOut, uiHeapNameBufSz);
 
@@ -914,6 +1033,8 @@ DevmemCreateHeap(DEVMEM_CONTEXT *psCtx,
 		const IMG_CHAR *pszName,
 		DEVMEM_HEAPCFGID uiHeapBlueprintID,
 		IMG_UINT32 uiHeapIndex,
+		IMG_UINT32 uiHeapManagerFlags,
+		IMG_UINT32 uiPolicyVMRA,
 		DEVMEM_HEAP **ppsHeapPtr)
 {
 	PVRSRV_ERROR eError = PVRSRV_OK;
@@ -922,7 +1043,7 @@ DevmemCreateHeap(DEVMEM_CONTEXT *psCtx,
 	/* handle to the server-side counterpart of the device memory heap
 	   (specifically, for handling mapping to device MMU) */
 	IMG_HANDLE hDevMemServerHeap;
-	RA_POLICY_T ui32Policy = RA_POLICY_DEFAULT, ui32PolicyVMRA;
+	RA_POLICY_T ui32Policy = RA_POLICY_DEFAULT, ui32PolicyVMRA = uiPolicyVMRA;
 
 	IMG_CHAR aszBuf[100];
 	IMG_CHAR *pszStr;
@@ -933,8 +1054,6 @@ DevmemCreateHeap(DEVMEM_CONTEXT *psCtx,
 	/* Reserved VA space of a heap must always be multiple of DEVMEM_HEAP_RESERVED_SIZE_GRANULARITY.
 	 * Granularity has been chosen to support the max possible practically used OS page size. */
 	PVR_LOG_RETURN_IF_INVALID_PARAM((uiReservedRegionLength % DEVMEM_HEAP_RESERVED_SIZE_GRANULARITY) == 0, "uiReservedRegionLength");
-
-	ui32PolicyVMRA = _GetVMRAPolicyForHeap(pszName);
 
 	PVR_ASSERT(uiReservedRegionLength + DEVMEM_HEAP_MINIMUM_SIZE <= uiLength);
 
@@ -1027,35 +1146,7 @@ DevmemCreateHeap(DEVMEM_CONTEXT *psCtx,
 
 	psHeap->uiLog2ImportAlignment = ui32Log2ImportAlignment;
 	psHeap->uiLog2Quantum = ui32Log2Quantum;
-
-	if (!OSStringNCompare(pszName, RGX_GENERAL_SVM_HEAP_IDENT, sizeof(RGX_GENERAL_SVM_HEAP_IDENT)))
-	{
-		/* The SVM heap normally starts out as this type though
-		   it may transition to DEVMEM_HEAP_MANAGER_USER
-		   on platforms with more processor virtual address
-		   bits than device virtual address bits */
-		psHeap->ui32HeapManagerFlags = DEVMEM_HEAP_MANAGER_KERNEL;
-	}
-	else if (uiReservedRegionLength != 0)
-	{
-		/* Heaps which specify reserved VA space range are dual managed:
-		 * - sBaseAddress to (sBaseAddress+uiReservedRegionLength-1): User managed
-		 * - (sBaseAddress+uiReservedRegionLength) to uiLength: RA managed
-		 */
-		psHeap->ui32HeapManagerFlags = DEVMEM_HEAP_MANAGER_DUAL_USER_RA;
-	}
-	else
-	{
-		/* Otherwise, heap manager is decided (USER or RA) at first map */
-		psHeap->ui32HeapManagerFlags = DEVMEM_HEAP_MANAGER_UNKNOWN;
-	}
-
-	/* Mark the heap to be managed by RA */
-	if (!OSStringNCompare(pszName, RGX_VK_CAPT_REPLAY_HEAP_IDENT,
-	                      sizeof(RGX_VK_CAPT_REPLAY_HEAP_IDENT)))
-	{
-		psHeap->ui32HeapManagerFlags |= DEVMEM_HEAP_MANAGER_RA;
-	}
+	psHeap->ui32HeapManagerFlags = uiHeapManagerFlags;
 
 	OSSNPrintf(aszBuf, sizeof(aszBuf),
 			"NDM heap '%s' (QVM) ctx:%p",

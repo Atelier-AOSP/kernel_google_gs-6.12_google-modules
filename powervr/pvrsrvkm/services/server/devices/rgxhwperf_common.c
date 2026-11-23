@@ -471,8 +471,7 @@ static IMG_UINT32 RGXHWPerfDataStore(PVRSRV_RGXDEV_INFO	*psDevInfo)
 	}
 
 	/* Invalidate partial region of struct */
-	RGXFwSharedMemCacheOpValue(psDevInfo->psRGXFWIfFwSysData->sHWPerfCtrl,
-	                           INVALIDATE);
+	RGXFwSharedMemCacheOpValue(psHwPerfData->sHWPerfCtrl, INVALIDATE);
 
 	/* Get a copy of the current
 	 *   read (first packet to read)
@@ -536,7 +535,7 @@ static IMG_UINT32 RGXHWPerfDataStore(PVRSRV_RGXDEV_INFO	*psDevInfo)
 			                          RGXHWPerfAdvanceRIdx(psDevInfo->ui32RGXFWIfHWPerfBufSize,
 			                                               ui32SrcRIdx,
 			                                               ui32BytesCopied));
-			RGXFwSharedMemCacheOpValue(psDevInfo->psRGXFWIfFwSysData->sHWPerfCtrl.ui32HWPerfRIdx,
+			RGXFwSharedMemCacheOpValue(psHwPerfData->sHWPerfCtrl.ui32HWPerfRIdx,
 			                           FLUSH);
 
 			ui32BytesCopiedSum += ui32BytesCopied;
@@ -568,7 +567,7 @@ static IMG_UINT32 RGXHWPerfDataStore(PVRSRV_RGXDEV_INFO	*psDevInfo)
 			{
 				OSWriteDeviceMem32WithWMB(&psHwPerfData->sHWPerfCtrl.ui32HWPerfWrapCount,
 				                          psDevInfo->ui32RGXFWIfHWPerfBufSize);
-				RGXFwSharedMemCacheOpValue(psDevInfo->psRGXFWIfFwSysData->sHWPerfCtrl.ui32HWPerfWrapCount,
+				RGXFwSharedMemCacheOpValue(psHwPerfData->sHWPerfCtrl.ui32HWPerfWrapCount,
 				                           FLUSH);
 			}
 			OSWriteDeviceMem32WithWMB(&psHwPerfData->sHWPerfCtrl.ui32HWPerfRIdx, ui32SrcRIdx);
@@ -598,7 +597,7 @@ static IMG_UINT32 RGXHWPerfDataStore(PVRSRV_RGXDEV_INFO	*psDevInfo)
 				ui32BytesCopiedSum += ui32BytesCopied;
 			}
 			/* This flush covers both writes above */
-			RGXFwSharedMemCacheOpValue(psDevInfo->psRGXFWIfFwSysData->sHWPerfCtrl.ui32HWPerfRIdx,
+			RGXFwSharedMemCacheOpValue(psHwPerfData->sHWPerfCtrl.ui32HWPerfRIdx,
 			                           FLUSH);
 		}
 #ifdef HWPERF_MISR_FUNC_DEBUG
@@ -906,6 +905,7 @@ PVRSRV_ERROR RGXHWPerfInitOnDemandL1Buffer(PVRSRV_RGXDEV_INFO *psRgxDevInfo)
 						| PVRSRV_MEMALLOCFLAG_PHYS_HEAP_HINT(FW_MAIN);
 
 	/* Allocate HWPerf FW L1 buffer */
+	PDUMPCOMMENT(psRgxDevInfo->psDeviceNode, "Allocate FwHWPerfBuffer");
 	eError = DevmemFwAllocate(psRgxDevInfo,
 	                          /* Pad it enough to hold the biggest variable sized packet. */
 	                          psRgxDevInfo->ui32RGXFWIfHWPerfBufSize+RGX_HWPERF_MAX_PACKET_SIZE,
@@ -939,7 +939,6 @@ PVRSRV_ERROR RGXHWPerfInitOnDemandL1Buffer(PVRSRV_RGXDEV_INFO *psRgxDevInfo)
 #if defined(RGX_FEATURE_HWPERF_VOLCANIC)
 	RGXSetMetaDMAAddress(&psRgxDevInfo->psRGXFWIfHwPerfRuntimeCfg->sHWPerfDMABuf,
 	                     psRgxDevInfo->psRGXFWIfHWPerfBufMemDesc,
-	                     &psRgxDevInfo->psRGXFWIfHwPerfRuntimeCfg->sHWPerfBuf,
 	                     0);
 #endif
 
@@ -1905,22 +1904,16 @@ void RGXHWPerfHostDeInit(PVRSRV_RGXDEV_INFO *psRgxDevInfo)
 
 	PVRSRV_VZ_RETN_IF_MODE(GUEST, DEVINFO, psRgxDevInfo);
 
-	if (psRgxDevInfo->pui8DeferredEvents)
+	if (psRgxDevInfo->pui8DeferredEvents != NULL)
 	{
 		OSFreeMem(psRgxDevInfo->pui8DeferredEvents);
 		psRgxDevInfo->pui8DeferredEvents = NULL;
-	}
 
-	OSSpinLockDestroy(psRgxDevInfo->hHWPerfHostSpinLock);
+		OSSpinLockDestroy(psRgxDevInfo->hHWPerfHostSpinLock);
 
-	if (psRgxDevInfo->pvHostHWPerfMISR)
-	{
 		(void) OSUninstallMISR(psRgxDevInfo->pvHostHWPerfMISR);
 		psRgxDevInfo->pvHostHWPerfMISR = NULL;
-	}
 
-	if (psRgxDevInfo->hHWPerfHostStream)
-	{
 		/* send the event here because host stream is implicitly opened for
 		 * write in TLStreamCreate and TLStreamClose is never called (so the
 		 * event is never emitted) */
@@ -1929,11 +1922,8 @@ void RGXHWPerfHostDeInit(PVRSRV_RGXDEV_INFO *psRgxDevInfo)
 		psRgxDevInfo->hHWPerfHostStream = NULL;
 	}
 
-	if (psRgxDevInfo->hLockHWPerfHostStream)
-	{
-		OSLockDestroy(psRgxDevInfo->hLockHWPerfHostStream);
-		psRgxDevInfo->hLockHWPerfHostStream = NULL;
-	}
+	OSLockDestroy(psRgxDevInfo->hLockHWPerfHostStream);
+	psRgxDevInfo->hLockHWPerfHostStream = NULL;
 }
 
 static IMG_UINT64 RGXHWPerfFwSetEventFilterNoLock(PVRSRV_RGXDEV_INFO *psRgxDevInfo,
@@ -4285,12 +4275,16 @@ PVRSRV_ERROR PVRSRVRGXCloseHWPerfClientStreamKM(HWPERF_STREAM_DESC *psSD)
 
 	PVR_ASSERT(psSD != NULL);
 
+	// Acquire lock before the decrement.
+	OSLockAcquire(psPVRSRVData->hClientStreamTableLock);
+
 	iOldRefCount = OSAtomicSubtractUnless(&psSD->iRefCount, 1, CLIENT_STREAM_REFCOUNT_MIN);
 	if (iOldRefCount == CLIENT_STREAM_REFCOUNT_MIN)
 	{
 		/* If the old value is 0 return error. This means that something went
 		 * wrong and the reference count was already 0 and resources were
 		 * freed. */
+		OSLockRelease(psPVRSRVData->hClientStreamTableLock);
 		return PVRSRV_ERROR_REFCOUNT_OVERFLOW;
 	}
 	else if (iOldRefCount != (CLIENT_STREAM_REFCOUNT_MIN + 1))
@@ -4298,12 +4292,11 @@ PVRSRV_ERROR PVRSRVRGXCloseHWPerfClientStreamKM(HWPERF_STREAM_DESC *psSD)
 		/* If the old value is not 1 then return ok, the stream is still used
 		 * by someone. If it's 1, then progress with the resources destruction
 		 * since the current value is 0. */
+		OSLockRelease(psPVRSRVData->hClientStreamTableLock);
 		return PVRSRV_OK;
 	}
 
 	PVR_ASSERT(iOldRefCount > 0);
-
-	OSLockAcquire(psPVRSRVData->hClientStreamTableLock);
 
 	psElement = (void *) HASH_Remove_Extended(psPVRSRVData->psClientStreamTable,
 	                                          psSD->psSD->psNode->psStream->szName);

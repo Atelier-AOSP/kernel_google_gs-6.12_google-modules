@@ -26,26 +26,6 @@
 
 #ifndef BCM_FLEX_ARRAY
 #define BCM_FLEX_ARRAY  (1)
-#define BCM_DECLARE_FLEX_ARRAY(TYPE, NAME) \
-	union { \
-		TYPE __legacy_ ## NAME[BCM_FLEX_ARRAY]; \
-		DECLARE_FLEX_ARRAY(TYPE, NAME); \
-	}
-#define BCM_DECLARE_FLEX_2D_ARRAY(TYPE, NAME, COLS) \
-	union { \
-		TYPE __legacy_ ## NAME[BCM_FLEX_ARRAY][COLS]; \
-		struct { \
-			struct {} __empty_ ## NAME; \
-			TYPE NAME[][COLS]; \
-		}; \
-	}
-#else
-#define BCM_DECLARE_FLEX_ARRAY(TYPE, NAME) DECLARE_FLEX_ARRAY(TYPE, NAME)
-#define BCM_DECLARE_FLEX_2D_ARRAY(TYPE, NAME, COLS) \
-	struct { \
-		struct {} __empty_ ## NAME; \
-		TYPE NAME[][COLS]; \
-	}
 #endif /* BCM_FLEX_ARRAY */
 
 /*

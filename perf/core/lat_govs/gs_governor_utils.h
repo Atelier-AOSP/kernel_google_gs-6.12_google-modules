@@ -50,10 +50,18 @@ struct cluster_config {
 	cpumask_t cpus;
 	unsigned int ratio_ceil;
 	unsigned int stall_floor;
+	unsigned int stale_threshold_ms;
 	enum gs_perf_cpu_idle_state cpuidle_state_depth_threshold;
 	bool cpuidle_state_aware;
 	struct gs_governor_core_dev_map *base_freq_table;
 	struct gs_governor_core_dev_map *latency_freq_table;
+};
+
+enum gs_governor_cpu_latgov_state { LATGOV_IDLE, LATGOV_BASE, LATGOV_LATENCY };
+
+struct gs_governor_latgov_state {
+	enum gs_governor_cpu_latgov_state state;
+	unsigned long freq_khz;
 };
 
 /**

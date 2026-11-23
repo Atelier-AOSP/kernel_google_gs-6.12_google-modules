@@ -426,6 +426,8 @@ static int h2omg_probe(struct i2c_client *client)
 	info->dev = dev;
 	i2c_set_clientdata(client, info);
 
+	info->vref_div = of_property_read_bool(dev->of_node, "vref_div");
+
 	err = revision_init(client);
 	if (err) {
 		dev_err(dev, "Unable to initialize chip (%d)\n", err);

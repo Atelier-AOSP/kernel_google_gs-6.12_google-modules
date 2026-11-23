@@ -116,7 +116,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 typedef IMG_UINT32 DEVMEM_HEAPCFGID;
 #define DEVMEM_HEAPCFG_FORCLIENTS 0
 #define DEVMEM_HEAPCFG_FORFW 1
-
+#define DEVMEM_HEAPCFG_FORDEVICE 2
 
 /*
   In order to call the server side functions, we need a bridge handle.
@@ -248,6 +248,8 @@ DevmemCreateHeap(DEVMEM_CONTEXT *psCtxPtr,
                  const IMG_CHAR *pszName,
                  DEVMEM_HEAPCFGID uiHeapBlueprintID,
                  IMG_UINT32 uiHeapIndex,
+                 IMG_UINT32 uiHeapManagerFlags,
+                 IMG_UINT32 uiPolicyVMRA,
                  DEVMEM_HEAP **ppsHeapPtr);
 /*
  * DevmemDestroyHeap()
@@ -321,12 +323,14 @@ DevmemAllocateExportable(SHARED_DEV_CONNECTION hDevConnection,
                          DEVMEM_MEMDESC **ppsMemDescPtr);
 
 PVRSRV_ERROR
-DeviceMemChangeSparse(DEVMEM_MEMDESC *psMemDesc,
-                      IMG_UINT32 ui32AllocPageCount,
-                      IMG_UINT32 *paui32AllocPageIndices,
-                      IMG_UINT32 ui32FreePageCount,
-                      IMG_UINT32 *pauiFreePageIndices,
-                      SPARSE_MEM_RESIZE_FLAGS uiFlags);
+DeviceMemSparseAddBacking(DEVMEM_MEMDESC *psMemDesc,
+                          IMG_UINT32 ui32PageCount,
+                          IMG_UINT32 *paui32PageIndices);
+
+PVRSRV_ERROR
+DeviceMemSparseRemoveBacking(DEVMEM_MEMDESC *psMemDesc,
+                             IMG_UINT32 ui32PageCount,
+                             IMG_UINT32 *paui32PageIndices);
 
 PVRSRV_ERROR
 DevmemAllocateSparse(SHARED_DEV_CONNECTION hDevConnection,
@@ -575,7 +579,9 @@ DevmemHeapDetails(SHARED_DEV_CONNECTION hDevConnection,
                   IMG_DEVMEM_SIZE_T *puiHeapLengthOut,
                   IMG_DEVMEM_SIZE_T *puiReservedRegionLengthOut,
                   IMG_UINT32 *puiLog2DataPageSize,
-                  IMG_UINT32 *puiLog2ImportAlignmentOut);
+                  IMG_UINT32 *puiLog2ImportAlignmentOut,
+                  IMG_UINT32 *puiHeapManagerFlags,
+                  IMG_UINT32 *puiPolicyVMRA);
 
 /*
  * Devmem_FindHeapByName()

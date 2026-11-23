@@ -7,31 +7,35 @@
  * Authors: Jaegeuk Kim <jaegeuk@google.com>
  */
 
-#ifndef HAVE_UFSHCD_RPM_GET_SYNC
-#include <core/ufshcd-priv.h>
+#if IS_ENABLED(CONFIG_UFS_PIXEL_READ_BOOST)
+#include <linux/string_choices.h>
 #endif
 #include <linux/workqueue.h>
-#include <misc/sbbm.h>
+#include <scsi/scsi_cmnd.h>
+#include <trace/hooks/ufshcd.h>
 #include <ufs/ufs.h>
-#include "ufs-pixel.h"
+#include <ufs/ufshcd.h>
+
+#include <misc/sbbm.h>
+
+#ifndef HAVE_UFSHCD_RPM_GET_SYNC
+#include <drivers/ufs/core/ufshcd-priv.h>
+#endif
+
+#include "ufs-google-priv.h"
+#include "ufs-pixel-crypto.h"
 #if IS_ENABLED(CONFIG_SCSI_UFS_PIXEL_FIPS140)
 #include "ufs-pixel-fips.h"
 #endif
-#include "ufs-pixel-crypto.h"
+#include "ufs-pixel.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/ufs_pixel.h>
-
 #undef CREATE_TRACE_POINTS
-#include <trace/hooks/ufshcd.h>
 
-/* UFSHCD error handling flags */
-enum {
-	UFSHCD_EH_IN_PROGRESS = (1 << 0),
-};
-
-#define ufshcd_eh_in_progress(h) \
-	((h)->eh_flags & UFSHCD_EH_IN_PROGRESS)
+static bool enable_uic_err_dbg;
+module_param(enable_uic_err_dbg, bool, 0444);
+MODULE_PARM_DESC(enable_uic_err_dbg, "Trigger kernel panic on UIC error");
 
 static const char *const ufs_event_str[] = {
 	[EVENT_UNDEF] = "event_undef",
@@ -167,6 +171,7 @@ static void pixel_ufs_log_slowio(struct ufs_hba *hba,
 		struct ufshcd_lrb *lrbp, s64 iotime_us)
 {
 	struct pixel_ufs *ufs = to_pixel_ufs(hba);
+	struct scsi_cmnd *cmd = lrbp->cmd;
 	sector_t sector = ULONG_MAX;
 	u32 affected_bytes = UINT_MAX;
 	u8 opcode = 0xff;
@@ -178,8 +183,8 @@ static void pixel_ufs_log_slowio(struct ufs_hba *hba,
 	if (likely(iotime_us < ufs->slowio_min_us))
 		return;
 
-	if (lrbp->cmd) {
-		opcode = (u8)(*lrbp->cmd->cmnd);
+	if (cmd) {
+		opcode = cmd->cmnd[0];
 		optype = pixel_ufs_get_slowio_optype(opcode);
 		if (optype < PIXEL_SLOWIO_OP_MAX) {
 			if (iotime_us < ufs->slowio[optype][PIXEL_SLOWIO_US])
@@ -189,7 +194,7 @@ static void pixel_ufs_log_slowio(struct ufs_hba *hba,
 		if (optype == PIXEL_SLOWIO_READ ||
 			optype == PIXEL_SLOWIO_WRITE ||
 			optype == PIXEL_SLOWIO_UNMAP) {
-			struct request *rq = scsi_cmd_to_rq(lrbp->cmd);
+			struct request *rq = scsi_cmd_to_rq(cmd);
 			if (rq && rq->bio) {
 				sector = blk_rq_pos(rq);
 				affected_bytes = blk_rq_bytes(rq);
@@ -207,12 +212,13 @@ static void pixel_ufs_log_slowio(struct ufs_hba *hba,
 static int pixel_ufs_get_cmd_type(struct ufshcd_lrb *lrbp,
 				  enum req_type_stats *cmd_type)
 {
+	struct scsi_cmnd *cmd = lrbp->cmd;
 	u8 scsi_op_code;
 
-	if (!lrbp->cmd)
+	if (!cmd)
 		return -EINVAL;
 
-	scsi_op_code = (u8)(*lrbp->cmd->cmnd);
+	scsi_op_code = cmd->cmnd[0];
 	switch (scsi_op_code) {
 	case READ_10:
 	case READ_16:
@@ -340,7 +346,7 @@ static inline void record_ufs_stats(struct ufs_hba *hba)
 	}
 }
 
-void pixel_ufs_update_req_stats(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
+static void pixel_ufs_update_req_stats(struct ufs_hba *hba, struct ufshcd_lrb *lrbp)
 {
 	struct pixel_ufs *ufs = to_pixel_ufs(hba);
 	struct pixel_req_stats *rst;
@@ -418,6 +424,7 @@ static inline void __update_io_stats(struct ufs_hba *hba,
 static void pixel_ufs_update_io_stats(struct ufs_hba *hba,
 		struct ufshcd_lrb *lrbp, bool is_start)
 {
+	struct scsi_cmnd *cmd = lrbp->cmd;
 	u32 affected_bytes;
 	bool is_write;
 	enum req_type_stats cmd_type;
@@ -428,10 +435,10 @@ static void pixel_ufs_update_io_stats(struct ufs_hba *hba,
 	if (cmd_type != REQ_TYPE_READ && cmd_type != REQ_TYPE_WRITE)
 		return;
 
-	affected_bytes = blk_rq_bytes(scsi_cmd_to_rq(lrbp->cmd));
+	affected_bytes = blk_rq_bytes(scsi_cmd_to_rq(cmd));
 
 	/* Upload I/O amount on statistic */
-	is_write = op_is_write(req_op(scsi_cmd_to_rq(lrbp->cmd)));
+	is_write = op_is_write(req_op(scsi_cmd_to_rq(cmd)));
 	__update_io_stats(hba, is_write, affected_bytes, is_start);
 
 	record_ufs_stats(hba);
@@ -633,22 +640,23 @@ static void pixel_ufs_trace_upiu_cmd(struct ufs_hba *hba,
 {
 	u8 lun = 0, opcode = 0, idn = 0, tag = 0, group_id = 0;
 	enum pixel_event_type event = EVENT_UNDEF;
+	struct scsi_cmnd *cmd = lrbp->cmd;
 	sector_t sector = 0;
 	int affected_bytes = 0;
 
 	lun = lrbp->lun;
 	tag = lrbp->task_tag;
 
-	if (lrbp->cmd) {
+	if (cmd) {
 		event = (is_start) ? EVENT_SCSI_SEND : EVENT_SCSI_COMPL;
-		opcode = lrbp->cmd->cmnd[0];
-		sector = blk_rq_pos(scsi_cmd_to_rq(lrbp->cmd));
+		opcode = cmd->cmnd[0];
+		sector = blk_rq_pos(scsi_cmd_to_rq(cmd));
 
-		affected_bytes = blk_rq_bytes(scsi_cmd_to_rq(lrbp->cmd));
+		affected_bytes = blk_rq_bytes(scsi_cmd_to_rq(cmd));
 		if (opcode == WRITE_10 || opcode == READ_10)
-			group_id = lrbp->cmd->cmnd[6] & 0x3f;
+			group_id = cmd->cmnd[6] & 0x3f;
 		else if (opcode == WRITE_16 || opcode == READ_16)
-			group_id = lrbp->cmd->cmnd[14] & 0x3f;
+			group_id = cmd->cmnd[14] & 0x3f;
 	} else {
 		if (hba->dev_cmd.type == DEV_CMD_TYPE_NOP)
 			event = (is_start) ? EVENT_NOP_OUT : EVENT_NOP_IN;
@@ -739,6 +747,7 @@ static void pixel_ufs_prepare_command(void *data, struct ufs_hba *hba,
 			struct request *rq, struct ufshcd_lrb *lrbp, int *err)
 {
 	struct pixel_ufs *ufs = to_pixel_ufs(hba);
+	struct scsi_cmnd *cmd = lrbp->cmd;
 	u8 opcode;
 
 	*err = 0;
@@ -771,11 +780,11 @@ static void pixel_ufs_prepare_command(void *data, struct ufs_hba *hba,
 	if (hba->dev_info.wspecversion <= 0x300)
 		return;
 
-	opcode = (u8)(*lrbp->cmd->cmnd);
+	opcode = cmd->cmnd[0];
 	if (opcode == WRITE_10)
-		lrbp->cmd->cmnd[6] = 0x11;
+		cmd->cmnd[6] = 0x11;
 	else if (opcode == WRITE_16)
-		lrbp->cmd->cmnd[14] = 0x11;
+		cmd->cmnd[14] = 0x11;
 	if (ufshcd_is_wb_allowed(hba))
 		ufs->need_wb_flush = true;
 }
@@ -937,10 +946,8 @@ static ssize_t manual_gc_store(struct device *dev,
 		}
 	}
 
-	if (!ufs->manual_gc.hagc_support) {
-		err = ufshcd_bkops_ctrl(hba, (value == MANUAL_GC_ON) ?
-					BKOPS_STATUS_NON_CRITICAL:
-					BKOPS_STATUS_CRITICAL);
+	if (!ufs->manual_gc.hagc_support && value == MANUAL_GC_ON) {
+		err = ufshcd_bkops_ctrl(hba);
 		if (!hba->auto_bkops_enabled)
 			err = -EAGAIN;
 	}
@@ -1115,6 +1122,39 @@ static ssize_t uic_link_state_show(struct device *dev,
 				hba->uic_link_state));
 }
 
+void pixel_init_uic_err_dbg(struct ufs_hba *hba)
+{
+	struct pixel_ufs *ufs = to_pixel_ufs(hba);
+
+	ufs->enable_uic_err_dbg = enable_uic_err_dbg;
+}
+
+static ssize_t uic_err_dbg_enable_show(struct device *dev,
+				       struct device_attribute *attr, char *buf)
+{
+	struct ufs_hba *hba = dev_get_drvdata(dev);
+	struct pixel_ufs *ufs = to_pixel_ufs(hba);
+
+	return sysfs_emit(buf, "%d\n", ufs->enable_uic_err_dbg);
+}
+
+static ssize_t uic_err_dbg_enable_store(struct device *dev,
+					struct device_attribute *attr,
+					const char *buf, size_t count)
+{
+	struct ufs_hba *hba = dev_get_drvdata(dev);
+	struct pixel_ufs *ufs = to_pixel_ufs(hba);
+	bool value;
+
+	if (kstrtobool(buf, &value))
+		return -EINVAL;
+
+	if (value != ufs->enable_uic_err_dbg)
+		WRITE_ONCE(ufs->enable_uic_err_dbg, value);
+
+	return count;
+}
+
 static const char * const wb_gid_str[] = {
 	[WB_GID_DISABLE]	= "disable",
 	[WB_GID_SEL]		= "selective",
@@ -1172,6 +1212,7 @@ static DEVICE_ATTR_RW(manual_gc_hold);
 static DEVICE_ATTR_RO(host_capabilities);
 static DEVICE_ATTR_RO(curr_dev_pwr_mode);
 static DEVICE_ATTR_RO(uic_link_state);
+static DEVICE_ATTR_RW(uic_err_dbg_enable);
 static DEVICE_ATTR_RW(set_gid);
 SLOWIO_ATTR_RW(read, PIXEL_SLOWIO_READ);
 SLOWIO_ATTR_RW(write, PIXEL_SLOWIO_WRITE);
@@ -1266,6 +1307,7 @@ static struct attribute *pixel_sysfs_ufshcd_attrs[] = {
 	&dev_attr_host_capabilities.attr,
 	&dev_attr_curr_dev_pwr_mode.attr,
 	&dev_attr_uic_link_state.attr,
+	&dev_attr_uic_err_dbg_enable.attr,
 	&dev_attr_set_gid.attr,
 	&ufs_slowio_read_us.attr.attr,
 	&ufs_slowio_read_cnt.attr.attr,
@@ -1426,6 +1468,44 @@ static ssize_t phy_release_date_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(phy_release_date);
 
+#if IS_ENABLED(CONFIG_UFS_PIXEL_READ_BOOST)
+static ssize_t read_boost_show(struct device *dev,
+			       struct device_attribute *attr, char *buf)
+{
+	struct ufs_hba *hba = dev_get_drvdata(dev);
+	struct pixel_ufs *ufs = to_pixel_ufs(hba);
+	bool enabled;
+
+	if (!ufs->pixel_ops->get_read_boost)
+		return -EOPNOTSUPP;
+
+	enabled = ufs->pixel_ops->get_read_boost(hba);
+
+	return sysfs_emit(buf, "%s\n", str_true_false(enabled));
+}
+
+static ssize_t read_boost_store(struct device *dev,
+				struct device_attribute *attr, const char *buf,
+				size_t count)
+{
+	struct ufs_hba *hba = dev_get_drvdata(dev);
+	struct pixel_ufs *ufs = to_pixel_ufs(hba);
+	bool enabled;
+	int ret;
+
+	if (!ufs->pixel_ops->set_read_boost)
+		return -EOPNOTSUPP;
+
+	if (kstrtobool(buf, &enabled))
+		return -EINVAL;
+
+	ret = ufs->pixel_ops->set_read_boost(hba, enabled);
+
+	return ret < 0 ? ret : count;
+}
+static DEVICE_ATTR_RW(read_boost);
+#endif /* CONFIG_UFS_PIXEL_READ_BOOST */
+
 static struct attribute *pixel_sysfs_pixel_attrs[] = {
 	&dev_attr_boot_lun_enabled.attr,
 	&dev_attr_print_cmd_log.attr,
@@ -1433,6 +1513,9 @@ static struct attribute *pixel_sysfs_pixel_attrs[] = {
 	&dev_attr_enable_pixel_ufs_logging.attr,
 	&dev_attr_phy_version.attr,
 	&dev_attr_phy_release_date.attr,
+#if IS_ENABLED(CONFIG_UFS_PIXEL_READ_BOOST)
+	&dev_attr_read_boost.attr,
+#endif
 	NULL,
 };
 
@@ -1629,7 +1712,7 @@ static ssize_t reset_io_status_store(struct device *dev,
 	return count;
 }
 
-void pixel_init_writebooster(struct ufs_hba *hba)
+static void pixel_init_writebooster(struct ufs_hba *hba)
 {
 	/* Enable capability for writebooster */
 	hba->caps |= UFSHCD_CAP_WB_EN;
@@ -1847,8 +1930,8 @@ static DEVICE_ATTR_RO(_name)
 
 PIXEL_HC_REG_ATTR(cap, _CONTROLLER_CAPABILITIES);
 PIXEL_HC_REG_ATTR(ver, _UFS_VERSION);
-PIXEL_HC_REG_ATTR(hcpid, _CONTROLLER_DEV_ID);
-PIXEL_HC_REG_ATTR(hcmid, _CONTROLLER_PROD_ID);
+PIXEL_HC_REG_ATTR(hcpid, _CONTROLLER_PID);
+PIXEL_HC_REG_ATTR(hcmid, _CONTROLLER_MID);
 PIXEL_HC_REG_ATTR(ahit, _AUTO_HIBERNATE_IDLE_TIMER);
 PIXEL_HC_REG_ATTR(is, _INTERRUPT_STATUS);
 PIXEL_HC_REG_ATTR(ie, _INTERRUPT_ENABLE);
@@ -2188,6 +2271,8 @@ int pixel_init(struct ufs_hba *hba, struct device *pdev,
 	INIT_WORK(&ufs->update_sysfs_work, pixel_ufs_update_sysfs_work);
 
 	pixel_init_manual_gc(hba);
+
+	pixel_init_uic_err_dbg(hba);
 
 	pixel_init_slowio(hba);
 

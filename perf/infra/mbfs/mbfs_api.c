@@ -14,6 +14,7 @@
 
 #include "mbfs_base.h"
 #include "mbfs_backend.h"
+#include "mbfs_protocol.h"
 
 // The code supports dealing with multiple firmware backends
 #define MBFS_CLIENT_MAX_BACKENDS 15
@@ -46,6 +47,8 @@ int mbfs_error2linux(enum mbfs_error_code error)
 		return -ECOMM;
 	case MBFS_PROBE_DEFER:
 		return -EPROBE_DEFER;
+	case MBFS_INVALID_ARG:
+		return -EINVAL;
 	default:
 		return -EINVAL;
 	}
@@ -62,6 +65,7 @@ static const char *mbfs_error_strings[NUM_MBFS_ERROR_CODES] = {
 	[MBFS_CUSTOM_FILE_ERROR] = "Custom file error",
 	[MBFS_COMMUNICATION_FAILURE] = "Communication failure",
 	[MBFS_PROBE_DEFER] = "Probe defer",
+	[MBFS_INVALID_ARG] = "Invalid arg",
 };
 
 const char *get_mbfs_error_string(enum mbfs_error_code code)
@@ -91,7 +95,7 @@ EXPORT_SYMBOL_GPL(get_mbfs_file_value_type_string);
 // This is currently called inside mbfs_client_backends_mutex for writing.
 static int initialize_mbfs_backend(struct mbfs_client_backend *backend, int index)
 {
-	enum mbfs_error_code mbfs_err;
+	int err;
 
 	if (backend->initialized)
 		return -EPERM;
@@ -106,29 +110,31 @@ static int initialize_mbfs_backend(struct mbfs_client_backend *backend, int inde
 								      MBFS_GET_PROTOCOL_VERSION };
 	struct mbfs_protocol_version_response protocol_resp;
 
-	mbfs_err = backend->submit_request((struct mbfs_request *)&protocol_req,
-					   (struct mbfs_response *)&protocol_resp);
+	err = backend->submit_request((struct mbfs_request *)&protocol_req,
+				      (struct mbfs_response *)&protocol_resp);
+	if (err)
+		return err;
 
-	if (mbfs_err != MBFS_OK) {
+	if (protocol_resp.error_code != MBFS_OK)
 		// Failed to retrieve protocol version for backend!
-		return -EINVAL;
-	}
+		return mbfs_error2linux(protocol_resp.error_code);
 
 	if (protocol_resp.major_version != REQUIRED_MAJOR_MBFS_VERSION ||
-	    protocol_resp.minor_version < REQUIRED_MIN_MINOR_MBFS_VERSION) {
+	    protocol_resp.minor_version < REQUIRED_MIN_MINOR_MBFS_VERSION)
 		// Incompatible protocol version for backend!
 		return -EPERM;
-	}
 
 	struct mbfs_get_root_handle_request root_req = { .command_idx = MBFS_GET_ROOT_HANDLE };
 	struct mbfs_get_root_handle_response root_resp;
 
-	mbfs_err = backend->submit_request((struct mbfs_request *)&root_req,
-					   (struct mbfs_response *)&root_resp);
-	if (mbfs_err != MBFS_OK) {
+	err = backend->submit_request((struct mbfs_request *)&root_req,
+				      (struct mbfs_response *)&root_resp);
+	if (err)
+		return err;
+
+	if (root_resp.error_code != MBFS_OK)
 		// Failed to retrieve root handle for backend!
-		return -EINVAL;
-	}
+		return mbfs_error2linux(root_resp.error_code);
 
 	backend->idx_registered = index;
 	backend->root_handle.backend_idx = index;
@@ -253,10 +259,16 @@ static enum mbfs_error_code mbfs_submit_request(uint32_t backend_index,
 						const struct mbfs_request *req,
 						struct mbfs_response *resp)
 {
+	int err;
+
 	if (backend_index >= MBFS_CLIENT_MAX_BACKENDS)
 		return MBFS_NOT_FOUND;
 
-	return mbfs_client_backends[backend_index]->submit_request(req, resp);
+	err = mbfs_client_backends[backend_index]->submit_request(req, resp);
+	if (err)
+		return MBFS_COMMUNICATION_FAILURE;
+
+	return resp->error_code;
 }
 
 // Retrieve the handle of the provided parent node's child whose name matches
@@ -324,7 +336,8 @@ EXPORT_SYMBOL_GPL(mbfs_get_child_by_name);
 // ideally be cached by clients for later use.
 // Return 0 when successful.
 // Return MBFS_PROBE_DEFER if a backend couldn't be found.
-// Return MBFS_NOT_FOUND for all other cases.
+// Return MBFS_INVALID_ARG if there is an error with `path`.
+// Return the error as is if mbfs protocol returns an error.
 enum mbfs_error_code mbfs_get_handle(const char *path, union mbfs_client_handle *handle)
 {
 	char current_token[MAX_MBFS_NAME_LENGTH + 1] = { 0 };
@@ -333,7 +346,7 @@ enum mbfs_error_code mbfs_get_handle(const char *path, union mbfs_client_handle 
 	struct mbfs_client_backend *backend = NULL;
 
 	if (!mbfs_get_next_token(next_token, current_token, sizeof(current_token), &next_token))
-		return MBFS_NOT_FOUND;
+		return MBFS_INVALID_ARG;
 
 	backend = mbfs_find_backend(current_token);
 
@@ -353,7 +366,7 @@ enum mbfs_error_code mbfs_get_handle(const char *path, union mbfs_client_handle 
 	}
 
 	if (next_token[0] != '\0') // The whole path could not be walked
-		return MBFS_NOT_FOUND;
+		return MBFS_INVALID_ARG;
 
 	*handle = tmp_handle;
 
@@ -432,7 +445,7 @@ enum mbfs_error_code mbfs_get_nth_child(union mbfs_client_handle handle,
 		uint32_t file_index_mask = ((1 << bits) - 1);
 
 		if (n >= file_index_mask)
-			return MBFS_NOT_FOUND;
+			return MBFS_INVALID_ARG;
 		*child_handle = (union mbfs_client_handle){
 			.backend_idx = handle.backend_idx,
 			.remote_handle = (handle.remote_handle & ~file_index_mask) | n,
@@ -487,7 +500,6 @@ EXPORT_SYMBOL_GPL(mbfs_read_file);
 
 enum mbfs_error_code mbfs_write_file(union mbfs_client_handle handle, union val64 input)
 {
-	enum mbfs_error_code error_code;
 	struct mbfs_write_file_request req = {
 		.command_idx = MBFS_WRITE_FILE,
 		.file_handle = handle.remote_handle,
@@ -496,13 +508,8 @@ enum mbfs_error_code mbfs_write_file(union mbfs_client_handle handle, union val6
 	};
 	struct mbfs_write_file_response resp;
 
-	error_code = mbfs_submit_request(handle.backend_idx, (struct mbfs_request *)&req,
+	return mbfs_submit_request(handle.backend_idx, (struct mbfs_request *)&req,
 					 (struct mbfs_response *)&resp);
-
-	if (error_code != MBFS_OK)
-		return error_code;
-
-	return MBFS_OK;
 }
 EXPORT_SYMBOL_GPL(mbfs_write_file);
 
@@ -516,11 +523,7 @@ enum mbfs_error_code mbfs_read_child_by_name(union mbfs_client_handle parent_han
 	if (error_code != MBFS_OK)
 		return error_code;
 
-	error_code = mbfs_read_file(tmp_handle, output);
-	if (error_code != MBFS_OK)
-		return error_code;
-
-	return MBFS_OK;
+	return mbfs_read_file(tmp_handle, output);
 }
 EXPORT_SYMBOL_GPL(mbfs_read_child_by_name);
 

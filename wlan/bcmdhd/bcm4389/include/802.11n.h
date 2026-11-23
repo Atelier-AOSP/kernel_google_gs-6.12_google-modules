@@ -370,7 +370,7 @@ BWL_PRE_PACKED_STRUCT struct dot11_obss_chanlist {
 	uint8	id;
 	uint8	len;
 	uint8	regclass;
-	BCM_DECLARE_FLEX_ARRAY(uint8, chanlist);
+	uint8	chanlist[BCM_FLEX_ARRAY];
 } BWL_POST_PACKED_STRUCT;
 typedef struct dot11_obss_chanlist dot11_obss_chanlist_t;
 #define DOT11_OBSS_CHANLIST_FIXED_LEN	1	/* fixed length of regclass */

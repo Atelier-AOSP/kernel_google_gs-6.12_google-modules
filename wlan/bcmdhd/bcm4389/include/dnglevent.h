@@ -69,7 +69,7 @@ typedef BWL_PRE_PACKED_STRUCT struct bcm_dngl_event {
 typedef BWL_PRE_PACKED_STRUCT struct bcm_dngl_socramind {
 	uint16			tag;	/* data tag */
 	uint16			length; /* data length */
-	BCM_DECLARE_FLEX_ARRAY(uint8, value); /* variable length specified by length */
+	uint8			value[BCM_FLEX_ARRAY]; /* variable length specified by length */
 } BWL_POST_PACKED_STRUCT bcm_dngl_socramind_t;
 
 typedef BWL_PRE_PACKED_STRUCT struct bcm_dngl_profile_data_ind_t {
@@ -123,7 +123,7 @@ typedef enum socram_ind_tag {
 typedef BWL_PRE_PACKED_STRUCT struct bcm_dngl_healthcheck {
 	uint16			top_module_tag;	/* top level module tag */
 	uint16			top_module_len; /* Type of PCIE issue indication */
-	BCM_DECLARE_FLEX_ARRAY(uint8, value); /* variable length specified by length */
+	uint8			value[BCM_FLEX_ARRAY]; /* variable length specified by length */
 } BWL_POST_PACKED_STRUCT bcm_dngl_healthcheck_t;
 
 /* Health check top level module tags */

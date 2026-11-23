@@ -46,6 +46,13 @@
 #define BCM_UNUSED_VAR
 #endif
 
+/* Allow for suppressing pedantic warnings. */
+#ifdef __GNUC__
+#define BCM_EXTENSION	__extension__
+#else
+#define BCM_EXTENSION
+#endif
+
 /* Allow for suppressing a warning for a switch case without break */
 #ifdef __GNUC__
 #define GCC_SUPPRESS_FALLTHROUGH_WARNING     __attribute__ ((fallthrough))
@@ -75,11 +82,11 @@
 	defined(__clang__))
 
 #define GCC_DIAGNOSTIC_PUSH_SUPPRESS_CAST()              \
-	_Pragma("GCC diagnostic push")			 \
+	_Pragma("GCC diagnostic push")			\
 	_Pragma("GCC diagnostic ignored \"-Wcast-qual\"")
 
-#define GCC_DIAGNOSTIC_PUSH_SUPPRESS_NULL_DEREF()	 \
-	_Pragma("GCC diagnostic push")			 \
+#define GCC_DIAGNOSTIC_PUSH_SUPPRESS_NULL_DEREF()	\
+	_Pragma("GCC diagnostic push")			\
 	_Pragma("GCC diagnostic ignored \"-Wnull-dereference\"")
 
 #define GCC_DIAGNOSTIC_POP()                             \
@@ -90,7 +97,7 @@
 #define GCC_DIAGNOSTIC_PUSH_SUPPRESS_CAST()              \
 	__pragma(warning(push))                          \
 	__pragma(warning(disable:4090))
-#define GCC_DIAGNOSTIC_PUSH_SUPPRESS_NULL_DEREF()	 \
+#define GCC_DIAGNOSTIC_PUSH_SUPPRESS_NULL_DEREF()	\
 	__pragma(warning(push))
 #define GCC_DIAGNOSTIC_POP()                             \
 	__pragma(warning(pop))
@@ -106,7 +113,7 @@
 
 #if !defined(__clang__) || __clang_major__ >= 13
 #define GCC_DIAGNOSTIC_PUSH_SUPPRESS_FN_TYPE()           \
-	_Pragma("GCC diagnostic push")			 \
+	_Pragma("GCC diagnostic push")			\
 	_Pragma("GCC diagnostic ignored \"-Wcast-function-type\"")
 #else
 #define GCC_DIAGNOSTIC_PUSH_SUPPRESS_FN_TYPE()           \
@@ -362,6 +369,12 @@ extern bool bcm_postattach_part_reclaimed;
 	#define BCMRAMDATA(_data)	_data
 #endif /* ROMBUILD */
 
+/* This will be used by the accessor functions and other helper functions which are required
+ * to ROM a given function. This function will always remain in RAM. Also a separate modifier
+ * will help to differentiate these functions from standard RAM functions.
+ */
+#define BCMACCESSOR_RAMFN(_fn) BCMRAMFN(_fn)
+
 /* Use BCMSPECSYM() macro to tag symbols going to a special output section in the binary. */
 #define BCMSPECSYM(_sym)	__attribute__ ((__section__ (".special." #_sym))) _sym
 
@@ -568,7 +581,7 @@ typedef uint32 dmaaddr_t;
 /* One physical DMA segment */
 typedef struct  {
 	dmaaddr_t addr;
-	uint32	  length;
+	uint32	length;
 } hnddma_seg_t;
 
 #if defined(__linux__)
@@ -653,7 +666,7 @@ typedef struct {
 		(((val) >> field ## _S) & field ## _M)
 #define SFIELD(val, field, bits) \
 		(((val) & (~(field ## _M << field ## _S))) | \
-		 ((unsigned)(bits) << field ## _S))
+		((unsigned)(bits) << field ## _S))
 
 /* define BCMSMALL to remove misc features for memory-constrained environments */
 #ifdef BCMSMALL
@@ -735,7 +748,8 @@ typedef struct {
 
 #ifdef BCMLFRAG /* BCMLFRAG support enab macros  */
 	extern bool _bcmlfrag;
-#if defined(ROM_ENAB_RUNTIME_CHECK) || !defined(DONGLEBUILD)
+#if (defined(ROM_ENAB_RUNTIME_CHECK) && !defined(BCMLFRAG_NO_RUNTIME_CHECK)) || \
+	!defined(DONGLEBUILD)
 	#define BCMLFRAG_ENAB() (_bcmlfrag)
 #elif defined(BCMLFRAG_DISABLED)
 	#define BCMLFRAG_ENAB()	(FALSE)
@@ -748,7 +762,7 @@ typedef struct {
 
 #ifdef BCMPCIEDEV /* BCMPCIEDEV support enab macros */
 extern bool _pciedevenab;
-#if defined(ROM_ENAB_RUNTIME_CHECK)
+#if defined(ROM_ENAB_RUNTIME_CHECK) && !defined(BCMPCIEDEV_NO_RUNTIME_CHECK)
 	#define BCMPCIEDEV_ENAB() (_pciedevenab)
 #elif defined(BCMPCIEDEV_ENABLED)
 	#define BCMPCIEDEV_ENAB() (TRUE)
@@ -844,7 +858,8 @@ extern uint32 gFWID;
 
 #ifdef BCMFRWDPKT /* BCMFRWDPKT support enab macros  */
 	extern bool _bcmfrwdpkt;
-#if defined(ROM_ENAB_RUNTIME_CHECK) || !defined(DONGLEBUILD)
+#if (defined(ROM_ENAB_RUNTIME_CHECK) && !defined(BCMFRWDPKT_NO_RUNTIME_CHECK)) || \
+		!defined(DONGLEBUILD)
 	#define BCMFRWDPKT_ENAB() (_bcmfrwdpkt)
 #elif defined(BCMFRWDPKT_DISABLED)
 	#define BCMFRWDPKT_ENAB() (FALSE)
@@ -883,9 +898,10 @@ extern uint32 gFWID;
 
 #ifdef BCMRXDATAPOOL /* BCMRXDATAPOOL support enab macros  */
 	extern bool _bcmrxdatapool;
-#if defined(ROM_ENAB_RUNTIME_CHECK) || !defined(DONGLEBUILD)
+#if (defined(ROM_ENAB_RUNTIME_CHECK) && !defined(BCMRXDATAPOOL_NO_RUNTIME_CHECK)) || \
+		!defined(DONGLEBUILD)
 	#define BCMRXDATAPOOL_ENAB() (_bcmrxdatapool)
-#elif defined(BCMRXDATAPOOL_DISABLED)
+#elif defined(BCMRXDATAPOOL_DISABLED) && defined(DONGLEBUILD)
 	#define BCMRXDATAPOOL_ENAB() (FALSE)
 #else
 	#define BCMRXDATAPOOL_ENAB() (TRUE)
@@ -896,7 +912,8 @@ extern uint32 gFWID;
 
 #ifdef URB /* URB support enab macros  */
 	extern bool _urb_enab;
-#if defined(ROM_ENAB_RUNTIME_CHECK) || !defined(DONGLEBUILD)
+#if (defined(ROM_ENAB_RUNTIME_CHECK) && !defined(URB_NO_RUNTIME_CHECK)) || \
+		!defined(DONGLEBUILD)
 	#define URB_ENAB() (_urb_enab)
 #elif defined(URB_DISABLED)
 	#define URB_ENAB() (FALSE)
@@ -1021,6 +1038,7 @@ extern bool _tx_histogram_enabled;
 #if defined(BCMROMBUILD)
 #define BCMPOSTTRAPFN(_fn)		_fn
 #define BCMPOSTTRAPRAMFN(_fn)	__attribute__ ((__section__ (".text_ram." #_fn))) _fn
+#define BCMPOSTTRAP_ACCESSOR_RAMFN(fn)	BCMPOSTTRAPRAMFN(fn)
 #if defined(BCMFASTPATH_EXCLUDE_FROM_ROM)
 #define BCMPOSTTRAPFASTPATH(_fn)	__attribute__ ((__section__ (".text_ram." #_fn))) _fn
 #else /* BCMFASTPATH_EXCLUDE_FROM_ROM */
@@ -1035,6 +1053,7 @@ extern bool _tx_histogram_enabled;
 #define BCMPOSTTRAPFASTPATH(_fn)	_fn
 #endif /* DONGLEBUILD */
 #define BCMPOSTTRAPRAMFN(fn)	BCMPOSTTRAPFN(fn)
+#define BCMPOSTTRAP_ACCESSOR_RAMFN(fn)	BCMPOSTTRAPRAMFN(fn)
 #endif /* ROMBUILD */
 
 typedef struct bcm_rng * bcm_rng_handle_t;

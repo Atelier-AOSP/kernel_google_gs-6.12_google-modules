@@ -125,7 +125,6 @@ dhd_dscp_policy_attach(struct bcm_cfg80211 *cfg)
 
 	/* Setup policy spin lock */
 	policy_info->dscp_policy_lock = osl_spin_lock_init(cfg->osh);
-	OSL_LOCK_CLASS_SET(policy_info->dscp_policy_lock);
 	if (policy_info->dscp_policy_lock == NULL) {
 		ret_val = BCME_ERROR;
 		goto done;

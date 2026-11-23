@@ -336,10 +336,7 @@ extern bool _nvram_reclaim_enb;
 #define NVRAM_RECLAIM_CHECK(name)
 #endif /* BCM_RECLAIM */
 
-#ifndef ATE_BUILD
-const
-#endif /* ATE_BUILD */
-char *getvar(char *vars, const char *name);
+const char *getvar(char *vars, const char *name);
 int getintvar(char *vars, const char *name);
 int getintvararray(char *vars, const char *name, int index);
 int getintvararraysize(char *vars, const char *name);
@@ -407,7 +404,7 @@ typedef struct bcm_iovar {
 	const char *name;	/* name for lookup and display */
 	uint16 varid;		/* id for switch */
 	uint16 flags;		/* driver-specific flag bits */
-	uint8 flags2;		 /* driver-specific flag bits */
+	uint8 flags2;		/* driver-specific flag bits */
 	uint8 type;		/* base type of argument */
 	uint16 minlen;		/* min length for buffer vars */
 } bcm_iovar_t;
@@ -590,12 +587,11 @@ uint16 bcmhex2bin(const uint8* hex, uint hex_len, uint8 *buf, uint buf_len);
 #define VALID_MASK(mask)	!((mask) & ((mask) + 1))
 
 #ifndef OFFSETOF
-#if ((__GNUC__ >= 4) && (__GNUC_MINOR__ >= 8)) || defined(BCMFUZZ)
-	/* GCC 4.8+ complains when using our OFFSETOF macro in array length declarations. */
+#if defined(__GNUC__) || defined(BCMFUZZ)
 	#define	OFFSETOF(type, member)	__builtin_offsetof(type, member)
 #else
 	#define	OFFSETOF(type, member)	((uint)(uintptr)&((type *)0)->member)
-#endif /* GCC 4.8 or newer */
+#endif /* GCC || BCMFUZZ */
 #endif /* OFFSETOF */
 
 #ifndef CONTAINEROF
@@ -753,6 +749,9 @@ DECLARE_MAP_API(8, 2, 3, 3u, 0x00FFu) /* setbit8() and getbit8() */
 
 /* basic mux operation - can be optimized on several architectures */
 #define MUX(pred, true, false) ((pred) ? (true) : (false))
+
+/* find modulo of a number */
+#define MOD(x, bound) MUX(ISPOWEROF2(bound), ((x) & ((bound) - 1)), ((x) % (bound)))
 
 /* modulo inc/dec - assumes x E [0, bound - 1] */
 #define MODDEC(x, bound) MUX((x) == 0, (bound) - 1, (x) - 1)
@@ -980,6 +979,7 @@ extern void prhexstr_msb(const char *prefix, const uint8 *buf, uint len, bool ne
 
 /* bcmerror */
 extern const char *bcmerrorstr(int bcmerror);
+int bcm_get_last_err(void);
 
 #if defined(BCMDBG) || defined(WLMSG_ASSOC)
 /* get 802.11 frame name based on frame kind - see frame types FC_.. in 802.11.h */
@@ -1040,7 +1040,7 @@ extern uint bcm_mkiovar(const char *name, const char *data, uint datalen, char *
 
 enum pkttrace_info {
 	PKTLIST_PRECQ,		/* Pkt in Prec Q */
-	PKTLIST_FAIL_PRECQ, 	/* Pkt failed to Q in PRECQ */
+	PKTLIST_FAIL_PRECQ,	/* Pkt failed to Q in PRECQ */
 	PKTLIST_DMAQ,		/* Pkt in DMA Q */
 	PKTLIST_MI_TFS_RCVD,	/* Received TX status */
 	PKTLIST_TXDONE,		/* Pkt TX done */
@@ -1644,24 +1644,32 @@ count_trailing_zeros(uint32 val)
 
 int buf_shift_right(uint8 *buf, uint16 len, uint8 bits);
 
+/* Take a variable number of args and replace with only the first.
+ * (UNUSED arg ensures that there is at least one argument in '...', as required by (pre-C23) ISO C
+ * for variadic macros).
+ */
+#define FIRST_ARG_HELPER(a1, ...)	a1
+#define FIRST_ARG(...)			FIRST_ARG_HELPER(__VA_ARGS__, UNUSED)
+
 #ifdef DONGLEBUILD
 extern int print_string(const char *str);
 
+/* Generate function name by joining 'fn' arg with number of variable args.
+ * (UNUSED arg ensures that there is at least one argument in '...', as required by (pre-C23) ISO C
+ * for variadic macros).
+ */
 #define _NUM_ARGS_FN(fn, _1, _2, _3, _4, _5, _6, _7, _8, _9, \
 	       _A, _B, _C, _D, _E, _F, N, ...) fn ## N
 #define NUM_ARGS_FN(fn, ...)	\
-	_NUM_ARGS_FN(fn, __VA_ARGS__, x, x, x, x, x, x, x, x, x, x, x, x, x, x, 0)
+	_NUM_ARGS_FN(fn, __VA_ARGS__, x, x, x, x, x, x, x, x, x, x, x, x, x, x, 0, UNUSED)
 
-#define FIRST_ARG(a1, ...)	a1
-#define NEXT_ARGS(a1, ...)	__VA_ARGS__
-
-#define printf_ps_0(str, ...)	print_string(str)
-#define printf_ps_x(str, ...)	printf(str, __VA_ARGS__)
+#define printf_ps_0(str, unused)	print_string(str)
+#define printf_ps_x(str, unused, ...)	printf(str, __VA_ARGS__)
 
 #define posttrap_printf(...)	\
 	do { \
 		static const char BCMPOST_TRAP_RODATA(p_str)[] = FIRST_ARG(__VA_ARGS__); \
-		NUM_ARGS_FN(printf_ps_, __VA_ARGS__)(p_str, NEXT_ARGS(__VA_ARGS__)); \
+		NUM_ARGS_FN(printf_ps_, __VA_ARGS__)(p_str, __VA_ARGS__); \
 		BCM_REFERENCE(p_str); \
 	} while (0)
 
@@ -1703,5 +1711,43 @@ typedef struct ver_len_info {
 	uint16 ver;
 	uint16 len;
 } ver_len_info_t;
+
+/* Nvram related constants and magics */
+#define NV_SIG_MAGIC_VAL {0xCD, 0xCA, 0xDC, 0xAC, 0xBA, 0xB0, 0xAB, 0x0B};
+#define NV_SIG_MAGIC_SZ 8
+#define NV_SIG_KEY_LEN_SZ sizeof(uint16)
+#define NV_SIG_HDR_SZ (NV_SIG_MAGIC_SZ + NV_SIG_KEY_LEN_SZ)
+#define NVRAM_SIG_MIN_SZ 204
+/* NVRAM extension */
+#define NV_EXT_MAGIC "ENDOFEXT"
+#define NV_EXT_MAGIC_SZ 8
+#define NV_EXT_KEY "rt_extension"
+#define NV_EXT_KEY_SZ 12
+#define NV_MAX_RT_EXT 200
+
+/* 32/16/8 bits list with 2^16 capacity.
+ * When being used to carry out data from an API the caller of the API must initialize the cnt field
+ * to indicate the available array size of the elem field and the API must update the cnt field to
+ * indicate the used array size of the elem field before returning to the caller.
+ */
+typedef struct bcm_uint32_list {
+	uint16	cnt;		/* element count in the element array */
+	uint8	PAD[2];
+	uint32	elem[];		/* element array */
+} bcm_uint32_list_t;
+
+typedef struct bcm_uint16_list {
+	uint16	cnt;		/* element count in the element array */
+	uint16	elem[];		/* element array */
+} bcm_uint16_list_t;
+
+typedef struct bcm_uint8_list {
+	uint16	cnt;		/* element count in the element array */
+	uint8	elem[];		/* element array */
+} bcm_uint8_list_t;
+
+#if defined(WLC_NVRAMSIG)
+int getvarsig(const uint8 **sig, uint *ssize, const char **var, int *vsize, uint idx);
+#endif /* WLC_NVRAMSIG */
 
 #endif	/* _bcmutils_h_ */

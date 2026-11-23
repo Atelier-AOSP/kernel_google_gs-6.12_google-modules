@@ -236,32 +236,40 @@ static void cpm_irq_mailbox_exit(struct platform_device *pdev)
 	cpm_iface_free_client(info->client);
 }
 
+static int cpm_irq_domain_map(struct irq_domain *d, unsigned int virq,
+			     irq_hw_number_t hwirq)
+{
+	struct cpm_irq_info *info = d->host_data;
+
+	if (hwirq >= CPM_IRQ_COUNT)
+		return -EINVAL;
+
+	irq_set_chip_data(virq, info);
+	irq_set_chip_and_handler(virq, &cpm_irq_chip, handle_simple_irq);
+
+	dev_dbg(info->dev, "Mapped hwirq %lu to virq %u\n", hwirq, virq);
+
+	return 0;
+}
+
+static const struct irq_domain_ops cpm_irq_domain_ops = {
+	.map = cpm_irq_domain_map,
+	.xlate = irq_domain_xlate_onecell,
+};
+
 static int cpm_irq_irqchip_init(struct platform_device *pdev)
 {
 	struct cpm_irq_info *info = platform_get_drvdata(pdev);
 	struct device *dev = &pdev->dev;
-	size_t i;
 
 	mutex_init(&info->lock);
 
 	memset(info->trig_type, 0, sizeof(info->trig_type));
-	info->domain = irq_domain_add_linear(dev->of_node, CPM_IRQ_COUNT,
-					     &irq_domain_simple_ops, info);
+
+	info->domain = irq_domain_create_tree(dev_fwnode(dev), &cpm_irq_domain_ops, info);
 	if (!info->domain) {
-		dev_err(info->dev, "Unable to get irq domain\n");
+		dev_err(info->dev, "Unable to add irq domain\n");
 		return -ENODEV;
-	}
-
-	for (i = 0; i < CPM_IRQ_COUNT; i++) {
-		int irq = irq_create_mapping(info->domain, i);
-
-		if (!irq) {
-			dev_err(dev, "Failed to create irq mapping\n");
-			return -EINVAL;
-		}
-		irq_set_chip_data(irq, info);
-		irq_set_chip_and_handler(irq, &cpm_irq_chip,
-					 handle_simple_irq);
 	}
 
 	return 0;
@@ -294,11 +302,9 @@ static int cpm_irq_probe(struct platform_device *pdev)
 	return err;
 }
 
-static int cpm_irq_remove(struct platform_device *pdev)
+static void cpm_irq_remove(struct platform_device *pdev)
 {
 	cpm_irq_mailbox_exit(pdev);
-
-	return 0;
 }
 
 static const struct platform_device_id cpm_irq_id[] = {

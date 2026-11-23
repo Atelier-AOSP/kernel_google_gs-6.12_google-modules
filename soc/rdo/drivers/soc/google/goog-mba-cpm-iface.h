@@ -10,6 +10,9 @@
 #ifndef _GOOG_MBA_CPM_IFACE_PRIV_H_
 #define _GOOG_MBA_CPM_IFACE_PRIV_H_
 
+#include <soc/google/goog_mba_cpm_iface.h>
+#include <soc/google/google_gtc.h>
+
 /*
  * cpm_iface_cb_t - Callback invoked for CPM-initiated transactions
  * @context:			Context value provided by the CPM host.
@@ -68,6 +71,13 @@ struct cpm_iface_session {
 	struct completion complete;
 	struct cpm_iface_req req;
 	struct cpm_iface_payload req_msg;
+	struct cpm_iface_event_timestamps timestamps;
 };
 
+inline void cpm_iface_record_timestamp(struct cpm_iface_event_timestamps *ts,
+				       enum cpm_iface_events event)
+{
+	if (ts && event < MAX_CPM_IFACE_EVENTS)
+		ts->events[event] = goog_gtc_get_time_ns();
+}
 #endif /* _GOOG_MBA_CPM_IFACE_PRIV_H_ */

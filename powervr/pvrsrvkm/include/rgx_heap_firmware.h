@@ -58,7 +58,9 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * the entire range (i.e. main and config heap).
  */
 #define RGX_FIRMWARE_HEAP_SHIFT                      RGX_FW_HEAP_SHIFT
-#define RGX_FIRMWARE_RAW_HEAP_BASE                   (IMG_UINT64_C(0xE1C0000000))
+#define RGX_FIRMWARE_RAW_HEAP_HIGH                   0xE1
+#define RGX_FIRMWARE_RAW_HEAP_LOW                    0xC0000000
+#define RGX_FIRMWARE_RAW_HEAP_BASE                   ((IMG_UINT64_C(RGX_FIRMWARE_RAW_HEAP_HIGH) << 32U) | IMG_UINT64_C(RGX_FIRMWARE_RAW_HEAP_LOW))
 #define RGX_FIRMWARE_RAW_HEAP_SIZE                   (IMG_UINT32_C(1) << RGX_FIRMWARE_HEAP_SHIFT)
 
 /* To enable the firmware to compute the exact address of structures allocated by the KM
@@ -125,6 +127,14 @@ static_assert((RGX_FIRMWARE_RAW_HEAP_SIZE) >= IMG_UINT32_C(0x800000), "MIPS GPU 
 #define RGX_FIRMWARE_CONFIG_HEAP_BASE           (RGX_FIRMWARE_RAW_HEAP_BASE + \
                                                  RGX_FIRMWARE_RAW_HEAP_SIZE - \
                                                  RGX_FIRMWARE_CONFIG_HEAP_SIZE)
+
+/* Register clear data offset from private data heap base */
+#define RGX_FIRMWARE_REG_CLEAR_PRIV_DATA_HEAP_OFFSET	0x1000
+#define RGX_FIRMWARE_REG_CLEAR_HEAP_BASE				(RGX_FIRMWARE_PRIV_DATA_HEAP_BASE + IMG_UINT64_C(RGX_FIRMWARE_REG_CLEAR_PRIV_DATA_HEAP_OFFSET))
+/* Macros suitable for asm files */
+#define RGX_FIRMWARE_PRIV_DATA_HEAP_BASE_LOW_ASM		RGX_FIRMWARE_RAW_HEAP_LOW+RGX_FW_CODE_SECTION_SIZE
+#define RGX_FIRMWARE_REG_CLEAR_HEAP_BASE_LOW_ASM		RGX_FIRMWARE_PRIV_DATA_HEAP_BASE_LOW_ASM+RGX_FIRMWARE_REG_CLEAR_PRIV_DATA_HEAP_OFFSET
+#define RGX_FIRMWARE_REG_CLEAR_HEAP_BASE_HIGH_ASM		RGX_FIRMWARE_RAW_HEAP_HIGH
 
 /* 1 Mb can hold the maximum amount of page tables for the memory shared between the firmware and all KM drivers:
  *  MAX(RAW_HEAP_SIZE) = 32 Mb; MAX(NUMBER_OS) = 32; Total shared memory = 1024 Mb;

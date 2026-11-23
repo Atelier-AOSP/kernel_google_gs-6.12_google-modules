@@ -475,6 +475,10 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #define CLAMP(min, max, n)  ((n) < (min) ? (min) : ((n) > (max) ? (max) : (n)))
 #endif
 
+#define ADD_UINT32_OVERFLOW(a, b) \
+	({ typeof(a) _a = (a); typeof(b) _b = (b); \
+	(_a + _b) < _a;})
+
 #define SWAP(X, Y) (X) ^= (Y); (Y) ^= (X); (X) ^= (Y);
 
 #if defined(__linux__) && defined(__KERNEL__)

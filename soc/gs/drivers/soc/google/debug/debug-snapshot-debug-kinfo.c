@@ -15,7 +15,7 @@
 #include <generated/utsrelease.h>
 #include <soc/google/debug-snapshot.h>
 #include <soc/google/pixel-suspend-diag.h>
-#include "../../../../drivers/android/debug_kinfo.h"
+#include "drivers/android/debug_kinfo.h"
 
 #define UPDATE_VENDOR_KERNEL_INFO_PERIOD_MS		10
 
@@ -162,6 +162,7 @@ static int debug_snapshot_debug_kinfo_probe(struct platform_device *pdev)
 	}
 
 	rmem = of_reserved_mem_lookup(mem_region);
+	of_node_put(mem_region);
 	if (!rmem) {
 		dev_err(&pdev->dev, "no such reserved mem of node %pOF\n",
 				dev_of_node(&pdev->dev));

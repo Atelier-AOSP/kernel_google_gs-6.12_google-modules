@@ -21,6 +21,11 @@ properties:
       integer specifying the wifi chip for that particulare device.
     maxItems: 1
 
+  bt-chip:
+    description:
+      integer specifying the bt chip for that particulare device.
+    maxItems: 1
+
   gdmc-iface:
     description:
       Reference to the GDMC node, if any.
@@ -37,6 +42,40 @@ properties:
   gsa-enabled:
     description:
       Boolean specifying whether GSA boot for AOC is enabled. Must be unset if false.
+    maxItems: 1
+
+  ramdump-header-offset:
+    description:
+      Location of AoC coredump header as an offset from start of DRAM carveout.
+
+  carveout-paddr-from-aoc:
+    description:
+      Physical address of DRAM carveout from AoC point of view, used by coredump writer.
+
+  carveout-vaddr-from-aoc:
+    description:
+      Virtual address of DRAM carveout from AoC point of view, used by coredump writer.
+
+  mbox-doorbell-mode-enabled:
+    description:
+      Specifies whether doorbell mode is enabled for the target.
+
+  boot-breadcrumbs-enabled:
+    description:
+      Specifies whether boot breadcrumbs are enabled for the target.
+
+  mbox-non-waking:
+    description:
+      List of references to the mailboxes which shall be used to handle
+      non waking signals. Each list entry has two arguments which specifies
+      the offset between base register address and corresponding mask register,
+      as well as a register bitmask.
+      The number of arguments has to be set as "#non_waking-cells" property in
+      the memory resource describing the mailbox.
+
+  coredump-region:
+    description:
+      Reference to the additional memory carveout where coredump can be stored.
     maxItems: 1
 
 required:
@@ -81,6 +120,8 @@ examples:
           &aoc_ap_19_mba_client_19 0
         >;
 
+        mbox-doorbell-mode-enabled;
+
         power-domains = <&sswrp_aoc_pd>, <&aoc_core_pd>;
         power-domain-names = "sswrp_aoc_pd", "aoc_core_pd";
 
@@ -103,16 +144,21 @@ examples:
         channel-max-pending-msgs = <128>;
         block-channel-threshold = <64>;
 
-        notify-on-state-transition = "true";
-        hotword-supported = "true";
-        chre-supported = "true";
-        iommu-config-persistent = "true";
+        notify-on-state-transition;
+        hotword-supported;
+        chre-supported;
+        iommu-config-persistent;
 
-        aoc-coredump-mbox = <19>;
+        aoc-coredump-mbox = <3>;
+        ramdump-header-offset = <0x3000000>;
+        carveout-paddr-from-aoc = <0x6000000>;
+        carveout-vaddr-from-aoc = <0xB6000000>;
 
         gdmc-iface = <&goog_mba_gdmc_iface>;
 
+        boot-breadcrumbs-enabled;
+
         gsa-device = <&gsa>;
-        gsa-enabled = "true";
+        gsa-enabled;
       };
     };

@@ -11,7 +11,6 @@
 
 struct soc_source_drvdata {
 	struct coresight_device *csdev;
-	local_t mode;
 };
 
 #endif  // GENERIC_SOURCE_H_

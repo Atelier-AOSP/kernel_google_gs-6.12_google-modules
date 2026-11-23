@@ -46,6 +46,13 @@ enum hw_trace_component_9x00 {
 	HW_TRACE_WRITEBACK_9x00,
 };
 
+enum dpu_component_9x00 {
+	DPU_COMPONENT_BE = 0,
+	DPU_COMPONENT_FE0,
+	DPU_COMPONENT_FE1,
+	DPU_COMPONENT_WB,
+}
+
 #endif /* __9x00_VS_HW_TRACE_API_DEF__ */
 
 TRACE_DEFINE_ENUM(HW_TRACE_LAYER_9x00);
@@ -57,6 +64,18 @@ TRACE_DEFINE_ENUM(HW_TRACE_WRITEBACK_9x00);
 		 { HW_TRACE_LAYER_9x00, "Layer" }, \
 		 { HW_TRACE_OUT_CTRL_9x00, "Out_ctrl" }, \
 		 { HW_TRACE_WRITEBACK_9x00, "Writeback" })
+
+TRACE_DEFINE_ENUM(DPU_COMPONENT_BE);
+TRACE_DEFINE_ENUM(DPU_COMPONENT_FE0);
+TRACE_DEFINE_ENUM(DPU_COMPONENT_FE1);
+TRACE_DEFINE_ENUM(DPU_COMPONENT_WB);
+
+#define show_dpu_component(x) \
+	__print_symbolic(x, \
+		{ DPU_COMPONENT_BE, "BE " }, \
+		{ DPU_COMPONENT_FE0, "FE0" }, \
+		{ DPU_COMPONENT_FE1, "FE1" }, \
+		{ DPU_COMPONENT_WB, "WB" })
 
 /* Specific HW Programming Traces */
 
@@ -108,7 +127,7 @@ TRACE_EVENT(disp_config_hw_fb_mask,
 			__entry->address = fb->address;
 			__entry->stride = fb->stride;
 			__entry->en = fb->enable;
-			__assign_str(prop, prop);
+			__assign_str(prop);
 	),
 	TP_printk("[%s%d] %s: en:%d address:%#llx stride:%d",
 		  show_trace_component_9x00(__entry->component), __entry->hw_id,
@@ -167,7 +186,7 @@ TRACE_EVENT(disp_config_hw_fb,
 			__entry->display_id = fb->display_id;
 			__entry->secure = fb->secure;
 			__entry->en = fb->enable;
-			__assign_str(prop, prop);
+			__assign_str(prop);
 	),
 
 	TP_printk(
@@ -365,50 +384,132 @@ DEFINE_EVENT(disp_dc, disp_dc_disable,
 	TP_PROTO(struct vs_dc *dc),
 	TP_ARGS(dc)
 );
+
+DECLARE_EVENT_CLASS(disp_dc_component_en,
+	TP_PROTO(enum dpu_component_9x00 dpu_component),
+	TP_ARGS(dpu_component),
+	TP_STRUCT__entry(
+		__field(u32, dpu_component)
+	),
+	TP_fast_assign(
+		__entry->dpu_component = dpu_component;
+	),
+	TP_printk("%s", show_dpu_component(__entry->dpu_component))
+);
+DEFINE_EVENT(disp_dc_component_en, disp_dc_component_enable,
+	TP_PROTO(enum dpu_component_9x00 dpu_component),
+	TP_ARGS(dpu_component)
+);
+DEFINE_EVENT(disp_dc_component_en, disp_dc_component_disable,
+	TP_PROTO(enum dpu_component_9x00 dpu_component),
+	TP_ARGS(dpu_component)
+);
+
+#define trace_disp_dc_fe_enable(fe_idx)                                    \
+	do {                                                               \
+		if ((fe_idx) == 0)                                         \
+			trace_disp_dc_component_enable(DPU_COMPONENT_FE0); \
+		else                                                       \
+			trace_disp_dc_component_enable(DPU_COMPONENT_FE1); \
+	} while (0)
+#define trace_disp_dc_fe_disable(fe_idx)                                    \
+	do {                                                                \
+		if ((fe_idx) == 0)                                          \
+			trace_disp_dc_component_disable(DPU_COMPONENT_FE0); \
+		else                                                        \
+			trace_disp_dc_component_disable(DPU_COMPONENT_FE1); \
+	} while (0)
+#define trace_disp_dc_be_enable() \
+	trace_disp_dc_component_enable(DPU_COMPONENT_BE)
+#define trace_disp_dc_be_disable() \
+	trace_disp_dc_component_disable(DPU_COMPONENT_BE)
+#define trace_disp_dc_wb_enable() \
+	trace_disp_dc_component_enable(DPU_COMPONENT_WB)
+#define trace_disp_dc_wb_disable() \
+	trace_disp_dc_component_disable(DPU_COMPONENT_WB)
+
 DECLARE_EVENT_CLASS(disp_dc_irq,
-	TP_PROTO(struct vs_dc *dc),
-	TP_ARGS(dc),
+	TP_PROTO(struct device *dev, const struct dc_irq_info *irq_info),
+	TP_ARGS(dev, irq_info),
 	TP_STRUCT__entry(
 		__field(bool, suspended)
 		__field(bool, active)
 		__field(int, usage_count)
 		__field(int, enable_count)
+		__string(name, dev_name(dev))
 	),
 	TP_fast_assign(
-		__entry->suspended = pm_runtime_suspended(dc->hw.dev);
-		__entry->active = pm_runtime_active(dc->hw.dev);
-		__entry->usage_count = atomic_read(&dc->hw.dev->power.usage_count);
-		__entry->enable_count = dc->irq_enable_count;
+		__entry->suspended = pm_runtime_suspended(dev);
+		__entry->active = pm_runtime_active(dev);
+		__entry->usage_count = atomic_read(&dev->power.usage_count);
+		__entry->enable_count = irq_info->enable_count;
+		__assign_str(name);
 	),
-	TP_printk("DC IRQ suspended:%d active:%d usage_count:%d irq_enable_count:%d",
-		  __entry->suspended, __entry->active, __entry->usage_count, __entry->enable_count)
+	TP_printk("DC IRQ %s suspended:%d active:%d usage_count:%d irq_enable_count:%d",
+		  __get_str(name), __entry->suspended, __entry->active,
+		  __entry->usage_count, __entry->enable_count)
 );
 DEFINE_EVENT(disp_dc_irq, disp_dc_enable_irqs,
-	TP_PROTO(struct vs_dc *dc),
-	TP_ARGS(dc)
+	TP_PROTO(struct device *dev, const struct dc_irq_info *irq_info),
+	TP_ARGS(dev, irq_info)
 );
 DEFINE_EVENT(disp_dc_irq, disp_dc_disable_irqs,
-	TP_PROTO(struct vs_dc *dc),
-	TP_ARGS(dc)
+	TP_PROTO(struct device *dev, const struct dc_irq_info *irq_info),
+	TP_ARGS(dev, irq_info)
 );
 
 TRACE_EVENT(disp_dc_irq_status,
-	TP_PROTO(struct vs_dc *dc),
-	TP_ARGS(dc),
+	TP_PROTO(struct device *dev, const struct dc_irq_info *irq_info),
+	TP_ARGS(dev, irq_info),
 	TP_STRUCT__entry(
-		__bitmask(masked_status, dc->irq_num)
-		__bitmask(pending_status, dc->irq_num)
-		__dynamic_array(u8, depths, dc->irq_num)
+		__bitmask(masked_status, irq_info->irq_num)
+		__bitmask(pending_status, irq_info->irq_num)
+		__dynamic_array(u8, depths, irq_info->irq_num)
+		__string(name, dev_name(dev))
 	),
 	TP_fast_assign(
-		__assign_bitmask(masked_status, dc->irq_masked_status, dc->irq_num);
-		__assign_bitmask(pending_status, dc->irq_pending_status, dc->irq_num);
-		memcpy(__get_dynamic_array(depths), dc->irq_depths,
-		       dc->irq_num * sizeof(*dc->irq_depths));
+		__assign_bitmask(masked_status, irq_info->irq_masked_status, irq_info->irq_num);
+		__assign_bitmask(pending_status, irq_info->irq_pending_status, irq_info->irq_num);
+		memcpy(__get_dynamic_array(depths), irq_info->irq_depths,
+		       irq_info->irq_num * sizeof(*irq_info->irq_depths));
+		__assign_str(name);
 	),
-	TP_printk("DC IRQ masked:%s pending:%s depths:[%s]",
-		  __get_bitmask(masked_status), __get_bitmask(pending_status),
+	TP_printk("DC IRQ %s masked:%s pending:%s depths:[%s]",
+		  __get_str(name), __get_bitmask(masked_status), __get_bitmask(pending_status),
 		  __print_hex(__get_dynamic_array(depths), __get_dynamic_array_len(depths)))
+);
+
+TRACE_EVENT_CONDITION(disp_err_irqs,
+	TP_PROTO(u16 pvric_err, u8 underrun, u8 data_lost),
+	TP_ARGS(pvric_err, underrun, data_lost),
+	TP_CONDITION(pvric_err || underrun || data_lost),
+	TP_STRUCT__entry(
+		__field(u16, pvric_err)
+		__field(u8, underrun)
+		__field(u8, data_lost)
+	),
+	TP_fast_assign(
+		__entry->pvric_err = pvric_err;
+		__entry->underrun = underrun;
+		__entry->data_lost = data_lost;
+	),
+	TP_printk("pvric_err: %#x underrun: %#x data_lost: %#x",
+		__entry->pvric_err, __entry->underrun, __entry->data_lost)
+);
+
+TRACE_EVENT_CONDITION(disp_bus_err_irqs,
+	TP_PROTO(const char *name, long data),
+	TP_ARGS(name, data),
+	TP_CONDITION(data),
+	TP_STRUCT__entry(
+		__string(name, name)
+		__field(long, data)
+	),
+	TP_fast_assign(
+		__assign_str(name);
+		__entry->data = data;
+	),
+	TP_printk("%s: %#lx", __get_str(name), __entry->data)
 );
 
 TRACE_EVENT(disp_dsc_status,
@@ -482,6 +583,69 @@ DEFINE_EVENT(disp_dc_power, disp_dc_power_put,
 	TP_PROTO(struct device *dev, bool sync, int ret),
 	TP_ARGS(dev, sync, ret)
 );
+
+DECLARE_EVENT_CLASS(disp_dc_component_power,
+	TP_PROTO(enum dpu_component_9x00 dpu_component, struct device *dev, bool sync, int ret),
+	TP_ARGS(dpu_component, dev, sync, ret),
+	TP_STRUCT__entry(
+		__field(u32, dpu_component)
+		__field(bool, enabled)
+		__field(bool, suspended)
+		__field(bool, active)
+		__field(int, usage_count)
+		__field(bool, sync)
+		__field(ktime_t, timestamp)
+		__field(int, ret)
+	),
+	TP_fast_assign(
+		__entry->dpu_component = dpu_component;
+		__entry->enabled = pm_runtime_enabled(dev);
+		__entry->suspended = pm_runtime_suspended(dev);
+		__entry->active = pm_runtime_active(dev);
+		__entry->usage_count = atomic_read(&dev->power.usage_count);
+		__entry->sync = sync;
+		__entry->timestamp = ktime_get_real();
+		__entry->ret = ret;
+	),
+	TP_printk("%s: enabled:%d suspended:%d active:%d usage_count:%d sync:%d ts_utc:%lld ret:%d",
+		  show_dpu_component(__entry->dpu_component), __entry->enabled,
+		  __entry->suspended, __entry->active, __entry->usage_count,
+		  __entry->sync, __entry->timestamp, __entry->ret)
+);
+DEFINE_EVENT(disp_dc_component_power, disp_dc_component_power_get,
+	TP_PROTO(enum dpu_component_9x00 dpu_component, struct device *dev, bool sync, int ret),
+	TP_ARGS(dpu_component, dev, sync, ret)
+);
+DEFINE_EVENT(disp_dc_component_power, disp_dc_component_power_put,
+	TP_PROTO(enum dpu_component_9x00 dpu_component, struct device *dev, bool sync, int ret),
+	TP_ARGS(dpu_component, dev, sync, ret)
+);
+#define trace_disp_dc_fe_power_get(fe_idx, dev, sync, ret)                       \
+	do {                                                                     \
+		if ((fe_idx) == 0)                                               \
+			trace_disp_dc_component_power_get(DPU_COMPONENT_FE0,     \
+							  (dev), (sync), (ret)); \
+		else                                                             \
+			trace_disp_dc_component_power_get(DPU_COMPONENT_FE1,     \
+							  (dev), (sync), (ret)); \
+	} while (0)
+#define trace_disp_dc_fe_power_put(fe_idx, dev, sync, ret)                       \
+	do {                                                                     \
+		if ((fe_idx) == 0)                                               \
+			trace_disp_dc_component_power_put(DPU_COMPONENT_FE0,     \
+							  (dev), (sync), (ret)); \
+		else                                                             \
+			trace_disp_dc_component_power_put(DPU_COMPONENT_FE1,     \
+							  (dev), (sync), (ret)); \
+	} while (0)
+#define trace_disp_dc_be_power_get(dev, sync, ret) \
+	trace_disp_dc_component_power_get(DPU_COMPONENT_BE, (dev), (sync), (ret))
+#define trace_disp_dc_be_power_put(dev, sync, ret) \
+	trace_disp_dc_component_power_put(DPU_COMPONENT_BE, (dev), (sync), (ret))
+#define trace_disp_dc_wb_power_get(dev, sync, ret) \
+	trace_disp_dc_component_power_get(DPU_COMPONENT_WB, (dev), (sync), (ret))
+#define trace_disp_dc_wb_power_put(dev, sync, ret) \
+	trace_disp_dc_component_power_put(DPU_COMPONENT_WB, (dev), (sync), (ret))
 
 TRACE_EVENT(disp_be_idle_timeout,
 	TP_PROTO(u32 config),

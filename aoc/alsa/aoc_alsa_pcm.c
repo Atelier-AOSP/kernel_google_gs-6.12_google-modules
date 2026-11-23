@@ -95,6 +95,9 @@ static void aoc_pcm_reset_handler(aoc_aud_service_event_t evnt, void *cookies)
 
 static bool aoc_pcm_support_interrupt(uint8_t mbox_index)
 {
+#ifdef AOC_FACTORY_BUILD
+	return false;
+#endif
 	return (mbox_index == PCM_CHANNEL);
 }
 /* Timer interrupt to read the ring buffer reader/writer positions */
@@ -202,7 +205,6 @@ static struct snd_pcm_hardware snd_aoc_playback_hw = {
 static enum hrtimer_restart aoc_pcm_irq_process(struct aoc_alsa_stream *alsa_stream)
 {
 	struct aoc_service_dev *dev;
-	struct snd_pcm_runtime *runtime;
 	unsigned long consumed;
 	unsigned long avail;
 
@@ -211,9 +213,8 @@ static enum hrtimer_restart aoc_pcm_irq_process(struct aoc_alsa_stream *alsa_str
 		return HRTIMER_NORESTART;
 
 	dev = alsa_stream->dev;
-	runtime = alsa_stream->substream->runtime;
 
-	if (runtime->status->state != SNDRV_PCM_STATE_RUNNING)
+	if (!alsa_stream->running)
 		return HRTIMER_RESTART;
 
 	/* The number of bytes read/written should be the bytes in the buffer
@@ -456,8 +457,11 @@ static int snd_aoc_pcm_close(struct snd_soc_component *component,
 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
 	struct aoc_chip *chip = alsa_stream->chip;
 	int err;
+	bool mutex_locked = true;
 
 	pr_debug("%s: name %s substream %p", __func__, rtd->dai_link->name, substream);
+	// Wait for any active ISR to finish
+	synchronize_irq(alsa_stream->dev->irq);
 	aoc_timer_stop_sync(alsa_stream);
 	atomic_set(&alsa_stream->cancel_work_active, 1);
 	audio_free_isr(alsa_stream->dev);
@@ -470,7 +474,8 @@ static int snd_aoc_pcm_close(struct snd_soc_component *component,
 
 	if (mutex_lock_interruptible(&chip->audio_mutex)) {
 		pr_err("ERR: interrupted while waiting for lock\n");
-		return -EINTR;
+		mutex_locked = false;
+		/* b/480740542 don't return to cleanup the resource */
 	}
 
 	runtime = substream->runtime;
@@ -506,7 +511,8 @@ static int snd_aoc_pcm_close(struct snd_soc_component *component,
 	* Do not free up alsa_stream here, it will be freed up by
 	* runtime->private_free callback we registered in *_open above
    	*/
-	mutex_unlock(&chip->audio_mutex);
+	if (mutex_locked)
+		mutex_unlock(&chip->audio_mutex);
 
 	cancel_work_sync(&alsa_stream->free_aoc_service_work);
 

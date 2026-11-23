@@ -169,8 +169,9 @@ PVRSRVBridgeDICreateContext(IMG_UINT32 ui32DispatchTableEntry,
 	if ((puiStreamNameInt) && ((PVRSRVTL_MAX_STREAM_NAME_SIZE * sizeof(IMG_CHAR)) > 0))
 	{
 		if (unlikely
-		    (OSCopyToUser
-		     (NULL, (void __user *)psDICreateContextOUT->puiStreamName, puiStreamNameInt,
+		    (CopyToUserWrapper
+		     (NULL, ui32DispatchTableEntry,
+		      (void __user *)psDICreateContextOUT->puiStreamName, puiStreamNameInt,
 		      (PVRSRVTL_MAX_STREAM_NAME_SIZE * sizeof(IMG_CHAR))) != PVRSRV_OK))
 		{
 			psDICreateContextOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -342,8 +343,9 @@ PVRSRVBridgeDIReadEntry(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (DI_IMPL_BRG_PATH_LEN * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiEntryPathInt, (const void __user *)psDIReadEntryIN->puiEntryPath,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiEntryPathInt,
+		     (const void __user *)psDIReadEntryIN->puiEntryPath,
 		     DI_IMPL_BRG_PATH_LEN * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psDIReadEntryOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -490,8 +492,9 @@ PVRSRVBridgeDIWriteEntry(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (DI_IMPL_BRG_PATH_LEN * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiEntryPathInt, (const void __user *)psDIWriteEntryIN->puiEntryPath,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiEntryPathInt,
+		     (const void __user *)psDIWriteEntryIN->puiEntryPath,
 		     DI_IMPL_BRG_PATH_LEN * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psDIWriteEntryOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;
@@ -509,8 +512,9 @@ PVRSRVBridgeDIWriteEntry(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psDIWriteEntryIN->ui32ValueSize * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiValueInt, (const void __user *)psDIWriteEntryIN->puiValue,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiValueInt,
+		     (const void __user *)psDIWriteEntryIN->puiValue,
 		     psDIWriteEntryIN->ui32ValueSize * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
 			psDIWriteEntryOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;

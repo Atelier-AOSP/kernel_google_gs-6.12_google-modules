@@ -10,6 +10,7 @@
  */
 #include <linux/acpi.h>
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/err.h>
@@ -443,7 +444,7 @@ err_release_lock:
 	return ret;
 }
 
-void __i2c_dw_disable(struct dw_i2c_dev *dev)
+int __i2c_dw_disable(struct dw_i2c_dev *dev)
 {
 	unsigned int raw_intr_stats;
 	unsigned int enable;
@@ -461,8 +462,10 @@ void __i2c_dw_disable(struct dw_i2c_dev *dev)
 		ret = regmap_read_poll_timeout(dev->map, DW_IC_ENABLE, enable,
 					       !(enable & DW_IC_ENABLE_ABORT), 10,
 					       100);
-		if (ret)
+		if (ret) {
 			dev_err(dev->dev, "timeout while trying to abort current transfer\n");
+			return -ETIMEDOUT;
+		}
 	}
 
 	do {
@@ -473,7 +476,7 @@ void __i2c_dw_disable(struct dw_i2c_dev *dev)
 		 */
 		regmap_read(dev->map, DW_IC_ENABLE_STATUS, &status);
 		if ((status & 1) == 0)
-			return;
+			return 0;
 
 		/*
 		 * Wait 10 times the signaling period of the highest I2C
@@ -484,6 +487,7 @@ void __i2c_dw_disable(struct dw_i2c_dev *dev)
 	} while (timeout--);
 
 	dev_err(dev->dev, "timeout in disabling adapter\n");
+	return -ETIMEDOUT;
 }
 
 u32 i2c_dw_clk_rate(struct dw_i2c_dev *dev)
@@ -496,6 +500,7 @@ u32 i2c_dw_clk_rate(struct dw_i2c_dev *dev)
 		return 0;
 	return dev->get_clk_rate_khz(dev);
 }
+EXPORT_SYMBOL_GPL(i2c_dw_clk_rate);
 
 int i2c_dw_prepare_clk(struct dw_i2c_dev *dev, bool prepare)
 {
@@ -514,8 +519,11 @@ int i2c_dw_prepare_clk(struct dw_i2c_dev *dev, bool prepare)
 		return ret;
 	}
 
-	clk_disable_unprepare(dev->clk);
-	clk_disable_unprepare(dev->pclk);
+	if (__clk_is_enabled(dev->clk))
+		clk_disable_unprepare(dev->clk);
+
+	if (__clk_is_enabled(dev->pclk))
+		clk_disable_unprepare(dev->pclk);
 
 	return 0;
 }
@@ -536,12 +544,14 @@ int i2c_dw_acquire_lock(struct dw_i2c_dev *dev)
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(i2c_dw_acquire_lock);
 
 void i2c_dw_release_lock(struct dw_i2c_dev *dev)
 {
 	if (dev->release_lock)
 		dev->release_lock();
 }
+EXPORT_SYMBOL_GPL(i2c_dw_release_lock);
 
 /*
  * Waiting for bus not busy

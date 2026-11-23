@@ -157,6 +157,7 @@ int gs_perf_mon_get_data(unsigned int cpu, struct gs_cpu_perf_data *data_dest)
 	/* Copy over cpu metadata. */
 	data_dest->time_delta_us = cpu_data->time_delta_us;
 	data_dest->cpu_idle_state = READ_ONCE(cpu_data->idle_state);
+	data_dest->last_update_ts = cpu_data->last_update_ts;
 
 	spin_unlock_irqrestore(&cpu_data->cpu_perf_lock, flags);
 
@@ -717,6 +718,23 @@ static int parse_perf_counters(struct device *dev, struct device_node *counter_t
 	if (ret)
 		dev_dbg(dev, "l3-cachemiss-ev not specified. Skipping.\n");
 
+#if IS_ENABLED(CONFIG_PIXEL_CME)
+	ret = parse_perf_event(counter_type, &cpu_events[PERF_CME_INST_RETIRED_IDX], unit_id,
+			       PERF_CME_INST_RETIRED_IDX, "cme-inst-ev");
+	if (ret)
+		dev_dbg(dev, "cme-inst-ev not specified. Skipping.\n");
+#endif
+
+	ret = parse_perf_event(counter_type, &cpu_events[PERF_MEM_RD_INST_IDX], unit_id,
+			       PERF_MEM_RD_INST_IDX, "mem-rd-inst-ev");
+	if (ret)
+		dev_dbg(dev, "mem-rd-inst-ev not specified. Skipping.\n");
+
+	ret = parse_perf_event(counter_type, &cpu_events[PERF_MEM_WR_INST_IDX], unit_id,
+			       PERF_MEM_WR_INST_IDX, "mem-wr-inst-ev");
+	if (ret)
+		dev_dbg(dev, "mem-wr-inst-ev not specified. Skipping.\n");
+
 	return 0;
 }
 
@@ -947,6 +965,7 @@ static int gs_perf_mon_driver_probe(struct platform_device *pdev)
 		dev_err(dev, "gs_perf_mon could not stop with error code %d\n", ret);
 		goto err_cpuhp_init;
 	}
+	wake_up_process(perf_mon_metadata.perf_mon_task);
 	perf_mon_metadata.perf_monitor_initialized = true;
 
 	/* Create the procfs files. */
@@ -1019,6 +1038,58 @@ static void __exit gs_perf_mon_exit(void)
 		remove_proc_subtree("gs_perf_mon", NULL);
 }
 
+static int gs_perf_mon_param_set_client_interval_us(const char *val, const struct kernel_param *kp)
+{
+	unsigned int interval = 0;
+
+	if (kstrtouint(val, 10, &interval)) {
+		pr_err("%s: gs_perf_mon parse error", __func__);
+		return -EINVAL;
+	}
+
+	perf_mon_config.client_update_interval_us = interval;
+
+	return 0;
+}
+
+static int gs_perf_mon_param_get_client_interval_us(char *buf, const struct kernel_param *kp)
+{
+	return sysfs_emit_at(buf, 0, "%u\n", perf_mon_config.client_update_interval_us);
+}
+
+static const struct kernel_param_ops param_interval_us = {
+	.set = gs_perf_mon_param_set_client_interval_us,
+	.get = gs_perf_mon_param_get_client_interval_us,
+};
+
+module_param_cb(client_update_interval_us, &param_interval_us, NULL, 0644);
+
+static int gs_perf_mon_param_set_client_backup_us(const char *val, const struct kernel_param *kp)
+{
+	unsigned int interval = 0;
+
+	if (kstrtouint(val, 10, &interval)) {
+		pr_err("%s: gs_perf_mon parse error", __func__);
+		return -EINVAL;
+	}
+
+	perf_mon_config.client_update_backup_us = interval;
+
+	return 0;
+}
+
+static int gs_perf_mon_param_get_client_backup_us(char *buf, const struct kernel_param *kp)
+{
+	return sysfs_emit_at(buf, 0, "%u\n", perf_mon_config.client_update_backup_us);
+}
+
+static const struct kernel_param_ops param_backup_us = {
+	.set = gs_perf_mon_param_set_client_backup_us,
+	.get = gs_perf_mon_param_get_client_backup_us,
+};
+
+module_param_cb(client_update_backup_us, &param_backup_us, NULL, 0644);
+
 /* A module parameter for frequency of counter updates. */
 static int gs_perf_mon_param_set_ticks(const char *val, const struct kernel_param *kp)
 {
@@ -1035,8 +1106,6 @@ static int gs_perf_mon_param_set_ticks(const char *val, const struct kernel_para
 	}
 
 	perf_mon_config.param_ticks_per_counter_update = ticks;
-	perf_mon_config.client_update_interval_us = ticks * USECS_PER_TICK;
-	perf_mon_config.client_update_backup_us = ticks * USECS_PER_TICK + USECS_PER_TICK / 2;
 
 	return 0;
 }

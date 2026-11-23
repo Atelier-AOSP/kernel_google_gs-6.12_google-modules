@@ -6,11 +6,12 @@
  */
 
 #define pr_fmt(fmt) "powercap_voltage_match_algo: " fmt
+#include <kunit/static_stub.h>
+#include <linux/of.h>
 
 #include "powercap_voltage_match_algo.h"
 #include "google_powercap_helper.h"
-#include "google_powercap_helper_mock.h"
-#include <linux/of.h>
+#include "google_powercap_stats.h"
 
 #define MAX_CHILD_CT 2
 
@@ -19,6 +20,25 @@ struct powercap_volt_algo_platform_data {
 	unsigned int num_opps;
 	unsigned int num_children;
 };
+
+struct device_node *gpc_of_find_node_by_path(const char *path)
+{
+	KUNIT_STATIC_STUB_REDIRECT(gpc_of_find_node_by_path, path);
+	return of_find_node_by_path(path);
+}
+
+void gpc_of_node_put(struct device_node *np)
+{
+	KUNIT_STATIC_STUB_REDIRECT(gpc_of_node_put, np);
+	return of_node_put(np);
+}
+
+const struct of_device_id *gpc_match_of_node(const struct of_device_id *matches,
+					      const struct device_node *node)
+{
+	KUNIT_STATIC_STUB_REDIRECT(gpc_match_of_node, matches, node);
+	return of_match_node(matches, node);
+}
 
 u64 __gpc_volt_algo_set_power_limit(struct gpowercap *gpowercap, u64 power_limit)
 {
@@ -45,9 +65,11 @@ u64 __gpc_volt_algo_set_power_limit(struct gpowercap *gpowercap, u64 power_limit
 		pr_debug("[%s] set_power_limit total:%u child idx:%d child power:%u.\n",
 			 gpowercap->zone.name, gpc_volt->opp_table[i].power, child_idx,
 			 gpc_volt->opp_table[i].children_power[child_idx]);
-		__set_power_limit_uw(child, gpc_volt->opp_table[i].children_power[child_idx++]);
+		gpowercap_set_parent_power_limit(child,
+			gpc_volt->opp_table[i].children_power[child_idx++]);
 	}
 	mutex_unlock(&gpc_volt->lock);
+	gpc_stats_update(gpowercap, GPC_STAT_POWER_LIMIT, power);
 
 	return power;
 }
@@ -81,7 +103,7 @@ int __gpc_volt_algo_update_power_uw(struct gpowercap *gpowercap)
 	return 0;
 }
 
-void __gpc_free_opp_table_mem(struct gpowercap_volt_algo *gpc_volt)
+static void __gpc_free_opp_table_mem(struct gpowercap_volt_algo *gpc_volt)
 {
 	int i = 0;
 
@@ -92,7 +114,7 @@ void __gpc_free_opp_table_mem(struct gpowercap_volt_algo *gpc_volt)
 	kfree(gpc_volt->opp_table);
 }
 
-int __gpc_allocate_opp_table_mem(struct gpowercap_volt_algo *gpc_volt, unsigned int child_ct)
+static int __gpc_allocate_opp_table_mem(struct gpowercap_volt_algo *gpc_volt, unsigned int child_ct)
 {
 	int i = 0, opp_ct;
 
@@ -262,7 +284,7 @@ int __gpc_volt_algo_evaluate(struct gpowercap *gpowercap)
 		goto free_mem_exit;
 	}
 
-	match = match_of_node(powercap_volt_algo_platform_table, np);
+	match = gpc_match_of_node(powercap_volt_algo_platform_table, np);
 	gpc_of_node_put(np);
 
 	if (match && match->data) {
@@ -274,6 +296,13 @@ int __gpc_volt_algo_evaluate(struct gpowercap *gpowercap)
 			goto free_mem_exit;
 		}
 		__gpc_volt_algo_update_power_uw(gpowercap);
+
+		if (!test_bit(GPOWERCAP_PARENT_LIMIT_FLAG, &gpowercap->flags))
+			gpowercap->parent_power_limit = gpowercap->power_max;
+		if (!test_bit(GPOWERCAP_USERSPACE_LIMIT_FLAG, &gpowercap->flags))
+			gpowercap->userspace_power_limit = gpowercap->power_max;
+		if (!test_bit(GPOWERCAP_POWER_LIMIT_FLAG, &gpowercap->flags))
+			gpowercap->power_limit = gpowercap->power_max;
 	} else {
 		pr_err("powercap:%s: No compatible platform data found.\n",
 		       gpowercap->zone.name);
@@ -303,20 +332,21 @@ static struct gpowercap_ops gpc_volt_algo_ops = {
 	.release		= __gpc_volt_algo_release,
 };
 
-struct gpowercap *__gpc_volt_algo_setup(const char *name, struct gpowercap *parent)
+struct gpowercap *__gpc_volt_algo_setup(struct device_node *dn, struct gpowercap *parent)
 {
+	if (!dn || !parent)
+		return ERR_PTR(-EINVAL);
+
 	int ret = 0;
 	struct gpowercap_volt_algo *gpc_volt;
-
-	if (!name || !parent)
-		return ERR_PTR(-EINVAL);
+	const char *name = dn->name;
 
 	gpc_volt = kzalloc(sizeof(*gpc_volt), GFP_KERNEL);
 	if (!gpc_volt)
 		return ERR_PTR(-ENOMEM);
 	mutex_init(&gpc_volt->lock);
 	gpowercap_init(&gpc_volt->gpowercap, &gpc_volt_algo_ops);
-	ret = gpc_gpowercap_register(name, &gpc_volt->gpowercap, parent);
+	ret = gpowercap_register(name, &gpc_volt->gpowercap, parent);
 	if (ret)
 		goto out_kfree_exit;
 

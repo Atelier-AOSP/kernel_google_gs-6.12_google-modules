@@ -25,6 +25,7 @@ struct stats_test_data {
 	int mock_register_tr_cb_ret;
 	char mock_group_name[THERMAL_NAME_LENGTH];
 	struct thermal_sm_stats_data mock_sm_data;
+	const char *mock_tz_name;
 };
 
 static struct platform_device *fake_pdev;
@@ -124,6 +125,14 @@ int mock_get_thermal_sm_stats_thresholds(struct thermal_sm_stats_thresholds *dat
 	return stats_data->mock_sm_ret;
 }
 
+const char *mock_cpm_mbox_get_tz_name(enum hw_thermal_zone_id hw_tzid)
+{
+	struct kunit *test = kunit_get_current_test();
+	struct stats_test_data *stats_data = test->priv;
+
+	return stats_data->mock_tz_name;
+}
+
 static void thermal_stats_parse_dt_test(struct kunit *test)
 {
 	struct stats_test_data *stats_data = test->priv;
@@ -143,7 +152,7 @@ static void thermal_stats_parse_dt_test(struct kunit *test)
 static void thermal_stats_register_thermal_metrics_test(struct kunit *test)
 {
 	struct stats_test_data *stats_data = test->priv;
-	enum hw_thermal_zone_id mock_tz_id = HW_THERMAL_ZONE_BIG;
+	enum hw_thermal_zone_id mock_tz_id = HW_THERMAL_ZONE_0;
 
 	// success
 	KUNIT_EXPECT_EQ(test,
@@ -199,6 +208,11 @@ static void thermal_stats_init_test(struct kunit *test)
 
 	// init sm failure
 	stats_data->mock_sm_ret = -EINVAL;
+	KUNIT_EXPECT_EQ(test, thermal_stats_init(stats_data->fake_pdev, &mock_drv_data), -EINVAL);
+
+	// invalid tz_id
+	stats_data->mock_sm_ret = -EINVAL;
+	stats_data->mock_tz_name = NULL;
 	KUNIT_EXPECT_EQ(test, thermal_stats_init(stats_data->fake_pdev, &mock_drv_data), -EINVAL);
 }
 
@@ -443,6 +457,7 @@ static int thermal_stats_test_init(struct kunit *test)
 
 	stats_data = kunit_kzalloc(test, sizeof(*stats_data), GFP_KERNEL);
 	stats_data->fake_pdev = fake_pdev;
+	stats_data->mock_tz_name = "mock_tz_name";
 	strscpy(stats_data->mock_group_name, "mock_tmu", THERMAL_NAME_LENGTH);
 	test->priv = stats_data;
 	mock_drv_data.group_name = stats_data->mock_group_name;

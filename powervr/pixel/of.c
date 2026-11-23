@@ -38,11 +38,11 @@ static uint32_t read_u32_property_or_default(struct device *dev,
 		node = of_get_child_by_name(last, path[index]);
 
 		if (node == NULL) {
-			dev_dbg(dev,
+			PVR_DPF((PVR_DBG_CUSTOMER,
 				"%s: unable to follow path to DT property %s "
 				"(failed to find child '%s' on node '%s')",
 				__func__, property_name, path[index],
-				last->name);
+				last->name));
 			final_node = last;
 			goto end;
 		}
@@ -61,21 +61,20 @@ static uint32_t read_u32_property_or_default(struct device *dev,
 	case 0:
 		break;
 	case -EINVAL:
-		dev_dbg(dev, "%s: DT property %s does not exist", __func__,
-			property_name);
+		PVR_DPF((PVR_DBG_CUSTOMER, "%s: DT property %s does not exist",
+			__func__, property_name));
 		break;
 	case -ENODATA:
-		dev_dbg(dev, "%s: DT property %s does not have a value",
-			__func__, property_name);
+		PVR_DPF((PVR_DBG_CUSTOMER, "%s: DT property %s does not have a value",
+			__func__, property_name));
 		break;
 	case -EOVERFLOW:
-		dev_dbg(dev,
-			"%s: DT property %s has data that isn't large enough",
-			__func__, property_name);
+		PVR_DPF((PVR_DBG_CUSTOMER, "%s: DT property %s has data that isn't large enough",
+			__func__, property_name));
 		break;
 	default:
-		dev_dbg(dev, "%s: DT property %s has unknown return code %d",
-			__func__, property_name, return_code);
+		PVR_DPF((PVR_DBG_CUSTOMER, "%s: DT property %s has unknown return code %d",
+			__func__, property_name, return_code));
 		break;
 	}
 
@@ -235,7 +234,7 @@ int init_pixel_of(struct pixel_gpu_device *pixel_dev)
 					     "enable-firmware-managed-spu-power");
 
 	if (disable_apm) {
-		dev_dbg(dev, "APM disabled, overriding device tree");
+		PVR_DPF((PVR_DBG_CUSTOMER, "APM disabled, overriding device tree"));
 		of_properties->apm = false;
 	} else {
 		of_properties->apm =
@@ -301,15 +300,16 @@ int init_pixel_of(struct pixel_gpu_device *pixel_dev)
 	WARN_ON(of_properties->emulator && of_properties->virtual_platform);
 
 	// Print OF config
-	dev_dbg(dev, "DT configuration");
-	dev_dbg(dev, "Pre-Silicon Configuration: %d", of_properties->pre_silicon);
-	dev_dbg(dev, "Emulator Configuration: %d", of_properties->emulator);
-	dev_dbg(dev, "Virtual Platform Configuration: %d", of_properties->virtual_platform);
-	dev_dbg(dev, "GPU Power Forced On: %d", of_properties->jones_force_on);
-	dev_dbg(dev, "SPU Power Gating: %d", of_properties->spu_gating);
-	dev_dbg(dev, "Active Power Management (APM): %d", of_properties->apm);
-	dev_dbg(dev, "APM Latency: %u", of_properties->apm_latency);
-	dev_dbg(dev, "Autosuspend Latency: %u", of_properties->autosuspend_latency);
+	PVR_DPF((PVR_DBG_CUSTOMER, "DT configuration"));
+	PVR_DPF((PVR_DBG_CUSTOMER, "Pre-Silicon Configuration: %d", of_properties->pre_silicon));
+	PVR_DPF((PVR_DBG_CUSTOMER, "Emulator Configuration: %d", of_properties->emulator));
+	PVR_DPF((PVR_DBG_CUSTOMER, "Virtual Platform Configuration: %d",
+			of_properties->virtual_platform));
+	PVR_DPF((PVR_DBG_CUSTOMER, "GPU Power Forced On: %d", of_properties->jones_force_on));
+	PVR_DPF((PVR_DBG_CUSTOMER, "SPU Power Gating: %d", of_properties->spu_gating));
+	PVR_DPF((PVR_DBG_CUSTOMER, "Active Power Management (APM): %d", of_properties->apm));
+	PVR_DPF((PVR_DBG_CUSTOMER, "APM Latency: %u", of_properties->apm_latency));
+	PVR_DPF((PVR_DBG_CUSTOMER, "Autosuspend Latency: %u", of_properties->autosuspend_latency));
 
 	return 0;
 

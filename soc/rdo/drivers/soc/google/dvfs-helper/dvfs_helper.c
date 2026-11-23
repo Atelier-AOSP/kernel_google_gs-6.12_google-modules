@@ -88,6 +88,12 @@ struct dvfs_helper {
 
 static const struct dvfs_info *dvfs_info_g;
 
+bool dvfs_helper_ready(void)
+{
+	return dvfs_info_g != NULL;
+}
+EXPORT_SYMBOL_GPL(dvfs_helper_ready);
+
 struct dvfs_domain_info *dvfs_helper_get_domain_from_id(u16 domain_idx)
 {
 	if (domain_idx > dvfs_info_g->num_domains - 1)
@@ -109,6 +115,7 @@ struct dvfs_domain_info *dvfs_helper_get_domain(const char *name)
 
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(dvfs_helper_get_domain);
 
 const char *dvfs_helper_domain_id_to_name(u16 domain_idx)
 {
@@ -300,19 +307,16 @@ int dvfs_helper_get_domain_info(struct device * const dev,
 }
 EXPORT_SYMBOL_GPL(dvfs_helper_get_domain_info);
 
-int dvfs_helper_add_opps_to_device(struct device * const dev, struct device_node * const node)
+/* This function requires the domain_info to be valid */
+static int dvfs_helper_add_opps_to_device_by_domain(struct device * const dev,
+				struct dvfs_domain_info *domain_info)
 {
-	struct dvfs_domain_info *domain_info;
 	struct dvfs_opp_info *opp_info;
 	struct dev_pm_opp *opp;
 	struct dev_pm_opp_data opp_data;
-	u32 freq_hz, u_volt;
+	u64 freq_hz;
+	u32 u_volt;
 	int ret;
-
-	ret = dvfs_helper_get_domain_info(dev, node, &domain_info);
-
-	if (ret)
-		return ret;
 
 	dev_dbg(dev, "num_levels: %u", domain_info->num_levels);
 	for (int i = 0; i < domain_info->num_levels; ++i) {
@@ -336,7 +340,7 @@ int dvfs_helper_add_opps_to_device(struct device * const dev, struct device_node
 		ret = dev_pm_opp_add_dynamic(dev, &opp_data);
 
 		if (ret) {
-			dev_err(dev, "Failed to add OPP: Freq = %uHz, Volt = %uuV",
+			dev_err(dev, "Failed to add OPP: Freq = %lluHz, Volt = %uuV",
 				freq_hz, u_volt);
 			dev_pm_opp_remove_all_dynamic(dev);
 			return ret;
@@ -361,10 +365,42 @@ int dvfs_helper_add_opps_to_device(struct device * const dev, struct device_node
 				return ret;
 			}
 
-			dev_info(dev, "Disabled OPP %uHz %uuV", freq_hz, u_volt);
+			dev_info(dev, "Disabled OPP %lluHz %uuV", freq_hz, u_volt);
 		}
 	}
 	return 0;
+}
+
+int dvfs_helper_add_opps_to_device_by_name(struct device * const dev, const char *name)
+{
+	struct dvfs_domain_info *domain_info;
+
+	if (!dvfs_info_g)
+		return -EPROBE_DEFER;
+
+	if (!dev)
+		return -ENODEV;
+
+	domain_info = dvfs_helper_get_domain(name);
+	if (!domain_info) {
+		dev_err(dev, "Error getting domain_info");
+		return -ENOENT;
+	}
+
+	return dvfs_helper_add_opps_to_device_by_domain(dev, domain_info);
+}
+EXPORT_SYMBOL_GPL(dvfs_helper_add_opps_to_device_by_name);
+
+int dvfs_helper_add_opps_to_device(struct device * const dev, struct device_node * const node)
+{
+	struct dvfs_domain_info *domain_info;
+	int ret;
+
+	ret = dvfs_helper_get_domain_info(dev, node, &domain_info);
+	if (ret)
+		return ret;
+
+	return dvfs_helper_add_opps_to_device_by_domain(dev, domain_info);
 }
 EXPORT_SYMBOL_GPL(dvfs_helper_add_opps_to_device);
 
@@ -556,7 +592,6 @@ static int dvfs_helper_read_dvfs_tables(struct dvfs_helper * const dvfs_helper)
 	if (resp->num_domains > MAX_DOMAINS)
 		resp->num_domains = MAX_DOMAINS;
 
-	dvfs_info_g = &dvfs_helper->dvfs_info;
 	dvfs_helper->dvfs_info.rev_id = DVFS_INFO_REV_ID;
 	dvfs_helper->dvfs_info.num_domains = resp->num_domains;
 	dvfs_helper->dvfs_info.domains = devm_kzalloc(dvfs_helper->dev,
@@ -593,6 +628,9 @@ static int dvfs_helper_probe(struct platform_device *pdev)
 	/* Read all the DVFS tables from CPM */
 	ret = dvfs_helper_read_dvfs_tables(dvfs_helper);
 	dvfs_helper_cpm_mailbox_exit(dvfs_helper);
+
+	if (!ret)
+		dvfs_info_g = &dvfs_helper->dvfs_info;
 
 	return ret;
 };

@@ -34,13 +34,13 @@ static int cpm_thermal_unregister_thermal_zone(struct google_cpm_thermal *cpm_th
 {
 	struct thermal_zone_node *node;
 	struct list_head *it, *n;
-	struct thermal_data *removed = tz->devdata;
+	struct thermal_data *removed = thermal_zone_device_priv(tz);
 	int removed_id = removed->id;
 
 	mutex_lock(&cpm_thermal->thermal_zone_list_lock);
 	list_for_each_safe(it, n, &cpm_thermal->thermal_zone_list) {
 		node = list_entry(it, struct thermal_zone_node, list);
-		struct thermal_data *data = node->tz->devdata;
+		struct thermal_data *data = thermal_zone_device_priv(node->tz);
 
 		if (data->id == removed_id) {
 			list_del(&node->list);
@@ -60,7 +60,7 @@ static struct thermal_zone_device *get_thermal_zone_by_id(struct google_cpm_ther
 	struct thermal_zone_node *node;
 
 	list_for_each_entry(node, &cpm_thermal->thermal_zone_list, list) {
-		struct thermal_data *data = node->tz->devdata;
+		struct thermal_data *data = thermal_zone_device_priv(node->tz);
 
 		if (data->id == id)
 			return node->tz;
@@ -92,9 +92,9 @@ static void cpm_thermal_throttle_worker(struct work_struct *work)
 		return;
 	}
 
-	dev_dbg(dev, "Route to thermal_zone: %d\n", tz->id);
+	dev_dbg(dev, "Route to thermal_zone: %d\n", thermal_zone_device_id(tz));
 
-	data = (struct thermal_data *)tz->devdata;
+	data = thermal_zone_device_priv(tz);
 
 	data->ops->google_thermal_throttling(data, message.data[1]);
 }
@@ -443,14 +443,12 @@ static inline void google_cpm_thermal_mbox_free(struct google_cpm_thermal *cpm_t
 		cpm_iface_free_client(cpm_thermal->client);
 }
 
-static int cpm_thermal_platform_remove(struct platform_device *pdev)
+static void cpm_thermal_platform_remove(struct platform_device *pdev)
 {
 	struct google_cpm_thermal *cpm_thermal = (struct google_cpm_thermal *)
 						       platform_get_drvdata(pdev);
 
 	google_cpm_thermal_mbox_free(cpm_thermal);
-
-	return 0;
 }
 
 static const struct of_device_id google_thermal_client_of_match_table[] = {

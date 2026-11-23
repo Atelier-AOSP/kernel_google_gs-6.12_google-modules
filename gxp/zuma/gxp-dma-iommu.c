@@ -13,6 +13,7 @@
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 
+#include <gcip/gcip-domain-pool.h>
 #include <gcip/gcip-iommu.h>
 #include <gcip/gcip-memory.h>
 
@@ -33,35 +34,6 @@ struct gxp_dma_iommu_manager {
 
 /* Fault handler */
 
-static int iommu_fault_handler(struct iommu_fault *fault, void *token)
-{
-	struct device *dev = token;
-
-	switch (fault->type) {
-	case IOMMU_FAULT_DMA_UNRECOV:
-		dev_err(dev, "Unrecoverable IOMMU fault!\n");
-		dev_err(dev, "reason = %08X\n", fault->event.reason);
-		dev_err(dev, "flags = %08X\n", fault->event.flags);
-		dev_err(dev, "pasid = %08X\n", fault->event.pasid);
-		dev_err(dev, "perm = %08X\n", fault->event.perm);
-		dev_err(dev, "addr = %llX\n", fault->event.addr);
-		dev_err(dev, "fetch_addr = %llX\n", fault->event.fetch_addr);
-		break;
-	case IOMMU_FAULT_PAGE_REQ:
-		dev_err(dev, "IOMMU page request fault!\n");
-		dev_err(dev, "flags = %08X\n", fault->prm.flags);
-		dev_err(dev, "pasid = %08X\n", fault->prm.pasid);
-		dev_err(dev, "grpid = %08X\n", fault->prm.grpid);
-		dev_err(dev, "perm = %08X\n", fault->prm.perm);
-		dev_err(dev, "addr = %llX\n", fault->prm.addr);
-		break;
-	default:
-		dev_err(dev, "Unexpected IOMMU fault type (%d)\n", fault->type);
-	}
-
-	/* Tells the IOMMU driver to carry on. */
-	return -EAGAIN;
-}
 
 #if GXP_HAS_LAP
 
@@ -75,8 +47,10 @@ static int iommu_fault_handler(struct iommu_fault *fault, void *token)
 static int gxp_map_csrs(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 			struct gcip_memory *regs)
 {
+	u64 gcip_map_flags = gcip_iommu_map_flags_dma_rw();
+
 	return gcip_iommu_map(gdomain, GXP_IOVA_AURORA_TOP, gxp->regs.phys_addr, gxp->regs.size,
-			      GCIP_MAP_FLAGS_DMA_RW);
+			      gcip_map_flags);
 }
 
 static void gxp_unmap_csrs(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
@@ -125,11 +99,6 @@ int gxp_dma_init(struct gxp_dev *gxp)
 		return PTR_ERR(mgr->default_domain);
 	}
 
-	if (iommu_register_device_fault_handler(gxp->dev, iommu_fault_handler, gxp->dev)) {
-		dev_err(gxp->dev, "Failed to register iommu fault handler\n");
-		return -EIO;
-	}
-
 	gxp->dma_mgr = &(mgr->dma_mgr);
 
 	return 0;
@@ -137,9 +106,6 @@ int gxp_dma_init(struct gxp_dev *gxp)
 
 void gxp_dma_exit(struct gxp_dev *gxp)
 {
-	if (iommu_unregister_device_fault_handler(gxp->dev))
-		dev_err(gxp->dev,
-			"Failed to unregister IOMMU fault handler\n");
 }
 
 #define EXT_TPU_MBX_SIZE 0x2000
@@ -163,7 +129,7 @@ int gxp_dma_domain_attach_device(struct gxp_dev *gxp, struct gcip_iommu_domain *
 	if (gdomain == gxp_iommu_get_domain_for_dev(gxp))
 		return 0;
 
-	pasid = gcip_iommu_domain_pool_attach_domain(gxp->domain_pool, gdomain);
+	pasid = gcip_domain_pool_attach(gxp->domain_pool, gdomain);
 	if (pasid < 0) {
 		dev_err(gxp->dev, "Attach IOMMU domain failed: %d", pasid);
 		return pasid;
@@ -181,12 +147,13 @@ void gxp_dma_domain_detach_device(struct gxp_dev *gxp, struct gcip_iommu_domain 
 		return;
 
 	gxp_soc_deactivate_context(gxp, gdomain, core_list);
-	gcip_iommu_domain_pool_detach_domain(gxp->domain_pool, gdomain);
+	gcip_domain_pool_detach(gxp->domain_pool, gdomain);
 }
 
 int gxp_dma_map_core_resources(struct gxp_dev *gxp, struct gcip_iommu_domain *gdomain,
 			       uint core_list, u8 slice_index)
 {
+	u64 gcip_map_flags = gcip_iommu_map_flags_dma_rw();
 	int ret;
 	uint i;
 
@@ -202,7 +169,7 @@ int gxp_dma_map_core_resources(struct gxp_dev *gxp, struct gcip_iommu_domain *gd
 			continue;
 		ret = gcip_iommu_map(gdomain, gxp->mbx[i].dma_addr,
 				     gxp->mbx[i].phys_addr + MAILBOX_DEVICE_INTERFACE_OFFSET,
-				     gxp->mbx[i].size, GCIP_MAP_FLAGS_DMA_RW);
+				     gxp->mbx[i].size, gcip_map_flags);
 		if (ret)
 			goto err;
 	}
@@ -213,7 +180,7 @@ int gxp_dma_map_core_resources(struct gxp_dev *gxp, struct gcip_iommu_domain *gd
 				continue;
 			ret = gcip_iommu_map(gdomain, GXP_IOVA_EXT_TPU_MBX + i * EXT_TPU_MBX_SIZE,
 					     gxp->tpu_dev.mbx_paddr + i * EXT_TPU_MBX_SIZE,
-					     EXT_TPU_MBX_SIZE, GCIP_MAP_FLAGS_DMA_RW);
+					     EXT_TPU_MBX_SIZE, gcip_map_flags);
 			if (ret)
 				goto err;
 		}
@@ -334,6 +301,7 @@ int gxp_dma_map_tpu_buffer(struct gxp_dev *gxp,
 	int core;
 	int ret;
 	int i = 0;
+	u64 gcip_map_flags;
 
 	while (core_list) {
 		phys_addr_t cmdq_pa = mbx_info->mailboxes[i].cmdq_pa;
@@ -341,12 +309,15 @@ int gxp_dma_map_tpu_buffer(struct gxp_dev *gxp,
 
 		core = ffs(core_list) - 1;
 		queue_iova = GXP_IOVA_TPU_MBX_BUFFER(core);
+		gcip_map_flags = gcip_iommu_map_flags_dma_rw();
 		ret = gcip_iommu_map(gdomain, queue_iova, cmdq_pa, mbx_info->cmdq_size,
-				     GCIP_MAP_FLAGS_DMA_RW);
+				     gcip_map_flags);
 		if (ret)
 			goto error;
+
+		gcip_map_flags = gcip_iommu_map_flags_dma_ro();
 		ret = gcip_iommu_map(gdomain, queue_iova + mbx_info->cmdq_size, respq_pa,
-				     mbx_info->respq_size, GCIP_MAP_FLAGS_DMA_RO);
+				     mbx_info->respq_size, gcip_map_flags);
 		if (ret) {
 			gcip_iommu_unmap(gdomain, queue_iova, mbx_info->cmdq_size);
 			goto error;
@@ -395,7 +366,7 @@ int gxp_dma_map_allocated_coherent_buffer(struct gxp_dev *gxp,
 	struct sg_table *sgt;
 	unsigned int nents_mapped;
 	int ret = 0;
-	u64 gcip_map_flags = GCIP_MAP_FLAGS_DMA_RW;
+	u64 gcip_map_flags = gcip_iommu_map_flags_dma_rw();
 
 	if (gdomain == gxp_iommu_get_domain_for_dev(gxp))
 		return 0;
@@ -508,15 +479,29 @@ void gxp_dma_sync_sg_for_device(struct gxp_dev *gxp, struct scatterlist *sg,
 	dma_sync_sg_for_device(gxp->dev, sg, nents, direction);
 }
 
+int gxp_iommu_get_max_vd_activation(struct gxp_dev *gxp)
+{
+	return gcip_iommu_domain_pool_get_num_pasid(gxp->domain_pool);
+}
+
 u64 gxp_dma_encode_gcip_map_flags(uint gxp_dma_flags, unsigned long dma_attrs)
 {
 	enum dma_data_direction dir = gxp_dma_flags & GXP_MAP_DIR_MASK;
 	bool coherent = false;
 	bool restrict_iova = false;
+	bool mmio = false;
 
 #ifdef GXP_IS_DMA_COHERENT
 	coherent = gxp_dma_flags & GXP_MAP_COHERENT;
 #endif
 
-	return gcip_iommu_encode_gcip_map_flags(dir, coherent, dma_attrs, restrict_iova);
+	return gcip_iommu_encode_gcip_map_flags(dir, coherent, dma_attrs, restrict_iova, mmio);
+}
+
+int gxp_iommu_fault_handler(struct iommu_domain *domain, struct device *dev, unsigned long iova,
+			    int flags, void *token)
+{
+	dev_dbg(dev, "IOMMU fault on address %08lX. flags = %08X", iova, flags);
+	/* Tell the IOMMU driver we are OK with this fault. */
+	return 0;
 }

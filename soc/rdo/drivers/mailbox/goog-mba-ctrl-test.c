@@ -207,15 +207,13 @@ static int goog_mba_ctrl_test_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int goog_mba_ctrl_test_remove(struct platform_device *pdev)
+static void goog_mba_ctrl_test_remove(struct platform_device *pdev)
 {
 	struct goog_mba_ctrl_test *mba_ctrl_test = platform_get_drvdata(pdev);
 
 	goog_mba_ctrl_test_remove_chans(mba_ctrl_test);
 
 	debugfs_remove_recursive(mba_ctrl_test->debugfs_root);
-
-	return 0;
 }
 
 static const struct of_device_id

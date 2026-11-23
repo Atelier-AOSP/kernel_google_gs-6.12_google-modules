@@ -28,6 +28,10 @@
 #define TCPC_RECEIVE_BUFFER_FRAME_TYPE_OFFSET           1
 #define TCPC_RECEIVE_BUFFER_RX_BYTE_BUF_OFFSET          2
 
+#define COMBINED_ROLE_VOTABLE				"COMB_ROLE_VOTABLE"
+#define TCPCI_VOTER					"TCPCI_VOTER"
+#define POGO_VOTER					"POGO_VOTER"
+
 struct gvotable_election;
 struct logbuffer;
 struct max777x9_contaminant;
@@ -53,6 +57,7 @@ struct max77759_plat {
 	struct gvotable_election *charger_mode_votable;
 	struct gvotable_election *bcl_usb_votable;
 	struct gvotable_election *usb_data_role_votable;
+	struct gvotable_election *comb_role_votable;
 	bool vbus_enabled;
 	/* Data role notified to the data stack */
 	enum typec_data_role active_data_role;
@@ -100,6 +105,7 @@ struct max77759_plat {
 	struct gpio_desc *in_switch_gpio;
 	struct gpio_desc *sbu_mux_en_gpio;
 	struct gpio_desc *sbu_mux_sel_gpio;
+	struct gpio_desc *vbus_dis_gpio;
 	/* 0:active_low 1:active_high */
 	bool in_switch_gpio_active_high;
 	bool first_toggle;
@@ -183,6 +189,7 @@ struct max77759_plat {
 	struct kthread_delayed_work reset_ovp_work;
 	struct kthread_delayed_work check_missing_rp_work;
 	struct kthread_delayed_work bcl_usb_votable_work;
+	struct kthread_delayed_work vbus_dis_work;
 	u8 bcl_usb_vote;
 
 	/* Notifier for data role */
@@ -251,9 +258,7 @@ struct max77759_plat {
 	ktime_t first_toggle_time_since_boot;
 
 	/* EXT_BST_EN exposed as GPIO */
-#ifdef CONFIG_GPIOLIB
 	struct gpio_chip gpio;
-#endif
 
 	struct logbuffer *log;
 

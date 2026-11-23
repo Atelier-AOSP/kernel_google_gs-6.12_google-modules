@@ -24,7 +24,7 @@
 #include <linux/of.h>
 #include <soc/google/meminfo.h>
 
-#include <heaps/page_pool.h>
+#include "page_pool.h"
 
 #include "samsung-dma-heap.h"
 
@@ -197,8 +197,10 @@ free_export:
 		free_dma_heap_page(sg_page(sg), false);
 	samsung_dma_buffer_free(buffer);
 free_buffer:
-	list_for_each_entry_safe(page, tmp_page, &pages, lru)
+	list_for_each_entry_safe(page, tmp_page, &pages, lru) {
+		list_del(&page->lru);
 		free_dma_heap_page(page, false);
+	}
 
 	return ERR_PTR(ret);
 }

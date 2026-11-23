@@ -136,9 +136,6 @@ static DEFINE_SPINLOCK(noti_list_lock);
 /* CUR ETH became obsolete with this major version onwards */
 #define RTT_IOV_CUR_ETH_OBSOLETE 12
 
-/* minimum WLC API version supporting 11AZ */
-#define FTM_11AZ_MIN_WLC_API 16
-
 /*
  * Parallel RTT Sessions are supported
  * with this major and minor verion onwards
@@ -772,7 +769,7 @@ rtt_alloc_getset_buf(dhd_pub_t *dhd, wl_proxd_method_t method, wl_proxd_session_
 
 	*p_out_bufsize = 0;	/* init */
 	/* calculate the whole buffer size, including one reserve-tlv entry in the header */
-	proxd_iovsize = sizeof(wl_proxd_iov_t) + tlvs_bufsize;
+	proxd_iovsize = sizeof(wl_proxd_iov_t) + sizeof(wl_proxd_tlv_t) + tlvs_bufsize;
 
 	p_proxd_iov = (wl_proxd_iov_t *)MALLOCZ(dhd->osh, proxd_iovsize);
 	if (p_proxd_iov == NULL) {
@@ -1811,6 +1808,10 @@ dhd_rtt_nan_start_session(dhd_pub_t *dhd, rtt_mc_az_target_info_t *rtt_target)
 	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
 	nan_ranging_inst_t *ranging_inst = NULL;
 	rtt_status_info_t *rtt_status = GET_RTTSTATE(dhd);
+	ftm_config_param_info_t ftm_params[FTM_MAX_PARAMS];
+	int ftm_param_cnt = 0;
+
+	memset(ftm_params, 0, sizeof(ftm_params));
 
 	NAN_MUTEX_LOCK();
 
@@ -1845,6 +1846,13 @@ dhd_rtt_nan_start_session(dhd_pub_t *dhd, rtt_mc_az_target_info_t *rtt_target)
 	if (!ranging_inst) {
 		err = BCME_NORESOURCE;
 		goto exit;
+	}
+
+	/* apply event mask */
+	if (dhd->wlc_ver_major < FTM_11AZ_MIN_WLC_API) {
+		dhd_rtt_set_ftm_config_param(ftm_params, &ftm_param_cnt, rtt_target,
+			WL_PROXD_TLV_ID_EVENT_MASK);
+		dhd_rtt_ftm_config(dhd, 0, NULL, 0, ftm_params, ftm_param_cnt, RTT_TWO_WAY_MC);
 	}
 
 	DHD_RTT(("Trigger nan based range request\n"));
@@ -3194,13 +3202,19 @@ dhd_rtt_timeout(dhd_pub_t *dhd)
 				(rtt_status->cur_idx >= rtt_status->rtt_config.rtt_target_cnt)) {
 			goto exit;
 		}
-		rtt_target = &rtt_target_info[rtt_status->cur_idx];
-		WL_ERR(("Proxd timer expired for Target: "MACDBG" \n",
-			MAC2STRDBG(&rtt_target->cmn_tgt_info.addr)));
-		/* For Legacy RTT */
-		dhd_rtt_delete_session(dhd, FTM_DEFAULT_SESSION);
-		dhd_rtt_create_failure_result(rtt_status, &rtt_target->cmn_tgt_info.addr,
-			RTT_STATUS_FAIL_TM_TIMEOUT);
+
+		/* create failure report for the uncompleted targets */
+		for (idx = 0; idx < rtt_status->rtt_config.rtt_target_cnt; idx++) {
+			if (!dhd_rtt_get_report_header(rtt_status, NULL,
+				&rtt_status->rtt_config.target_info[idx].cmn_tgt_info.addr)) {
+				rtt_target = &rtt_target_info[idx];
+				WL_ERR(("Proxd timer expired for Target: "MACDBG" \n",
+					MAC2STRDBG(&rtt_target->cmn_tgt_info.addr)));
+				dhd_rtt_create_failure_result(rtt_status,
+					&rtt_target->cmn_tgt_info.addr,
+					RTT_STATUS_FAIL_TM_TIMEOUT);
+			}
+		}
 		dhd_rtt_handle_rtt_session_end(dhd);
 	}
 #endif /* DHD_DUMP_ON_RTT_TIMEOUT */
@@ -3872,6 +3886,13 @@ dhd_rtt_mc_az_config_sta_rtt(dhd_pub_t *dhd, struct net_device *dev,
 	int err = BCME_OK;
 	uint8 err_at = 0;
 	u8 ioctl_buf[WLC_IOCTL_SMLEN];
+	wl_wlc_version_t wlc_ver = {0};
+
+	err = dhd_iovar(dhd, 0, "wlc_ver", NULL, 0, (char *)(&wlc_ver), sizeof(wlc_ver), FALSE);
+	if (err != BCME_OK) {
+		DHD_ERROR(("%s: wlc_ver failed, retcode = %d\n", __FUNCTION__, err));
+		goto exit;
+	}
 
 	ftm_configs = MALLOCZ(dhd->osh, sizeof(ftm_config_options_info_t) * FTM_MAX_CONFIGS);
 	if (!ftm_configs) {
@@ -4043,7 +4064,12 @@ dhd_rtt_mc_az_config_sta_rtt(dhd_pub_t *dhd, struct net_device *dev,
 			pp_config.passphrase_len =
 				rtt_target->u.az_tgt_info.sec_info.passphrase_len;
 			pp_config.bssid = (uint8 *)&rtt_target->cmn_tgt_info.addr;
-
+#ifdef DHD_RTT_USE_SEPARATE_PASSPHRASE_DB
+			/* Flag to indicate separate passsphrase_db for ranging */
+			if (wlc_ver.wlc_ver_major >= FTM_SEPARATE_PASSPHRASE_DB_MIN_WLC_VER) {
+				pp_config.flags = WSEC_SAE_PASSPHRASE_FTM;
+			}
+#endif /* DHD_RTT_USE_SEPARATE_PASSPHRASE_DB */
 			err = wl_cfg80211_config_passphrase(cfg, dev, &pp_config);
 			if (err != BCME_OK) {
 				err_at = 2;
@@ -4150,7 +4176,8 @@ dhd_rtt_start_ranging(dhd_pub_t *dhd, rtt_config_params_t *config)
 
 	for (i = 0; i < config->rtt_target_cnt; i++) {
 		if (config->target_info[i].cmn_tgt_info.sid != 0) {
-			ranging_sids->ids[i] = config->target_info[i].cmn_tgt_info.sid;
+			ranging_sids->ids[valid_target_cnt] =
+				config->target_info[i].cmn_tgt_info.sid;
 			valid_target_cnt++;
 		}
 	}
@@ -4238,6 +4265,8 @@ dhd_rtt_start_for_targets(dhd_pub_t *dhd, rtt_status_info_t *rtt_status,
 					dhd_rtt_create_failure_result(rtt_status,
 						&rtt_target->cmn_tgt_info.addr,
 						RTT_STATUS_FAILURE);
+					dhd_rtt_delete_session(dhd,
+						rtt_target->cmn_tgt_info.sid);
 					rtt_target->cmn_tgt_info.sid = 0;
 					continue;
 				}
@@ -5706,6 +5735,9 @@ dhd_rtt_handle_rtt_session_end(dhd_pub_t *dhd)
 		if (rtt_config->target_list_mode == RNG_TARGET_LIST_MODE_LEGACY) {
 			for (i = 0; i < rtt_config->rtt_target_cnt; i++) {
 				rtt_target = &rtt_status->rtt_config.target_info[i];
+				if (rtt_target->cmn_tgt_info.sid == 0) {
+					continue;
+				}
 #ifdef WL_RTT_LCI
 				dhd_rtt_target_cleanup_lci_lcr(dhd, rtt_target);
 #endif
@@ -5754,6 +5786,26 @@ dhd_rtt_handle_rtt_session_end(dhd_pub_t *dhd)
 #endif /* WL_CFG80211 */
 
 #ifdef WL_CFG80211
+static rtt_mc_az_target_info_t*
+dhd_rtt_get_target_info_for_peer(dhd_pub_t *dhd, rtt_status_info_t *rtt_status,
+	struct ether_addr *addr)
+{
+	struct ether_addr *tgt_info_addr;
+	rtt_mc_az_target_info_t *target_info = NULL;
+	int8 idx;
+
+	for (idx = rtt_status->start_idx; idx < rtt_status->rtt_config.rtt_target_cnt; idx++) {
+		tgt_info_addr = &rtt_status->rtt_config.target_info[idx].cmn_tgt_info.addr;
+		if (!eacmp(tgt_info_addr, addr)) {
+			/* Match found */
+			target_info = &rtt_status->rtt_config.target_info[idx];
+			break;
+		}
+	}
+
+	return target_info;
+}
+
 static int
 dhd_rtt_create_failure_result(rtt_status_info_t *rtt_status,
 	struct ether_addr *addr, rtt_reason_t report_status)
@@ -5770,8 +5822,13 @@ dhd_rtt_create_failure_result(rtt_status_info_t *rtt_status,
 		ret = -ENOMEM;
 		goto exit;
 	}
-
-	rtt_target_info = &rtt_status->rtt_config.target_info[rtt_status->cur_idx];
+	rtt_target_info = dhd_rtt_get_target_info_for_peer(rtt_status->dhd, rtt_status, addr);
+	if (!rtt_target_info) {
+		ret = BCME_NOTFOUND;
+		MFREE(rtt_status->dhd->osh, rtt_results_header, sizeof(rtt_results_header_t));
+		DHD_RTT(("target info for peer "MACF" not found \n", ETHERP_TO_MACF(addr)));
+		goto exit;
+	}
 	/* Initialize the head of list for rtt result */
 	INIT_LIST_HEAD(&rtt_results_header->result_list);
 	/* same src and dest len */
@@ -6411,15 +6468,12 @@ dhd_rtt_event_handler(dhd_pub_t *dhd, wl_event_msg_t *event, void *event_data)
 		}
 	}
 
-	/* check current target_mac and event_mac are matching */
-	target = &rtt_status->rtt_config.target_info[rtt_status->cur_idx];
-	if (memcmp(&target->cmn_tgt_info.addr, &event->addr, ETHER_ADDR_LEN)) {
-		DHD_RTT(("Ignore Proxd event for the unexpected peer "MACDBG
-			" expected peer "MACDBG"\n", MAC2STRDBG(&event->addr),
-			MAC2STRDBG(&target->cmn_tgt_info.addr)));
+	target = dhd_rtt_get_target_info_for_peer(dhd, rtt_status, &event->addr);
+	if (!target) {
+		DHD_RTT(("Ignore Proxd event for the unexpected peer "MACDBG" \n",
+			MAC2STRDBG(&event->addr)));
 		goto exit;
 	}
-
 #endif /* WL_CFG80211 */
 
 #ifdef WL_CFG80211

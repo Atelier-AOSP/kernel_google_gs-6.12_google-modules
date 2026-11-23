@@ -26,9 +26,8 @@ static enum hrtimer_restart periodic_io_timer_func(struct hrtimer *timer)
 {
 	ktime_t interval;
 	unsigned long flags;
-	struct list_head *it_period, *it_period_tmp;
 	struct lwis_periodic_io_list *periodic_io_list;
-	struct lwis_periodic_io *periodic_io;
+	struct lwis_periodic_io *periodic_io, *periodic_io_tmp;
 	struct lwis_periodic_io_proxy *periodic_io_proxy;
 	struct lwis_client *client;
 	bool active_periodic_io_present = false;
@@ -38,8 +37,8 @@ static enum hrtimer_restart periodic_io_timer_func(struct hrtimer *timer)
 
 	/* Go through all periodic io under the chosen periodic list */
 	spin_lock_irqsave(&client->periodic_io_lock, flags);
-	list_for_each_safe(it_period, it_period_tmp, &periodic_io_list->list) {
-		periodic_io = list_entry(it_period, struct lwis_periodic_io, timer_list_node);
+	list_for_each_entry_safe(periodic_io, periodic_io_tmp, &periodic_io_list->list,
+				 timer_list_node) {
 		if (periodic_io->active) {
 			periodic_io_proxy = lwis_allocator_allocate(
 				client->lwis_dev, sizeof(*periodic_io_proxy), GFP_ATOMIC);
@@ -90,7 +89,7 @@ static struct lwis_periodic_io_list *periodic_io_list_create_locked(struct lwis_
 	ktime_t ktime;
 	struct lwis_device *lwis_dev = client->lwis_dev;
 	struct lwis_periodic_io_list *periodic_io_list =
-		kmalloc(sizeof(struct lwis_periodic_io_list), GFP_ATOMIC);
+		lwis_allocator_allocate(lwis_dev, sizeof(struct lwis_periodic_io_list), GFP_ATOMIC);
 
 	if (!periodic_io_list)
 		return NULL;
@@ -138,7 +137,8 @@ periodic_io_list_find_or_create_locked(struct lwis_client *client, int64_t perio
 }
 
 /* Calling this function requires holding the client's periodic_io_lock */
-static void push_periodic_io_error_event_locked(struct lwis_periodic_io *periodic_io,
+static void push_periodic_io_error_event_locked(struct lwis_device *lwis_dev,
+						struct lwis_periodic_io *periodic_io,
 						int error_code, struct list_head *pending_events)
 {
 	struct lwis_periodic_io_info *info = &periodic_io->info;
@@ -153,7 +153,8 @@ static void push_periodic_io_error_event_locked(struct lwis_periodic_io *periodi
 	resp.num_entries_per_period = 0;
 	resp.results_size_bytes = 0;
 
-	lwis_pending_event_push(pending_events, info->emit_error_event_id, &resp, sizeof(resp));
+	lwis_pending_event_push(lwis_dev, pending_events, info->emit_error_event_id, &resp,
+				sizeof(resp));
 }
 
 static int process_io_entries(struct lwis_client *client,
@@ -169,7 +170,7 @@ static int process_io_entries(struct lwis_client *client,
 	struct lwis_periodic_io_response_header *resp = periodic_io->resp;
 	size_t resp_size;
 	uint8_t *read_buf;
-	const int reg_value_bytewidth = lwis_dev->native_value_bitwidth / 8;
+	const int reg_value_bytewidth = lwis_dev->native_read_value_bitwidth / 8;
 	unsigned long flags;
 
 	read_buf = (uint8_t *)resp + sizeof(struct lwis_periodic_io_response_header) +
@@ -252,8 +253,8 @@ event_push:
 		 */
 		resp->results_size_bytes =
 			resp_size - sizeof(struct lwis_periodic_io_response_header);
-		lwis_pending_event_push(pending_events, info->emit_error_event_id, (void *)resp,
-					resp_size);
+		lwis_pending_event_push(lwis_dev, pending_events, info->emit_error_event_id,
+					(void *)resp, resp_size);
 
 		/* Flag the periodic io as inactive */
 		spin_lock_irqsave(&client->periodic_io_lock, flags);
@@ -261,8 +262,9 @@ event_push:
 		spin_unlock_irqrestore(&client->periodic_io_lock, flags);
 	} else {
 		if (periodic_io->batch_count == info->batch_size) {
-			lwis_pending_event_push(pending_events, info->emit_success_event_id,
-						(void *)resp, resp_size);
+			lwis_pending_event_push(lwis_dev, pending_events,
+						info->emit_success_event_id, (void *)resp,
+						resp_size);
 			periodic_io->batch_count = 0;
 			resp->batch_size = 0;
 		}
@@ -275,24 +277,22 @@ void lwis_process_periodic_io_in_queue(struct lwis_client *client)
 	int error_code;
 	unsigned long flags;
 	struct lwis_periodic_io *periodic_io;
-	struct lwis_periodic_io_proxy *periodic_io_proxy;
-	struct list_head *it_period, *it_period_tmp;
+	struct lwis_periodic_io_proxy *periodic_io_proxy, *periodic_io_proxy_tmp;
 	struct list_head pending_events;
 
 	INIT_LIST_HEAD(&pending_events);
 
 	spin_lock_irqsave(&client->periodic_io_lock, flags);
-	list_for_each_safe(it_period, it_period_tmp, &client->periodic_io_process_queue) {
-		periodic_io_proxy =
-			list_entry(it_period, struct lwis_periodic_io_proxy, process_queue_node);
+	list_for_each_entry_safe(periodic_io_proxy, periodic_io_proxy_tmp,
+				 &client->periodic_io_process_queue, process_queue_node) {
 		periodic_io = periodic_io_proxy->periodic_io;
 		list_del(&periodic_io_proxy->process_queue_node);
 		/* Error indicates the cancellation of the periodic io */
 		if (periodic_io->resp->error_code || !periodic_io->active) {
 			error_code = periodic_io->resp->error_code ? periodic_io->resp->error_code :
 								     -ECANCELED;
-			push_periodic_io_error_event_locked(periodic_io, error_code,
-							    &pending_events);
+			push_periodic_io_error_event_locked(client->lwis_dev, periodic_io,
+							    error_code, &pending_events);
 		} else {
 			spin_unlock_irqrestore(&client->periodic_io_lock, flags);
 			process_io_entries(client, periodic_io_proxy, &pending_events);
@@ -332,7 +332,7 @@ static int prepare_response(struct lwis_client *client, struct lwis_periodic_io 
 	size_t resp_size;
 	size_t read_buf_size = 0;
 	int read_entries = 0;
-	const int reg_value_bytewidth = client->lwis_dev->native_value_bitwidth / 8;
+	const int reg_value_bytewidth = client->lwis_dev->native_read_value_bitwidth / 8;
 	unsigned long flags;
 	size_t result_size, read_buf_total, temp_size, total_size;
 
@@ -485,21 +485,18 @@ int lwis_periodic_io_client_flush(struct lwis_client *client)
 {
 	int i;
 	struct hlist_node *tmp;
-	struct list_head *it_period, *it_period_tmp;
-	struct lwis_periodic_io *periodic_io;
+	struct lwis_periodic_io *periodic_io, *periodic_io_tmp;
 	struct lwis_periodic_io_list *it_periodic_io_list;
 	unsigned long flags;
 
 	struct lwis_periodic_io *periodic_cleanup_io;
-	struct lwis_periodic_io_proxy *periodic_cleanup_io_proxy;
-	struct list_head *it_cleanup_period, *it_cleanup_period_tmp;
+	struct lwis_periodic_io_proxy *periodic_cleanup_io_proxy, *periodic_cleanup_io_proxy_tmp;
 
 	spin_lock_irqsave(&client->periodic_io_lock, flags);
 	/* First, cancel all timers */
 	hash_for_each_safe(client->timer_list, i, tmp, it_periodic_io_list, node) {
-		list_for_each_safe(it_period, it_period_tmp, &it_periodic_io_list->list) {
-			periodic_io =
-				list_entry(it_period, struct lwis_periodic_io, timer_list_node);
+		list_for_each_entry_safe(periodic_io, periodic_io_tmp, &it_periodic_io_list->list,
+					 timer_list_node) {
 			periodic_io->active = false;
 		}
 		it_periodic_io_list->hr_timer_state = LWIS_HRTIMER_INACTIVE;
@@ -514,10 +511,8 @@ int lwis_periodic_io_client_flush(struct lwis_client *client)
 
 	spin_lock_irqsave(&client->periodic_io_lock, flags);
 	/* Cleanup any stale entries remaining after the flush */
-	list_for_each_safe(it_cleanup_period, it_cleanup_period_tmp,
-			   &client->periodic_io_process_queue) {
-		periodic_cleanup_io_proxy = list_entry(
-			it_cleanup_period, struct lwis_periodic_io_proxy, process_queue_node);
+	list_for_each_entry_safe(periodic_cleanup_io_proxy, periodic_cleanup_io_proxy_tmp,
+				 &client->periodic_io_process_queue, process_queue_node) {
 		if (periodic_cleanup_io_proxy) {
 			periodic_cleanup_io = periodic_cleanup_io_proxy->periodic_io;
 			list_del(&periodic_cleanup_io_proxy->process_queue_node);
@@ -529,10 +524,9 @@ int lwis_periodic_io_client_flush(struct lwis_client *client)
 
 	/* Release the periodic io list of from all timers */
 	hash_for_each_safe(client->timer_list, i, tmp, it_periodic_io_list, node) {
-		list_for_each_safe(it_period, it_period_tmp, &it_periodic_io_list->list) {
-			periodic_io =
-				list_entry(it_period, struct lwis_periodic_io, timer_list_node);
-			list_del(it_period);
+		list_for_each_entry_safe(periodic_io, periodic_io_tmp, &it_periodic_io_list->list,
+					 timer_list_node) {
+			list_del(&periodic_io->timer_list_node);
 			lwis_periodic_io_free(client->lwis_dev, periodic_io);
 		}
 	}
@@ -558,6 +552,7 @@ int lwis_periodic_io_client_cleanup(struct lwis_client *client)
 	spin_lock_irqsave(&client->periodic_io_lock, flags);
 	hash_for_each_safe(client->timer_list, i, tmp, it_periodic_io_list, node) {
 		hash_del(&it_periodic_io_list->node);
+		lwis_allocator_free(client->lwis_dev, it_periodic_io_list);
 	}
 	spin_unlock_irqrestore(&client->periodic_io_lock, flags);
 	return 0;
@@ -576,14 +571,12 @@ static struct lwis_periodic_io *periodic_io_find_locked(struct lwis_client *clie
 {
 	int i;
 	struct hlist_node *tmp;
-	struct list_head *it_period, *it_period_tmp;
 	struct lwis_periodic_io_list *it_list;
-	struct lwis_periodic_io *periodic_io;
+	struct lwis_periodic_io *periodic_io, *periodic_io_tmp;
 
 	hash_for_each_safe(client->timer_list, i, tmp, it_list, node) {
-		list_for_each_safe(it_period, it_period_tmp, &it_list->list) {
-			periodic_io =
-				list_entry(it_period, struct lwis_periodic_io, timer_list_node);
+		list_for_each_entry_safe(periodic_io, periodic_io_tmp, &it_list->list,
+					 timer_list_node) {
 			if (periodic_io->info.id == id)
 				return periodic_io;
 		}

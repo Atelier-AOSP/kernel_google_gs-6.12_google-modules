@@ -11,6 +11,7 @@
 struct lwis_i3c_ibi_config {
 	uint32_t ibi_max_payload_len;
 	uint32_t ibi_num_slots;
+	bool ibi_configured_in_dt;
 };
 
 int lwis_i3c_proxy_device_init(void);

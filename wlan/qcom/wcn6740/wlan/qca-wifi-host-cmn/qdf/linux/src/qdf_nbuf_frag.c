@@ -518,12 +518,12 @@ static QDF_FRAG_TRACK *__qdf_frag_debug_add_node(qdf_frag_t fragp,
 
 	if (p_node) {
 		p_node->p_frag = fragp;
-		qdf_str_lcopy(p_node->alloc_func_name, func_name,
+		qdf_str_scopy(p_node->alloc_func_name, func_name,
 			      QDF_MEM_FUNC_NAME_SIZE);
 		p_node->alloc_func_line = line_num;
 		p_node->refcount = QDF_NBUF_FRAG_DEBUG_COUNT_ZERO;
 
-		qdf_str_lcopy(p_node->last_func_name, func_name,
+		qdf_str_scopy(p_node->last_func_name, func_name,
 			      QDF_MEM_FUNC_NAME_SIZE);
 		p_node->last_func_line = line_num;
 
@@ -602,7 +602,7 @@ void qdf_frag_debug_refcount_inc(qdf_frag_t fragp, const char *func_name,
 	if (p_node) {
 		(p_node->refcount)++;
 
-		qdf_str_lcopy(p_node->last_func_name, func_name,
+		qdf_str_scopy(p_node->last_func_name, func_name,
 			      QDF_MEM_FUNC_NAME_SIZE);
 		p_node->last_func_line = line_num;
 	} else {
@@ -645,7 +645,7 @@ void qdf_frag_debug_refcount_dec(qdf_frag_t fragp, const char *func_name,
 			/* Remove frag debug node when refcount reaches 0 */
 			__qdf_frag_debug_delete_node(p_node, index);
 		} else {
-			qdf_str_lcopy(p_node->last_func_name, func_name,
+			qdf_str_scopy(p_node->last_func_name, func_name,
 				      QDF_MEM_FUNC_NAME_SIZE);
 			p_node->last_func_line = line_num;
 		}
@@ -720,7 +720,7 @@ void qdf_frag_debug_update_addr(qdf_frag_t p_fragp, qdf_frag_t n_fragp,
 		/* Update frag address */
 		p_node->p_frag = n_fragp;
 
-		qdf_str_lcopy(p_node->last_func_name, func_name,
+		qdf_str_scopy(p_node->last_func_name, func_name,
 			      QDF_MEM_FUNC_NAME_SIZE);
 		p_node->last_func_line = line_num;
 

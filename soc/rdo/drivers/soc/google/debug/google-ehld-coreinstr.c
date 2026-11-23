@@ -809,7 +809,7 @@ static int ehld_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int ehld_remove(struct platform_device *pdev)
+static void ehld_remove(struct platform_device *pdev)
 {
 	platform_set_drvdata(pdev, NULL);
 
@@ -829,8 +829,6 @@ static int ehld_remove(struct platform_device *pdev)
 	unregister_pm_notifier(&google_ehld_pm_notifier_block);
 
 	dev_dbg(ehld_dev.dev, "Removed Google EHLD device.\n");
-
-	return 0;
 }
 
 static const struct of_device_id ehld_dt_match[] = {

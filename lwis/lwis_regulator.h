@@ -25,6 +25,38 @@ struct lwis_regulator_info {
  */
 int lwis_regulator_list_add_info(struct device *dev, struct list_head *list, const char *name);
 
+/**
+ * @brief Adds regulator information to a list based on a name that includes a mode prefix.
+ *
+ * This function parses an input name string that is expected to be prefixed
+ * with a regulator mode (e.g., "fast-", "normal-", "idle-", "standby-").
+ * It strips this prefix to extract the actual regulator name and then calls
+ * lwis_regulator_list_add_info() to add the regulator to the provided list.
+ *
+ * This is typically used when the regulator name in the device tree or
+ * configuration also specifies an initial mode to be set.
+ *
+ * @param dev Pointer to the device structure associated with this regulator.
+ *            This is used by devm_regulator_get().
+ * @param list Pointer to the head of the list (struct list_head) where the
+ *             lwis_regulator_info structure will be added.
+ * @param name The name of the regulator, prefixed with its intended mode
+ *             (e.g., "fast-vdd_core", "normal-vdd_io").
+ *             The supported prefixes are:
+ *             - "fast-"
+ *             - "normal-"
+ *             - "idle-"
+ *             - "standby-"
+ *
+ * @return 0 on success.
+ * @return -EINVAL if the mode prefix in 'name' is invalid or not recognized.
+ * @return -ENOMEM if memory allocation for lwis_regulator_info fails.
+ * @return Other negative error codes from devm_regulator_get() if the
+ *         underlying regulator cannot be found or acquired.
+ */
+int lwis_regulator_list_add_info_by_set_mode(struct device *dev, struct list_head *list,
+					     const char *name);
+
 /*
  *  Free the nodes in the list.
  */

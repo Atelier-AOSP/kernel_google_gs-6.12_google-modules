@@ -52,7 +52,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "cache_ops.h"
 #include "device.h"
 #include "osfunc.h"
-#include "rgxlayer_impl.h"
+#include "rgxhal_driver.h"
 #if defined(SUPPORT_WORKLOAD_ESTIMATION)
 #include "hash.h"
 #endif
@@ -73,8 +73,7 @@ typedef struct {
 #define RGXKM_DEVICE_STATE_CCB_GROW_EN                            (0x8)  /*!< Used to indicate CCB grow is permitted */
 #define RGXKM_DEVICE_STATE_ENABLE_SPU_UNITS_POWER_MASK_CHANGE_EN  (0x10) /*!< Used for validation to enable SPU power state mask change */
 #define RGXKM_DEVICE_STATE_SAFETY_TEST_COMPLETE_EN                (0x20) /*!< Used to mark the GPU safety self-test complete */
-#define RGXKM_DEVICE_STATE_FREELIST_CLEANUP_FALLBACK_EN           (0x40) /*!< The firmware does not support combined RTData/Freelist cleanup */
-#define RGXKM_DEVICE_STATE_MASK                                   (0x7F)
+#define RGXKM_DEVICE_STATE_MASK                                   (0x3F)
 
 /*!
  ******************************************************************************
@@ -513,6 +512,13 @@ typedef struct _PVRSRV_RGXDEV_INFO_
 
 	void					*pvDeviceMemoryHeap;
 
+#if defined(RGX_FEATURE_ERYX_TOP_INFRASTRUCTURE)
+	DEVMEM_CONTEXT			*psUVBSpillDevmemCtx;
+	DEVMEM_HEAP				*psUVBSpillHeap;
+	DEVMEM_MEMDESC			*psUVBSpillMemDesc;
+	MMU_CONTEXT				*psUVBSpillMMUCtx;
+#endif
+
 	/* Kernel CCB */
 	DEVMEM_MEMDESC			*psKernelCCBCtlMemDesc;      /*!< memdesc for Kernel CCB control */
 	RGXFWIF_CCB_CTL			*psKernelCCBCtl;             /*!< kernel mapping for Kernel CCB control */
@@ -575,12 +581,10 @@ typedef struct _PVRSRV_RGXDEV_INFO_
 
 	DEVMEM_MEMDESC			*psRGXFWCorememCodeMemDesc;
 	IMG_DEV_VIRTADDR		sFWCorememCodeDevVAddrBase;
-	RGXFWIF_DEV_VIRTADDR		sFWCorememCodeFWAddr;
 	IMG_UINT32			ui32FWCorememCodeSizeInBytes;
 
 	DEVMEM_MEMDESC			*psRGXFWIfCorememDataStoreMemDesc;
 	IMG_DEV_VIRTADDR		sFWCorememDataStoreDevVAddrBase;
-	RGXFWIF_DEV_VIRTADDR		sFWCorememDataStoreFWAddr;
 
 	DEVMEM_MEMDESC			*psRGXFWAlignChecksMemDesc;
 
@@ -669,6 +673,9 @@ typedef struct _PVRSRV_RGXDEV_INFO_
 	DEVMEM_MEMDESC			*psRGXFWIfFwFPFKickAndCommunicateMemDesc;
 	DEVMEM_MEMDESC			*psRGXFWIfFwFPFLookupTableMemDesc;
 	RGXFWIF_FPF_LOOKUP_HASH *psRGXFWIfFwFPFLookupTable;
+	PVRSRV_CLIENT_SYNC_PRIM *psRGXFWIfFwFPFLookupTableMMUSync;
+	/* Protected by checkpoint context block lock */
+	IMG_UINT32               ui32NextFPFInvalidateUpdate;
 #endif /* defined(SUPPORT_FASTPATH_FENCE) */
 
 #if defined(SUPPORT_FW_HOST_SIDE_RECOVERY)

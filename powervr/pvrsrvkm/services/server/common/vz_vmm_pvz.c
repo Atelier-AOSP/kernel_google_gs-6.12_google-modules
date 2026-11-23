@@ -46,7 +46,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "img_types.h"
 #include "pvrsrv_error.h"
 #include "allocmem.h"
-#include "pvrsrv.h"
 #include "vz_vmm_pvz.h"
 #include "vmm_impl.h"
 

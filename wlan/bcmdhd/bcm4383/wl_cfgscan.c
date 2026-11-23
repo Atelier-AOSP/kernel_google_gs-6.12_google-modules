@@ -1766,9 +1766,11 @@ wl_cfgscan_populate_scan_channels(struct bcm_cfg80211 *cfg,
 #endif /* WL_HOST_BAND_MGMT */
 
 		if (is_p2p_scan) {
+			{
 				if (CHSPEC_IS6G(chanspec)) {
 					continue;
 				}
+			}
 
 			if (CHSPEC_IS5G(chanspec)) {
 #ifdef P2P_SKIP_DFS
@@ -4358,6 +4360,8 @@ static void wl_scan_timeout(unsigned long data)
 	u64 cur_time = OSL_LOCALTIME_NS();
 #ifdef BCMDONGLEHOST
 	dhd_pub_t *dhdp = (dhd_pub_t *)(cfg->pub);
+	char lock_info[512] = {0};
+	u32 lock_info_len = 0;
 #endif /* BCMDONGLEHOST */
 	unsigned long flags;
 #ifdef RTT_SUPPORT
@@ -4366,6 +4370,9 @@ static void wl_scan_timeout(unsigned long data)
 #endif /* RTT_SUPPORT */
 
 	UNUSED_PARAMETER(cur_time);
+	UNUSED_PARAMETER(lock_info);
+	UNUSED_PARAMETER(lock_info_len);
+
 	WL_CFG_DRV_LOCK(&cfg->cfgdrv_lock, flags);
 	if (!(cfg->scan_request)) {
 		WL_ERR(("timer expired but no scan request\n"));
@@ -4421,13 +4428,12 @@ static void wl_scan_timeout(unsigned long data)
 		if (cfg->tsinfo.scan_enq) {
 			WL_ERR(("Elapsed time(ns): %llu\n", (cur_time - cfg->tsinfo.scan_enq)));
 		}
-		WL_ERR(("lock_states:[%d:%d:%d:%d:%d:%d]\n",
-			mutex_is_locked(&cfg->if_sync),
-			mutex_is_locked(&cfg->usr_sync),
-			mutex_is_locked(&cfg->pm_sync),
-			mutex_is_locked(&cfg->scan_sync),
-			spin_is_locked(&cfg->cfgdrv_lock),
-			spin_is_locked(&cfg->eq_lock)));
+		lock_info_len = wl_cfg80211_debug_data_dump(wdev_to_wlc_ndev(wdev, cfg),
+			(u8 *)lock_info, sizeof(lock_info) - 1);
+		if (lock_info_len > 0) {
+			lock_info[lock_info_len] = '\0';
+			WL_ERR(("%s\n", lock_info));
+		}
 #ifdef RTT_SUPPORT
 		WL_ERR(("RTT lock_state:[%d]\n",
 			mutex_is_locked(&rtt_status->rtt_mutex)));
@@ -4791,9 +4797,16 @@ exit:
 	return 0;
 }
 
+#if defined(WL_PMSR_BKPORT)
+s32
+wl_cfgscan_listen_on_channel(struct bcm_cfg80211 *cfg, struct wireless_dev *wdev,
+	struct ieee80211_channel *channel, unsigned int duration,
+	const u8 *rand_addr)
+#else
 s32
 wl_cfgscan_listen_on_channel(struct bcm_cfg80211 *cfg, struct wireless_dev *wdev,
 	struct ieee80211_channel *channel, unsigned int duration)
+#endif /* WL_PMSR_BKPORT */
 {
 	u32 dwell = duration;
 	u32 chanspec, params_size;
@@ -4824,9 +4837,21 @@ wl_cfgscan_listen_on_channel(struct bcm_cfg80211 *cfg, struct wireless_dev *wdev
 		goto exit;
 	}
 	if (cfg->loc.in_progress == true) {
-		WL_ERR(("Listen in progress\n"));
-		err = -EAGAIN;
-		goto exit;
+#if defined(WL_PMSR)
+		if (rand_addr && !is_zero_ether_addr(rand_addr)) {
+			WL_INFORM_MEM(("Cancel existing listen for rand_addr request\n"));
+			if (delayed_work_pending(&cfg->loc.work)) {
+				dhd_cancel_delayed_work_sync(&cfg->loc.work);
+			}
+			wl_cfgscan_notify_listen_complete(cfg);
+			wl_cfgscan_scan_abort(cfg);
+		} else
+#endif /* WL_PMSR */
+		{
+			WL_ERR(("Listen in progress\n"));
+			err = -EAGAIN;
+			goto exit;
+		}
 	}
 	bssidx = wl_get_bssidx_by_wdev(cfg, wdev);
 	if (bssidx < 0) {
@@ -4874,6 +4899,15 @@ wl_cfgscan_listen_on_channel(struct bcm_cfg80211 *cfg, struct wireless_dev *wdev
 		scanparams_v4 = (wl_scan_params_v4_t *)&eparams_v4->params;
 		chanspec_list = scanparams_v4->channel_list;
 		scanparams_v4->channel_num = channel_num;
+#ifdef WL_PMSR
+		if (rand_addr && !is_zero_ether_addr(rand_addr)) {
+			scanparams_v4->scan_type_ext |= WL_SCANFLAGS_EXT_USE_HOST_MAC;
+			(void)memcpy_s(&scanparams_v4->bssid, ETHER_ADDR_LEN,
+				rand_addr, ETHER_ADDR_LEN);
+			WL_DBG(("listen: host_mac set to " MACDBG "\n",
+				MAC2STRDBG(rand_addr)));
+		}
+#endif /* WL_PMSR */
 	} else if (IS_SCAN_PARAMS_V3_V2(cfg)) {
 		eparams_v3 = (wl_escan_params_v3_t *)params;
 		scanparams_v3 = (wl_scan_params_v3_t *)&eparams_v3->params;
@@ -4949,7 +4983,11 @@ wl_priortize_scan_over_listen(struct bcm_cfg80211 *cfg,
 #define IS_P2P_DISC_NDEV(wdev) \
 	(wdev->netdev ? (strncmp(wdev->netdev->name, "p2p0", strlen("p2p0")) == 0) : false)
 
-#if defined(WL_CFG80211_P2P_DEV_IF)
+#if defined(WL_PMSR_BKPORT)
+s32
+wl_cfgscan_remain_on_channel(struct wiphy *wiphy, bcm_struct_cfgdev *cfgdev,
+	struct ieee80211_channel *channel, unsigned int duration, u64 *cookie, const u8 *rx_addr)
+#elif defined(WL_CFG80211_P2P_DEV_IF)
 s32
 wl_cfgscan_remain_on_channel(struct wiphy *wiphy, bcm_struct_cfgdev *cfgdev,
 	struct ieee80211_channel *channel, unsigned int duration, u64 *cookie)
@@ -4959,7 +4997,7 @@ wl_cfgscan_remain_on_channel(struct wiphy *wiphy, bcm_struct_cfgdev *cfgdev,
 	struct ieee80211_channel *channel,
 	enum nl80211_channel_type channel_type,
 	unsigned int duration, u64 *cookie)
-#endif /* WL_CFG80211_P2P_DEV_IF */
+#endif /* WL_PMSR_BKPORT */
 {
 	s32 target_channel;
 	u32 id;
@@ -4975,6 +5013,15 @@ wl_cfgscan_remain_on_channel(struct wiphy *wiphy, bcm_struct_cfgdev *cfgdev,
 #else
 	wdev = cfgdev_to_wlc_wdev(cfgdev, cfg);
 #endif
+
+#ifdef WL_PMSR
+	/* For PMSR, rx_addr is expected to be non-NULL and valid. */
+	if (rx_addr && is_zero_ether_addr(rx_addr)) {
+		WL_DBG(("rx_addr for PMSR remain on channel: " MACDBG "\n",
+			MAC2STRDBG(rx_addr)));
+	}
+#endif /* WL_PMSR */
+
 	if (!wdev) {
 		WL_ERR(("wdev null\n"));
 		return -EINVAL;
@@ -5049,7 +5096,6 @@ wl_cfgscan_remain_on_channel(struct wiphy *wiphy, bcm_struct_cfgdev *cfgdev,
 			goto exit;
 		}
 #endif /* WL_CFG80211_SYNC_GON */
-
 		if (!cfg->p2p->on) {
 		/* In case of p2p_listen command, supplicant may send
 		* remain_on_channel without turning on P2P
@@ -5084,7 +5130,11 @@ wl_cfgscan_remain_on_channel(struct wiphy *wiphy, bcm_struct_cfgdev *cfgdev,
 	} else if (wdev->iftype == NL80211_IFTYPE_STATION ||
 		wdev->iftype == NL80211_IFTYPE_AP) {
 		WL_DBG(("LISTEN ON CHANNEL\n"));
+#if defined(WL_PMSR)
+		err = wl_cfgscan_listen_on_channel(cfg, wdev, channel, duration, rx_addr);
+#else
 		err = wl_cfgscan_listen_on_channel(cfg, wdev, channel, duration);
+#endif
 	}
 
 exit:
@@ -6184,6 +6234,15 @@ wl_convert_freqlist_to_chspeclist(struct bcm_cfg80211 *cfg,
 
 		/* Skip restricted frequencies */
 		if (CHSPEC_IS5G(chspeclist[j])) {
+			/* SAP - indoor channel not allowed */
+			if ((wl_cfgscan_get_chan_info(cfg,
+				&chan_info, chspeclist[j]) == BCME_OK) &&
+				(chan_info & WL_CHAN_INDOOR_ONLY)) {
+				WL_DBG_MEM(("Skipped indoor chanspec (0x%x: 0x%x)\n",
+					chspeclist[j], chan_info));
+				continue;
+			}
+
 			if (((wl_cfgscan_get_dynamic_chan_info(cfg,
 				&chan_info, chspeclist[j], WL_CHAN_INDOOR_ONLY) == BCME_OK) &&
 				wl_is_chan_info_restricted(chan_info, chspeclist[j]))) {

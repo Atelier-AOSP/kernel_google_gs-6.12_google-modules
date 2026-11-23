@@ -328,6 +328,8 @@
 #define GENERAL_INTERRUPT_ENABLE                                    0x0d04
 #define HPD_STATUS                                                  0x0d08
 #define HPD_INTERRUPT_ENABLE                                        0x0d0c
+
+#if IS_ENABLED(CONFIG_SOC_LGA)
 #define HDCPCFG                                                     0x0e00
 #define HDCPOBS                                                     0x0e04
 #define HDCPAPIINTCLR                                               0x0e08
@@ -347,6 +349,28 @@
 #define HDCP2GPIOSTS                                                0x3628
 #define HDCP2GPIOCHNGSTS                                            0x362c
 #define HDCPREG_DPK_CRC                                             0x3630
+#else
+#define HDCPCFG                                                     0x10e00
+#define HDCPOBS                                                     0x10e04
+#define HDCPAPIINTCLR                                               0x10e08
+#define HDCPAPIINTSTAT                                              0x10e0c
+#define HDCPAPIINTMSK                                               0x10e10
+#define HDCPKSVMEMCTRL                                              0x10e18
+#define HDCPREG_BKSV0                                               0x13600
+#define HDCPREG_BKSV1                                               0x13604
+#define HDCPREG_ANCONF                                              0x13608
+#define HDCPREG_AN0                                                 0x1360c
+#define HDCPREG_AN1                                                 0x13610
+#define HDCPREG_RMLCTL                                              0x13614
+#define HDCPREG_RMLSTS                                              0x13618
+#define HDCPREG_SEED                                                0x1361c
+#define HDCPREG_DPK0                                                0x13620
+#define HDCPREG_DPK1                                                0x13624
+#define HDCP2GPIOSTS                                                0x13628
+#define HDCP2GPIOCHNGSTS                                            0x1362c
+#define HDCPREG_DPK_CRC                                             0x13630
+#endif
+
 #define VG_SWRST                                                    0x3800
 #define VG_CONFIG1                                                  0x3804
 #define VG_CONFIG2                                                  0x3808

@@ -136,6 +136,12 @@ typedef struct _DEVMEM_HEAP_BLUEPRINT_
 	aligned to at least this value */
 	IMG_UINT32 uiLog2ImportAlignment;
 
+	/* Flags for Heap Manager */
+	IMG_UINT32 uiHeapManagerFlags;
+
+	/* Flags for VMRA policy */
+	IMG_UINT32 uiPolicyVMRA;
+
 	/* Callback function for device specific heap init. */
 	PFN_HEAP_INIT pfnInit;
 
@@ -150,6 +156,8 @@ void HeapCfgBlueprintInit(const IMG_CHAR        *pszName,
 	                      IMG_DEVMEM_SIZE_T      uiReservedRegionLength,
 	                      IMG_UINT32             ui32Log2DataPageSize,
 	                      IMG_UINT32             uiLog2ImportAlignment,
+	                      IMG_UINT32             ui32HeapManagerFlags,
+	                      IMG_UINT32             ui32PolicyVMRA,
 	                      PFN_HEAP_INIT          pfnInit,
 	                      PFN_HEAP_DEINIT        pfnDeInit,
 	                      DEVMEM_HEAP_BLUEPRINT *psHeapBlueprint);
@@ -200,7 +208,9 @@ HeapCfgHeapDetails(struct _CONNECTION_DATA_ *psConnection,
     IMG_DEVMEM_SIZE_T *puiHeapLengthOut,
     IMG_DEVMEM_SIZE_T *puiReservedRegionLengthOut,
     IMG_UINT32 *puiLog2DataPageSizeOut,
-    IMG_UINT32 *puiLog2ImportAlignmentOut
+    IMG_UINT32 *puiLog2ImportAlignmentOut,
+    IMG_UINT32 *puiHeapManagerFlags,
+    IMG_UINT32 *puiPolicyVMRA
 );
 
 PVRSRV_ERROR

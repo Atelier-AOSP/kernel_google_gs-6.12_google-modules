@@ -61,6 +61,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "physheap_config.h"
 #include "pvrsrv_memalloc_physheap.h"
 #include "pvrsrv_memallocflags.h"
+#include "log2.h"
 
 struct _PHYS_HEAP_
 {
@@ -255,6 +256,28 @@ static const IMG_FLAGS2DESC g_asPhysHeapUsageFlagStrings[] =
 static inline IMG_BOOL PhysHeapCheckValidUsageFlags(PHYS_HEAP_USAGE_FLAGS ui32PhysHeapUsage)
 {
 	return !(ui32PhysHeapUsage & ~PHYS_HEAP_USAGE_MASK);
+}
+
+/*************************************************************************/ /*!
+@Function       PhysHeapPMROutFlagsGet
+@Description    Returns the output flags for an allocated PMR. If the physheap
+                can provide user mode allocations, the hint will be updated.
+
+@Input          psPhysHeap  The physheap to retrieve the flags from.
+@Input          uiFlags     The flags to update.
+
+@Return         The output flags, with the correct physheap hint.
+*/ /**************************************************************************/
+static inline PVRSRV_MEMALLOCFLAGS_T PhysHeapPMROutFlagsGet(PHYS_HEAP *psPhysHeap,
+                                                            PVRSRV_MEMALLOCFLAGS_T uiFlags)
+{
+	PHYS_HEAP_USAGE_FLAGS uiUsage = psPhysHeap->ui32UsageFlags & PHYS_HEAP_USAGE_APPLICATION_MASK;
+	if (uiUsage != 0)
+	{
+		PVRSRV_CHANGE_PHYS_HEAP_HINT(ExactLog2(uiUsage), uiFlags);
+	}
+
+	return uiFlags;
 }
 
 /*************************************************************************/ /*!
@@ -494,6 +517,20 @@ failure:
 	return eError;
 }
 
+IMG_INTERNAL bool PhysHeapHasUMAHeap(PVRSRV_DEVICE_NODE *psDevNode)
+{
+	PHYS_HEAP *psPhysHeap;
+
+	for (psPhysHeap = psDevNode->psPhysHeapList; psPhysHeap != NULL; psPhysHeap = psPhysHeap->psNext)
+	{
+		if (psPhysHeap->eType == PHYS_HEAP_TYPE_UMA)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 /*************************************************************************/ /*!
 @Function       PhysHeapDebugRequest
 @Description    This function is used to output debug information for a given
@@ -546,11 +583,13 @@ static void PhysHeapDebugRequest(PVRSRV_DBGREQ_HANDLE pfnDbgRequestHandle,
 	                  OSAtomicRead(&psDeviceNode->uiPMRZombieCount),
 	                  OSAtomicRead(&psDeviceNode->uiPMRZombieCountInCleanup));
 #else
-	_ZombieListLock(psDeviceNode);
-	PVR_DUMPDEBUG_LOG("PMR Zombie Count: %u, PMR Zombie Count In Cleanup: %u",
-	                  psDeviceNode->uiPMRZombieCount,
-	                  psDeviceNode->uiPMRZombieCountInCleanup);
-	_ZombieListUnlock(psDeviceNode);
+		IMG_UINT32 uiPMRZombieCount;
+		IMG_UINT32 uiPMRZombieCountInCleanup;
+
+		PMRGetZombieStats(psDeviceNode, &uiPMRZombieCount, &uiPMRZombieCountInCleanup);
+
+		PVR_DUMPDEBUG_LOG("PMR Zombie Count: %u, PMR Zombie Count In Cleanup: %u",
+		                  uiPMRZombieCount, uiPMRZombieCountInCleanup);
 #endif
 
 	PVR_DUMPDEBUG_LOG("PMR Live Count: %d", PMRGetLiveCount());
@@ -2104,23 +2143,19 @@ static inline void _LogOOMDetection(IMG_BOOL isOOMDetected, PHYS_HEAP *psPhysHea
 	{
 		IMG_UINT64 ui64TotalSize;
 		IMG_UINT64 ui64FreeSize;
+		IMG_UINT32 uiPMRZombieCountInQueue;
+		IMG_UINT32 uiPMRZombieCountInCleanup;
 
 		PVR_LOG(("OOM Detected :: Device: %d PhysHeap: %s",
 		         psDevNode->sDevId.ui32InternalID,
 		         PVRSRVGetPhysHeapName(ePhysHeap)));
-#if defined(PVRSRV_USE_LOCKLESS_PMR_ZOMBIE_LIST)
+
+		PMRGetZombieStats(psDevNode, &uiPMRZombieCountInQueue, &uiPMRZombieCountInCleanup);
+
 		PVR_LOG(("\tDevice :: PMR Count - Live: %u, Zombie: %u, In Clean-up: %u",
 		         PMRGetLiveCount(),
-		         OSAtomicRead(&psDevNode->uiPMRZombieCount),
-		         OSAtomicRead(&psDevNode->uiPMRZombieCountInCleanup)));
-#else
-		_ZombieListLock(psDeviceNode);
-		PVR_LOG(("\tDevice :: PMR Count - Live: %u, Zombie: %u, In Clean-up: %u",
-		         PMRGetLiveCount(),
-		         psDevNode->uiPMRZombieCount,
-		         psDevNode->uiPMRZombieCountInCleanup));
-		_ZombieListUnlock(psDeviceNode);
-#endif
+		         uiPMRZombieCountInQueue,
+		         uiPMRZombieCountInCleanup));
 
 		psPhysHeap->psImplFuncs->pfnGetFactoryMemStats(psPhysHeap->pvImplData,
 		                                               &ui64TotalSize,
@@ -2154,6 +2189,8 @@ PVRSRV_ERROR PhysHeapCreatePMR(PHYS_HEAP *psPhysHeap,
 {
 	PVRSRV_ERROR eError;
 	const PHEAP_IMPL_FUNCS *psImplFuncs;
+	IMG_UINT64 uiTotalSize;
+	__maybe_unused IMG_UINT64 uiFreeSize;
 #if !defined(PVRSRV_PHYSHEAP_DISABLE_OOM_DEMOTION)
 	IMG_UINT64 uiFreeBytes;
 	PVRSRV_PHYS_HEAP eDemotionPhysIdx;
@@ -2169,6 +2206,32 @@ PVRSRV_ERROR PhysHeapCreatePMR(PHYS_HEAP *psPhysHeap,
 
 	psImplFuncs = psPhysHeap->psImplFuncs;
 
+	/* Get heap maximum size. */
+	if (psPhysHeap->eType == PHYS_HEAP_TYPE_IMA)
+	{
+		PhysHeapIMAGetMemInfo(psPhysHeap, &uiTotalSize, &uiFreeSize);
+	}
+	else
+	{
+		psPhysHeap->psImplFuncs->pfnGetFactoryMemStats(psPhysHeap->pvImplData,
+		                                               &uiTotalSize, &uiFreeSize);
+	}
+
+	/* Sanity check if the heap can hold the requested size. */
+	if (ui32NumPhysChunks == ui32NumVirtChunks)
+	{
+		if (uiSize > uiTotalSize)
+		{
+			return PVRSRV_ERROR_PMR_TOO_LARGE;
+		}
+	}
+	else if (((IMG_UINT64) ui32NumPhysChunks << uiLog2PageSize) > uiTotalSize)
+	{
+		return PVRSRV_ERROR_PMR_TOO_LARGE;
+	}
+#if !defined(PVRSRV_PHYSHEAP_DISABLE_OOM_DEMOTION)
+RetryNow:
+#endif
 	eError = psImplFuncs->pfnCreatePMR(psPhysHeap,
 									 psConnection,
 									 uiSize,
@@ -2189,11 +2252,53 @@ PVRSRV_ERROR PhysHeapCreatePMR(PHYS_HEAP *psPhysHeap,
 	{
 		if (puiOutFlags)
 		{
-			*puiOutFlags = uiFlags;
+			*puiOutFlags = PhysHeapPMROutFlagsGet(psPhysHeap, uiFlags);
 		}
 		return eError;
 	}
-	PVR_LOG_RETURN_IF_FALSE((IsOOMError(eError)), "Failed to allocate PMR", eError);
+
+	if (IsOOMError(eError))
+	{
+		PVRSRV_ERROR eErrorZombieQ;
+		PPVRSRV_DEVICE_NODE psDevNode = PhysHeapDeviceNode(psPhysHeap);
+		IMG_BOOL bZombiesQueued;
+		/* If there are any zombies that have not been queued yet do it now. */
+		eErrorZombieQ = PMRQueueZombiesForCleanupAndInvalidateMMUCaches(psDevNode,
+		                                                                &bZombiesQueued);
+		switch (eErrorZombieQ)
+		{
+			case PVRSRV_OK:
+			{
+				if (bZombiesQueued)
+				{
+					/* Zombies found and caches flushed, Retry Now. */
+					OSReleaseThreadQuanta();
+					goto RetryNow;
+				}
+				/* No Zombies found */
+				break;
+			}
+			/* Zombies added to list, flush timed out */
+			case PVRSRV_ERROR_TIMEOUT:
+			case PVRSRV_ERROR_RETRY:
+			{
+				/* Return RETRY to the client so it can wait until some of the zombies
+				 * are freed. */
+				return PVRSRV_ERROR_RETRY;
+			}
+			/* Unexpected error */
+			default:
+			{
+				PVR_DPF((PVR_DBG_ERROR,
+				         "Unexpected error from PMRQueueZombiesForCleanupAndFlushCaches(). "
+				         "Treated as failure to free zombies."));
+				break;
+			}
+		}
+	}
+
+	PVR_LOG_RETURN_IF_FALSE_VA(IsOOMError(eError), eError, "Failed to allocate PMR with error %s",
+	                           PVRSRVGetErrorString(eError));
 
 	/* Skip logic and return if mandate flag is set */
 	if (PVRSRV_CHECK_MANDATED_PHYSHEAP(uiFlags))
@@ -2277,13 +2382,20 @@ PVRSRV_ERROR PhysHeapCreatePMR(PHYS_HEAP *psPhysHeap,
 			                          OSAtomicRead(&psDevNode->uiPMRZombieCount),
 			                          OSAtomicRead(&psDevNode->uiPMRZombieCountInCleanup));
 #else
-			_ZombieListLock(psDevNode);
+			IMG_UINT32 uiPMRZombieCount;
+			IMG_UINT32 uiPMRZombieCountInCleanup;
+
+			PMRGetZombieStats(psDevNode, &uiPMRZombieCount, &uiPMRZombieCountInCleanup);
+
 			PVR_LOG_VA(PVR_DBG_ERROR, "PMR Zombie Count: %u, PMR Zombie Count In Cleanup: %u",
-			                          psDevNode->uiPMRZombieCount,
-			                          psDevNode->uiPMRZombieCountInCleanup);
-			_ZombieListUnlock(psDevNode);
+			           uiPMRZombieCount, uiPMRZombieCountInCleanup);
 #endif
 		}
+	}
+#else
+	if (puiOutFlags)
+	{
+		*puiOutFlags = PhysHeapPMROutFlagsGet(psPhysHeap, uiFlags);
 	}
 #endif
 	return eError;

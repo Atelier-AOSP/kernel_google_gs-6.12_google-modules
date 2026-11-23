@@ -3,6 +3,7 @@
 config GOOGLE_EBU
 	tristate "Google EBU Driver"
 	depends on ARCH_GOOGLE
+	depends on GOOGLE_LCM
 	help
 	  Driver for the Google EBU IP
 	  If unsure select "N".

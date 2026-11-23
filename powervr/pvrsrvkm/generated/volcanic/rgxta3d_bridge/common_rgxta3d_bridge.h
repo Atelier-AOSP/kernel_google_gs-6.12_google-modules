@@ -96,9 +96,9 @@ typedef struct PVRSRV_BRIDGE_OUT_RGXDESTROYHWRTDATASET_TAG
 /* Bridge in structure for RGXCreateZSBuffer */
 typedef struct PVRSRV_BRIDGE_IN_RGXCREATEZSBUFFER_TAG
 {
+	PVRSRV_MEMALLOCFLAGS_T uiMapFlags;
 	IMG_HANDLE hPMR;
 	IMG_HANDLE hReservation;
-	PVRSRV_MEMALLOCFLAGS_T uiMapFlags;
 } __packed PVRSRV_BRIDGE_IN_RGXCREATEZSBUFFER;
 
 /* Bridge out structure for RGXCreateZSBuffer */

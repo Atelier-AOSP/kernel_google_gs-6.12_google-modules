@@ -376,6 +376,7 @@ struct gcip_iommu_domain *gcip_iommu_domain_create(struct device *dev, struct io
 	gdomain->domain = domain;
 	gdomain->pasid = IOMMU_PASID_INVALID;
 
+	gdomain->attach_handle.domain = domain;
 
 	ret = gcip_iommu_domain_space_init(&gdomain->space, dev, domain_type, space_daddr,
 					   space_size, reserved_daddr, reserved_size, granule);

@@ -1197,18 +1197,17 @@ static int da9186_regulator_probe(struct platform_device *pdev)
 #endif
 }
 
-static int da9186_regulator_remove(struct platform_device *pdev)
+static void da9186_regulator_remove(struct platform_device *pdev)
 {
 	struct morro_device *morro_dev = platform_get_drvdata(pdev);
 
 	if (IS_ERR_OR_NULL(morro_dev))
-		return 0;
+		return;
 
 	pmic_mfd_mbox_release(&morro_dev->mbox);
 #ifdef CONFIG_DEBUG_FS
 	debugfs_remove_recursive(morro_dev->debugfs_root);
 #endif
-	return 0;
 }
 
 static const struct platform_device_id da9186_regulator_id[] = {

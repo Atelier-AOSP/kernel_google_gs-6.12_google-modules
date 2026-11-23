@@ -913,10 +913,12 @@ static PVRSRV_ERROR AllocHandle(PVRSRV_HANDLE_BASE *psBase,
 	PVR_ASSERT(psBase != NULL && psBase->psHashTab != NULL);
 	PVR_ASSERT(gpsHandleFuncs);
 
-	if (!TEST_FLAG(eFlag, PVRSRV_HANDLE_ALLOC_FLAG_MULTI))
+	/* Handle must not already exist */
+	if ((!TEST_FLAG(eFlag, PVRSRV_HANDLE_ALLOC_FLAG_MULTI)) &&
+	    (FindHandle(psBase, pvData, eType, hParent) != NULL))
 	{
-		/* Handle must not already exist */
-		PVR_ASSERT(FindHandle(psBase, pvData, eType, hParent) == NULL);
+		PVR_DPF((PVR_DBG_ERROR, "%s: Handle already exists", __func__));
+		return PVRSRV_ERROR_UNABLE_TO_ADD_HANDLE;
 	}
 
 	psNewHandleData = OSAllocZMem(sizeof(*psNewHandleData));

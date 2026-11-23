@@ -50,10 +50,10 @@
 #endif	/* BCMDBG_msg */
 
 struct arp_table {
-	parp_entry_t	*parp_table[BCM_PARP_TABLE_SIZE];   /* proxyarp entries in cache table */
-	parp_entry_t	*parp_candidate_list;		    /* proxyarp entries in candidate list */
-	uint8 parp_smac[ETHER_ADDR_LEN];		    /* L2 SMAC from DHCP Req */
-	uint8 parp_cmac[ETHER_ADDR_LEN];		    /* Bootp Client MAC from DHCP Req */
+	parp_entry_t *parp_table[BCM_PARP_TABLE_SIZE];	/* proxyarp entries in cache table */
+	parp_entry_t *parp_candidate_list;		/* proxyarp entries in candidate list */
+	uint8 parp_smac[ETHER_ADDR_LEN];		/* L2 SMAC from DHCP Req */
+	uint8 parp_cmac[ETHER_ADDR_LEN];		/* Bootp Client MAC from DHCP Req */
 };
 #ifdef DHD_DUMP_ARPTABLE
 void bcm_l2_parp_dump_table(arp_table_t* arp_tbl);

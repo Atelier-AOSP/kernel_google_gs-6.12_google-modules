@@ -11,7 +11,8 @@
 #include "dw-mipi-cdphy.h"
 #include "dw-mipi-cdphy-g301-clock-calc.h"
 
-#define PHY_STATUS_TIMEOUT_US	10000
+/* TODO: b/393661981 - Re-visit to decrease timeout */
+#define PHY_STATUS_TIMEOUT_US 30000
 
 /* dwc_mipi_cdphy_tx_4l3t_ns */
 #define PPI_STARTUP_RW_COMMON_DPHY_0			(0x0c00 * 4)
@@ -589,6 +590,8 @@
 #define CORE_DIG_DLANE_0_RW_HS_TX_11			(0x310b * 4)
 #define CORE_DIG_DLANE_0_RW_HS_TX_12			(0x310c * 4)
 #define CORE_DIG_DLANE_0_RW_HS_TX_13			(0x310d * 4)
+#define CORE_DIG_DLANE_0_RW_HS_TX_SHADOW_10		(0x311a * 4)
+#define CORE_DIG_DLANE_0_RW_HS_TX_SHADOW_11		(0x311b * 4)
 
 /* lane 1 */
 #define CORE_DIG_DLANE_1_RW_CFG_0			(0x3200 * 4)
@@ -629,6 +632,8 @@
 #define CORE_DIG_DLANE_1_RW_HS_TX_11			(0x330b * 4)
 #define CORE_DIG_DLANE_1_RW_HS_TX_12			(0x330c * 4)
 #define CORE_DIG_DLANE_1_RW_HS_TX_13			(0x330d * 4)
+#define CORE_DIG_DLANE_1_RW_HS_TX_SHADOW_10		(0x331a * 4)
+#define CORE_DIG_DLANE_1_RW_HS_TX_SHADOW_11		(0x331b * 4)
 
 /* lane 2 */
 #define CORE_DIG_DLANE_2_RW_CFG_0			(0x3400 * 4)
@@ -668,6 +673,8 @@
 #define CORE_DIG_DLANE_2_RW_HS_TX_10			(0x350a * 4)
 #define CORE_DIG_DLANE_2_RW_HS_TX_11			(0x350b * 4)
 #define CORE_DIG_DLANE_2_RW_HS_TX_12			(0x350c * 4)
+#define CORE_DIG_DLANE_2_RW_HS_TX_SHADOW_10		(0x351a * 4)
+#define CORE_DIG_DLANE_2_RW_HS_TX_SHADOW_11		(0x351b * 4)
 
 /* lane 3 */
 #define CORE_DIG_DLANE_3_RW_CFG_0			(0x3600 * 4)
@@ -708,6 +715,8 @@
 #define CORE_DIG_DLANE_3_RW_HS_TX_11			(0x370b * 4)
 #define CORE_DIG_DLANE_3_RW_HS_TX_12			(0x370c * 4)
 #define CORE_DIG_DLANE_3_RW_HS_TX_13			(0x370d * 4)
+#define CORE_DIG_DLANE_3_RW_HS_TX_SHADOW_10		(0x371a * 4)
+#define CORE_DIG_DLANE_3_RW_HS_TX_SHADOW_11		(0x371b * 4)
 
 #define CORE_DIG_DLANE_CLK_RW_CFG_0			(0x3800 * 4)
 #define CORE_DIG_DLANE_CLK_RW_CFG_1			(0x3801 * 4)
@@ -747,6 +756,8 @@
 #define CORE_DIG_DLANE_CLK_RW_HS_TX_10			(0x390a * 4)
 #define CORE_DIG_DLANE_CLK_RW_HS_TX_12			(0x390c * 4)
 #define CORE_DIG_DLANE_CLK_RW_HS_TX_13			(0x390d * 4)
+#define CORE_DIG_DLANE_CLK_RW_HS_TX_SHADOW_10		(0x391a * 4)
+#define CORE_DIG_DLANE_CLK_RW_HS_TX_SHADOW_11		(0x391b * 4)
 
 /* trio0 */
 #define PPI_RW_CPHY_TRIO0_LBERT_0			(0x4000 * 4)
@@ -937,6 +948,7 @@ struct dw_mipi_cdphy_g301 {
 
 	struct dw_cdphy_hs_configuration hs_config;
 	struct list_head preset_list;
+	bool is_primary;
 
 	/* dwc_mipi_cdphy_tx_4l3t_ns */
 	struct regmap_field	*field_ppi_startup_rw_common_dphy_2_rcal_addr;
@@ -961,6 +973,7 @@ struct dw_mipi_cdphy_g301 {
 	struct regmap_field	*field_ppi_rw_pll_startup_cfg_0_pll_rst_time;
 	struct regmap_field	*field_ppi_rw_pll_startup_cfg_1_pll_gear_shift_time;
 	struct regmap_field	*field_ppi_rw_pll_startup_cfg_2_pll_lock_det_time;
+	struct regmap_field	*field_ppi_rw_pll_startup_cfg_4_ssc_reset_n;
 	struct regmap_field	*field_ppi_rw_tx_hibernate_cfg_0_hibernate_exit;
 	struct regmap_field	*field_core_dig_ioctrl_rw_afe_lane0_ctrl_2_2_oa_lane0_sel_lane_cfg;
 	struct regmap_field	*field_core_dig_ioctrl_rw_afe_lane0_ctrl_2_3_oa_lane0_hstx_sel_phase0;
@@ -1085,6 +1098,10 @@ struct dw_mipi_cdphy_g301 {
 	struct regmap_field	*field_core_dig_ioctrl_rw_afe_cb_ctrl_2_6_oa_cb_hstxlb_dco_tune_clkdig_en_ovr_en;
 	struct regmap_field	*field_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_cb_hstxlb_dco_en_ovr_val;
 	struct regmap_field	*field_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_cb_hstxlb_dco_tune_clkdig_en_ovr_val;
+	struct regmap_field	*field_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setr_ovr_en;
+	struct regmap_field	*field_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setr_calib_ovr_en;
+	struct regmap_field	*field_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setra_ovr_en;
+	struct regmap_field	*field_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setrb_ovr_en;
 	struct regmap_field	*field_core_dig_anactrl_rw_common_anactrl_0_cb_lp_dco_en_dly;
 	struct regmap_field	*field_core_dig_anactrl_rw_common_anactrl_2_global_ulps_ovr_en;
 	struct regmap_field	*field_core_dig_anactrl_rw_common_anactrl_2_global_ulps_ovr_val;
@@ -1105,6 +1122,7 @@ struct dw_mipi_cdphy_g301 {
 	struct regmap_field	*field_core_dig_dlane_0_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg;
 	struct regmap_field	*field_core_dig_dlane_0_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg;
 	struct regmap_field	*field_core_dig_dlane_0_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg;
+	struct regmap_field	*field_core_dig_dlane_0_rw_hs_tx_sh_11_sh_sel_reg;
 	struct regmap_field	*field_core_dig_dlane_1_rw_lp_0_lp_0_ttago_reg;
 	struct regmap_field	*field_core_dig_dlane_1_rw_lp_0_lp_0_itminrx_reg;
 	struct regmap_field	*field_core_dig_dlane_1_rw_lp_2_lp_2_filter_input_sampling_reg;
@@ -1117,6 +1135,7 @@ struct dw_mipi_cdphy_g301 {
 	struct regmap_field	*field_core_dig_dlane_1_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg;
 	struct regmap_field	*field_core_dig_dlane_1_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg;
 	struct regmap_field	*field_core_dig_dlane_1_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg;
+	struct regmap_field	*field_core_dig_dlane_1_rw_hs_tx_sh_11_sh_sel_reg;
 	struct regmap_field	*field_core_dig_dlane_2_rw_lp_0_lp_0_ttago_reg;
 	struct regmap_field	*field_core_dig_dlane_2_rw_lp_0_lp_0_itminrx_reg;
 	struct regmap_field	*field_core_dig_dlane_2_rw_lp_2_lp_2_filter_input_sampling_reg;
@@ -1129,6 +1148,7 @@ struct dw_mipi_cdphy_g301 {
 	struct regmap_field	*field_core_dig_dlane_2_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg;
 	struct regmap_field	*field_core_dig_dlane_2_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg;
 	struct regmap_field	*field_core_dig_dlane_2_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg;
+	struct regmap_field	*field_core_dig_dlane_2_rw_hs_tx_sh_11_sh_sel_reg;
 	struct regmap_field	*field_core_dig_dlane_3_rw_lp_0_lp_0_ttago_reg;
 	struct regmap_field	*field_core_dig_dlane_3_rw_lp_0_lp_0_itminrx_reg;
 	struct regmap_field	*field_core_dig_dlane_3_rw_lp_2_lp_2_filter_input_sampling_reg;
@@ -1141,6 +1161,7 @@ struct dw_mipi_cdphy_g301 {
 	struct regmap_field	*field_core_dig_dlane_3_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg;
 	struct regmap_field	*field_core_dig_dlane_3_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg;
 	struct regmap_field	*field_core_dig_dlane_3_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg;
+	struct regmap_field	*field_core_dig_dlane_3_rw_hs_tx_sh_11_sh_sel_reg;
 	struct regmap_field	*field_core_dig_dlane_clk_rw_hs_tx_0_hs_tx_0_thstrail_reg;
 	struct regmap_field	*field_core_dig_dlane_clk_rw_hs_tx_1_hs_tx_1_thszero_reg;
 	struct regmap_field	*field_core_dig_dlane_clk_rw_hs_tx_2_hs_tx_2_tclkpre_reg;
@@ -1152,6 +1173,7 @@ struct dw_mipi_cdphy_g301 {
 	struct regmap_field	*field_core_dig_dlane_clk_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg;
 	struct regmap_field	*field_core_dig_dlane_clk_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg;
 	struct regmap_field	*field_core_dig_dlane_clk_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg;
+	struct regmap_field	*field_core_dig_dlane_clk_rw_hs_tx_sh_11_sh_sel_reg;
 	struct regmap_field	*field_core_dig_clane_0_rw_lp_0_lp_0_ttago_reg;
 	struct regmap_field	*field_core_dig_clane_0_rw_lp_0_lp_0_itminrx_reg;
 	struct regmap_field	*field_core_dig_clane_0_rw_hs_tx_0_hs_tx_0_thsexit_dco_reg;
@@ -1335,7 +1357,7 @@ struct dw_mipi_cdphy_g301 {
 	struct regmap_field	*field_phy_extended_ctr1_rw_cont_en;
 	struct regmap_field	*field_phy_extended_ctr1_rw_cont_en_ov_en;
 
-	struct regmap_field	*field_phy_common9_reg;
+	struct regmap_field	*field_phy_common9_reg_lp_dco_clk_dyn_gating;
 	struct regmap_field	*field_phy_startup_cfg3_reg;
 };
 
@@ -1363,6 +1385,7 @@ struct dw_mipi_phy_g301_variant {
 	const struct reg_field	cfg_ppi_rw_pll_startup_cfg_0_pll_rst_time;
 	const struct reg_field	cfg_ppi_rw_pll_startup_cfg_1_pll_gear_shift_time;
 	const struct reg_field	cfg_ppi_rw_pll_startup_cfg_2_pll_lock_det_time;
+	const struct reg_field	cfg_ppi_rw_pll_startup_cfg_4_ssc_reset_n;
 	const struct reg_field	cfg_ppi_rw_tx_hibernate_cfg_0_hibernate_exit;
 	const struct reg_field	cfg_core_dig_ioctrl_rw_afe_lane0_ctrl_2_2_oa_lane0_sel_lane_cfg;
 	const struct reg_field	cfg_core_dig_ioctrl_rw_afe_lane0_ctrl_2_3_oa_lane0_hstx_sel_phase0;
@@ -1497,6 +1520,10 @@ struct dw_mipi_phy_g301_variant {
 	const struct reg_field	cfg_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_cb_hstxlb_dco_en_ovr_val;
 	const struct reg_field
 		cfg_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_cb_hstxlb_dco_tune_clkdig_en_ovr_val;
+	const struct reg_field	cfg_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setr_ovr_en;
+	const struct reg_field	cfg_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setr_calib_ovr_en;
+	const struct reg_field	cfg_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setra_ovr_en;
+	const struct reg_field	cfg_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setrb_ovr_en;
 	const struct reg_field	cfg_core_dig_anactrl_rw_common_anactrl_0_cb_lp_dco_en_dly;
 	const struct reg_field	cfg_core_dig_anactrl_rw_common_anactrl_2_global_ulps_ovr_en;
 	const struct reg_field	cfg_core_dig_anactrl_rw_common_anactrl_2_global_ulps_ovr_val;
@@ -1517,6 +1544,7 @@ struct dw_mipi_phy_g301_variant {
 	const struct reg_field	cfg_core_dig_dlane_0_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg;
 	const struct reg_field	cfg_core_dig_dlane_0_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg;
 	const struct reg_field	cfg_core_dig_dlane_0_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg;
+	const struct reg_field	cfg_core_dig_dlane_0_rw_hs_tx_sh_11_sh_sel_reg;
 	const struct reg_field	cfg_core_dig_dlane_1_rw_lp_0_lp_0_ttago_reg;
 	const struct reg_field	cfg_core_dig_dlane_1_rw_lp_0_lp_0_itminrx_reg;
 	const struct reg_field	cfg_core_dig_dlane_1_rw_lp_2_lp_2_filter_input_sampling_reg;
@@ -1529,6 +1557,7 @@ struct dw_mipi_phy_g301_variant {
 	const struct reg_field	cfg_core_dig_dlane_1_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg;
 	const struct reg_field	cfg_core_dig_dlane_1_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg;
 	const struct reg_field	cfg_core_dig_dlane_1_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg;
+	const struct reg_field	cfg_core_dig_dlane_1_rw_hs_tx_sh_11_sh_sel_reg;
 	const struct reg_field	cfg_core_dig_dlane_2_rw_lp_0_lp_0_ttago_reg;
 	const struct reg_field	cfg_core_dig_dlane_2_rw_lp_0_lp_0_itminrx_reg;
 	const struct reg_field	cfg_core_dig_dlane_2_rw_lp_2_lp_2_filter_input_sampling_reg;
@@ -1541,6 +1570,7 @@ struct dw_mipi_phy_g301_variant {
 	const struct reg_field	cfg_core_dig_dlane_2_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg;
 	const struct reg_field	cfg_core_dig_dlane_2_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg;
 	const struct reg_field	cfg_core_dig_dlane_2_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg;
+	const struct reg_field	cfg_core_dig_dlane_2_rw_hs_tx_sh_11_sh_sel_reg;
 	const struct reg_field	cfg_core_dig_dlane_3_rw_lp_0_lp_0_ttago_reg;
 	const struct reg_field	cfg_core_dig_dlane_3_rw_lp_0_lp_0_itminrx_reg;
 	const struct reg_field	cfg_core_dig_dlane_3_rw_lp_2_lp_2_filter_input_sampling_reg;
@@ -1553,6 +1583,7 @@ struct dw_mipi_phy_g301_variant {
 	const struct reg_field	cfg_core_dig_dlane_3_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg;
 	const struct reg_field	cfg_core_dig_dlane_3_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg;
 	const struct reg_field	cfg_core_dig_dlane_3_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg;
+	const struct reg_field	cfg_core_dig_dlane_3_rw_hs_tx_sh_11_sh_sel_reg;
 	const struct reg_field	cfg_core_dig_dlane_clk_rw_hs_tx_0_hs_tx_0_thstrail_reg;
 	const struct reg_field	cfg_core_dig_dlane_clk_rw_hs_tx_1_hs_tx_1_thszero_reg;
 	const struct reg_field	cfg_core_dig_dlane_clk_rw_hs_tx_2_hs_tx_2_tclkpre_reg;
@@ -1564,6 +1595,7 @@ struct dw_mipi_phy_g301_variant {
 	const struct reg_field	cfg_core_dig_dlane_clk_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg;
 	const struct reg_field	cfg_core_dig_dlane_clk_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg;
 	const struct reg_field	cfg_core_dig_dlane_clk_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg;
+	const struct reg_field	cfg_core_dig_dlane_clk_rw_hs_tx_sh_11_sh_sel_reg;
 	const struct reg_field	cfg_core_dig_clane_0_rw_lp_0_lp_0_ttago_reg;
 	const struct reg_field	cfg_core_dig_clane_0_rw_lp_0_lp_0_itminrx_reg;
 	const struct reg_field	cfg_core_dig_clane_0_rw_hs_tx_0_hs_tx_0_thsexit_dco_reg;
@@ -1753,7 +1785,7 @@ struct dw_mipi_phy_g301_variant {
 	const struct reg_field	cfg_phy_extended_ctr1_rw_cont_en;
 	const struct reg_field	cfg_phy_extended_ctr1_rw_cont_en_ov_en;
 
-	const struct reg_field	cfg_phy_common9_reg;
+	const struct reg_field	cfg_phy_common9_reg_lp_dco_clk_dyn_gating;
 	const struct reg_field	cfg_phy_startup_cfg3_reg;
 };
 

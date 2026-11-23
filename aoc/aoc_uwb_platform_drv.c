@@ -118,9 +118,8 @@ static int aoc_uwb_pdrv_probe(struct platform_device *pdev)
 	return uwb_pdrv_pin_init(pdev);
 }
 
-static int aoc_uwb_pdrv_remove(struct platform_device *pdev)
+static void aoc_uwb_pdrv_remove(struct platform_device *pdev)
 {
-	return 0;
 }
 
 static const struct of_device_id aoc_match[] = {

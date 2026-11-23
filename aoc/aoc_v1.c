@@ -28,6 +28,11 @@ extern struct platform_device *aoc_platform_device;
 extern struct resource *aoc_sram_resource;
 extern struct mutex aoc_service_lock;
 
+const char * const control_channels[] = {
+	"control",
+};
+const int control_channels_size = ARRAY_SIZE(control_channels);
+
 struct aoc_v1_prvdata {
 	u32 aoc_pcu_base;
 	u32 aoc_gpio_base;
@@ -159,16 +164,13 @@ int aoc_watchdog_restart(struct aoc_prvdata *prvdata,
 		dev_info(prvdata->dev, "waiting for aoc reset to finish\n");
 		if (wait_event_timeout(prvdata->aoc_reset_wait_queue, prvdata->aoc_reset_done,
 				       aoc_reset_timeout_ms) == 0) {
+			dev_err(prvdata->dev, "AoC reset timed out\n");
 			ret = exynos_pmu_read(custom_out_offset, &custom_out);
 			dev_err(prvdata->dev,
 				"AoC reset timeout custom_out=%d, ret=%d\n", custom_out, ret);
 			ret = exynos_pmu_read(custom_in_offset, &custom_in);
 			dev_err(prvdata->dev,
 				"AoC reset timeout custom_in=%d, ret=%d\n", custom_in, ret);
-			dev_err(prvdata->dev, "PCU_WATCHDOG_CONTROL = 0x%x\n",
-				readl(pcu + AOC_PCU_WATCHDOG_CONTROL_OFFSET));
-			dev_err(prvdata->dev, "PCU_WATCHDOG_VALUE = 0x%x\n",
-				readl(pcu + AOC_PCU_WATCHDOG_VALUE_OFFSET));
 		} else {
 			aoc_reset_successful = true;
 			break;
@@ -192,6 +194,10 @@ int aoc_watchdog_restart(struct aoc_prvdata *prvdata,
 
 	/* Restore IOMMU settings by briefly setting AoC to runtime active. Since IOMMU is a
 	 * supplier to AoC, it will be set to runtime active as a side effect. */
+
+	//TODO: b/469263456 Find way to check if IOMMU control is ready
+	msleep(20);
+
 	rc = pm_runtime_set_active(prvdata->dev);
 	if (rc < 0) {
 		dev_err(prvdata->dev, "iommu restore failed: pm_runtime_resume rc = %d\n", rc);
@@ -429,6 +435,12 @@ u32 aoc_chip_get_type(void)
 	return gs_chipid_get_type();
 }
 
+size_t platform_specific_get_dvfs_freq(char *buff)
+{
+	return -ENODATA;
+}
+EXPORT_SYMBOL_GPL(platform_specific_get_dvfs_freq);
+
 u32 aoc_chip_get_product_id(void)
 {
 	return gs_chipid_get_product_id();
@@ -449,5 +461,18 @@ void platform_specific_aoc_core_suspend(void)
 }
 
 void platform_specific_aoc_core_resume(void)
+{
+}
+
+u64 aoc_get_timer_ticks(void)
+{
+	return arch_timer_read_counter();
+}
+
+void aoc_print_core_boot_breadcrumbs(struct aoc_prvdata *prvdata)
+{
+}
+
+void aoc_init_core_boot_breadcrumbs(struct aoc_prvdata *prvdata)
 {
 }

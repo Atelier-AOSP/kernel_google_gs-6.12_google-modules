@@ -1,7 +1,7 @@
 /*
  * DHD debugability: Header file for the Status Information Logging
  *
- * Copyright (C) 2025, Broadcom.
+ * Copyright (C) 2026, Broadcom.
  *
  *      Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -65,7 +65,7 @@ typedef struct stat_bdmask_req {
 	uint32 req_buf_len;	/* length of the request buffer */
 } stat_bdmask_req_t;
 
-typedef void * dhd_statlog_handle_t; /* opaque handle to status log */
+typedef void *dhd_statlog_handle_t; /* opaque handle to status log */
 
 /* enums */
 #define ST(x)			STATE_## x

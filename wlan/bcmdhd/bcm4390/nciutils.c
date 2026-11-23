@@ -510,6 +510,15 @@ BCMATTACHFN(nci_init)(si_t *sih, chipcregs_t *cc, uint bustype)
 
 		break;
 
+#ifdef BCMSDIO
+	case SPI_BUS:
+	case SDIO_BUS:
+		nci->erom2base = (uint32 *)((uintptr)nci->cc_erom2base);
+		nci->oobr_base = (uint32 *)((uintptr)GET_OOBR_BASE(nci->cc_erom2base));
+		nci->erom1base = (uint32 *)((uintptr)GET_EROM1_BASE(nci->cc_erom2base));
+		break;
+#endif  /* BCMSDIO */
+
 	default:
 		err_at = 2u;
 		ASSERT(0u);
@@ -645,7 +654,7 @@ BCMATTACHFN(nci_save_iface1_reg)(si_t *sih, interface_desc_t *desc, uint32 iface
 		if (desc->num_addr_reg) {
 			NCI_ERROR(("nci_save_iface1_reg: Master NODEPTR Addresses is not zero "
 				"i.e. %d\n", GET_NUM_ADDR_REG(iface_desc_1)));
-			ASSERT(0u);
+			return;
 		}
 	} else {
 		/* SLAVE 'NumAddressRegion' one less than actual slave ports, so increment by 1
@@ -1008,6 +1017,13 @@ BCMATTACHFN(nci_find_numcores)(si_t *sih)
 		oobr_reg = (volatile hndoobr_reg_t *)sii->curmap;
 		break;
 
+#ifdef BCMSDIO
+	case SPI_BUS:
+	case SDIO_BUS:
+		oobr_reg = (volatile hndoobr_reg_t *)nci->oobr_base;
+		break;
+#endif  /* BCMSDIO */
+
 	default:
 		NCI_ERROR(("nci_find_numcores: Invalid bustype %d\n", BUSTYPE(sih->bustype)));
 		ASSERT(0);
@@ -1210,7 +1226,6 @@ end:
 	if (err) {
 		NCI_ERROR(("nci_scan: Failed with Code %d\n", err));
 		nci->num_cores = 0;
-		ASSERT(0u);
 	}
 
 	return nci->num_cores;
@@ -1940,6 +1955,13 @@ BCMPOSTTRAPFN(_nci_setcoreidx)(const si_t *sih, uint coreidx, uint wrapper_idx)
 	case PCI_BUS:
 		_nci_setcoreidx_pcie_bus(sih, &regs, curmap, curwrap);
 		break;
+#ifdef BCMSDIO
+	case SPI_BUS:
+	case SDIO_BUS:
+		sii->curmap = regs = (void *)((uintptr)curmap);
+		sii->curwrap = (void *)((uintptr)curwrap);
+		break;
+#endif  /* BCMSDIO */
 
 	default:
 		NCI_ERROR(("_nci_stcoreidx Invalid bustype %d\n", BUSTYPE(sih->bustype)));
@@ -2154,6 +2176,12 @@ BCMPOSTTRAPFN(nci_core_reset_iface)(const si_t *sih, uint32 bits, uint32 resetbi
 		OSL_PCI_WRITE_CONFIG(nci->osh, PCI_BAR0_WIN, PCI_ACCESS_SIZE,
 			GET_OOBR_BASE(nci->cc_erom2base));
 		break;
+
+#ifdef BCMSDIO
+	case SPI_BUS:
+	case SDIO_BUS:
+		break;
+#endif  /* BCMSDIO */
 
 	default:
 		NCI_ERROR(("nci_core_reset_iface Invalid bustype %d\n", BUSTYPE(sih->bustype)));
@@ -2619,6 +2647,13 @@ BCMPOSTTRAPFN(nci_core_cflags)(const si_t *sih, uint32 mask, uint32 val)
 		io = (volatile dmp_regs_t *)sii->curmap;
 		break;
 
+#ifdef BCMSDIO
+	case SPI_BUS:
+	case SDIO_BUS:
+		io = (volatile dmp_regs_t *)nci->oobr_base;
+		break;
+#endif  /* BCMSDIO */
+
 	default:
 		NCI_ERROR(("nci_core_cflags Invalid bustype %d\n", BUSTYPE(sih->bustype)));
 		goto end;
@@ -2700,6 +2735,13 @@ BCMPOSTTRAPFN(nci_core_cflags_wo)(const si_t *sih, uint32 mask, uint32 val)
 			io = (volatile dmp_regs_t *)sii->curmap;
 			break;
 
+#ifdef BCMSDIO
+		case SPI_BUS:
+		case SDIO_BUS:
+			io = (volatile dmp_regs_t *)nci->oobr_base;
+			break;
+#endif  /* BCMSDIO */
+
 		default:
 			NCI_ERROR(("nci_core_cflags_wo Invalid bustype %d\n",
 				BUSTYPE(sih->bustype)));
@@ -2777,6 +2819,13 @@ nci_core_sflags(const si_t *sih, uint32 mask, uint32 val)
 			GET_OOBR_BASE(nci->cc_erom2base));
 			io = (volatile dmp_regs_t *)sii->curmap;
 			break;
+
+#ifdef BCMSDIO
+		case SPI_BUS:
+		case SDIO_BUS:
+			io = (volatile dmp_regs_t *)nci->oobr_base;
+			break;
+#endif  /* BCMSDIO */
 
 		default:
 			NCI_ERROR(("nci_core_sflags Invalid bustype %d\n", BUSTYPE(sih->bustype)));

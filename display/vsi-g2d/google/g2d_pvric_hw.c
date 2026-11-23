@@ -4,7 +4,7 @@
  */
 #include "g2d_pvric_hw.h"
 #include "g2d_sc_hw.h"
-#include "vs_g2d_reg_sc.h"
+#include "g2d_registers.h"
 
 static void pvric_hw_enable_decoder(struct sc_hw *hw, u8 id, bool enable)
 {

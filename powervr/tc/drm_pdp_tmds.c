@@ -50,6 +50,7 @@
 
 #include <drm/drm_encoder.h>
 #include <drm/drm_modeset_helper_vtables.h>
+#include <drm/drm_print.h>
 
 #include "kernel_compatibility.h"
 

@@ -131,7 +131,7 @@ QDF_STATUS qdf_tracker_track(struct qdf_tracker *tracker, void *ptr,
 		return QDF_STATUS_E_NOMEM;
 
 	node->domain = qdf_debug_domain_get();
-	qdf_str_lcopy(node->func, func, QDF_TRACKER_FUNC_SIZE);
+	qdf_str_scopy(node->func, func, QDF_TRACKER_FUNC_SIZE);
 	node->line = line;
 
 	qdf_spin_lock_bh(&tracker->lock);
@@ -180,7 +180,7 @@ bool qdf_tracker_lookup(struct qdf_tracker *tracker, void *ptr,
 	qdf_spin_lock_bh(&tracker->lock);
 	node = qdf_ptr_hash_get(tracker->ht, ptr, node, entry);
 	if (node) {
-		qdf_str_lcopy((char *)out_func, node->func,
+		qdf_str_scopy((char *)out_func, node->func,
 			      QDF_TRACKER_FUNC_SIZE);
 		*out_line = node->line;
 	}

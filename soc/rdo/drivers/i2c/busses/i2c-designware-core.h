@@ -119,6 +119,7 @@
 
 #define DW_IC_SDA_HOLD_RX_SHIFT			16
 #define DW_IC_SDA_HOLD_RX_MASK			GENMASK(23, 16)
+#define DW_IC_SDA_HOLD_TX_MASK			GENMASK(15, 0)
 
 #define DW_IC_ERR_TX_ABRT			0x1
 
@@ -318,6 +319,9 @@ struct dw_i2c_dev {
 	struct pinctrl_state	*cli_state;
 	enum i2c_dw_xfer_op_mode operation_mode;
 	u32			hybrid_threshold;
+	struct regulator	*io_vreg_dev;
+	bool			aoss_ssr_started;
+	struct dentry		*debugfs;
 };
 
 #define ACCESS_INTR_MASK			BIT(0)
@@ -374,7 +378,7 @@ static inline void __i2c_dw_disable_nowait(struct dw_i2c_dev *dev)
 	dev->status &= ~STATUS_ACTIVE;
 }
 
-void __i2c_dw_disable(struct dw_i2c_dev *dev);
+int __i2c_dw_disable(struct dw_i2c_dev *dev);
 
 extern void i2c_dw_configure_master(struct dw_i2c_dev *dev);
 extern int i2c_dw_probe_master(struct dw_i2c_dev *dev);

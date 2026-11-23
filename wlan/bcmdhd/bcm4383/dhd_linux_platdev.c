@@ -502,10 +502,19 @@ static int wifi_platdev_match(struct device *dev, void *data)
 	char *name;
 	const struct platform_device *pdev;
 
+	if (!dev || !data) {
+		return FALSE;
+	}
+
 	GCC_DIAGNOSTIC_PUSH_SUPPRESS_CAST();
 	name = (char *)data;
 	pdev = to_platform_device(dev);
 	GCC_DIAGNOSTIC_POP();
+
+	/* pdev->name must be a valid non-NULL string. */
+	if (!pdev->name) {
+		return FALSE;
+	}
 
 	if (strcmp(pdev->name, name) == 0) {
 		DHD_PRINT(("found wifi platform device %s\n", name));
@@ -602,15 +611,19 @@ void wifi_ctrlfunc_unregister_drv(void)
 {
 
 #ifdef CONFIG_DTS
-	DHD_PRINT(("unregister wifi platform drivers\n"));
+	DHD_PRINT(("unregister wifi platform drivers(DTS)\n"));
 	platform_driver_unregister(&wifi_platform_dev_driver);
 #else
-	struct device *dev1, *dev2;
-	dev1 = bus_find_device(&platform_bus_type, NULL, WIFI_PLAT_NAME, wifi_platdev_match);
-	dev2 = bus_find_device(&platform_bus_type, NULL, WIFI_PLAT_NAME2, wifi_platdev_match);
-	if (!dts_enabled)
+	struct device *dev1 = NULL, *dev2 = NULL;
+
+	if (!dts_enabled) {
+		dev1 = bus_find_device(&platform_bus_type, NULL,
+			WIFI_PLAT_NAME, wifi_platdev_match);
+		dev2 = bus_find_device(&platform_bus_type, NULL,
+			WIFI_PLAT_NAME2, wifi_platdev_match);
 		if (dev1 == NULL && dev2 == NULL)
 			return;
+	}
 
 	DHD_PRINT(("unregister wifi platform drivers\n"));
 

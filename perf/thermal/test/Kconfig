@@ -57,3 +57,12 @@ config GOOGLE_POWERCAP_KUNIT_TEST
 	help
 		This enables the test suite for testing the powercap framework helper,
 		CPU client helper, devfreq client helper and powercap tree builder modules.
+
+config GOOGLE_UCLAMP_CDEV_HELPER_KUNIT_TEST
+	tristate "Google LLC uclamp cdev helper tests" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+		This enables the test suite that will test all the helper functions
+		used by uclamp cooling device(cdev) driver. This tests the probe
+		function, cooling device registration, driver exit cleanup.

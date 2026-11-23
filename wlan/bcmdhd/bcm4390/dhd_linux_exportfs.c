@@ -29,6 +29,7 @@
 #include <dhd_dbg.h>
 #include <dhd_linux_priv.h>
 #include <dhd_proto.h>
+#include <bcmstdlib_s.h>
 #if defined(WL_BAM)
 #include <wl_bam.h>
 #endif	/* WL_BAM */
@@ -42,6 +43,9 @@
 #ifdef DHD_SSSR_DUMP
 #include <dhd_pcie_sssr_dump.h>
 #endif /* DHD_SSSR_DUMP */
+#ifdef DHD_DMPD
+#include <dhd_dmpd.h>
+#endif /* DHD_DMPD */
 
 #ifdef SHOW_LOGTRACE
 extern dhd_pub_t *g_dhd_pub;
@@ -2805,7 +2809,7 @@ static struct dhd_attr dhd_attr_wl_dbg_level =
 __ATTR(wl_dbg_level, 0660, show_wl_debug_level, set_wl_debug_level);
 #endif /* WL_CFG80211 */
 
-#if defined(DHD_FILE_DUMP_EVENT) && defined(DHD_FW_COREDUMP)
+#if (defined(DHD_FILE_DUMP_EVENT) || defined(DHD_DMPD)) && defined(DHD_FW_COREDUMP)
 #define DUMP_TRIGGER	1
 
 static ssize_t
@@ -2863,7 +2867,7 @@ exit:
 
 static struct dhd_attr dhd_attr_dump_in_progress =
 __ATTR(dump_in_progress, 0660, show_dhd_dump_in_progress, set_dhd_dump_in_progress);
-#endif /* DHD_FILE_DUMP_EVENT && DHD_FW_COREDUMP */
+#endif /* (DHD_FILE_DUMP_EVENT || DHD_DMPD) && defined(DHD_FW_COREDUMP) */
 
 #ifdef DHD_DUMP_START_COMMAND
 static ssize_t
@@ -2934,6 +2938,139 @@ set_arp_print(struct dhd_info *dev, const char *buf, size_t count)
 
 static struct dhd_attr dhd_attr_arp_print =
 __ATTR(arp_print, 0660, show_arp_print, set_arp_print);
+
+#ifdef DHD_DMPD
+static ssize_t
+dmpd_dbgring_status_show(struct dhd_info *dev, char *buf)
+{
+	return dmpd_get_dbgring_status_to_str(buf, PAGE_SIZE);
+}
+
+static struct dhd_attr dhd_attr_dmpd_dbgring_status =
+__ATTR(dmpd_dbgring_status, 0660,
+	dmpd_dbgring_status_show, NULL);
+
+static ssize_t
+dmpd_log_max_size_show(struct dhd_info *dev, char *buf)
+{
+	int value = dmpd_get_max_log_size();
+	return sprintf(buf, "%u\n", value);
+}
+
+static ssize_t
+dmpd_log_max_size_store(struct dhd_info *dev, const char *buf, size_t count)
+{
+	u32 value;
+	int ret;
+
+	ret = kstrtou32(buf, 10, &value);
+	if (ret) {
+		DHD_ERROR(("%s: conv failed value:%u\n", __func__, value));
+		return ret;
+	}
+
+	ret = dmpd_set_max_log_size(value);
+	if (ret) {
+		return ret;
+	}
+
+	return count;
+}
+
+static struct dhd_attr dhd_attr_dmpd_log_size =
+__ATTR(max_chipset_log_size, 0660,
+	dmpd_log_max_size_show, dmpd_log_max_size_store);
+
+static ssize_t
+dmpd_log_level_show(struct dhd_info *dev, char *buf)
+{
+	int value = dmpd_get_log_level();
+	return sprintf(buf, "%u\n", value);
+}
+
+static ssize_t
+dmpd_log_level_store(struct dhd_info *dev, const char *buf, size_t count)
+{
+	u32 value;
+	int ret;
+
+	ret = kstrtou32(buf, 10, &value);
+	if (ret) {
+		DHD_ERROR(("%s: conv failed value:%u\n", __func__, value));
+		return ret;
+	}
+
+	ret = dmpd_set_log_level(value);
+	if (ret) {
+		return ret;
+	}
+
+	return count;
+}
+
+static struct dhd_attr dhd_attr_dmpd_log_level =
+__ATTR(dmpd_log_level, 0660, dmpd_log_level_show, dmpd_log_level_store);
+
+static ssize_t
+dmpd_dbgring_interval_show(struct dhd_info *dev, char *buf)
+{
+	int value = dmpd_get_log_interval();
+	return sprintf(buf, "%u\n", value);
+}
+
+static ssize_t
+dmpd_dbgring_interval_store(struct dhd_info *dev, const char *buf, size_t count)
+{
+	u32 value;
+	int ret;
+
+	ret = kstrtou32(buf, 10, &value);
+	if (ret) {
+		DHD_ERROR(("%s: conv failed value:%u\n", __func__, value));
+		return ret;
+	}
+
+	ret = dmpd_set_log_interval(value);
+	if (ret) {
+		return ret;
+	}
+
+	return count;
+}
+
+static struct dhd_attr dhd_attr_dmpd_dbgring_interval =
+__ATTR(dmpd_dbgring_interval, 0660, dmpd_dbgring_interval_show, dmpd_dbgring_interval_store);
+
+static ssize_t
+dmpd_dbgring_threshold_show(struct dhd_info *dev, char *buf)
+{
+	int value = dmpd_get_log_threshold();
+	return sprintf(buf, "%u\n", value);
+}
+
+static ssize_t
+dmpd_dbgring_threshold_store(struct dhd_info *dev, const char *buf, size_t count)
+{
+	u32 value;
+	int ret;
+
+	ret = kstrtou32(buf, 10, &value);
+	if (ret) {
+		DHD_ERROR(("%s: conv failed value:%u\n", __func__, value));
+		return ret;
+	}
+
+	ret = dmpd_set_log_threshold(value);
+	if (ret) {
+		return ret;
+	}
+
+	return count;
+}
+
+static struct dhd_attr dhd_attr_dmpd_dbgring_threshold =
+__ATTR(dmpd_dbgring_threshold, 0660, dmpd_dbgring_threshold_show, dmpd_dbgring_threshold_store);
+#endif /* DHD_DMPD */
 
 /* Attribute object that gets registered with "wifi" kobject tree */
 static struct attribute *default_file_attrs[] = {
@@ -3033,9 +3170,9 @@ static struct attribute *default_file_attrs[] = {
 #if defined(WL_CFG80211)
 	&dhd_attr_wl_dbg_level.attr,
 #endif /* WL_CFG80211 */
-#if defined(DHD_FILE_DUMP_EVENT) && defined(DHD_FW_COREDUMP)
+#if (defined(DHD_FILE_DUMP_EVENT) || defined(DHD_DMPD)) && defined(DHD_FW_COREDUMP)
 	&dhd_attr_dump_in_progress.attr,
-#endif /* DHD_FILE_DUMP_EVENT && DHD_FW_COREDUMP */
+#endif /* (DHD_FILE_DUMP_EVENT || DHD_DMPD) && DHD_FW_COREDUMP */
 #ifdef DHD_DUMP_START_COMMAND
 	&dhd_attr_dump_start_command.attr,
 #endif /* DHD_DUMP_START_COMMAND */
@@ -3064,6 +3201,13 @@ static struct attribute *default_file_attrs[] = {
 #endif /* PCIE_FULL_DONGLE */
 	&dhd_attr_tcm_test_mode.attr,
 	&dhd_attr_arp_print.attr,
+#ifdef DHD_DMPD
+	&dhd_attr_dmpd_log_level.attr,
+	&dhd_attr_dmpd_log_size.attr,
+	&dhd_attr_dmpd_dbgring_status.attr,
+	&dhd_attr_dmpd_dbgring_interval.attr,
+	&dhd_attr_dmpd_dbgring_threshold.attr,
+#endif /* DHD_DMPD */
 	NULL
 };
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 18, 0))
@@ -4138,7 +4282,7 @@ static struct kobj_attribute hdm_wlan_attr =
 	__ATTR(hdm_wlan_loader, 0660, NULL, hdm_load_module);
 
 void
-dhd_hdm_wlan_sysfs_init()
+dhd_hdm_wlan_sysfs_init(void)
 {
 	DHD_PRINT(("export hdm_wlan_loader\n"));
 	if (sysfs_create_file(kernel_kobj, &hdm_wlan_attr.attr)) {

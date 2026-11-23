@@ -242,12 +242,13 @@ static int iif_sync_file_ioctl_submit_signaler(struct iif_sync_file *sync_file)
 {
 	struct iif_fence *fence = sync_file->fence;
 
-	if (fence->params.signaler_ip != IIF_IP_AP) {
+	if (fence->params.signaler_ip != IIF_IP_AP && !fence->propagate) {
 		iif_err(fence,
 			"Only fences with signaler type AP are allowed to submit a signaler (signaler_ip=%d)\n",
 			fence->params.signaler_ip);
 		return -EPERM;
 	}
+
 	return iif_fence_submit_signaler(fence);
 }
 
@@ -261,7 +262,7 @@ static int iif_sync_file_ioctl_signal(struct iif_sync_file *sync_file,
 	if (copy_from_user(&ibuf, argp, sizeof(ibuf)))
 		return -EFAULT;
 
-	if (fence->params.signaler_ip != IIF_IP_AP) {
+	if (fence->params.signaler_ip != IIF_IP_AP && !fence->propagate) {
 		iif_err(fence,
 			"Only fences with signaler type AP are allowed to signal (signaler_ip=%d)\n",
 			fence->params.signaler_ip);
@@ -353,7 +354,7 @@ static int iif_sync_file_ioctl_signaler_completed(struct iif_sync_file *sync_fil
 {
 	struct iif_fence *fence = sync_file->fence;
 
-	if (fence->params.signaler_ip != IIF_IP_AP) {
+	if (fence->params.signaler_ip != IIF_IP_AP && !fence->propagate) {
 		iif_err(fence,
 			"IIF_FENCE_SIGNALER_COMPLETED ioctl is allowed for AP-signaled fences only (signaler_ip=%d)\n",
 			fence->params.signaler_ip);
@@ -437,6 +438,11 @@ err_put_fd:
 	return ret;
 }
 
+static int iif_sync_file_ioctl_delegate_to_ap(struct iif_sync_file *sync_file)
+{
+	return iif_fence_delegate_to_ap(sync_file->fence);
+}
+
 static long iif_sync_file_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct iif_sync_file *sync_file = file->private_data;
@@ -463,6 +469,8 @@ static long iif_sync_file_ioctl(struct file *file, unsigned int cmd, unsigned lo
 		return iif_sync_file_ioctl_get_information_with_details(sync_file, argp);
 	case IIF_FENCE_CREATE_TRACKER:
 		return iif_sync_file_ioctl_create_tracker(sync_file, argp);
+	case IIF_FENCE_DELEGATE_TO_AP:
+		return iif_sync_file_ioctl_delegate_to_ap(sync_file);
 	default:
 		return -ENOTTY;
 	}

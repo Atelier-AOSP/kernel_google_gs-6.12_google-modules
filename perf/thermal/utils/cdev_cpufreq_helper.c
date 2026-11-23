@@ -7,9 +7,10 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
+#include <linux/cpu.h>
+#include <kunit/static_stub.h>
+
 #include "cdev_cpufreq_helper.h"
-#include "cdev_helper_mock.h"
-#include "thermal_msg_helper.h"
 
 static struct device *__cdev_fetch_cpu_dev(unsigned int cpu)
 {

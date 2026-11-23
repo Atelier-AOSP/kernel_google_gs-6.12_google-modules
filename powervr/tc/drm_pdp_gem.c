@@ -45,6 +45,7 @@
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 5, 0))
 #include <drm/drm_drv.h>
 #include <drm/drm_prime.h>
+#include <drm/drm_print.h>
 #include <linux/platform_device.h>
 #endif
 
@@ -85,13 +86,13 @@ const struct vm_operations_struct pdp_gem_vm_ops = {
 	.close	= drm_gem_vm_close,
 };
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
 static const struct drm_gem_object_funcs pdp_gem_funcs = {
 	.export = pdp_gem_prime_export,
 	.free = pdp_gem_object_free,
 	.vm_ops = &pdp_gem_vm_ops,
 };
-#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0) */
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0) */
 
 struct pdp_gem_private {
 	struct mutex			vram_lock;
@@ -103,6 +104,10 @@ struct pdp_gem_private {
 	PHYS_HEAP			*pvr_phys_heap;
 #endif
 	bool				cma_alloc;
+	struct mutex			*gem_mutex;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0))
+	struct mutex			gem_mutex_inline;
+#endif
 };
 
 static struct pdp_gem_object *
@@ -125,20 +130,58 @@ pdp_gem_private_object_create(struct drm_device *dev,
 	pdp_obj->base.resv = resv;
 #endif
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0))
 	pdp_obj->base.funcs = &pdp_gem_funcs;
-#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0) */
+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0) */
 
 	drm_gem_private_object_init(dev, &pdp_obj->base, size);
 
 	return pdp_obj;
 }
 
+static void pdp_gem_object_free_priv(struct pdp_gem_private *gem_priv,
+			      struct drm_gem_object *obj)
+{
+	struct pdp_gem_object *pdp_obj = to_pdp_obj(obj);
+
+	drm_gem_free_mmap_offset(obj);
+
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0))
+	if (&pdp_obj->_resv == pdp_obj->resv)
+		dma_resv_fini(&pdp_obj->_resv);
+#endif
+
+	if (gem_priv->cma_alloc) {
+		dma_free_coherent(obj->dev->dev, pdp_obj->size, pdp_obj->vaddr, pdp_obj->dev_addr);
+		pdp_obj->vaddr = NULL;
+	} else if (pdp_obj->vram) {
+		mutex_lock(&gem_priv->vram_lock);
+		drm_mm_remove_node(pdp_obj->vram);
+		mutex_unlock(&gem_priv->vram_lock);
+
+		kfree(pdp_obj->vram);
+	} else if (obj->import_attach) {
+		drm_prime_gem_destroy(obj, pdp_obj->sgt);
+	}
+
+	drm_gem_object_release(&pdp_obj->base);
+	kfree(pdp_obj);
+}
+
+static void pdp_gem_cleanup(struct device *dev, void *res);
+static struct pdp_gem_private *pdp_gem_get_private(struct drm_device *ddev)
+{
+	struct pdp_gem_private *gem_priv = devres_find(ddev->dev, pdp_gem_cleanup, NULL, NULL);
+	WARN_ON(!gem_priv);
+
+	return gem_priv;
+}
+
 struct drm_gem_object *pdp_gem_object_create(struct drm_device *dev,
-					     struct pdp_gem_private *gem_priv,
 					     size_t size,
 					     u32 flags)
 {
+	struct pdp_gem_private *gem_priv = pdp_gem_get_private(dev);
 	struct pdp_gem_object *pdp_obj;
 	struct drm_mm_node *node;
 	int err = 0;
@@ -227,35 +270,6 @@ vm_fault_t pdp_gem_object_vm_fault(struct vm_fault *vmf)
 #endif
 }
 
-void pdp_gem_object_free_priv(struct pdp_gem_private *gem_priv,
-			      struct drm_gem_object *obj)
-{
-	struct pdp_gem_object *pdp_obj = to_pdp_obj(obj);
-
-	drm_gem_free_mmap_offset(obj);
-
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(5, 2, 0))
-	if (&pdp_obj->_resv == pdp_obj->resv)
-		dma_resv_fini(&pdp_obj->_resv);
-#endif
-
-	if (gem_priv->cma_alloc) {
-		dma_free_coherent(obj->dev->dev, pdp_obj->size, pdp_obj->vaddr, pdp_obj->dev_addr);
-		pdp_obj->vaddr = NULL;
-	} else if (pdp_obj->vram) {
-		mutex_lock(&gem_priv->vram_lock);
-		drm_mm_remove_node(pdp_obj->vram);
-		mutex_unlock(&gem_priv->vram_lock);
-
-		kfree(pdp_obj->vram);
-	} else if (obj->import_attach) {
-		drm_prime_gem_destroy(obj, pdp_obj->sgt);
-	}
-
-	drm_gem_object_release(&pdp_obj->base);
-	kfree(pdp_obj);
-}
-
 static int pdp_gem_prime_attach(struct dma_buf *dma_buf,
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 19, 0))
 				struct device *dev,
@@ -339,11 +353,12 @@ static int pdp_gem_prime_mmap(struct dma_buf *dma_buf,
 			      struct vm_area_struct *vma)
 {
 	struct drm_gem_object *obj = dma_buf->priv;
+	struct pdp_gem_private *gem_priv = pdp_gem_get_private(obj->dev);
 	int err;
 
-	mutex_lock(&obj->dev->struct_mutex);
+	mutex_lock(gem_priv->gem_mutex);
 	err = drm_gem_mmap_obj(obj, obj->size, vma);
-	mutex_unlock(&obj->dev->struct_mutex);
+	mutex_unlock(gem_priv->gem_mutex);
 
 	return err;
 }
@@ -357,10 +372,11 @@ static int pdp_gem_prime_vmap(struct dma_buf *dma_buf, struct iosys_map *map)
 {
 	struct drm_gem_object *obj = dma_buf->priv;
 	struct pdp_gem_object *pdp_obj = to_pdp_obj(obj);
+	struct pdp_gem_private *gem_priv = pdp_gem_get_private(obj->dev);
 	void __iomem *vaddr;
 	__maybe_unused int ret = 0;
 
-	mutex_lock(&obj->dev->struct_mutex);
+	mutex_lock(gem_priv->gem_mutex);
 
 	if (pdp_obj->cma_alloc) {
 		vaddr = (void __iomem *)pdp_obj->vaddr;
@@ -376,7 +392,7 @@ static int pdp_gem_prime_vmap(struct dma_buf *dma_buf, struct iosys_map *map)
 		ret = -ENOMEM;
 	}
 
-	mutex_unlock(&obj->dev->struct_mutex);
+	mutex_unlock(gem_priv->gem_mutex);
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0))
 	if (!pdp_obj->cma_alloc && ret == 0)
@@ -395,11 +411,12 @@ static void pdp_gem_prime_vunmap(struct dma_buf *dma_buf, struct iosys_map *map)
 {
 	struct drm_gem_object *obj = dma_buf->priv;
 	struct pdp_gem_object *pdp_obj = to_pdp_obj(obj);
+	struct pdp_gem_private *gem_priv = pdp_gem_get_private(obj->dev);
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0))
 	void __iomem *vaddr = map->vaddr_iomem;
 #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0) */
 
-	mutex_lock(&obj->dev->struct_mutex);
+	mutex_lock(gem_priv->gem_mutex);
 	if (!pdp_obj->cma_alloc)
 		iounmap((void __iomem *)vaddr);
 
@@ -407,7 +424,7 @@ static void pdp_gem_prime_vunmap(struct dma_buf *dma_buf, struct iosys_map *map)
 	iosys_map_clear(map);
 #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0) */
 
-	mutex_unlock(&obj->dev->struct_mutex);
+	mutex_unlock(gem_priv->gem_mutex);
 }
 #endif
 
@@ -535,9 +552,8 @@ err_exit:
 	return ERR_PTR(err);
 }
 
-int pdp_gem_dumb_create_priv(struct drm_file *file,
+int pdp_gem_dumb_create(struct drm_file *file,
 			     struct drm_device *dev,
-			     struct pdp_gem_private *gem_priv,
 			     struct drm_mode_create_dumb *args)
 {
 	struct drm_gem_object *obj;
@@ -549,7 +565,7 @@ int pdp_gem_dumb_create_priv(struct drm_file *file,
 	pitch = args->width * (ALIGN(args->bpp, 8) >> 3);
 	size = PAGE_ALIGN(pitch * args->height);
 
-	obj = pdp_gem_object_create(dev, gem_priv, size, 0);
+	obj = pdp_gem_object_create(dev, size, 0);
 	if (IS_ERR(obj))
 		return PTR_ERR(obj);
 
@@ -563,33 +579,6 @@ int pdp_gem_dumb_create_priv(struct drm_file *file,
 
 exit:
 	drm_gem_object_put(obj);
-	return err;
-}
-
-int pdp_gem_dumb_map_offset(struct drm_file *file,
-			    struct drm_device *dev,
-			    uint32_t handle,
-			    uint64_t *offset)
-{
-	struct drm_gem_object *obj;
-	int err;
-
-	mutex_lock(&dev->struct_mutex);
-
-	err = pdp_gem_lookup_our_object(file, handle, &obj);
-	if (err)
-		goto exit_unlock;
-
-	err = drm_gem_create_mmap_offset(obj);
-	if (err)
-		goto exit_obj_unref;
-
-	*offset = drm_vma_node_offset_addr(&obj->vma_node);
-
-exit_obj_unref:
-	drm_gem_object_put(obj);
-exit_unlock:
-	mutex_unlock(&dev->struct_mutex);
 	return err;
 }
 
@@ -728,33 +717,42 @@ pdp_gem_cleanup_platform(struct pdp_gem_private *gem_priv)
 }
 #endif
 
-struct pdp_gem_private *pdp_gem_init(struct drm_device *dev, unsigned int instance)
+static void pdp_gem_cleanup(struct device *dev, void *res)
 {
-	struct pdp_gem_private *gem_priv = kmalloc(sizeof(*gem_priv), GFP_KERNEL);
+	struct pdp_gem_private *gem_priv = res;
+
+	pdp_gem_cleanup_platform(gem_priv);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0))
+	mutex_destroy(&gem_priv->gem_mutex_inline);
+#endif
+	mutex_destroy(&gem_priv->vram_lock);
+}
+
+int pdp_gem_init_devres(struct drm_device *dev)
+{
+	struct pdp_gem_private *gem_priv = devres_alloc(pdp_gem_cleanup, sizeof(*gem_priv), GFP_KERNEL);
 
 	if (!gem_priv)
-		return NULL;
+		return -ENOMEM;
 
 	memset(&gem_priv->vram, 0, sizeof(gem_priv->vram));
 
 	mutex_init(&gem_priv->vram_lock);
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 18, 0))
+	mutex_init(&gem_priv->gem_mutex_inline);
+	gem_priv->gem_mutex = &(gem_priv->gem_mutex_inline);
+#else
+	gem_priv->gem_mutex = &(dev->struct_mutex);
+#endif
 
-	if (!pdp_gem_init_platform(dev, gem_priv, instance)) {
+	if (!pdp_gem_init_platform(dev, gem_priv, 0)) {
 		mutex_destroy(&gem_priv->vram_lock);
-		kfree(gem_priv);
-		return NULL;
+		devres_free(gem_priv);
+		return -ENODEV;
 	}
 
-	return gem_priv;
-}
-
-void pdp_gem_cleanup(struct pdp_gem_private *gem_priv)
-{
-	pdp_gem_cleanup_platform(gem_priv);
-
-	mutex_destroy(&gem_priv->vram_lock);
-
-	kfree(gem_priv);
+	devres_add(dev->dev, gem_priv);
+	return 0;
 }
 
 struct dma_resv *pdp_gem_get_resv(struct drm_gem_object *obj)
@@ -769,8 +767,7 @@ u64 pdp_gem_get_dev_addr(struct drm_gem_object *obj)
 	return pdp_obj->dev_addr;
 }
 
-int pdp_gem_object_create_ioctl_priv(struct drm_device *dev,
-				struct pdp_gem_private *gem_priv,
+int pdp_gem_object_create_ioctl(struct drm_device *dev,
 				void *data,
 				struct drm_file *file)
 {
@@ -789,7 +786,6 @@ int pdp_gem_object_create_ioctl_priv(struct drm_device *dev,
 	}
 
 	obj = pdp_gem_object_create(dev,
-					gem_priv,
 					PAGE_ALIGN(args->size),
 					args->flags);
 	if (IS_ERR(obj))
@@ -817,7 +813,7 @@ int pdp_gem_object_mmap_ioctl(struct drm_device *dev, void *data,
 		return -EINVAL;
 	}
 
-	return pdp_gem_dumb_map_offset(file, dev, args->handle, &args->offset);
+	return drm_gem_dumb_map_offset(file, dev, args->handle, &args->offset);
 }
 
 int pdp_gem_object_cpu_prep_ioctl(struct drm_device *dev, void *data,
@@ -826,6 +822,7 @@ int pdp_gem_object_cpu_prep_ioctl(struct drm_device *dev, void *data,
 	struct drm_pdp_gem_cpu_prep *args = (struct drm_pdp_gem_cpu_prep *)data;
 	struct drm_gem_object *obj;
 	struct pdp_gem_object *pdp_obj;
+	struct pdp_gem_private *gem_priv;
 	bool write = !!(args->flags & PDP_GEM_CPU_PREP_WRITE);
 	bool wait = !(args->flags & PDP_GEM_CPU_PREP_NOWAIT);
 	int err = 0;
@@ -837,49 +834,48 @@ int pdp_gem_object_cpu_prep_ioctl(struct drm_device *dev, void *data,
 		return -EINVAL;
 	}
 
-	mutex_lock(&dev->struct_mutex);
-
 	err = pdp_gem_lookup_our_object(file, args->handle, &obj);
 	if (err)
-		goto exit_unlock;
+		return err;
+
+	gem_priv = pdp_gem_get_private(obj->dev);
 
 	pdp_obj = to_pdp_obj(obj);
 
-	if (pdp_obj->cpu_prep) {
+	mutex_lock(gem_priv->gem_mutex);
+
+	if (pdp_obj->cpu_prep)
 		err = -EBUSY;
-		goto exit_unref;
-	}
-
-	if (wait) {
-		long lerr;
+	else {
+		if (wait) {
+			long lerr;
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0))
-		lerr = dma_resv_wait_timeout(pdp_obj->resv, write,
-					     true, 30 * HZ);
+			lerr = dma_resv_wait_timeout(pdp_obj->resv, write,
+			                             true, 30 * HZ);
 #else
-		lerr = dma_resv_wait_timeout_rcu(pdp_obj->resv, write,
-						 true, 30 * HZ);
+			lerr = dma_resv_wait_timeout_rcu(pdp_obj->resv, write,
+			                                 true, 30 * HZ);
 #endif
-		if (!lerr)
-			err = -EBUSY;
-		else if (lerr < 0)
-			err = lerr;
-	} else {
+			if (!lerr)
+				err = -EBUSY;
+			else if (lerr < 0)
+				err = lerr;
+		} else {
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0))
-		if (!dma_resv_test_signaled(pdp_obj->resv, write))
+			if (!dma_resv_test_signaled(pdp_obj->resv, write))
 #else
-		if (!dma_resv_test_signaled_rcu(pdp_obj->resv, write))
+				if (!dma_resv_test_signaled_rcu(pdp_obj->resv, write))
 #endif
-			err = -EBUSY;
+					err = -EBUSY;
+		}
+
+		if (!err)
+			pdp_obj->cpu_prep = true;
 	}
 
-	if (!err)
-		pdp_obj->cpu_prep = true;
-
-exit_unref:
+	mutex_unlock(gem_priv->gem_mutex);
 	drm_gem_object_put(obj);
-exit_unlock:
-	mutex_unlock(&dev->struct_mutex);
 	return err;
 }
 
@@ -889,6 +885,7 @@ int pdp_gem_object_cpu_fini_ioctl(struct drm_device *dev, void *data,
 	struct drm_pdp_gem_cpu_fini *args = (struct drm_pdp_gem_cpu_fini *)data;
 	struct drm_gem_object *obj;
 	struct pdp_gem_object *pdp_obj;
+	struct pdp_gem_private *gem_priv;
 	int err = 0;
 
 	if (args->pad) {
@@ -896,24 +893,29 @@ int pdp_gem_object_cpu_fini_ioctl(struct drm_device *dev, void *data,
 		return -EINVAL;
 	}
 
-	mutex_lock(&dev->struct_mutex);
-
 	err = pdp_gem_lookup_our_object(file, args->handle, &obj);
 	if (err)
-		goto exit_unlock;
+		return err;
+
+	gem_priv = pdp_gem_get_private(obj->dev);
 
 	pdp_obj = to_pdp_obj(obj);
 
-	if (!pdp_obj->cpu_prep) {
+	mutex_lock(gem_priv->gem_mutex);
+
+	if (!pdp_obj->cpu_prep)
 		err = -EINVAL;
-		goto exit_unref;
-	}
+	else
+		pdp_obj->cpu_prep = false;
 
-	pdp_obj->cpu_prep = false;
-
-exit_unref:
+	mutex_unlock(gem_priv->gem_mutex);
 	drm_gem_object_put(obj);
-exit_unlock:
-	mutex_unlock(&dev->struct_mutex);
 	return err;
+}
+
+void pdp_gem_object_free(struct drm_gem_object *obj)
+{
+	struct pdp_gem_private *gem_priv = pdp_gem_get_private(obj->dev);
+
+	pdp_gem_object_free_priv(gem_priv, obj);
 }

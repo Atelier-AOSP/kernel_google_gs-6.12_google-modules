@@ -23,9 +23,6 @@
  * $Id$
  */
 
-#ifdef DHD_PKT_LOGGING_DBGRING
-#include <linux/sched/clock.h>
-#endif
 #include <typedefs.h>
 #include <osl.h>
 #include <bcmutils.h>

@@ -8,77 +8,83 @@
 #include <linux/device.h>
 #include <linux/io.h>
 #include <linux/mfd/syscon.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_platform.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
-#include <linux/regmap.h>
 #include <linux/sizes.h>
 #include <linux/sys_soc.h>
 
 #include <soc/google/goog-chip-info.h>
 
 #include "goog-chip-info.h"
-#include "goog-chip-info-translator.c"
+#include "goog-chip-info-translator.h"
 
-#define MAX_CHIP_INFO_FEATURES 16
-#define MAX_SERIAL_CODE_WORDS 4
-struct goog_chip_info_data {
-	int nr_features;
-	struct goog_chip_info_feature features[MAX_CHIP_INFO_FEATURES];
-	int nr_priv_features;
-	struct goog_chip_info_feature priv_features[MAX_CHIP_INFO_FEATURES];
-	int lcs_state;
-	u32 serial_codes[MAX_SERIAL_CODE_WORDS];
-};
+static struct goog_chip_info_data *chip_info;
 
-struct goog_chip_info_data *chip_info;
-
-static int goog_chip_info_fetch_val(struct goog_chip_info_feature *feature,
-				    struct goog_chip_info_descriptor *desc)
+static int __init goog_chip_info_fetch_val(struct goog_chip_info_feature *feature,
+					   struct goog_chip_info_descriptor *desc,
+					   const struct goog_chip_info_config *config)
 {
 	struct device *dev = feature->dev;
 	u32 val[MAX_REG_INFO];
-	struct reg_info *reg;
+	const struct reg_info *reg;
 	int nr_fields;
 	int idx;
-	int ret;
 
 	for (nr_fields = 0; nr_fields < MAX_REG_INFO; nr_fields++) {
-		reg = &desc->reg_infos[nr_fields];
+		reg = &config->reg_infos[nr_fields];
 
 		if (reg->last_bit == reg->first_bit)
 			break;
 
-		ret = regmap_read(feature->base, reg->offset, &val[nr_fields]);
-		if (ret) {
-			dev_err(dev, "Failed to read '%s'/%#x (ret: %d)\n",
-				desc->name, reg->offset, ret);
-			return ret;
-		}
+		val[nr_fields] = readl(feature->base + reg->offset);
+
 		val[nr_fields] = (val[nr_fields] & ((1UL << reg->last_bit) - 1)) >> reg->first_bit;
-		if (desc->is_big_endian)
+		if (config->is_big_endian) {
+			/*
+			 * Big-endian fields that are not 32-bit aligned and require shifting are
+			 * not supported. The hardware design does not have this case.
+			 */
+			WARN(reg->shift % 32,
+			     "%s: big-endian fields with bit-shifts are not supported\n", __func__);
 			val[nr_fields] = cpu_to_be32(val[nr_fields]);
+		}
 	}
 
-	for (idx = 0; idx < nr_fields; idx++)
-		desc->value |= val[idx] << desc->reg_infos[idx].shift;
+	if (config->is_big_endian) {
+		switch (nr_fields) {
+		case 1: /* 32-bit field */
+			desc->value = val[0];
+			break;
+		case MAX_REG_INFO: /* 64-bit field */
+			desc->value = (u64)val[0] << 32 | val[1];
+			break;
+		default:
+			dev_warn(dev, "Invalid number of fields for big-endian value: %d\n",
+				 nr_fields);
+		}
+	} else {
+		for (idx = 0; idx < nr_fields; idx++)
+			desc->value |= (u64)val[idx] << config->reg_infos[idx].shift;
+	}
 
 	return 0;
 }
 
-static int goog_chip_info_read_entries(struct goog_chip_info_feature *feature)
+static int __init goog_chip_info_read_entries(struct goog_chip_info_feature *feature,
+					      const struct goog_chip_info_config *configs)
 {
 	struct device *dev = feature->dev;
 	struct goog_chip_info_descriptor *descriptor;
 	int idx, ret;
 
-	for (idx = 0; ; idx++) {
+	for (idx = 0; configs[idx].name; idx++) {
 		descriptor = &feature->descriptor[idx];
-		if (!descriptor->name)
-			break;
 
-		ret = goog_chip_info_fetch_val(feature, descriptor);
+		ret = goog_chip_info_fetch_val(feature, descriptor, &configs[idx]);
 		if (ret)
 			return ret;
 		dev_dbg(dev, "%s: Read descriptor[%d] = %#llx\n", __func__, idx, descriptor->value);
@@ -99,10 +105,10 @@ static struct bus_type chip_info_subsys = {
 	.dev_name = "goog-chip-info",
 };
 
-static goog_chip_info_translator_cb_t
+static goog_chip_info_translator_cb_t __init
 goog_chip_info_match_translator_dt(struct device *dev, struct device_node *node)
 {
-	struct translator *translator = NULL;
+	const struct translator *translator = NULL;
 	const char *prop_name;
 	int prop_name_size;
 	int ret;
@@ -169,7 +175,8 @@ static ssize_t goog_chip_info_sysfs_show(struct device *dev, struct device_attri
 		if (feature->translator_cb) {
 			int left_buf_size = min(TRANS_BUF_SIZE, PAGE_SIZE - pos);
 
-			nr_wroted = feature->translator_cb(feature, descriptor[idx].value, idx,
+			nr_wroted = feature->translator_cb(chip_info, feature,
+							   descriptor[idx].value, idx,
 							   translator_buf, left_buf_size);
 			translator_buf[TRANS_BUF_SIZE - 1] = '\0';
 		}
@@ -187,13 +194,17 @@ static ssize_t goog_chip_info_sysfs_show(struct device *dev, struct device_attri
 	return pos;
 }
 
-static int goog_chip_info_init_feature(struct device *dev, struct goog_chip_info_data *chip_info,
-				       struct device_node *node,
-				       struct goog_chip_info_descriptor *descriptors)
+static int __init goog_chip_info_init_feature(struct device *dev,
+					      struct goog_chip_info_data *chip_info,
+					      struct device_node *node,
+					      struct goog_chip_info_descriptor *descriptors,
+					      const struct goog_chip_info_config *configs,
+					      enum goog_chip_info_feature_type type)
 {
 	struct goog_chip_info_feature *feature;
 	struct device_attribute *dev_attr;
 	struct attribute *attr;
+	u32 reg_index;
 	int ret;
 	int *nr_features;
 
@@ -207,7 +218,7 @@ static int goog_chip_info_init_feature(struct device *dev, struct goog_chip_info
 	}
 
 	feature->dev = dev;
-
+	feature->type = type;
 	feature->descriptor = descriptors;
 
 	ret = of_property_read_string(node, "feature-name", &feature->name);
@@ -219,16 +230,22 @@ static int goog_chip_info_init_feature(struct device *dev, struct goog_chip_info
 	feature->is_device_table = of_property_read_bool(node, "device-table");
 	feature->is_serial_codes = of_property_read_bool(node, "serial-codes");
 	feature->is_lcs_state = of_property_read_bool(node, "lcs-state");
+	feature->is_rto = of_property_read_bool(node, "rto");
 	feature->is_visible_in_prod = of_property_read_bool(node, "visible-in-prod");
 
-	feature->base = syscon_regmap_lookup_by_phandle(node, "google,syscon-phandle");
-	if (IS_ERR(feature->base)) {
-		ret = PTR_ERR(feature->base);
-		dev_err(dev, "Failed to create regmap from phandle. (ret: %d)\n", ret);
+	ret = of_property_read_u32(node, "google,reg-index", &reg_index);
+	if (ret) {
+		dev_err(dev, "google,reg-index is missing in node %s\n", node->full_name);
 		return ret;
 	}
 
-	feature->nr_descriptor_entries = goog_chip_info_read_entries(feature);
+	if (reg_index >= chip_info->nr_bases) {
+		dev_err(dev, "Invalid reg-index %u in node %s\n", reg_index, node->full_name);
+		return -ENXIO;
+	}
+	feature->base = chip_info->bases[reg_index];
+
+	feature->nr_descriptor_entries = goog_chip_info_read_entries(feature, configs);
 	if (feature->nr_descriptor_entries <= 0)
 		return feature->nr_descriptor_entries;
 
@@ -249,7 +266,7 @@ static int goog_chip_info_init_feature(struct device *dev, struct goog_chip_info
 	return 0;
 }
 
-static void goog_chip_info_get_system_val(struct goog_chip_info_data *chip_info)
+static void __init goog_chip_info_get_system_val(struct goog_chip_info_data *chip_info)
 {
 	struct goog_chip_info_feature *feature;
 	int idx, i;
@@ -259,6 +276,8 @@ static void goog_chip_info_get_system_val(struct goog_chip_info_data *chip_info)
 
 		if (feature->is_lcs_state)
 			chip_info->lcs_state = feature->descriptor[0].value;
+		if (feature->is_rto)
+			chip_info->rto = feature->descriptor[0].value;
 		if (feature->is_serial_codes) {
 			for (i = 0; i < MAX_SERIAL_CODE_WORDS; i++)
 				chip_info->serial_codes[i] = feature->descriptor[i].value;
@@ -266,7 +285,8 @@ static void goog_chip_info_get_system_val(struct goog_chip_info_data *chip_info)
 	}
 }
 
-static int goog_chip_info_create_sysfs(struct device *dev, struct goog_chip_info_data *chip_info)
+static int __init goog_chip_info_create_sysfs(struct device *dev,
+					      struct goog_chip_info_data *chip_info)
 {
 	struct attribute **sysfs_attrs;
 	struct attribute_group *sysfs_group;
@@ -295,32 +315,74 @@ static int goog_chip_info_create_sysfs(struct device *dev, struct goog_chip_info
 	return 0;
 }
 
-static int goog_chip_info_probe(struct platform_device *pdev)
+static int __init goog_chip_info_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	const struct of_device_id *match;
 	struct device_node *child;
+	const struct goog_chip_info_config *configs;
 	struct goog_chip_info_descriptor *descriptors;
-	int ret;
+	void __iomem *base;
+	int nr_bases;
+	int i, ret, nr_configs;
 
 	chip_info = devm_kzalloc(dev, sizeof(*chip_info), GFP_KERNEL);
 	if (!chip_info)
 		return -ENOMEM;
+
+	nr_bases = of_address_count(dev->of_node);
+	if (nr_bases > MAX_CHIP_INFO_BASES) {
+		dev_err(dev, "Number of bases exceeds limit: %d > %d\n",
+			nr_bases, MAX_CHIP_INFO_BASES);
+		return -EOVERFLOW;
+	}
+
+	if (!nr_bases) {
+		dev_err(dev, "No available resource found\n");
+		return -ENODEV;
+	}
+
+	for (i = 0; i < nr_bases; i++) {
+		base = devm_platform_ioremap_resource(pdev, i);
+		if (IS_ERR(base))
+			return PTR_ERR(base);
+
+		chip_info->bases[i] = base;
+	}
+	chip_info->nr_bases = i;
 
 	for_each_child_of_node(dev->of_node, child) {
 		match = of_match_node(goog_chip_info_feature_map, child);
 		if (!match)
 			continue;
 
-		descriptors = (struct goog_chip_info_descriptor *)match->data;
-		if (!descriptors) {
+		configs = (const struct goog_chip_info_config *)match->data;
+		if (!configs) {
 			dev_warn(dev, "No match rule for %s\n", child->name);
 			continue;
 		}
 
-		ret = goog_chip_info_init_feature(dev, chip_info, child, descriptors);
+		nr_configs = 0;
+		while (configs[nr_configs].name)
+			nr_configs++;
+
+		descriptors = devm_kcalloc(dev, nr_configs, sizeof(*descriptors), GFP_KERNEL);
+		if (!descriptors) {
+			of_node_put(child);
+			return -ENOMEM;
+		}
+
+		/*
+		 * Since name pointer points to string in .rodata.str, keep it is safe to use.
+		 */
+		for (i = 0; i < nr_configs; i++)
+			descriptors[i].name = configs[i].name;
+
+		ret = goog_chip_info_init_feature(dev, chip_info, child, descriptors, configs,
+						  match - goog_chip_info_feature_map);
 		if (ret < 0) {
 			dev_err(dev, "fail to init feature: %s\n", child->name);
+			of_node_put(child);
 			return ret;
 		}
 	}
@@ -333,22 +395,14 @@ static int goog_chip_info_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int goog_chip_info_remove(struct platform_device *pdev)
-{
-	bus_unregister(&chip_info_subsys);
-
-	return 0;
-}
-
 static struct platform_driver goog_chip_info_driver = {
-	.probe = goog_chip_info_probe,
-	.remove = goog_chip_info_remove,
 	.driver = {
 		.name = "goog-chip-info",
 		.of_match_table = of_match_ptr(goog_chip_info_of_match_table),
+		.suppress_bind_attrs = true,
 	},
 };
-module_platform_driver(goog_chip_info_driver);
+module_platform_driver_probe(goog_chip_info_driver, goog_chip_info_probe);
 
 MODULE_DESCRIPTION("Google Chip Info driver");
 MODULE_AUTHOR("Lucas Wei <lucaswei@google.com>");

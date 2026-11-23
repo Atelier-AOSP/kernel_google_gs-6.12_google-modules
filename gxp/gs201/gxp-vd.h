@@ -19,8 +19,10 @@
 #include <linux/types.h>
 #include <linux/wait.h>
 
+#include <gcip/gcip-dma-fence.h>
 #include <gcip/gcip-image-config.h>
 #include <gcip/gcip-iommu-reserve.h>
+#include <gcip/gcip-memory.h>
 
 #include "gxp-host-device-structs.h"
 #include "gxp-internal.h"
@@ -98,7 +100,7 @@ struct gxp_virtual_device {
 	 * The config regions specified in image config.
 	 * core_cfg's size should be a multiple of GXP_NUM_CORES.
 	 */
-	struct gxp_mapped_resource core_cfg, vd_cfg, sys_cfg, lpm;
+	struct gcip_memory core_cfg, vd_cfg, sys_cfg, lpm, mcu_shared_cfg;
 	uint core_list;
 	/*
 	 * The ID of DSP client. -1 if it is not allocated.
@@ -136,10 +138,8 @@ struct gxp_virtual_device {
 	/* A constant ID assigned after VD is allocated. For debug only. */
 	int vdid;
 	struct gcip_image_config_parser cfg_parser;
-	/* Protects @dma_fence_list. */
-	struct mutex fence_list_lock;
-	/* List of GXP DMA fences owned by this VD. */
-	struct list_head gxp_fence_list;
+	/* To manage DMA fences. */
+	struct gcip_dma_fence_manager *gfence_mgr;
 	/* Protects changing the state of vd while generating a debug dump. */
 	struct mutex debug_dump_lock;
 	/* An eventfd which will be triggered when this vd is invalidated. */
@@ -446,20 +446,6 @@ gxp_vd_get(struct gxp_virtual_device *vd)
 void gxp_vd_put(struct gxp_virtual_device *vd);
 
 /*
- * Change the status of the vd of @client_id to GXP_VD_UNAVAILABLE.
- * Internally, it will discard all pending/unconsumed user commands and call the
- * `gxp_vd_block_unready` function.
- *
- * This function will be called when the `CLIENT_FATAL_ERROR_NOTIFY` RKCI has been sent from the
- * firmware side.
- *
- * @gxp: The GXP device to obtain the handler for
- * @client_id: client_id of the crashed vd.
- * @release_vmbox: Releases the vmbox of the vd after invalidating it.
- */
-void gxp_vd_invalidate_with_client_id(struct gxp_dev *gxp, int client_id, bool release_vmbox);
-
-/*
  * Changes the status of the @vd to GXP_VD_UNAVAILABLE.
  * Internally, it will discard all pending/unconsumed user commands.
  *
@@ -486,10 +472,44 @@ void gxp_vd_invalidate(struct gxp_dev *gxp, struct gxp_virtual_device *vd, u32 r
  * @vd: The virtual device to be dumped.
  * @core_list: A bitfield enumerating the physical cores on which crash is reported from firmware.
  */
-void gxp_vd_generate_debug_dump(struct gxp_dev *gxp,
-				struct gxp_virtual_device *vd, uint core_list);
+void gxp_vd_generate_debug_dump(struct gxp_dev *gxp, struct gxp_virtual_device *vd, uint core_list);
+
+/*
+ * gxp_vd_conclude_debug_dump () - Concludes generation of a debug dump by sending the locally
+ * copied segments to the SSCD module for the specified cores.
+ *
+ * @gxp: The GXP device to obtain the handler for.
+ * @core_list: Pointer to a bitfield enumerating the physical cores on which crash is reported
+ *             from firmware.
+ *
+ * This function will be called as part of debug dump generation - requested either by the FW or
+ * as a result of VD invalidation.
+ *
+ * Return:
+ * * 0          - Success
+ * * -EINVAL    - Debug dump is not enabled
+ */
+int gxp_vd_conclude_debug_dump(struct gxp_dev *gxp, uint *core_list);
 
 #if GXP_HAS_MCU
+/*
+ * gxp_vd_start_debug_dump_with_client_id() - Starts debug dump for the given @client_id.
+ *
+ * @gxp: The GXP device to obtain the handler for.
+ * @client_id: The client to which the virtual device to be dumped belongs.
+ * @core_list: Pointer to a bitfield enumerating the physical cores on which crash is reported
+ *             from the firmware. The bitfield will be updated to exclude any core which does
+ *             not have dump available.
+ *
+ * This function will be called as part of debug dump generation - requested either by the FW or
+ * as a result of VD invalidation.
+ *
+ * Return:
+ * * 0          - Success
+ * * -EINVAL    - VD belonging to @client_id has been closed.
+ */
+int gxp_vd_start_debug_dump_with_client_id(struct gxp_dev *gxp, int client_id, uint *core_list);
+
 /*
  * Releases the vmbox which is allocated to @vd.
  *

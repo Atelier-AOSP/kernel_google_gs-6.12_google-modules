@@ -309,7 +309,7 @@ LMA_PhyContigPagesAllocGPV(PHYS_HEAP *psPhysHeap,
 	IMG_UINT32 ui32Log2NumPages = 0;
 	PVRSRV_ERROR eError;
 
-	PVR_UNREFERENCED_PARAMETERS(ui64Alignment);
+	PVR_UNREFERENCED_PARAMETER(ui64Alignment);
 
 	PVR_ASSERT(uiSize != 0);
 	ui32Log2NumPages = OSGetOrder(uiSize);

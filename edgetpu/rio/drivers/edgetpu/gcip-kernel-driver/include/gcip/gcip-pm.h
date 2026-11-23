@@ -10,6 +10,7 @@
 
 #include <linux/atomic.h>
 #include <linux/bitops.h>
+#include <linux/completion.h>
 #include <linux/device.h>
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
@@ -21,7 +22,7 @@ enum gcip_pm_flags {
 
 struct gcip_pm {
 	struct device *dev;
-	/* Worker to handle async power down retry. */
+	/* Worker to handle power down retry. */
 	struct delayed_work power_down_work;
 
 	/* Lock to protect the members listed below. */
@@ -34,8 +35,10 @@ struct gcip_pm {
 	 * Protected by @lock.
 	 */
 	int suspendable_count;
-	/* Flag indicating a deferred power down is pending. Protected by @lock */
+	/* Flag indicating a power down is pending. */
 	bool power_down_pending;
+	/* For waiting on pending power down to complete. */
+	struct completion pending_power_down_done;
 	/* The worker to asynchronously call gcip_pm_put(). */
 	struct work_struct put_async_work;
 	/* The number of @count to be decreased in the @put_async_work. */
@@ -47,7 +50,18 @@ struct gcip_pm {
 	void (*before_destroy)(void *data);
 	int (*power_up)(void *data);
 	int (*power_down)(void *data);
+	/*
+	 * Time to wait for pending power down before erroring out a gcip_pm_get() call.
+	 * See struct gcip_pm_args.
+	 */
+	int power_down_wait_timeout_ms;
 };
+
+/*
+ * Default time to wait for pending power down before erroring out a
+ * gcip_pm_get() call.
+ */
+#define GCIP_POWER_DOWN_WAIT_TIMEOUT_DEFAULT 8000 /* ms */
 
 struct gcip_pm_args {
 	/* Device struct for logging. */
@@ -72,6 +86,12 @@ struct gcip_pm_args {
 	int (*after_create)(void *data);
 	/* Optional. For clean-up before the interface is destroyed. */
 	void (*before_destroy)(void *data);
+
+	/*
+	 * Time to wait for pending power down before erroring out a gcip_pm_get() call. If zero,
+	 * GCIP_POWER_DOWN_WAIT_TIMEOUT_DEFAULT is used.
+	 */
+	int power_down_wait_timeout_ms;
 };
 
 /* Allocates and initializes a power management interface for the GCIP device. */
@@ -186,9 +206,6 @@ bool gcip_pm_suspendable_locked(struct gcip_pm *pm, int *count);
 /* Make sure @pm->lock is held. */
 static inline void gcip_pm_lockdep_assert_held(struct gcip_pm *pm)
 {
-	if (!pm)
-		return;
-
 	lockdep_assert_held(&pm->lock);
 }
 
@@ -200,9 +217,6 @@ static inline void gcip_pm_lockdep_assert_held(struct gcip_pm *pm)
  */
 static inline void gcip_pm_lock(struct gcip_pm *pm)
 {
-	if (!pm)
-		return;
-
 	mutex_lock(&pm->lock);
 }
 
@@ -213,18 +227,12 @@ static inline void gcip_pm_lock(struct gcip_pm *pm)
  */
 static inline int gcip_pm_trylock(struct gcip_pm *pm)
 {
-	if (!pm)
-		return 1;
-
 	return mutex_trylock(&pm->lock);
 }
 
 /* Unlock the PM lock. */
 static inline void gcip_pm_unlock(struct gcip_pm *pm)
 {
-	if (!pm)
-		return;
-
 	lockdep_assert_held(&pm->lock);
 	mutex_unlock(&pm->lock);
 }

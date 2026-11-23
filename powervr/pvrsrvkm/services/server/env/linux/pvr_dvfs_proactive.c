@@ -61,7 +61,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  * the optimal governor.
  */
 #include "power.h"
-#include "pvrsrv.h"
 #include "pvrsrv_device.h"
 
 #include "rgxdevice.h"
@@ -279,15 +278,15 @@ static int pvr_governor_event_handler(struct devfreq *devfreq_dev,
 
 	switch (event) {
 	case DEVFREQ_GOV_START:
-		dev_info(&devfreq_dev->dev,"GOV_START event.\n");
+		PVR_DPF((PVR_DBG_CUSTOMER, "GOV_START event.\n"));
 		break;
 
 	case DEVFREQ_GOV_STOP:
-		dev_info(&devfreq_dev->dev,"GOV_STOP event.\n");
+		PVR_DPF((PVR_DBG_CUSTOMER, "GOV_STOP event.\n"));
 		break;
 
 	case DEVFREQ_GOV_UPDATE_INTERVAL:
-		dev_info(&devfreq_dev->dev,"GOV_INTERVAL event.\n");
+		PVR_DPF((PVR_DBG_CUSTOMER, "GOV_INTERVAL event.\n"));
 		if (*(unsigned int *)data > 500)
 		{
 			return -EINVAL;
@@ -297,37 +296,37 @@ static int pvr_governor_event_handler(struct devfreq *devfreq_dev,
 		break;
 
 	case DEVFREQ_GOV_SUSPEND:
-		dev_info(&devfreq_dev->dev,"GOV_SUSPEND event.\n");
+		PVR_DPF((PVR_DBG_CUSTOMER, "GOV_SUSPEND event.\n"));
 		break;
 
 	case DEVFREQ_GOV_RESUME:
-		dev_info(&devfreq_dev->dev,"GOV_RESUME event.\n");
+		PVR_DPF((PVR_DBG_CUSTOMER, "GOV_RESUME event.\n"));
 		break;
 	/*
 	 * Custom events
 	 */
 	case DEVFREQ_GOV_FIRMWARE_CAPACITY:
-		dev_info(&devfreq_dev->dev,"GOV_FIRMWARE_CAPACITY event.\n");
+		PVR_DPF((PVR_DBG_CUSTOMER, "GOV_FIRMWARE_CAPACITY event.\n"));
 		eError = PDVFSSendFirmwareCommand(&devfreq_dev->dev, event, data);
 		break;
 	case DEVFREQ_GOV_FIRMWARE_MINFREQ:
-		dev_info(&devfreq_dev->dev,"GOV_FIRMWARE_MINFREQ event.\n");
+		PVR_DPF((PVR_DBG_CUSTOMER, "GOV_FIRMWARE_MINFREQ event.\n"));
 		eError = PDVFSSendFirmwareCommand(&devfreq_dev->dev, event, data);
 		break;
 	case DEVFREQ_GOV_FIRMWARE_MAXFREQ:
-		dev_info(&devfreq_dev->dev,"GOV_FIRMWARE_MAXFREQ event.\n");
+		PVR_DPF((PVR_DBG_CUSTOMER, "GOV_FIRMWARE_MAXFREQ event.\n"));
 		eError = PDVFSSendFirmwareCommand(&devfreq_dev->dev, event, data);
 		break;
 	case DEVFREQ_GOV_UPDATE_UP_THRESHOLD:
-		dev_info(&devfreq_dev->dev,"GOV_UPDATE_UP_THRESHOLD event.\n");
+		PVR_DPF((PVR_DBG_CUSTOMER, "GOV_UPDATE_UP_THRESHOLD event.\n"));
 		eError = PDVFSSendFirmwareCommand(&devfreq_dev->dev, event, data);
 		break;
 	case DEVFREQ_GOV_UPDATE_DOWN_DIFFERENTIAL:
-		dev_info(&devfreq_dev->dev,"GOV_UPDATE_DOWN_DIFFERENTIAL event.\n");
+		PVR_DPF((PVR_DBG_CUSTOMER, "GOV_UPDATE_DOWN_DIFFERENTIAL event.\n"));
 		eError = PDVFSSendFirmwareCommand(&devfreq_dev->dev, event, data);
 		break;
 	default:
-		printk("Unknown event.\n");
+		dev_err(&devfreq_dev->dev, "Unknown event.\n");
 		break;
 	}
 
@@ -378,7 +377,9 @@ static IMG_INT32 devfreq_target(struct device *dev, unsigned long *requested_fre
 	struct dev_pm_opp *opp;
 
 	/* Target clock freq is calculated in the FW, here we sync the devfreq view of the GPU clock */
-	dev_info(dev, "Frequency notification from firmware-based governor: %lu\n", *requested_freq);
+	PVR_DPF((PVR_DBG_CUSTOMER,
+	         "Frequency notification from firmware-based governor: %lu\n",
+	         *requested_freq));
 
 	opp = devfreq_recommended_opp(dev, requested_freq, flags);
 	if (IS_ERR(opp)) {
@@ -388,7 +389,8 @@ static IMG_INT32 devfreq_target(struct device *dev, unsigned long *requested_fre
 
 	ui32Freq = dev_pm_opp_get_freq(opp);
 	ui32Volt = dev_pm_opp_get_voltage(opp);
-	dev_info(dev, "Requested new voltage %u and freq %u\n", ui32Volt, ui32Freq);
+	PVR_DPF((PVR_DBG_CUSTOMER,
+	         "Requested new voltage %u and freq %u\n", ui32Volt, ui32Freq));
 
 	dev_pm_opp_put(opp);
 

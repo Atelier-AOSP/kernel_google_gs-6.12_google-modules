@@ -7,6 +7,53 @@
 #include "common.h"
 #define google_pinmux__ -1
 
+static const u8 lga_regs[] = {
+	PARAM_ID,
+	DMUX_ID,
+	TXDATA_ID,
+	RXGATE_ID,
+	RXDATA_ID,
+	ISR_ID,
+	ISROVF_ID,
+	IER_ID,
+	IMR_ID,
+	ITR_ID,
+};
+
+static const u8 lga_reg2offset[REGS_NUM] = {
+	[PARAM_ID]  = 0x00,
+	[DMUX_ID]   = 0x04,
+	[TXDATA_ID] = 0x08,
+	[RXGATE_ID] = 0x0C,
+	[RXDATA_ID] = 0x10,
+	[ISR_ID]    = 0x14,
+	[ISROVF_ID] = 0x18,
+	[IER_ID]    = 0x1C,
+	[IMR_ID]    = 0x20,
+	[ITR_ID]    = 0x24,
+};
+
+int get_reg2offset(u8 reg_num)
+{
+	WARN_ON(reg_num >= ARRAY_SIZE(lga_reg2offset));
+
+	return lga_reg2offset[reg_num];
+}
+
+#define LGA_DUMP_REGS_HEADER "idx|          SOC pin           |  PARAM   |   DMUX   |  TXDATA  |  RXGATE  |  RXDATA  |   ISR    |  ISROVF  |   IER    |   IMR    |   ITR    |\n"
+static_assert(sizeof(LGA_DUMP_REGS_HEADER) <= DUMP_REGS_BUF_SIZE);
+
+#define LGA_PIN_SIZE 0x1000
+
+static const struct platform_common_info lga_common = {
+	.regs = lga_regs,
+	.num_regs = ARRAY_SIZE(lga_regs),
+	.pin_stride = LGA_PIN_SIZE,
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+	.dump_regs_header = LGA_DUMP_REGS_HEADER,
+#endif
+};
+
 GOOGLE_PINS(0);
 GOOGLE_PINS(1);
 GOOGLE_PINS(2);
@@ -175,9 +222,10 @@ static const struct google_pinctrl_soc_sswrp_info google_lga_pinctrl_hsion = {
 	.gpio_func = GPIO_FUNC_BIT_POS,
 	.num_gpios = MAX_NR_GPIO_HSION,
 	.label = "hsion",
+	.common = &lga_common,
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	.pins_excl_regs = hsion_pins_excl_regs,
-	.npins_excl_regs = ARRAY_SIZE(hsion_pins_excl_regs)
+	.npins_excl_regs = ARRAY_SIZE(hsion_pins_excl_regs),
 #endif
 };
 
@@ -248,9 +296,11 @@ static const struct google_pinctrl_soc_sswrp_info google_lga_pinctrl_hsios_stby 
 	.num_funcs = ARRAY_SIZE(google_lga_hsios_stby_functions),
 	.gpio_func = GPIO_FUNC_BIT_POS,
 	.num_gpios = MAX_NR_GPIO_HSIOS_STBY,
+	.common = &lga_common,
+	.label = "hsios_stby",
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	.pins_excl_regs = hsios_stby_pins_excl_regs,
-	.npins_excl_regs = ARRAY_SIZE(hsios_stby_pins_excl_regs)
+	.npins_excl_regs = ARRAY_SIZE(hsios_stby_pins_excl_regs),
 #endif
 };
 
@@ -345,7 +395,8 @@ static const struct google_pinctrl_soc_sswrp_info google_lga_pinctrl_hsios = {
 	.num_funcs = ARRAY_SIZE(google_lga_hsios_functions),
 	.gpio_func = GPIO_FUNC_BIT_POS,
 	.num_gpios = MAX_NR_GPIO_HSIOS,
-	.label = "hsios"
+	.label = "hsios",
+	.common = &lga_common,
 };
 
 static const struct pinctrl_pin_desc google_lga_dpu[] = {
@@ -382,7 +433,8 @@ static const struct google_pinctrl_soc_sswrp_info google_lga_pinctrl_dpu = {
 	.num_funcs = ARRAY_SIZE(google_lga_dpu_functions),
 	.gpio_func = GPIO_FUNC_BIT_POS,
 	.num_gpios = MAX_NR_GPIO_DPU,
-	.label = "dpu"
+	.label = "dpu",
+	.common = &lga_common,
 };
 
 static const struct pinctrl_pin_desc google_lga_aoc[] = {
@@ -842,7 +894,8 @@ static const struct google_pinctrl_soc_sswrp_info google_lga_pinctrl_aoc = {
 	.num_funcs = ARRAY_SIZE(google_lga_aoc_functions),
 	.gpio_func = GPIO_FUNC_BIT_POS,
 	.num_gpios = MAX_NR_GPIO_AOC,
-	.label = "aoc"
+	.label = "aoc",
+	.common = &lga_common,
 };
 
 static const struct pinctrl_pin_desc google_lga_gdmc[] = {
@@ -948,7 +1001,8 @@ static const struct google_pinctrl_soc_sswrp_info google_lga_pinctrl_gdmc = {
 	.num_funcs = ARRAY_SIZE(google_lga_gdmc_functions),
 	.gpio_func = GPIO_FUNC_BIT_POS,
 	.num_gpios = MAX_NR_GPIO_GDMC,
-	.label = "gdmc"
+	.label = "gdmc",
+	.common = &lga_common,
 };
 
 static const struct pinctrl_pin_desc google_lga_cpm[] = {
@@ -1178,7 +1232,8 @@ static const struct google_pinctrl_soc_sswrp_info google_lga_pinctrl_cpm = {
 	.num_funcs = ARRAY_SIZE(google_lga_cpm_functions),
 	.gpio_func = GPIO_FUNC_BIT_POS,
 	.num_gpios = MAX_NR_GPIO_CPM,
-	.label = "cpm"
+	.label = "cpm",
+	.common = &lga_common,
 };
 
 static const struct pinctrl_pin_desc google_lga_lsios[] = {
@@ -1468,9 +1523,10 @@ static const struct google_pinctrl_soc_sswrp_info google_lga_pinctrl_lsios = {
 	.gpio_func = GPIO_FUNC_BIT_POS,
 	.num_gpios = MAX_NR_GPIO_LSIOS,
 	.label = "lsios",
+	.common = &lga_common,
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	.pins_excl_regs = lsios_pins_excl_regs,
-	.npins_excl_regs = ARRAY_SIZE(lsios_pins_excl_regs)
+	.npins_excl_regs = ARRAY_SIZE(lsios_pins_excl_regs),
 #endif
 };
 
@@ -1636,7 +1692,8 @@ static const struct google_pinctrl_soc_sswrp_info google_lga_pinctrl_lsioe = {
 	.num_funcs = ARRAY_SIZE(google_lga_lsioe_functions),
 	.gpio_func = GPIO_FUNC_BIT_POS,
 	.num_gpios = MAX_NR_GPIO_LSIOE,
-	.label = "lsioe"
+	.label = "lsioe",
+	.common = &lga_common,
 };
 
 static const struct pinctrl_pin_desc google_lga_lsion[] = {
@@ -1700,7 +1757,8 @@ static const struct google_pinctrl_soc_sswrp_info google_lga_pinctrl_lsion = {
 	.num_funcs = ARRAY_SIZE(google_lga_lsion_functions),
 	.gpio_func = GPIO_FUNC_BIT_POS,
 	.num_gpios = MAX_NR_GPIO_LSION,
-	.label = "lsion"
+	.label = "lsion",
+	.common = &lga_common,
 };
 
 static const struct of_device_id google_lga_of_match[] = {

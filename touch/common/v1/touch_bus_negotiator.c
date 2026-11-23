@@ -10,10 +10,10 @@
 #include <linux/net.h>
 #include <linux/printk.h>
 #include <linux/slab.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
-#include <linux/of_gpio.h>
+#include <linux/of.h>
 #include <linux/delay.h>
 #include "touch_bus_negotiator.h"
 
@@ -36,7 +36,7 @@ static void handle_tbn_event_response(struct tbn_context *tbn,
 	struct TbnEventResponse *response);
 #endif
 static int tbn_handshaking(struct tbn_context *tbn, enum TbnOperation operation);
-static int tbn_remove(struct platform_device *pdev);
+static void tbn_remove(struct platform_device *pdev);
 
 static struct tbn_context *tbn_context;
 
@@ -57,7 +57,7 @@ static irqreturn_t tbn_aoc2ap_irq_thread(int irq, void *ptr)
 	 *    for complete_all(&tbn->bus_released);
 	 */
 	while (!completion_done(&tbn->bus_released)) {
-		if (gpio_get_value(tbn->aoc2ap_gpio) == TBN_BUS_OWNER_AOC)
+		if (gpiod_get_raw_value(tbn->aoc2ap_gpio) == TBN_BUS_OWNER_AOC)
 			complete_all(&tbn->bus_released);
 		else
 			usleep_range(10000, 10000);	/* wait 10 ms for gpio stablized */
@@ -70,7 +70,7 @@ static irqreturn_t tbn_aoc2ap_irq_thread(int irq, void *ptr)
 	 *    for complete_all(&tbn->bus_requested);
 	 */
 	while (!completion_done(&tbn->bus_requested)) {
-		if (gpio_get_value(tbn->aoc2ap_gpio) == TBN_BUS_OWNER_AP)
+		if (gpiod_get_raw_value(tbn->aoc2ap_gpio) == TBN_BUS_OWNER_AP)
 			complete_all(&tbn->bus_requested);
 		else
 			usleep_range(10000, 10000);	/* wait 10 ms for gpio stablized */
@@ -240,18 +240,18 @@ static int tbn_handshaking(struct tbn_context *tbn, enum TbnOperation operation)
 	}
 
 	if (tbn->mode == TBN_MODE_GPIO) {
-		int ap2aoc_val_org = gpio_get_value(tbn->ap2aoc_gpio);
-		int aoc2ap_val_org = gpio_get_value(tbn->aoc2ap_gpio);
+		int ap2aoc_val_org = gpiod_get_raw_value(tbn->ap2aoc_gpio);
+		int aoc2ap_val_org = gpiod_get_raw_value(tbn->aoc2ap_gpio);
 
 		reinit_completion(wait_for_completion);
 
 		irq_set_irq_type(tbn->aoc2ap_irq, irq_type);
 		enable_irq(tbn->aoc2ap_irq);
-		gpio_direction_output(tbn->ap2aoc_gpio, bus_owner);
+		gpiod_direction_output_raw(tbn->ap2aoc_gpio, bus_owner);
 		if (wait_for_completion_timeout(wait_for_completion,
 			msecs_to_jiffies(timeout)) == 0) {
-			int ap2aoc_val = gpio_get_value(tbn->ap2aoc_gpio);
-			int aoc2ap_val = gpio_get_value(tbn->aoc2ap_gpio);
+			int ap2aoc_val = gpiod_get_raw_value(tbn->ap2aoc_gpio);
+			int aoc2ap_val = gpiod_get_raw_value(tbn->aoc2ap_gpio);
 
 			complete_all(wait_for_completion);
 			if (bus_owner == aoc2ap_val)
@@ -411,7 +411,8 @@ void register_tbn_lptw_callback(void* callback, void* cbdata)
 EXPORT_SYMBOL_GPL(register_tbn_lptw_callback);
 
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_TBN_AOC_CHANNEL_MODE)
-void tbn_aoc_reset_work(struct work_struct *work) {
+static void tbn_aoc_reset_work(struct work_struct *work)
+{
 	struct tbn_context *tbn = container_of(work, struct tbn_context, aoc_reset_work);
 
 	pr_warn("%s: AOC has been reset", __func__);
@@ -466,52 +467,38 @@ static int tbn_probe(struct platform_device *pdev)
 		tbn->mode = TBN_MODE_GPIO;
 
 	if (tbn->mode == TBN_MODE_GPIO) {
-		tbn->ap2aoc_gpio = of_get_named_gpio(np, "tbn,ap2aoc_gpio", 0);
-		if (gpio_is_valid(tbn->ap2aoc_gpio)) {
-			err = devm_gpio_request_one(tbn->dev, tbn->ap2aoc_gpio,
-				GPIOF_OUT_INIT_LOW, "tbn,ap2aoc_gpio");
-			if (err) {
-				pr_err("%s: Unable to request ap2aoc_gpio %d, err %d!\n",
-					__func__, tbn->ap2aoc_gpio, err);
-				goto failed;
-			}
-		} else {
-			pr_err("%s: invalid ap2aoc_gpio %d!\n",
-				__func__, tbn->ap2aoc_gpio);
-			err = -EPROBE_DEFER;
+		tbn->ap2aoc_gpio = devm_gpiod_get(tbn->dev, "tbn,ap2aoc", GPIOD_ASIS);
+		if (IS_ERR(tbn->ap2aoc_gpio)) {
+			err = PTR_ERR(tbn->ap2aoc_gpio);
+			pr_err("%s: Unable to request ap2aoc_gpio, err %d!\n",
+			       __func__, err);
+			goto failed;
+		}
+		gpiod_direction_output_raw(tbn->ap2aoc_gpio, 0);
+
+		tbn->aoc2ap_gpio = devm_gpiod_get(tbn->dev, "tbn,aoc2ap", GPIOD_IN);
+		if (IS_ERR(tbn->aoc2ap_gpio)) {
+			err = PTR_ERR(tbn->aoc2ap_gpio);
+			pr_err("%s: Unable to request aoc2ap_gpio, err %d!\n",
+			       __func__, err);
 			goto failed;
 		}
 
-		tbn->aoc2ap_gpio = of_get_named_gpio(np, "tbn,aoc2ap_gpio", 0);
-		if (gpio_is_valid(tbn->aoc2ap_gpio)) {
-			err = devm_gpio_request_one(tbn->dev, tbn->aoc2ap_gpio,
-				GPIOF_DIR_IN, "tbn,aoc2ap_gpio");
-			if (err) {
-				pr_err("%s: Unable to request aoc2ap_gpio %d, err %d!\n",
-					__func__, tbn->aoc2ap_gpio, err);
-				goto failed;
-			}
-			tbn->aoc2ap_irq = gpio_to_irq(tbn->aoc2ap_gpio);
-			err = devm_request_threaded_irq(tbn->dev,
-				tbn->aoc2ap_irq, NULL,
-				tbn_aoc2ap_irq_thread,
-				IRQF_TRIGGER_RISING |
-				IRQF_ONESHOT, "tbn", tbn);
-			if (err) {
-				pr_err("%s: Unable to request_threaded_irq, err %d!\n",
-					__func__, err);
-				goto failed;
-			}
-			disable_irq_nosync(tbn->aoc2ap_irq);
-		} else {
-			pr_err("%s: invalid aoc2ap_gpio %d!\n",
-				__func__, tbn->aoc2ap_gpio);
-			err = -EPROBE_DEFER;
+		tbn->aoc2ap_irq = gpiod_to_irq(tbn->aoc2ap_gpio);
+		err = devm_request_threaded_irq(tbn->dev,
+						tbn->aoc2ap_irq, NULL,
+						tbn_aoc2ap_irq_thread,
+						IRQF_TRIGGER_RISING |
+						IRQF_ONESHOT, "tbn", tbn);
+		if (err) {
+			pr_err("%s: Unable to request_threaded_irq, err %d!\n",
+			       __func__, err);
 			goto failed;
 		}
+		disable_irq_nosync(tbn->aoc2ap_irq);
 
 		pr_info("%s: gpios(aoc2ap: %d ap2aoc: %d)\n",
-			__func__, tbn->aoc2ap_gpio, tbn->ap2aoc_gpio);
+			__func__, desc_to_gpio(tbn->aoc2ap_gpio), desc_to_gpio(tbn->ap2aoc_gpio));
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_TBN_AOC_CHANNEL_MODE)
 	} else if (tbn->mode == TBN_MODE_AOC_CHANNEL) {
 		mutex_init(&tbn->event_lock);
@@ -562,32 +549,41 @@ failed:
 	return err;
 }
 
-static int tbn_remove(struct platform_device *pdev)
+static void tbn_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct tbn_context *tbn = dev_get_drvdata(dev);
 
 	if (tbn == NULL)
-		return 0;
+		return;
 
-	if (tbn->mode == TBN_MODE_GPIO) {
-		free_irq(tbn->aoc2ap_irq, tbn);
-		if (gpio_is_valid(tbn->ap2aoc_gpio))
-			gpio_free(tbn->ap2aoc_gpio);
-		if (gpio_is_valid(tbn->aoc2ap_gpio))
-			gpio_free(tbn->aoc2ap_gpio);
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_TBN_AOC_CHANNEL_MODE)
-	} else if (tbn->mode == TBN_MODE_AOC_CHANNEL) {
+	if (tbn->mode == TBN_MODE_AOC_CHANNEL) {
 		if (!IS_ERR(tbn->aoc_channel_task))
 			kthread_stop(tbn->aoc_channel_task);
 		if (tbn->event_wq)
 			destroy_workqueue(tbn->event_wq);
-#endif
 	}
+#endif
 
 	devm_kfree(dev, tbn);
 	tbn_context = NULL;
-	return 0;
+}
+
+static void tbn_shutdown(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct tbn_context *tbn = dev_get_drvdata(dev);
+
+	if (tbn == NULL)
+		return;
+
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_TBN_AOC_CHANNEL_MODE)
+	if (tbn->mode == TBN_MODE_AOC_CHANNEL) {
+		if (!IS_ERR(tbn->aoc_channel_task))
+			kthread_stop(tbn->aoc_channel_task);
+	}
+#endif
 }
 
 static struct of_device_id tbn_of_match_table[] = {
@@ -605,6 +601,7 @@ static struct platform_driver tbn_driver = {
 	},
 	.probe = tbn_probe,
 	.remove = tbn_remove,
+	.shutdown = tbn_shutdown,
 };
 
 static int __init tbn_init(void)

@@ -73,7 +73,7 @@ struct google_usb_phy {
 	struct mutex lock;
 };
 
-int wait_for_sram_init(struct google_usb_phy *gphy)
+static int wait_for_sram_init(struct google_usb_phy *gphy)
 {
 	DP_USBCS_PHY_CFG1 creg;
 
@@ -117,7 +117,7 @@ static void set_sram_bypass(struct google_usb_phy *gphy, int bypass)
 	writel(phy_cfg1.reg_value, gphy->dp_top_csr_base + DP_USBCS_PHY_CFG1_OFFSET);
 }
 
-void set_ext_load_done(struct google_usb_phy *gphy, int done)
+static void set_ext_load_done(struct google_usb_phy *gphy, int done)
 {
 	DP_USBCS_PHY_CFG1 phy_cfg1;
 
@@ -220,7 +220,7 @@ static void lga_pm_callback(struct device *dev, bool resume)
 			bulk_array[i].id = names_array[i]; \
 	}
 
-int google_usb_phy_parse_clocks(struct google_usb_phy *gphy)
+static int google_usb_phy_parse_clocks(struct google_usb_phy *gphy)
 {
 	int ret;
 	const char *u2phy_clock_names[GOOGLE_U2PHY_NUM_CLOCKS] = {
@@ -237,7 +237,7 @@ int google_usb_phy_parse_clocks(struct google_usb_phy *gphy)
 	return devm_clk_bulk_get(gphy->dev, gphy->drv_data->num_u3p_clks, gphy->u3phy_clocks);
 }
 
-int google_usb_phy_parse_resets(struct google_usb_phy *gphy)
+static int google_usb_phy_parse_resets(struct google_usb_phy *gphy)
 {
 	gphy->u2phy_reset = devm_reset_control_get_exclusive(gphy->dev, "usb2_phy_reset");
 	if (IS_ERR(gphy->u2phy_reset)) {
@@ -712,7 +712,7 @@ unprepare_u2phy_clocks:
 	return ret;
 }
 
-static int google_usb_phy_remove(struct platform_device *pdev)
+static void google_usb_phy_remove(struct platform_device *pdev)
 {
 	struct google_usb_phy *gphy = dev_get_drvdata(&pdev->dev);
 
@@ -720,7 +720,6 @@ static int google_usb_phy_remove(struct platform_device *pdev)
 	typec_switch_unregister(gphy->typec_switch);
 	usb_role_switch_unregister(gphy->role_sw);
 	typec_mux_unregister(gphy->typec_mux);
-	return 0;
 }
 
 static const struct google_usb_phy_driverdata lga_drvdata = {

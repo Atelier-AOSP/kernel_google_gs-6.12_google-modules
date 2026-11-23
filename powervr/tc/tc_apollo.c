@@ -49,7 +49,6 @@
 #include <linux/interrupt.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
-#include <linux/version.h>
 #include <linux/thermal.h>
 
 #include "tc_drv_internal.h"

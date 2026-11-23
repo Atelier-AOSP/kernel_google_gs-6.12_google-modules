@@ -68,21 +68,10 @@ uint8_t esd_check;
 uint8_t esd_retry;
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
 
-#if NVT_TOUCH_EXT_PROC
-extern int32_t nvt_extra_proc_init(void);
-extern void nvt_extra_proc_deinit(void);
-#endif
-
-#if NVT_TOUCH_MP
-extern int32_t nvt_mp_proc_init(void);
-extern void nvt_mp_proc_deinit(void);
-#endif
-
 struct nvt_ts_data *ts;
 
 #if BOOT_UPDATE_FIRMWARE
 struct workqueue_struct *nvt_fwu_wq;
-extern void Boot_Update_Firmware(struct work_struct *work);
 #endif
 
 #if defined(CONFIG_FB)
@@ -1026,7 +1015,7 @@ Description:
 return:
 	n.a.
 *******************************************************/
-void nvt_ts_wakeup_gesture_report(uint8_t gesture_id, uint8_t *data)
+static void nvt_ts_wakeup_gesture_report(uint8_t gesture_id, uint8_t *data)
 {
 	unsigned int keycode = 0;
 	uint8_t func_type = data[2];
@@ -2196,8 +2185,8 @@ static int32_t nvt_ts_probe(struct spi_device *client)
 	}
 
 	//---prepare for spi parameter---
-	if (ts->client->master->flags & SPI_MASTER_HALF_DUPLEX) {
-		NVT_ERR("Full duplex not supported by master\n");
+	if (ts->client->controller->flags & SPI_CONTROLLER_HALF_DUPLEX) {
+		NVT_ERR("Full duplex not supported by controller\n");
 		ret = -EIO;
 		goto err_ckeck_full_duplex;
 	}

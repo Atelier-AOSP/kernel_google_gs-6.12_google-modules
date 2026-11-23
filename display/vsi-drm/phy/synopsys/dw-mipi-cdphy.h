@@ -16,6 +16,7 @@ enum cdphy_model {
 
 struct dw_mipi_cdphy_data {
 	bool lane_conn_fixup;
+	bool pll_calc_old;
 };
 
 struct dw_mipi_cdphy {
@@ -38,6 +39,7 @@ struct dw_mipi_cdphy {
 	bool pll_ssc;
 	bool pll_enabled;
 	bool phy_in_ulps;
+	bool non24x_fix;
 	u32 lane_ovr_en;
 
 	const struct phy_ops *cdphy_ops;
@@ -60,5 +62,6 @@ struct dw_cdphy_plat_data {
 	/* 0 dphy, 1 cphy */
 	u32 is_cphy;
 	bool pll_ssc;
+	bool non24x_fix;
 };
 #endif /* _DW_MIPI_CDPHY_H */

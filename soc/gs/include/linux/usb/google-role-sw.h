@@ -11,7 +11,8 @@
 #include <linux/usb/role.h>
 
 #define AOC_VOTER "AOC"
-#define TCPCI_VOTER "TCPCI"
+#define OFFLOAD_VOTER "OFFLOAD"
+#define TCPCI_COMB_VOTER "TCPCI_COMB"
 #define DISABLE_USB_DATA_VOTER "DISABLE_USB_DATA"
 #define VOTABLE_USB_DATA_ROLE "USB_DR_EL"
 
@@ -49,5 +50,9 @@ struct google_role_sw {
 	enum downstream_sw downstream;
 	int curr_role;
 };
+
+#if IS_ENABLED(CONFIG_KUNIT)
+	int update_data_role(struct gvotable_election *el, const char *reason, void *value);
+#endif
 
 #endif  // GOOGLE_ROLE_SW_H_

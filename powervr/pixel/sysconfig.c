@@ -12,8 +12,8 @@
 #include <pvrsrvkm/services/system/include/syscommon.h>
 #include <pvrsrvkm/services/system/include/sysconfig_cmn.h>
 #include <pvrsrvkm/services/server/devices/volcanic/rgxdevice.h>
-#include <pvrsrvkm/services/server/devices/rgxstartstop.h>
-#include <pvrsrvkm/services/server/devices/rgxfwimageutils.h>
+#include <pvrsrvkm/services/server/devices/hal/rgx/rgxstartstop.h>
+#include <pvrsrvkm/services/server/devices/hal/rgx/rgxfwimageutils.h>
 #include <pvrsrvkm/services/include/rgx_memallocflags.h>
 
 #include <pvr_drv.h>
@@ -31,6 +31,7 @@
 #include "sscd.h"
 #include "uid_time_in_state.h"
 #include "gpu_uevent.h"
+#include "scheduling.h"
 #include <trace/hooks/systrace.h>
 
 #if defined(SUPPORT_TRUSTED_DEVICE)
@@ -107,11 +108,11 @@ enum GPU_HEAPS {
 };
 
 #define PHYS_HEAP_IPA_CONFIG(PBHA_POLICY)                                                          \
-	((IPA_CONFIG){                                                                             \
-		.ui8IPAPolicyDefault = (PBHA_POLICY),                                              \
-		.ui8IPAPolicyMask = PBHA_MASK,                                                     \
-		.ui8IPAPolicyShift = PBHA_BIT_POS,                                                 \
-	})
+       ((IPA_CONFIG){                                                                             \
+               .ui8IPAPolicyDefault = (PBHA_POLICY),                                              \
+               .ui8IPAPolicyMask = PBHA_MASK,                                                     \
+               .ui8IPAPolicyShift = PBHA_BIT_POS,                                                 \
+       })
 
 /* This can't be const, as the physical address range of the trusted firmware
  * carveout will be populated from device-tree.
@@ -444,6 +445,7 @@ static void gpu_error_notify(IMG_HANDLE sysdata, PVRSRV_ROBUSTNESS_NOTIFY_DATA *
 	__ATRACE_END_PID(pid, "");
 }
 
+#if defined(SUPPORT_FOREIGN_FENCE_TOKEN)
 static void release_fence_data(IMG_HANDLE sys_data, IMG_UINT16 fence_data)
 {
 	struct pixel_gpu_device *pixel_dev = (struct pixel_gpu_device *)sys_data;
@@ -451,19 +453,22 @@ static void release_fence_data(IMG_HANDLE sys_data, IMG_UINT16 fence_data)
 
 	fence_manager_iif_retire(pixel_dev, &handle);
 }
+#endif
 
+#if defined(SUPPORT_FOREIGN_FENCE_TOKEN) || defined(SUPPORT_FASTPATH_FENCE)
 static IMG_BOOL extract_fence_data(IMG_HANDLE sys_data, IMG_HANDLE hEnvFenceObjPtr,
-		IMG_UINT16 *pui16FFToken)
+		SYNC_CHECKPOINT_FF_TOKEN *puiFFToken)
 {
 	struct pixel_gpu_device *pixel_dev = (struct pixel_gpu_device *)sys_data;
 	struct dma_fence *fence = hEnvFenceObjPtr;
 
 	union pixel_rgxfwif_iif_handle handle = fence_manager_extract_iif(pixel_dev, fence);
 
-	*pui16FFToken = handle.data;
+	*puiFFToken = handle.data;
 
 	return handle.valid;
 }
+#endif
 
 #if !defined(SUPPORT_TRUSTED_DEVICE)
 static int map_physmem_fw(struct pixel_gpu_device *pixel_dev)
@@ -505,8 +510,8 @@ static int map_physmem_fw(struct pixel_gpu_device *pixel_dev)
 	/* Provide the FW with the base address */
 	info->psRGXFWIfSysInit->sCustomerRegBase =
 		pixel_dev->gpu_phys_mem_import->sDeviceImport.sDevVAddr;
-	dev_dbg(pixel_dev->dev, "FW reg block va: %llx",
-		pixel_dev->gpu_phys_mem_import->sDeviceImport.sDevVAddr.uiAddr);
+	PVR_DPF((PVR_DBG_CUSTOMER, "FW reg block va: %llx",
+		pixel_dev->gpu_phys_mem_import->sDeviceImport.sDevVAddr.uiAddr));
 exit:
 	return ret;
 }
@@ -579,6 +584,7 @@ static const struct subsystem_init_table_entry subsys_init[] = {
 	{gpu_sscd_init, gpu_sscd_deinit, "Failed to initialize SSCD"},
 	{init_pixel_uid_tis, deinit_pixel_uid_tis, "Failed to initialize per-UID time-in-state"},
 	{gpu_uevent_init, gpu_uevent_term, "Failed to initialize GPU uevent"},
+	{init_scheduling, deinit_scheduling, "Failed to initialize GPU scheduling adjustments"},
 };
 
 static void subsystem_deinit(struct pixel_gpu_device *pixel_dev, int i)
@@ -735,7 +741,7 @@ PVRSRV_ERROR SysDevInit(void *osdev, PVRSRV_DEVICE_CONFIG **devcfg)
 	int ret;
 	u32 init_frequency;
 
-	dev_dbg(dev, "> %s", __func__);
+	PVR_DPF((PVR_DBG_CUSTOMER, "> %s", __func__));
 
 	// Inform the kernel that the GPU can access the full 40-bit IPA space, so it doesn't need
 	// to allocate "bounce buffers" for reading/writing data outside the GPU's accessible
@@ -747,7 +753,7 @@ PVRSRV_ERROR SysDevInit(void *osdev, PVRSRV_DEVICE_CONFIG **devcfg)
 		ret = PVRSRV_ERROR_INIT_FAILURE;
 		goto init_fail;
 	}
-	dev_dbg(dev, "regs: %pa .. %pa", &reg_res->start, &reg_res->end);
+	PVR_DPF((PVR_DBG_CUSTOMER, "regs: %pa .. %pa", &reg_res->start, &reg_res->end));
 
 	irq = platform_get_irq(to_platform_device(dev), 0);
 	if (irq < 0) {
@@ -755,7 +761,7 @@ PVRSRV_ERROR SysDevInit(void *osdev, PVRSRV_DEVICE_CONFIG **devcfg)
 		ret = PVRSRV_ERROR_INIT_FAILURE;
 		goto init_fail;
 	}
-	dev_dbg(dev, "irq: %d", irq);
+	PVR_DPF((PVR_DBG_CUSTOMER, "irq: %d", irq));
 
 	pixel_dev = kzalloc(sizeof(struct pixel_gpu_device), GFP_KERNEL);
 	if (!pixel_dev) {
@@ -781,7 +787,7 @@ PVRSRV_ERROR SysDevInit(void *osdev, PVRSRV_DEVICE_CONFIG **devcfg)
 	cfg->sRegsCpuPBase.uiAddr	= reg_res->start;
 	cfg->ui32RegsSize		= resource_size(reg_res);
 	cfg->ui32IRQ			= irq;
-	cfg->eCacheSnoopingMode		= PVRSRV_DEVICE_SNOOP_CPU_ONLY;
+	cfg->eSystemCoherencyMode       = PVRSRV_DEVICE_SNOOP_CPU_ONLY;
 	cfg->hSysData			= pixel_dev;
 	cfg->bHasNonMappableLocalMemory = false;
 	cfg->bHasFBCDCVersion31		= true;
@@ -807,8 +813,12 @@ PVRSRV_ERROR SysDevInit(void *osdev, PVRSRV_DEVICE_CONFIG **devcfg)
 	cfg->pszSecureDMAHeapName = PVR_SECURE_DMA_HEAP_NAME;
 #endif
 
+#if defined(SUPPORT_FOREIGN_FENCE_TOKEN) || defined(SUPPORT_FASTPATH_FENCE)
 	cfg->pfnSysDevExtractFFToken = extract_fence_data;
+#endif
+#if defined(SUPPORT_FOREIGN_FENCE_TOKEN)
 	cfg->pfnSysDevReleaseFF = release_fence_data;
+#endif
 	cfg->pfnRecordWorkPeriod = work_period_callback;
 
 	if (of_property_read_u32_index(dev->of_node, "init-frequency-hz", 0, &init_frequency)) {
@@ -829,7 +839,7 @@ PVRSRV_ERROR SysDevInit(void *osdev, PVRSRV_DEVICE_CONFIG **devcfg)
 		goto init_fail;
 
 	*devcfg = cfg;
-	dev_dbg(dev, "< %s", __func__);
+	PVR_DPF((PVR_DBG_CUSTOMER, "< %s", __func__));
 	return PVRSRV_OK;
 
 init_fail:
@@ -863,9 +873,7 @@ void SysDevDeInit(PVRSRV_DEVICE_CONFIG *devcfg)
 PVRSRV_ERROR SysDebugInfo(PVRSRV_DEVICE_CONFIG *devcfg, DUMPDEBUG_PRINTF_FUNC *dbg_printf,
 			  void *dbg_file)
 {
-	struct device * const dev = (struct device *)devcfg->pvOSDevice;
-
-	dev_dbg(dev, "%s", __func__);
+	PVR_DPF((PVR_DBG_CUSTOMER, "%s", __func__));
 	return PVRSRV_OK;
 }
 

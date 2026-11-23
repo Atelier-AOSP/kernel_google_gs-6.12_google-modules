@@ -2,7 +2,7 @@
 /*
  * GXP debug dump handler
  *
- * Copyright (C) 2020-2022 Google LLC
+ * Copyright (C) 2020-2025 Google LLC
  */
 
 #include <linux/bitops.h>
@@ -11,11 +11,14 @@
 #include <linux/dma-mapping.h>
 #include <linux/ktime.h>
 #include <linux/moduleparam.h>
+#include <linux/platform_data/sscoredump.h>
 #include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/workqueue.h>
 
 #include <gcip/gcip-alloc-helper.h>
+#include <gcip/gcip-android-build.h>
+#include <gcip/gcip-memory.h>
 #include <gcip/gcip-pm.h>
 
 #include "gxp-client.h"
@@ -35,19 +38,16 @@
 #include "gxp-pm.h"
 #include "gxp-vd.h"
 
-#if HAS_COREDUMP
-#include <linux/platform_data/sscoredump.h>
-#endif
 
 #if GXP_HAS_MCU
 #include "gxp-mcu-telemetry.h"
 #include "gxp-mcu.h"
 #endif /* GXP_HAS_MCU */
 
-#define SSCD_MSG_LENGTH 128
-
+/* Size of shared debug dump memory per core. */
+#define PER_CORE_DEBUG_DUMP_MEMORY_SIZE SZ_1M
 /* Shared debug dump memory size between DSP cores and GXP kernel driver. */
-#define CORE_DEBUG_DUMP_MEMORY_SIZE SZ_4M
+#define CORE_DEBUG_DUMP_MEMORY_SIZE (PER_CORE_DEBUG_DUMP_MEMORY_SIZE * GXP_NUM_CORES)
 /* Shared debug dump memory size between MCU and GXP kernel driver. */
 #define MCU_DEBUG_DUMP_MEMORY_SIZE SZ_128K
 
@@ -73,24 +73,14 @@ enum gxp_common_segments_idx {
 #define TEST_SLEEP()
 #endif /* IS_GXP_TEST */
 
-/* Whether or not the debug dump subsystem should be enabled. */
-#if !IS_GXP_TEST && !GXP_ENABLE_DEBUG_DUMP
-static int gxp_debug_dump_enable;
-#else
-static int gxp_debug_dump_enable = 1;
-#endif /* !IS_GXP_TEST && !GXP_ENABLE_DEBUG_DUMP */
-module_param_named(debug_dump_enable, gxp_debug_dump_enable, int, 0660);
-
 static void gxp_debug_dump_cache_invalidate(struct gxp_dev *gxp)
 {
 	/* Debug dump carveout is currently coherent. NO-OP. */
-	return;
 }
 
 static void gxp_debug_dump_cache_flush(struct gxp_dev *gxp)
 {
 	/* Debug dump carveout is currently coherent. NO-OP. */
-	return;
 }
 
 static u32 gxp_read_sync_barrier_shadow(struct gxp_dev *gxp, uint index)
@@ -98,38 +88,23 @@ static u32 gxp_read_sync_barrier_shadow(struct gxp_dev *gxp, uint index)
 	return gxp_read_32(gxp, GXP_REG_SYNC_BARRIER_SHADOW(index));
 }
 
-static void gxp_get_common_registers(struct gxp_dev *gxp,
-				     struct gxp_seg_header *seg_header,
-				     struct gxp_common_registers *common_regs)
+static void gxp_get_ac_disabled_common_reg(struct gxp_dev *gxp,
+					   struct gxp_common_registers *common_regs)
 {
 	int i;
 
-	dev_dbg(gxp->dev, "Getting common registers\n");
-
-	seg_header->type = COMMON_REGISTERS;
-	seg_header->valid = 1;
-	seg_header->size = sizeof(*common_regs);
-
-	/* Get Aurora Top registers */
-	common_regs->aurora_revision =
-		gxp_read_32(gxp, GXP_REG_AURORA_REVISION);
 #if GXP_DUMP_INTERRUPT_POLARITY_REGISTER
-	common_regs->common_int_pol_0 =
-		gxp_read_32(gxp, GXP_REG_COMMON_INT_POL_0);
-	common_regs->common_int_pol_1 =
-		gxp_read_32(gxp, GXP_REG_COMMON_INT_POL_1);
-	common_regs->dedicated_int_pol =
-		gxp_read_32(gxp, GXP_REG_DEDICATED_INT_POL);
+	common_regs->common_int_pol_0 = gxp_read_32(gxp, GXP_REG_COMMON_INT_POL_0);
+	common_regs->common_int_pol_1 = gxp_read_32(gxp, GXP_REG_COMMON_INT_POL_1);
+	common_regs->dedicated_int_pol = gxp_read_32(gxp, GXP_REG_DEDICATED_INT_POL);
 #endif /* GXP_DUMP_INTERRUPT_POLARITY_REGISTER */
 	common_regs->raw_ext_int = gxp_read_32(gxp, GXP_REG_RAW_EXT_INT);
 
 	for (i = 0; i < GXP_NUM_CORES; i++)
 		common_regs->core_pd[i] = gxp_read_32(gxp, GXP_REG_CORE_PD(i));
 
-	common_regs->global_counter_low =
-		gxp_read_32(gxp, GXP_REG_GLOBAL_COUNTER_LOW);
-	common_regs->global_counter_high =
-		gxp_read_32(gxp, GXP_REG_GLOBAL_COUNTER_HIGH);
+	common_regs->global_counter_low = gxp_read_32(gxp, GXP_REG_GLOBAL_COUNTER_LOW);
+	common_regs->global_counter_high = gxp_read_32(gxp, GXP_REG_GLOBAL_COUNTER_HIGH);
 	common_regs->wdog_control = gxp_read_32(gxp, GXP_REG_WDOG_CONTROL);
 	common_regs->wdog_value = gxp_read_32(gxp, GXP_REG_WDOG_VALUE);
 
@@ -145,9 +120,24 @@ static void gxp_get_common_registers(struct gxp_dev *gxp,
 
 	/* Get Sync Barrier registers */
 	for (i = 0; i < SYNC_BARRIER_COUNT; i++)
-		common_regs->sync_barrier[i] =
-			gxp_read_sync_barrier_shadow(gxp, i);
+		common_regs->sync_barrier[i] = gxp_read_sync_barrier_shadow(gxp, i);
+}
 
+static void gxp_get_common_registers(struct gxp_dev *gxp,
+				     struct gxp_seg_header *seg_header,
+				     struct gxp_common_registers *common_regs)
+{
+	dev_dbg(gxp->dev, "Getting common registers\n");
+
+	seg_header->type = COMMON_REGISTERS;
+	seg_header->valid = 1;
+	seg_header->size = sizeof(*common_regs);
+
+	/* Get Aurora Top registers */
+	common_regs->aurora_revision =
+		gxp_read_32(gxp, GXP_REG_AURORA_REVISION);
+	if (!GXP_RFW_AC_POLICY_ENABLED)
+		gxp_get_ac_disabled_common_reg(gxp, common_regs);
 	dev_dbg(gxp->dev, "Done getting common registers\n");
 }
 
@@ -333,15 +323,62 @@ static int gxp_add_seg(struct gxp_debug_dump_manager *mgr, uint core_id, uint *s
 	if (*seg_idx >= GXP_NUM_SEGMENTS_PER_CORE)
 		return -ENOSPC;
 
-#if HAS_COREDUMP
-	mgr->segs[core_id][*seg_idx].addr = addr;
-	mgr->segs[core_id][*seg_idx].size = size;
+	mgr->sscd_segments[core_id].segments[*seg_idx].addr = addr;
+	mgr->sscd_segments[core_id].segments[*seg_idx].size = size;
 	*seg_idx += 1;
-#endif
+	mgr->sscd_segments[core_id].num_segments = *seg_idx;
 	return 0;
 }
 
-#if HAS_COREDUMP
+static void gxp_free_sscd_segments(struct gxp_dev *gxp, uint core_id)
+{
+	int i;
+	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
+	struct gxp_per_core_sscd_segments *sscd_segments = &mgr->sscd_segments[core_id];
+
+	/* Segments are not copied in direct mode so nothing to free. */
+	if (gxp_is_direct_mode(gxp))
+		return;
+
+	for (i = 0; i < sscd_segments->num_copied_segments; i++) {
+		kvfree(sscd_segments->segments[i].addr);
+		sscd_segments->segments[i].addr = 0;
+		sscd_segments->segments[i].size = 0;
+	}
+	sscd_segments->num_copied_segments = 0;
+	sscd_segments->num_segments = 0;
+	sscd_segments->pending = false;
+}
+
+static int gxp_copy_sscd_segments(struct gxp_dev *gxp, uint core_id)
+{
+	void *ptr;
+	int i;
+	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
+	struct gxp_per_core_sscd_segments *sscd_segments = &mgr->sscd_segments[core_id];
+
+	/* Copying to local memory is skipped for direct mode. */
+	if (gxp_is_direct_mode(gxp))
+		return 0;
+
+	sscd_segments->num_copied_segments = 0;
+	sscd_segments->pending = true;
+	for (i = 0; i < sscd_segments->num_segments; i++) {
+		ptr = kvmalloc(sscd_segments->segments[i].size, GFP_KERNEL);
+		if (ptr) {
+			memcpy(ptr, sscd_segments->segments[i].addr,
+			       sscd_segments->segments[i].size);
+			sscd_segments->segments[i].addr = ptr;
+			sscd_segments->num_copied_segments++;
+		} else {
+			gxp_free_sscd_segments(gxp, core_id);
+			return -ENOMEM;
+		}
+	}
+
+	return 0;
+}
+
 static void gxp_send_to_sscd(struct gxp_dev *gxp, void *segs, int seg_cnt, const char *info)
 {
 	int ret;
@@ -370,7 +407,6 @@ static void gxp_send_to_sscd(struct gxp_dev *gxp, void *segs, int seg_cnt, const
 
 	prev_sscd_report_time = ktime_get();
 }
-#endif /* HAS_COREDUMP */
 
 /*
  * `user_bufs` is an input buffer containing up to GXP_NUM_BUFFER_MAPPINGS
@@ -547,6 +583,11 @@ static int gxp_map_ns_image_config_section(struct gxp_dev *gxp, struct gxp_virtu
 		if (daddr != vd->ns_regions[idx].daddr)
 			continue;
 
+		/*
+		 * Sync the SG buffer for CPU access before adding it to the segments.
+		 * This ensures the latest data is visible to the CPU for dumping.
+		 */
+		gxp_dma_sync_sg_for_cpu(gxp, sgt->sgl, sgt->orig_nents, DMA_BIDIRECTIONAL);
 		return gxp_add_seg(
 			mgr, core_id, seg_idx, gcip_noncontiguous_sgt_to_mem(sgt),
 			gcip_ns_config_to_size(
@@ -583,6 +624,30 @@ static void gxp_debug_dump_invalidate_mcu_segments(struct gxp_dev *gxp, int core
 }
 
 /**
+ * gxp_debug_dump_are_mcu_dumped_segments_available() - Checks if MCU dumped segments are
+ *                                                      available.
+ *
+ * @gxp: The GXP device.
+ * @core_id: Physical index (0-based) of DSP/MCU cores.
+ *
+ * Return:
+ * * true - MCU dumped segments available.
+ * * false - MCU dumped segments unavailable.
+ */
+static bool gxp_debug_dump_are_mcu_dumped_segments_available(struct gxp_dev *gxp, uint32_t core_id)
+{
+	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
+	struct gxp_mcu_dump_metadata *dump_metadata;
+	struct gxp_mcu_dump_descriptor *dump_descriptor;
+
+	dump_metadata = &mgr->mcu_dump->dump_metadata;
+	dump_descriptor = &dump_metadata->dump_descriptors[core_id];
+
+	/* check if debug data has been dumped for the core. */
+	return dump_descriptor->dump_available;
+}
+
+/**
  * gxp_debug_dump_add_mcu_dump_segments() - Adds the MCU dumped segment details to the global
  *                                          segment array that is passed to the SSCD module.
  *                                          Does nothing in direct mode.
@@ -594,7 +659,7 @@ static void gxp_debug_dump_invalidate_mcu_segments(struct gxp_dev *gxp, int core
  * * 0 - Successfully added MCU segment to global segment array.
  * * Error propagated from gxp_add_seg().
  */
-static int gxp_debug_dump_add_mcu_dump_segments(struct gxp_dev *gxp, int *seg_idx, int core_id)
+static int gxp_debug_dump_add_mcu_dump_segments(struct gxp_dev *gxp, int *seg_idx, uint32_t core_id)
 {
 	int i, ret = 0;
 	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
@@ -610,7 +675,7 @@ static int gxp_debug_dump_add_mcu_dump_segments(struct gxp_dev *gxp, int *seg_id
 	dump_descriptor = &dump_metadata->dump_descriptors[core_id];
 
 	/* check if debug data has been dumped for the core. */
-	if (!dump_descriptor->dump_available) {
+	if (!gxp_debug_dump_are_mcu_dumped_segments_available(gxp, core_id)) {
 		dev_warn(gxp->dev, "No MCU dumped data available for core%u.", core_id);
 		return 0;
 	}
@@ -622,7 +687,7 @@ static int gxp_debug_dump_add_mcu_dump_segments(struct gxp_dev *gxp, int *seg_id
 		return ret;
 
 	/* Dump the core segments. */
-	offset = mgr->mcu_buf.vaddr + dump_descriptor->offset;
+	offset = mgr->mcu_buf.virt_addr + dump_descriptor->offset;
 	for (i = 0; i < dump_descriptor->num_segment_dumped; i++) {
 		seg_header = &dump_descriptor->segment_headers[i];
 		ret = gxp_add_seg(gxp->debug_dump_mgr, core_id, seg_idx, offset, seg_header->size);
@@ -655,7 +720,7 @@ static int gxp_debug_dump_init_mcu_dump(struct gxp_dev *gxp)
 		dev_err(gxp->dev, "Failed to allocate memory for MCU debug dump\n");
 		return ret;
 	}
-	mgr->mcu_dump = mgr->mcu_buf.vaddr;
+	mgr->mcu_dump = mgr->mcu_buf.virt_addr;
 
 	gxp_mcu_set_debug_dump_config(gxp_mcu_firmware_of(gxp), &mgr->mcu_buf);
 
@@ -682,7 +747,17 @@ static void gxp_debug_dump_mcu_dump_exit(struct gxp_dev *gxp)
 }
 #endif /* #if GXP_HAS_MCU */
 
-void gxp_debug_dump_invalidate_core_segments(struct gxp_dev *gxp, uint32_t core_id)
+/**
+ * gxp_debug_dump_invalidate_core_segments() - Invalidate core dump segments to enable core
+ *                                             firmware to populate them on next debug dump
+ *                                             trigger.
+ *
+ * This function is not thread safe. Caller should take the necessary precautions.
+ *
+ * @gxp: The GXP device to obtain the handler for
+ * @core_id: physical id of the DSP core whose dump segments need to be invalidated.
+ */
+static void gxp_debug_dump_invalidate_core_segments(struct gxp_dev *gxp, uint32_t core_id)
 {
 	int i;
 	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
@@ -726,6 +801,9 @@ void gxp_debug_dump_send_forced_debug_dump_request(struct gxp_dev *gxp,
 	uint generate_debug_dump;
 	uint debug_dump_generated;
 
+	if (!gxp_debug_dump_is_enabled(gxp))
+		return;
+
 	for (phys_core = 0; phys_core < GXP_NUM_CORES; phys_core++) {
 		if (!(vd->core_list & BIT(phys_core)))
 			continue;
@@ -749,9 +827,8 @@ void gxp_debug_dump_send_forced_debug_dump_request(struct gxp_dev *gxp,
 	}
 }
 
-static bool gxp_debug_dump_is_core_dump_available_and_valid(struct gxp_dev *gxp,
-							   struct gxp_virtual_device *vd,
-							   uint32_t core_id)
+static bool gxp_debug_dump_are_core_dumped_segments_available_and_valid(
+	struct gxp_dev *gxp, struct gxp_virtual_device *vd, uint32_t core_id)
 {
 	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
 	struct gxp_core_dump *core_dump = mgr->core_dump;
@@ -759,21 +836,13 @@ static bool gxp_debug_dump_is_core_dump_available_and_valid(struct gxp_dev *gxp,
 	struct gxp_core_header *core_header = &core_dump_header->core_header;
 
 	/* Check if dump is marked available by the firmware for processing. */
-	if (!core_header->dump_available) {
-		dev_err(gxp->dev, "Core dump should have been available.\n");
+	if (!core_header->dump_available)
 		return false;
-	}
 
 	/* Check if the number of dumped segments by firmware are within the limit. */
 	if (core_header->num_dumped_segments_by_fw > GXP_MAX_NUM_CORE_SEGMENTS) {
 		dev_err(gxp->dev, "Excess segments dumped from the core(%u>%u).\n",
 			core_header->num_dumped_segments_by_fw, GXP_MAX_NUM_CORE_SEGMENTS);
-		return false;
-	}
-
-	/* For direct mode check if valid physical core to virtual core mapping exists. */
-	if (gxp_is_direct_mode(gxp) && (gxp_vd_phys_core_to_virt_core(vd, core_id) < 0)) {
-		dev_err(gxp->dev, "No virtual core for physical core %u.\n", core_id);
 		return false;
 	}
 
@@ -798,6 +867,12 @@ static int gxp_debug_dump_add_core_dump_segments(struct gxp_dev *gxp, struct gxp
 	uint32_t gxp_core_dumped_segments;
 	/* Count of segments dumped from DRAM. */
 	uint32_t gxp_dram_dumped_segments;
+
+	/* Check if the core dump is available and valid. */
+	if (!gxp_debug_dump_are_core_dumped_segments_available_and_valid(gxp, vd, core_id)) {
+		dev_warn(gxp->dev, "Core dump is not available for core %u.\n", core_id);
+		return 0;
+	}
 
 	/* Common segments. */
 	data_addr = &common_dump->common_dump_data.common_regs;
@@ -835,7 +910,7 @@ static int gxp_debug_dump_add_core_dump_segments(struct gxp_dev *gxp, struct gxp
 	}
 
 	/* FW RO section. */
-	ret = gxp_add_seg(mgr, core_id, seg_idx, gxp->fwbufs[virt_core_id].vaddr,
+	ret = gxp_add_seg(mgr, core_id, seg_idx, gxp->fwbufs[virt_core_id].virt_addr,
 			  gxp->fwbufs[virt_core_id].size);
 	if (ret)
 		return ret;
@@ -853,12 +928,12 @@ static int gxp_debug_dump_add_core_dump_segments(struct gxp_dev *gxp, struct gxp
 		return ret;
 
 	/* Core config region. */
-	ret = gxp_add_seg(mgr, core_id, seg_idx, vd->core_cfg.vaddr, vd->core_cfg.size);
+	ret = gxp_add_seg(mgr, core_id, seg_idx, vd->core_cfg.virt_addr, vd->core_cfg.size);
 	if (ret)
 		return ret;
 
 	/* VD config region. */
-	ret = gxp_add_seg(mgr, core_id, seg_idx, vd->vd_cfg.vaddr, vd->vd_cfg.size);
+	ret = gxp_add_seg(mgr, core_id, seg_idx, vd->vd_cfg.virt_addr, vd->vd_cfg.size);
 	if (ret)
 		return ret;
 
@@ -888,30 +963,26 @@ static int gxp_debug_dump_add_core_dump_segments(struct gxp_dev *gxp, struct gxp
  * Caller must make sure that gxp->debug_dump_mgr->common_dump and
  * gxp->debug_dump_mgr->core_dump are not NULL.
  */
-static int gxp_handle_debug_dump(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
-				 uint32_t core_id)
+static int gxp_debug_dump_add_segments(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
+				       uint32_t core_id)
 {
+	struct gxp_host_control_region *core_cfg;
 	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
 	struct gxp_core_dump *core_dump = mgr->core_dump;
-	struct gxp_host_control_region *core_cfg;
 	struct gxp_core_dump_header *core_dump_header = &core_dump->core_dump_header[core_id];
 	struct gxp_core_header *core_header = &core_dump_header->core_header;
 	int ret = 0;
 	int seg_idx = 0;
-	char sscd_msg[SSCD_MSG_LENGTH];
 	uint32_t virt_core_id;
-
-	/* TODO(b/381009565): Remove logic for early return if core dump not available. */
-	/* Check if the core dump is available and valid. */
-	if (!gxp_debug_dump_is_core_dump_available_and_valid(gxp, vd, core_id)) {
-		ret = -EINVAL;
-		goto out;
-	}
 
 	if (gxp_is_direct_mode(gxp))
 		virt_core_id = gxp_vd_phys_core_to_virt_core(vd, core_id);
 	else
 		virt_core_id = core_header->firmware_id;
+	if (virt_core_id >= GXP_NUM_CORES) {
+		dev_err(gxp->dev, "Invalid core ID to dump: %u", virt_core_id);
+		return -EINVAL;
+	}
 
 	/* Add the segments dumped from core firmware. */
 	ret = gxp_debug_dump_add_core_dump_segments(gxp, vd, core_id, virt_core_id, &seg_idx);
@@ -925,43 +996,120 @@ static int gxp_handle_debug_dump(struct gxp_dev *gxp, struct gxp_virtual_device 
 		goto out_add_seg;
 #endif /* GXP_HAS_MCU */
 
-	dev_dbg(gxp->dev, "Passing dump data to SSCD daemon\n");
-
-	core_cfg = vd->core_cfg.vaddr + (vd->core_cfg.size / GXP_NUM_CORES) * virt_core_id;
-	snprintf(sscd_msg, SSCD_MSG_LENGTH - 1,
-		 "gxp debug dump (vdid %d)(core %0x)(exccause:0x%x, excvaddr:0x%x, epc1:0x%x)",
-		 vd->vdid, core_id, core_cfg->crash_exccause, core_cfg->crash_excvaddr,
-		 core_cfg->crash_epc1);
-
-#if HAS_COREDUMP
-	gxp_send_to_sscd(gxp, mgr->segs[core_id], seg_idx, sscd_msg);
-#endif /* HAS_COREDUMP */
-
-	gxp_user_buffers_vunmap(gxp, vd, core_header);
+	core_cfg = vd->core_cfg.virt_addr + (vd->core_cfg.size / GXP_NUM_CORES) * virt_core_id;
+	scnprintf(
+		mgr->sscd_segments[core_id].sscd_msg, SSCD_MSG_LENGTH - 1,
+		"gxp debug dump (vdid %d)(core %0x)(device_id:0x%x)(exccause:0x%x, excvaddr:0x%x, epc1:0x%x)",
+		vd->vdid, core_id, core_cfg->device_id, core_cfg->crash_exccause,
+		core_cfg->crash_excvaddr, core_cfg->crash_epc1);
 
 out_add_seg:
 	if (ret)
 		dev_err(gxp->dev, "error on adding a segment: %d, seg_idx: %d", ret, seg_idx);
 
-out:
 	return ret;
 }
 
 /*
- * Caller must have locked `gxp->debug_dump_mgr->debug_dump_lock` before calling
- * `gxp_generate_coredump`.
+ * Caller must make sure that gxp->debug_dump_mgr->common_dump and
+ * gxp->debug_dump_mgr->core_dump are not NULL.
  */
-static int gxp_generate_coredump(struct gxp_dev *gxp,
-				 struct gxp_virtual_device *vd,
-				 uint32_t core_id)
+static int gxp_prepare_debug_dump_mcu_mode(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
+					   uint32_t core_id)
 {
+	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
+	struct gxp_core_dump *core_dump = mgr->core_dump;
+	struct gxp_core_dump_header *core_dump_header = &core_dump->core_dump_header[core_id];
+	struct gxp_core_header *core_header = &core_dump_header->core_header;
 	int ret = 0;
 
-	if (!gxp->debug_dump_mgr->core_dump ||
-	    !gxp->debug_dump_mgr->common_dump) {
+	ret = gxp_debug_dump_add_segments(gxp, vd, core_id);
+	if (ret)
+		goto out;
+
+	ret = gxp_copy_sscd_segments(gxp, core_id);
+	if (ret) {
+		dev_err(gxp->dev,
+			"Error when copying segments to local buffer: %d for vdid %d core %u", ret,
+			vd->client_id, core_id);
+	}
+	gxp_user_buffers_vunmap(gxp, vd, core_header);
+
+out:
+	/* Invalidate core dump segments to prepare for the next debug dump trigger */
+	if (core_header->dump_available)
+		gxp_debug_dump_invalidate_core_segments(gxp, core_id);
+
+#if GXP_HAS_MCU
+	/* Invalidate MCU dump segments to prepare for the next debug dump trigger */
+	if (mgr->mcu_dump->dump_metadata.dump_descriptors[core_id].dump_available)
+		gxp_debug_dump_invalidate_mcu_segments(gxp, core_id);
+#endif /* GXP_HAS_MCU */
+
+	return ret;
+}
+
+static int gxp_prepare_coredump_mcu_mode(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
+					 uint32_t core_id)
+{
+	int ret;
+	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
+	struct gxp_core_dump *core_dump = mgr->core_dump;
+	struct gxp_core_dump_header *core_dump_header = &core_dump->core_dump_header[core_id];
+
+	if (!gxp->debug_dump_mgr->core_dump || !gxp->debug_dump_mgr->common_dump) {
 		dev_err(gxp->dev, "Memory is not allocated for debug dump\n");
 		return -EINVAL;
 	}
+
+	lockdep_assert_held(&gxp->debug_dump_mgr->debug_dump_lock);
+
+	/*
+	 * Pending flag is set when the debug dump is prepared but has not yet been sent to the SSCD
+	 * module.
+	 *
+	 * There can be two scenarios where pending flag is seen to be set here:
+	 * - A race between Client fatal RKCI and VD close request. In this case, whoever
+	 *   won the race should complete debug dump, the other thread can skip debug dump
+	 *   generation.
+	 * - In the unlikely scenario that we get a debug dump request for the same core from 2
+	 *   different VDs and the first request is still not complete - in this case we will have
+	 *   to drop the second request as we only allocate one set of `sscd_segments` array to be
+	 *   shared by all VDs. For the second case we also invalidate the core and MCU segments so
+	 *   that any future debug dump triggers are not missed.
+	 *
+	 * TODO(b/391802989): Refactor this to differentiate between the two scenarios.
+	 */
+	if (gxp->debug_dump_mgr->sscd_segments[core_id].pending) {
+		dev_warn(gxp->dev,
+			"Sending dump to SSCD is pending for core %u, skipping this request from vdid %d\n",
+			core_id, vd->client_id);
+
+		/* Invalidate core dump segments to prepare for the next debug dump trigger */
+		if (core_dump_header->core_header.dump_available)
+			gxp_debug_dump_invalidate_core_segments(gxp, core_id);
+#if GXP_HAS_MCU
+		/* Invalidate MCU dump segments to prepare for the next debug dump trigger */
+		if (gxp->debug_dump_mgr->mcu_dump->dump_metadata.dump_descriptors[core_id]
+			    .dump_available)
+			gxp_debug_dump_invalidate_mcu_segments(gxp, core_id);
+#endif /* GXP_HAS_MCU */
+		return -EBUSY;
+	}
+
+#if GXP_HAS_MCU
+	/*
+	 * Similar to the above scenario, if the RKCI thread has completed debug dump generation
+	 * before VD close request starts preparing the dump, we will end up generating an empty
+	 * debug dump. To avoid this scenario, ensure that at least one of core or MCU dumped
+	 * segments are available.
+	 */
+	if (!gxp_debug_dump_are_core_dumped_segments_available_and_valid(gxp, vd, core_id) &&
+	    !gxp_debug_dump_are_mcu_dumped_segments_available(gxp, core_id)) {
+		dev_warn(gxp->dev, "No core / MCU dumped segments available.");
+		return -EINVAL;
+	}
+#endif /* GXP_HAS_MCU */
 
 	gxp_debug_dump_cache_invalidate(gxp);
 
@@ -969,7 +1117,7 @@ static int gxp_generate_coredump(struct gxp_dev *gxp,
 	if (ret)
 		goto out;
 
-	ret = gxp_handle_debug_dump(gxp, vd, core_id);
+	ret = gxp_prepare_debug_dump_mcu_mode(gxp, vd, core_id);
 	if (ret)
 		goto out;
 
@@ -979,22 +1127,48 @@ out:
 	return ret;
 }
 
-static void gxp_generate_debug_dump(struct gxp_dev *gxp, uint core_id,
-				    struct gxp_virtual_device *vd)
+/*
+ * Caller must have locked `gxp->debug_dump_mgr->debug_dump_lock` before calling
+ * `gxp_generate_debug_dump_direct_mode`.
+ */
+static int gxp_generate_debug_dump_direct_mode(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
+					       uint32_t core_id)
 {
-	mutex_lock(&gxp->debug_dump_mgr->debug_dump_lock);
+	int ret;
+	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
+	struct gxp_core_dump *core_dump = mgr->core_dump;
+	struct gxp_core_dump_header *core_dump_header = &core_dump->core_dump_header[core_id];
+	struct gxp_core_header *core_header = &core_dump_header->core_header;
 
-	if (gxp_generate_coredump(gxp, vd, core_id))
-		dev_warn(gxp->dev, "Failed to generate the coredump.\n");
+	if (!gxp->debug_dump_mgr->core_dump || !gxp->debug_dump_mgr->common_dump) {
+		dev_err(gxp->dev, "Memory is not allocated for debug dump\n");
+		return -EINVAL;
+	}
 
-	/* Invalidate core dump segments to prepare for the next debug dump trigger */
-	gxp_debug_dump_invalidate_core_segments(gxp, core_id);
-#if GXP_HAS_MCU
-	/* Invalidate MCU dump segments to prepare for the next debug dump trigger */
-	gxp_debug_dump_invalidate_mcu_segments(gxp, core_id);
-#endif /* GXP_HAS_MCU */
+	lockdep_assert_held(&gxp->debug_dump_mgr->debug_dump_lock);
 
-	mutex_unlock(&gxp->debug_dump_mgr->debug_dump_lock);
+	gxp_debug_dump_cache_invalidate(gxp);
+
+	ret = gxp_get_common_dump(gxp);
+	if (ret)
+		goto out;
+
+	ret = gxp_debug_dump_add_segments(gxp, vd, core_id);
+	if (ret)
+		goto out;
+
+	gxp_send_to_sscd(gxp, mgr->sscd_segments[core_id].segments,
+			 mgr->sscd_segments[core_id].num_segments,
+			 mgr->sscd_segments[core_id].sscd_msg);
+	gxp_user_buffers_vunmap(gxp, vd, core_header);
+
+out:
+	if (core_header->dump_available)
+		gxp_debug_dump_invalidate_core_segments(gxp, core_id);
+
+	gxp_debug_dump_cache_flush(gxp);
+
+	return ret;
 }
 
 static void gxp_debug_dump_process_dump_direct_mode(struct work_struct *work)
@@ -1024,7 +1198,10 @@ static void gxp_debug_dump_process_dump_direct_mode(struct work_struct *work)
 	 */
 	mutex_lock(&vd->debug_dump_lock);
 
-	gxp_generate_debug_dump(gxp, core_id, vd);
+	mutex_lock(&gxp->debug_dump_mgr->debug_dump_lock);
+	if (gxp_generate_debug_dump_direct_mode(gxp, vd, core_id))
+		dev_warn(gxp->dev, "Failed to generate debug dump for core %u.\n", core_id);
+	mutex_unlock(&gxp->debug_dump_mgr->debug_dump_lock);
 
 	/* Update the debug dump processing status for the current core. */
 	old_core_dump_generated_list = atomic_fetch_or(BIT(core_id), &vd->core_dump_generated_list);
@@ -1039,35 +1216,58 @@ static void gxp_debug_dump_process_dump_direct_mode(struct work_struct *work)
 	gxp_vd_put(vd);
 }
 
-int gxp_debug_dump_process_dump_mcu_mode(struct gxp_dev *gxp, uint core_list,
-					 struct gxp_virtual_device *crashed_vd)
+void gxp_debug_dump_prepare_dump_mcu_mode(struct gxp_dev *gxp, uint *core_list,
+					  struct gxp_virtual_device *crashed_vd)
 {
 	uint core;
-	struct gxp_core_dump_header *core_dump_header;
-	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
+	int ret;
+
+	if (!gxp_debug_dump_is_enabled(gxp))
+		return;
 
 	lockdep_assert_held(&crashed_vd->debug_dump_lock);
-
-	if (crashed_vd->state != GXP_VD_UNAVAILABLE) {
-		dev_err(gxp->dev, "Invalid vd state=%u for processing dumps.\n",
-			crashed_vd->state);
-		return -EINVAL;
-	}
+	mutex_lock(&gxp->debug_dump_mgr->debug_dump_lock);
 
 	for (core = 0; core < GXP_NUM_CORES; core++) {
-		if (!(BIT(core) & core_list))
+		if (!(BIT(core) & *core_list))
 			continue;
 
-		core_dump_header = &mgr->core_dump->core_dump_header[core];
-		/* Check if the dump has been generated by core firmware */
-		if (core_dump_header->core_header.dump_available != 1) {
-			dev_warn(gxp->dev, "Core dump not available core %u\n", core);
-			continue;
+		ret = gxp_prepare_coredump_mcu_mode(gxp, crashed_vd, core);
+		if (ret) {
+			/*
+			 * Remove core from core_list if preparing coredump fails for any core as we
+			 * should not process it later. The same core_list is passed to
+			 * `gxp_debug_dump_process_dump_mcu_mode`.
+			 */
+			*core_list = *core_list ^ BIT(core);
+			dev_warn(gxp->dev, "Failed to prepare the coredump for core %u\n", core);
 		}
-
-		gxp_generate_debug_dump(gxp, core, crashed_vd);
 	}
-	return 0;
+
+	mutex_unlock(&gxp->debug_dump_mgr->debug_dump_lock);
+}
+
+void gxp_debug_dump_process_dump_mcu_mode(struct gxp_dev *gxp, uint *core_list)
+{
+	uint core;
+
+	if (!gxp_debug_dump_is_enabled(gxp))
+		return;
+
+	mutex_lock(&gxp->debug_dump_mgr->debug_dump_lock);
+
+	for (core = 0; core < GXP_NUM_CORES; core++) {
+		if (!(BIT(core) & *core_list))
+			continue;
+
+		dev_dbg(gxp->dev, "Passing dump data to SSCD daemon for core %u\n", core);
+		gxp_send_to_sscd(gxp, gxp->debug_dump_mgr->sscd_segments[core].segments,
+				 gxp->debug_dump_mgr->sscd_segments[core].num_segments,
+				 gxp->debug_dump_mgr->sscd_segments[core].sscd_msg);
+		gxp_free_sscd_segments(gxp, core);
+	}
+
+	mutex_unlock(&gxp->debug_dump_mgr->debug_dump_lock);
 }
 
 struct work_struct *gxp_debug_dump_get_notification_handler(struct gxp_dev *gxp,
@@ -1075,7 +1275,7 @@ struct work_struct *gxp_debug_dump_get_notification_handler(struct gxp_dev *gxp,
 {
 	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
 
-	if (!gxp_debug_dump_is_enabled())
+	if (!gxp_debug_dump_is_enabled(gxp))
 		return NULL;
 
 	if (!mgr->core_buf.vaddr) {
@@ -1091,7 +1291,7 @@ static int debugfs_coredump(void *data, u64 val)
 	struct gxp_dev *gxp = (struct gxp_dev *)data;
 	int core;
 
-	if (!gxp_debug_dump_is_enabled()) {
+	if (!gxp_debug_dump_is_enabled(gxp)) {
 		dev_err(gxp->dev, "Debug dump functionality is disabled\n");
 		return -EINVAL;
 	}
@@ -1141,8 +1341,16 @@ int gxp_debug_dump_init(struct gxp_dev *gxp, void *sscd_dev, void *sscd_pdata)
 	struct gxp_debug_dump_manager *mgr;
 	int ret;
 
-	/* Don't initialize the debug dump subsystem unless it's enabled. */
-	if (!gxp_debug_dump_enable)
+	/*
+	 * Skip enabling debug dump on Android user builds. We pass
+	 * fallback_to_user = false to gcip_is_android_user_build() to ensure we
+	 * do not accidentally disable debug dump on non-user builds where the
+	 * build type cannot be definitively verified. For actual user builds
+	 * where detection might fail, a secondary safety net is enforced by the
+	 * SSCD module, which restricts saving dumps to the filesystem and
+	 * effectively disables the feature.
+	 */
+	if (gcip_is_android_user_build(gxp->dev, false))
 		return 0;
 
 	mgr = devm_kzalloc(gxp->dev, sizeof(*mgr), GFP_KERNEL);
@@ -1217,9 +1425,9 @@ void gxp_debug_dump_exit(struct gxp_dev *gxp)
 	gxp->debug_dump_mgr = NULL;
 }
 
-bool gxp_debug_dump_is_enabled(void)
+bool gxp_debug_dump_is_enabled(struct gxp_dev *gxp)
 {
-	return gxp_debug_dump_enable;
+	return gxp->debug_dump_mgr != NULL;
 }
 
 #if GXP_HAS_MCU
@@ -1274,20 +1482,160 @@ static int gxp_add_mailbox_details_to_segments(struct gxp_dev *gxp, struct gxp_m
 	return 0;
 }
 
-void gxp_debug_dump_report_mcu_crash(struct gxp_dev *gxp)
+/*
+ * Prints the ETF Buffer.
+ *
+ * When the dump_memory is either not initialized or the size is less than the number of valid
+ * values we have in ETF buffer we log the buffer into the kernel logs.
+ * @gxp: The GXP device to obtain the handler for
+ * @valid_trace_words: Number of valid words in FIFO
+ *
+ */
+static void gxp_debug_dump_log_etf_buffer(struct gxp_dev *gxp, u32 valid_trace_words)
+{
+	u32 addr;
+	u32 remain;
+	u32 vals[4];
+	u32 i;
+
+	dev_info(gxp->dev,
+		 "Start dumping ETF contents with size: %u words",
+		 valid_trace_words);
+
+	/* Perform modulo 4 operation to get remaining words. */
+	remain = valid_trace_words % 4;
+
+	for (addr = 0; addr < (valid_trace_words / 4); ++addr) {
+
+		for (i = 0; i < 4; ++i)
+			vals[i] = gxp_read_32(gxp, GXP_REG_ETF_RRD);
+
+		dev_info(gxp->dev,
+			 "ETF[%#04x]: %#08x %#08x %#08x %#08x",
+			 addr, vals[0], vals[1], vals[2], vals[3]);
+	}
+	if (remain != 0) {
+		/*
+		 * Fill the last 4 values with 0xFFFFFFFF as all 4 might not be occupied, ie will
+		 * indicate invalid value.
+		 */
+		memset(vals, 0xFFFFFFFF, sizeof(vals));
+
+		for (i = 0; i < remain; ++i)
+			vals[i] = gxp_read_32(gxp, GXP_REG_ETF_RRD);
+
+		dev_info(gxp->dev, "ETF[%#04x]: %#08x %#08x %#08x %#08x", addr, vals[0],
+			 vals[1], vals[2], vals[3]);
+	}
+}
+
+/*
+ * Prints the ETF CSR for following registers:
+ *
+ * RSZ, STS, RRD, RRP, RWP, CTL, MODE, CBUFLEVEL
+ * @gxp: The GXP device to obtain the handler for
+ *
+ */
+static void gxp_debug_dump_etf_dump_csr(struct gxp_dev *gxp)
+{
+	dev_info(gxp->dev, "Starting to dump ETF CSRs");
+	dev_info(gxp->dev, "rsz = %#08x", gxp_read_32(gxp, GXP_REG_ETF_RSZ));
+	dev_info(gxp->dev, "mode = %#08x", gxp_read_32(gxp, GXP_REG_ETF_MODE));
+	dev_info(gxp->dev, "rwp = %#08x", gxp_read_32(gxp, GXP_REG_ETF_RWP));
+	dev_info(gxp->dev, "ffcr = %#08x", gxp_read_32(gxp, GXP_REG_ETF_FFCR));
+	dev_info(gxp->dev, "rrp = %#08x", gxp_read_32(gxp, GXP_REG_ETF_RRP));
+	dev_info(gxp->dev, "rwp = %#08x", gxp_read_32(gxp, GXP_REG_ETF_RWP));
+	dev_info(gxp->dev, "ctl = %#08x", gxp_read_32(gxp, GXP_REG_ETF_CTL));
+	dev_info(gxp->dev, "sts = %#08x", gxp_read_32(gxp, GXP_REG_ETF_STS));
+	dev_info(gxp->dev, "cbuflevel = %#08x", gxp_read_32(gxp, GXP_REG_ETF_CBUFLEVEL));
+}
+
+/*
+ * Dumps the ETF hardware traces in MCU dump memory.
+ *
+ * If the memory is available and allocated dump the traces, else print the traces in kernel logs.
+ * @gxp: The GXP device to obtain the handler for
+ *
+ */
+static void gxp_debug_dump_etf_dump_buffer(struct gxp_dev *gxp)
+{
+	u32 cumulative_segment_size = 0;
+	u32 dump_memory_size = 0;
+	u32 *dump_memory;
+	u32 valid_trace_words;
+	bool trace_ram_full;
+	struct gxp_mcu_dump_descriptor *dump_descriptor;
+	u32 i;
+
+	/* Disable ETF trace capturing. */
+	gxp_write_32(gxp, GXP_REG_ETF_CTL, 0x0);
+	gxp_debug_dump_etf_dump_csr(gxp);
+
+	if (gxp_read_32(gxp, GXP_REG_ETF_MODE) != CIRCULAR_BUFFER_MODE) {
+		dev_info(gxp->dev,
+			 "Skip dumping ETF buffer since ETF is not in CircularBuffer mode.");
+		return;
+	}
+
+	trace_ram_full = ((gxp_read_32(gxp, GXP_REG_ETF_MODE) & 0x1) == 0x1);
+	valid_trace_words = (trace_ram_full) ? gxp_read_32(gxp, GXP_REG_ETF_RSZ) :
+					       gxp_read_32(gxp, GXP_REG_ETF_RWP) / sizeof(u32);
+
+	dump_descriptor =
+		&(gxp->debug_dump_mgr->mcu_dump->dump_metadata.dump_descriptors[GXP_REG_MCU_ID]);
+
+	for (i = 0; i < dump_descriptor->num_segment_dumped; ++i) {
+		if (dump_descriptor->segment_headers[i].type != ETF)
+			cumulative_segment_size += dump_descriptor->segment_headers[i].size;
+		else {
+			dump_memory_size = dump_descriptor->segment_headers[i].size;
+			break;
+		}
+	}
+	dump_memory = (u32 *)((gxp->debug_dump_mgr->mcu_buf.virt_addr) + cumulative_segment_size +
+			      dump_descriptor->offset);
+	dev_info(gxp->dev, "Dumping the buffer address: %#lx, size: %#x words",
+		 (uintptr_t)(dump_memory), dump_memory_size);
+
+	/* If dump memory is available, dump the ETF buffer to the dump memory. */
+	if (dump_memory_size >= valid_trace_words * sizeof(u32)) {
+		/*
+		 * Reset the memory since dump memory provided by GXP kernel driver is not
+		 * guaranteed to be zero-initialized.
+		 */
+		memset(dump_memory, 0, dump_memory_size);
+		for (i = 0; i < valid_trace_words; ++i)
+			dump_memory[i] = gxp_read_32(gxp, GXP_REG_ETF_RRD);
+
+	} else {
+		dev_warn(gxp->dev, "ETF dump memory size is not sufficient, size : %#08x",
+			 dump_memory_size);
+		gxp_debug_dump_log_etf_buffer(gxp, valid_trace_words);
+	}
+}
+
+void gxp_debug_dump_report_mcu_crash(struct gxp_dev *gxp, enum gcip_fw_crash_type crash_type)
 {
 	struct gxp_debug_dump_manager *mgr = gxp->debug_dump_mgr;
 	struct gxp_mcu *mcu = gxp_mcu_of(gxp);
-	struct gxp_mcu_telemetry_ctx *tel = &mcu->telemetry;
+	struct gcip_telemetry *tel = &mcu->telemetry_log;
 	struct gxp_mailbox_queue_desc kci_mailbox_queue_desc, uci_mailbox_queue_desc;
 	int seg_idx = 0;
 	char sscd_msg[SSCD_MSG_LENGTH];
 
-	snprintf(sscd_msg, SSCD_MSG_LENGTH - 1, "MCU crashed.");
+	if (!gxp_debug_dump_is_enabled(gxp))
+		return;
+
+	scnprintf(sscd_msg, SSCD_MSG_LENGTH - 1, "MCU crashed.");
 	mutex_lock(&mgr->debug_dump_lock);
 
+#ifdef GXP_REG_ETF_RRD
+	if (crash_type == GCIP_FW_CRASH_HW_WDG_TIMEOUT)
+		gxp_debug_dump_etf_dump_buffer(gxp);
+#endif
+
 	/* Add MCU telemetry buffer details to be dumped. */
-	if (gxp_add_seg(mgr, GXP_REG_MCU_ID, &seg_idx, tel->log_mem.vaddr, tel->log_mem.size))
+	if (gxp_add_seg(mgr, GXP_REG_MCU_ID, &seg_idx, tel->memory.virt_addr, tel->memory.size))
 		dev_warn(gxp->dev, "Failed to dump telemetry.\n");
 
 	/* Add KCI mailbox details to be dumped. */
@@ -1313,9 +1661,7 @@ void gxp_debug_dump_report_mcu_crash(struct gxp_dev *gxp)
 			 seg_idx, GXP_NUM_SEGMENTS_PER_CORE);
 	}
 
-#if HAS_COREDUMP
-	gxp_send_to_sscd(gxp, mgr->segs[GXP_REG_MCU_ID], seg_idx, sscd_msg);
-#endif /* HAS_COREDUMP */
+	gxp_send_to_sscd(gxp, mgr->sscd_segments[GXP_REG_MCU_ID].segments, seg_idx, sscd_msg);
 
 	mutex_unlock(&mgr->debug_dump_lock);
 }

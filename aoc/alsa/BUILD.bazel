@@ -2,7 +2,12 @@
 
 # ASoC-based ALSA driver gluing all the audio amplifier drivers
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module", "ddk_uapi_headers", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module", "ddk_uapi_headers")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 ddk_uapi_headers(
     name = "uapi_headers",
@@ -56,13 +61,18 @@ ddk_module(
         "aoc_alsa_card.c",
     ],
     out = "aoc_alsa_dev.ko",
+    copts = select({
+        "//private/devices/google/common:factory_build": ["-DAOC_FACTORY_BUILD"],
+        "//conditions:default": [],
+    }),
     kernel_build = "//private/devices/google/common:kernel",
     deps = [
         ":aoc_alsa_dev_util",
         "//common:all_headers_aarch64",
         "//private/google-modules/amplifiers/audiometrics:ddk_headers",
         "//private/google-modules/aoc:headers",
-        "//private/google-modules/aoc_ipc:ddk_headers",
+        "//private/google-modules/aoc_ipc",
+        "//private/google-modules/radio/common/radio-bridge",
         "//private/google-modules/soc/gs:headers",
     ],
 )
@@ -96,31 +106,31 @@ ddk_module(
             ],
         },
     },
+    copts = select({
+        "//private/devices/google/common:factory_build": ["-DAOC_FACTORY_BUILD"],
+        "//conditions:default": [],
+    }),
     kernel_build = "//private/devices/google/common:kernel",
-    visibility = [
-        "//private/google-modules/aoc/usb:__pkg__",
-    ],
     deps = [
         ":dp_module",
         "//common:all_headers_aarch64",
         "//private/google-modules/amplifiers/audiometrics",
         "//private/google-modules/aoc:aoc_core",
         "//private/google-modules/aoc:headers",
-        "//private/google-modules/aoc_ipc:ddk_headers",
-        "//private/google-modules/soc/gs:gs_soc_module",
+        "//private/google-modules/aoc_ipc",
+        "//private/google-modules/radio/common/radio-bridge",
         "//private/google-modules/soc/gs:headers",
         "//private/google-modules/soc/rdo:rdo_soc_headers",
-        "//private/google-modules/soc/rdo:rdo_soc_module",
-    ],
-)
-
-kernel_module_group(
-    name = "alsa",
-    srcs = [
-        ":aoc_alsa_dev",
-        ":aoc_alsa_dev_util",
-    ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-    ],
+    ] + select({
+        "//private/devices/google/common:soc_is_malibu": [
+        ],
+        "//conditions:default": [
+            "//private/google-modules/soc/gs/drivers/soc/google/modemctl:google_modemctl",
+        ],
+    }) + select({
+        "//private/devices/google/common:soc_is_laguna_or_later": [
+            "//private/google-modules/soc/rdo/drivers/soc/google/cdd:gcdd",
+        ],
+        "//conditions:default": [],
+    }),
 )

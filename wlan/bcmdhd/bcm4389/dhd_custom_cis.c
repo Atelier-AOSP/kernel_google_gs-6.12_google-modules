@@ -40,6 +40,7 @@
 #include <linux/fs.h>
 #include <linux/list.h>
 #include <bcmiov.h>
+#include <bcmstdlib_s.h>
 
 #ifdef DHD_USE_CISINFO_FROM_OTP
 #include <bcmdevs_legacy.h>    /* need to still support chips no longer in trunk firmware */

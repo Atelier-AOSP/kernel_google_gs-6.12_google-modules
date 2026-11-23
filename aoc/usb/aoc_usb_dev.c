@@ -19,13 +19,13 @@
 #include "aoc.h"
 #include "aoc-interface.h"
 #include "aoc_usb.h"
+#include "usb_offload.h"
 
 #define AOC_USB_NAME "aoc_usb"
 #define COMPLETION_TIMEOUT_MS 1000
 #define GVOTABLE_POLLING_MS 100
 #define WORK_MAX_RETRIES 3
-#define AOC_USB_WAKELOCK_PREFIX "aoc_"
-#define AOC_USB_WAKELOCK_NAME_LENGTH (AOC_SERVICE_NAME_LENGTH + sizeof(AOC_USB_WAKELOCK_PREFIX))
+#define AOC_USB_WAKELOCK_NAME_LENGTH (AOC_SERVICE_NAME_LENGTH + 8)
 
 enum { NONBLOCKING = 0, BLOCKING = 1 };
 
@@ -50,14 +50,11 @@ int unregister_aoc_usb_notifier(struct notifier_block *nb)
 	return blocking_notifier_chain_unregister(&aoc_usb_notifier_list, nb);
 }
 
-int xhci_set_dcbaa_ptr(u64 aoc_dcbaa_ptr)
-{
-	blocking_notifier_call_chain(&aoc_usb_notifier_list, SET_DCBAA_PTR, &aoc_dcbaa_ptr);
-	return 0;
-}
-
 int xhci_setup_done(void)
 {
+	if (!usb_offload_get_aoc_ready())
+		return -EAGAIN;
+
 	blocking_notifier_call_chain(&aoc_usb_notifier_list, SETUP_DONE, NULL);
 	return 0;
 }
@@ -66,6 +63,9 @@ int xhci_sync_conn_stat(unsigned int bus_id, unsigned int dev_num, unsigned int 
 			       unsigned int conn_stat)
 {
 	struct conn_stat_args args;
+
+	if (!usb_offload_get_aoc_ready())
+		return -EAGAIN;
 
 	args.bus_id = bus_id;
 	args.dev_num = dev_num;
@@ -95,51 +95,24 @@ static ssize_t aoc_usb_send_command(struct aoc_usb_drvdata *drvdata,
 	__pm_stay_awake(drvdata->ws);
 
 	if (aoc_service_flush_read_data(adev))
-		dev_err(&drvdata->adev->dev ,"Previous response left in channel\n");
+		dev_err(&drvdata->adev->dev, "Previous response left in channel\n");
 
 	dev_dbg(&drvdata->adev->dev, "send cmd id [%u]\n", ((struct CMD_CORE_GENERIC *)in_cmd)->parent.id);
 
 	ret = aoc_service_write_timeout(adev, in_cmd, in_size, drvdata->service_timeout);
 	if (ret != in_size) {
-		ret = -EIO;
+		dev_err(&drvdata->adev->dev, "aoc service write error, errno = %zd\n", ret);
 		goto out;
 	}
 
 	ret = aoc_service_read_timeout(adev, out_cmd, out_size, drvdata->service_timeout);
 	if (ret != out_size)
-		ret = -EIO;
+		dev_err(&drvdata->adev->dev, "aoc service read error, errno = %zd\n", ret);
 
 out:
 	__pm_relax(drvdata->ws);
 	mutex_unlock(&drvdata->lock);
 	return ret;
-}
-
-static int aoc_usb_set_dcbaa_ptr(struct aoc_usb_drvdata *drvdata,
-				 u64 *aoc_dcbaa_ptr)
-{
-	int ret = 0;
-
-	struct CMD_USB_CONTROL_SET_DCBAA_PTR *cmd;
-
-	cmd = kzalloc(sizeof(struct CMD_USB_CONTROL_SET_DCBAA_PTR), GFP_KERNEL);
-	if (!cmd)
-		return -ENOMEM;
-
-	AocCmdHdrSet(&cmd->parent,
-		     CMD_USB_CONTROL_SET_DCBAA_PTR_ID,
-		     sizeof(*cmd));
-
-	cmd->aoc_dcbaa_ptr = *aoc_dcbaa_ptr;
-	ret = aoc_usb_send_command(drvdata, cmd, sizeof(*cmd), cmd, sizeof(*cmd));
-	if (ret < 0) {
-		kfree(cmd);
-		return ret;
-	}
-
-	kfree(cmd);
-
-	return 0;
 }
 
 static int aoc_usb_setup_done(struct aoc_usb_drvdata *drvdata)
@@ -191,10 +164,12 @@ static int aoc_usb_notify_conn_stat(struct aoc_usb_drvdata *drvdata, void *data)
 
 	if (cmd->bus_id == 0 && cmd->dev_num == 0 && cmd->slot_id == 0) {
 		drvdata->usb_state = cmd->conn_state;
-		if (drvdata->usb_state == USB_CONNECTED)
-			init_completion(&exit_host);
-		else
-			complete(&exit_host);
+		if (drvdata->recovery_type == EXIT_HOST_MODE) {
+			if (drvdata->usb_state == USB_CONNECTED)
+				init_completion(&exit_host);
+			else
+				complete(&exit_host);
+		}
 	}
 
 	ret = aoc_usb_send_command(drvdata, cmd, sizeof(*cmd), cmd, sizeof(*cmd));
@@ -216,9 +191,6 @@ static int aoc_usb_notify(struct notifier_block *this,
 	int ret;
 
 	switch (code) {
-	case SET_DCBAA_PTR:
-		ret = aoc_usb_set_dcbaa_ptr(drvdata, data);
-		break;
 	case SETUP_DONE:
 		ret = aoc_usb_setup_done(drvdata);
 		break;
@@ -241,17 +213,18 @@ static void usb_host_aoc_ready_work(struct work_struct *ws)
 	int ret = 0;
 	struct aoc_usb_drvdata *drvdata =
 				container_of(ws, struct aoc_usb_drvdata, aoc_ready_work.work);
+	bool aoc_ready = usb_offload_get_aoc_ready();
 
 	drvdata->usb_data_role_votable =
 		gvotable_election_get_handle(VOTABLE_USB_DATA_ROLE);
 
 	if (drvdata->usb_data_role_votable) {
 		ret = gvotable_cast_vote(drvdata->usb_data_role_votable, AOC_VOTER,
-			(void *)(long)(drvdata->aoc_ready ? USB_ROLE_HOST : USB_ROLE_NONE), 1);
+			(void *)(long)(aoc_ready ? USB_ROLE_HOST : USB_ROLE_NONE), 1);
 		if (ret < 0) {
 			dev_err(&drvdata->adev->dev,
 				"Fail to cast vote: %s (ret = %d), retry count: %d (%s)\n",
-				drvdata->aoc_ready ? "USB_ROLE_HOST" : "USB_ROLE_NONE", ret,
+				aoc_ready ? "USB_ROLE_HOST" : "USB_ROLE_NONE", ret,
 				drvdata->aoc_ready_work_retries,
 				drvdata->aoc_ready_work_retries < WORK_MAX_RETRIES ?
 				"retry again later" : "retry limit exceeded");
@@ -259,7 +232,7 @@ static void usb_host_aoc_ready_work(struct work_struct *ws)
 				mod_delayed_work(system_wq, &drvdata->aoc_ready_work,
 						 msecs_to_jiffies(GVOTABLE_POLLING_MS));
 			} else {
-				if (!drvdata->aoc_ready)
+				if (!aoc_ready)
 					dev_err(&drvdata->adev->dev,
 					"ssr not updated to role-switch driver, might ramdump!\n");
 				complete(&work_done);
@@ -280,6 +253,8 @@ static int aoc_usb_probe(struct aoc_service_dev *adev)
 	struct device *dev = &adev->dev;
 	struct aoc_usb_drvdata *drvdata;
 	char ws_name[AOC_USB_WAKELOCK_NAME_LENGTH];
+	struct device_node *np = NULL;
+	int ret;
 
 	drvdata = kzalloc(sizeof(*drvdata), GFP_KERNEL);
 	if (!drvdata) {
@@ -287,11 +262,20 @@ static int aoc_usb_probe(struct aoc_service_dev *adev)
 	}
 
 	drvdata->adev = adev;
-
 	mutex_init(&drvdata->lock);
-	INIT_DEFERRABLE_WORK(&drvdata->aoc_ready_work, usb_host_aoc_ready_work);
+	np = of_find_compatible_node(np, NULL, "google,usb-role-sw");
+	if (!np) {
+		dev_err(dev, "device node missing: google,usb-role-sw\n");
+		drvdata->recovery_type = EXIT_HOST_MODE;
+	} else {
+		if (of_find_property(np, "host-mode-aoc-optional", NULL))
+			drvdata->recovery_type = DISABLE_OFFLOAD;
+		else
+			drvdata->recovery_type = EXIT_HOST_MODE;
+		of_node_put(np);
+	}
 
-	scnprintf(ws_name, sizeof(ws_name), "%s%s", AOC_USB_WAKELOCK_PREFIX, dev_name(dev));
+	scnprintf(ws_name, sizeof(ws_name), "aoc_%s", dev_name(dev));
 	drvdata->ws = wakeup_source_register(dev, ws_name);
 	if (!drvdata->ws) {
 		dev_err(&drvdata->adev->dev, "wakeup_source_register failed!\n");
@@ -301,16 +285,24 @@ static int aoc_usb_probe(struct aoc_service_dev *adev)
 
 	drvdata->service_timeout = msecs_to_jiffies(100);
 	drvdata->nb.notifier_call = aoc_usb_notify;
-	drvdata->aoc_ready = true;
+	ret = usb_offload_set_aoc_ready(true);
+	if (ret)
+		dev_err(&drvdata->adev->dev, "fail to set aoc status (ret = %d)\n", ret);
 	register_aoc_usb_notifier(&drvdata->nb);
 	dev_set_drvdata(dev, drvdata);
 
-	/* AoC is ready to switch to USB data role host. */
-	init_completion(&exit_host);
-	complete(&exit_host);
-	init_completion(&work_done);
-	drvdata->aoc_ready_work_retries = 0;
-	mod_delayed_work(system_wq, &drvdata->aoc_ready_work, 0);
+	drvdata->usb_data_role_votable = gvotable_election_get_handle(VOTABLE_USB_DATA_ROLE);
+	if (gvotable_get_int_vote(drvdata->usb_data_role_votable, AOC_VOTER) == USB_ROLE_HOST) {
+		usb_audio_offload_resume();
+	} else {
+		/* AoC is ready to switch to USB data role host. */
+		INIT_DEFERRABLE_WORK(&drvdata->aoc_ready_work, usb_host_aoc_ready_work);
+		init_completion(&exit_host);
+		complete(&exit_host);
+		init_completion(&work_done);
+		drvdata->aoc_ready_work_retries = 0;
+		mod_delayed_work(system_wq, &drvdata->aoc_ready_work, 0);
+	}
 
 	return 0;
 }
@@ -320,30 +312,40 @@ static int aoc_usb_remove(struct aoc_service_dev *adev)
 	struct aoc_usb_drvdata *drvdata = dev_get_drvdata(&adev->dev);
 	int ret = 0;
 
-	drvdata->aoc_ready = false;
-	/* AoC is not ready to switch to USB data role host. */
-	init_completion(&work_done);
-	drvdata->aoc_ready_work_retries = 0;
-	mod_delayed_work(system_wq, &drvdata->aoc_ready_work, 0);
-	ret = wait_for_completion_timeout(&work_done, msecs_to_jiffies(COMPLETION_TIMEOUT_MS));
-	if (!ret) {
-		cancel_delayed_work_sync(&drvdata->aoc_ready_work);
-		dev_err(&drvdata->adev->dev, "Timedout executing aoc_ready_work.\n");
-	}
+	ret = usb_offload_set_aoc_ready(false);
+	if (ret)
+		dev_err(&drvdata->adev->dev, "fail to set aoc status (ret = %d)\n", ret);
 
-	/* If device was in USB host mode, system needs to completely exit it before proceed. */
-	/*
-	 * TODO: Race condition exists when system switch to host after this completion check. In
-	 * this case, usb data role will still be host during aoc offtime, leading to possible
-	 * ramdump when xhci driver try to access aoc sram during its offtime. Need to discover
-	 * means for eliminating/shrinking the race window.
-	 */
-	ret = wait_for_completion_timeout(&exit_host, msecs_to_jiffies(COMPLETION_TIMEOUT_MS));
-	if (!ret) {
-		dev_err(&drvdata->adev->dev, "Timedout exiting usb host, ramdump might occur!\n");
-		ret = -ETIMEDOUT;
+	if (drvdata->recovery_type == DISABLE_OFFLOAD) {
+		usb_audio_offload_pause();
 	} else {
-		ret = 0;
+		/* AoC is not ready to switch to USB data role host. */
+		init_completion(&work_done);
+		drvdata->aoc_ready_work_retries = 0;
+		mod_delayed_work(system_wq, &drvdata->aoc_ready_work, 0);
+		ret = wait_for_completion_timeout(&work_done,
+						  msecs_to_jiffies(COMPLETION_TIMEOUT_MS));
+		if (!ret) {
+			cancel_delayed_work_sync(&drvdata->aoc_ready_work);
+			dev_err(&drvdata->adev->dev, "Timedout executing aoc_ready_work.\n");
+		}
+
+		/* System needs to completely exit USB host mode before proceed. */
+		/*
+		 * TODO: Race condition exists when system switch to host after this completion
+		 * check. In this case, usb data role will still be host during aoc offtime,
+		 * leading to possible ramdump when xhci driver try to access aoc sram during its
+		 * offtime. Need to discover means for eliminating/shrinking the race window.
+		 */
+		ret = wait_for_completion_timeout(&exit_host,
+						  msecs_to_jiffies(COMPLETION_TIMEOUT_MS));
+		if (!ret) {
+			dev_err(&drvdata->adev->dev,
+				"Timedout exiting usb host, ramdump might occur!\n");
+			ret = -ETIMEDOUT;
+		} else {
+			ret = 0;
+		}
 	}
 
 	unregister_aoc_usb_notifier(&drvdata->nb);
@@ -372,7 +374,6 @@ static struct aoc_driver aoc_usb_driver = {
 static int __init aoc_usb_init(void)
 {
 	usb_offload_helper_init();
-	usb_vendor_helper_init();
 
 	return aoc_driver_register(&aoc_usb_driver);
 }

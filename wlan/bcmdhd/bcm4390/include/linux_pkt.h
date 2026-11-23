@@ -115,7 +115,7 @@
 #define	PKTSETLEN(osh, skb, len)	\
 	({ \
 	 BCM_REFERENCE(osh); \
-	 skb_trim((struct sk_buff *)(skb), (len)); \
+	 __skb_trim((struct sk_buff*)(skb), (len)); \
 	 })
 #define	PKTPUSH(osh, skb, bytes)	\
 	({ \

@@ -33,6 +33,7 @@
 #include <linux/vmalloc.h>
 
 #include <bcmutils.h>
+#include <bcmstdlib_s.h>
 #include <bcmwifi_channels.h>
 #include <bcmendian.h>
 #include <ethernet.h>
@@ -7129,6 +7130,7 @@ static int wl_cfgvendor_lstats_get_info(struct wiphy *wiphy,
 	dhd_pub_t *dhdp = (dhd_pub_t *)(cfg->pub);
 	static wl_pwrstats_query_t scan_query;
 	wl_pwrstats_t *pwrstats;
+	void *p_data = NULL;
 	static wl_pwr_scan_stats_t scan_stats;
 	int scan_time_len;
 	uint32 tot_pno_dur = 0;
@@ -7209,7 +7211,8 @@ static int wl_cfgvendor_lstats_get_info(struct wiphy *wiphy,
 		goto exit;
 	}
 
-	scan_time_len = dtoh16(((uint16 *)pwrstats->data)[1]);
+	p_data = pwrstats->data;
+	scan_time_len = dtoh16(((uint16 *)p_data)[1]);
 
 	if (scan_time_len < sizeof(wl_pwr_scan_stats_t)) {
 		WL_ERR(("WL_PWRSTATS_TYPE_SCAN IOVAR info short len :  %d < %d\n",

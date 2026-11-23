@@ -26,6 +26,13 @@ struct iif_direct_fence {
 	int id;
 	int timeline;
 	int error;
+	/*
+	 * Holds the exact error code set by the kernel driver when signaling the fence.
+	 * This is separate from @error to allow `iif_direct_fence_sync_status_locked()`
+	 * to detect the error transition (from 0 to error) and trigger waiter callbacks,
+	 * and to preserve precise error codes (e.g. -EDEADLK) across lossy table conversions.
+	 */
+	int kernel_error;
 	int num_sync_points;
 	struct iif_fence *iif;
 	struct iif_manager *mgr;
@@ -271,7 +278,7 @@ static void iif_direct_fence_handle_signal_error(struct iif_direct_fence *fence,
 		return;
 
 	iif_direct_fence_table_set_error(fence, error);
-	iif_direct_fence_set_error(fence, error);
+	fence->kernel_error = error;
 }
 
 /* Invokes poll callbacks registered to a direct single-shot fence. */
@@ -356,7 +363,7 @@ static void iif_direct_fence_sync_status_locked(struct iif_direct_fence *fence)
 
 	/* If @fence->error_set_by_kernel is true, use the kernel level fence error directly. */
 	if (fence->error_set_by_kernel)
-		table_error = fence->error;
+		table_error = fence->kernel_error;
 
 	/*
 	 * @fence->error has a value means that the errored flag was set and the fence was already
@@ -396,9 +403,9 @@ static void iif_direct_fence_sync_status_locked(struct iif_direct_fence *fence)
 		return;
 
 	/*
-	 * If @fence->error_set_by_kernel is true, this function call will be NO-OP as @fence->error
-	 * must have been set when `iif_direct_fence_handle_signal_error()` is called. Otherwise, it
-	 * will sync the error code of kernel fence object to the fence table.
+	 * Update the kernel fence object's error and timeline to match the synchronized values.
+	 * If the error was set by the kernel, @table_error was overridden with the kernel error
+	 * code.
 	 */
 	iif_direct_fence_set_error(fence, table_error);
 	iif_direct_fence_set_timeline(fence, table_timeline);
@@ -494,20 +501,28 @@ static int iif_direct_fence_signal_reusable_locked(struct iif_direct_fence *fenc
 
 	lockdep_assert_held(&fence->fence_lock);
 
+	if (!fence->delegate_to_ap)
+		return -EOPNOTSUPP;
+
 	table_timeline = iif_direct_fence_table_get_timeline(fence);
 	table_errored = iif_direct_fence_table_is_errored(fence);
 
-	/* If the fence is already errored, we don't need to do anything on retire. */
-	if (retire && table_errored)
-		return 0;
+	/* If the fence is already errored, handle error setting or return an error. */
+	if (table_errored) {
+		/*
+		 * If this call is for retiring/destroying the fence, and it is already errored out,
+		 * it is already in a terminal error state and there is no need to forcefully error
+		 * it out again (e.g. with -EDEADLK). This is a no-op, so return success.
+		 */
+		if (retire)
+			return 0;
 
-	/*
-	 * Theoretically, if the error flag in the fence table was set by the firmware, the error
-	 * should be propagated from the firmware to kernel driver and the kernel driver should pass
-	 * non-zero value to @error. Handle it just in case.
-	 */
-	if (table_errored && !error)
-		error = -ECANCELED;
+		/*
+		 * Re-signaling a reusable fence that has already errored out is invalid
+		 * and returns -EBUSY to avoid overwriting the original error.
+		 */
+		return -EBUSY;
+	}
 
 	/*
 	 * For non-circular fences, if @fence->delegate_to_ap is true, see if the fence will be
@@ -519,13 +534,9 @@ static int iif_direct_fence_signal_reusable_locked(struct iif_direct_fence *fenc
 		error = -ETIMEDOUT;
 
 	/*
-	 * Updates the error and timeline of the fence table. Note that these functions will be
-	 * NO-OP if @fence->delegate_to_ap is false except setting @error to @fence->error.
-	 *
-	 * We should set the error before increasing the timeline value. Otherwise, if
-	 * @fence->delegate_to_ap is true so that the IIF driver is updating the fence table and if
-	 * it signals the fence first, waiter IPs may misundestand that the fence has been unblocked
-	 * without an error.
+	 * Updates the error and timeline of the fence table. We should set the error before
+	 * increasing the timeline value. Otherwise, if the IIF driver signals the fence first,
+	 * waiter IPs may misunderstand that the fence has been unblocked without an error.
 	 */
 	iif_direct_fence_handle_signal_error(fence, error);
 

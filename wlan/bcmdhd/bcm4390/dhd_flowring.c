@@ -48,6 +48,10 @@
 #include <dhd_mesh_route.h>
 #endif /* defined(DHD_MESH) */
 
+#ifdef GOOGLE_DAL_CORE
+#include <dhd_plat.h>
+#endif /* GOOGLE_DAL_CORE */
+
 static INLINE int dhd_flow_queue_throttle(flow_queue_t *queue);
 
 static INLINE uint16 dhd_flowid_find(dhd_pub_t *dhdp, uint8 ifindex,
@@ -90,6 +94,66 @@ dhd_flow_queue_throttle(flow_queue_t *queue)
 	return DHD_FLOW_QUEUE_FULL(queue);
 #endif /* ! BCM_ROUTER_DHD */
 }
+
+#ifdef GOOGLE_DAL_CORE
+/* This function updates the station information to the offload engine */
+static void dhd_update_sta_info(dhd_pub_t *dhdp, flow_ring_node_t *flow_node,
+	bool active)
+{
+	struct sta_info info;
+	struct net_device *dev;
+	flow_info_t *flow_info = &flow_node->flow_info;
+	int i = 0;
+
+	memset(&info, 0, sizeof(info));
+	info.bss_idx = flow_info->ifindex;
+
+	for (i = 0; i < PRIORITY_CLASS; i++) {
+		info.qos_txq_map[i] = (i == flow_info->tid) ?
+			flow_node->flowid : 0xFFFF;
+		platform_bus_tx_queue_active(dhdp, flow_node->flowid, active);
+	}
+
+	dev = dhd_idx2net(dhdp, flow_info->ifindex);
+	if (unlikely(!dev)) {
+		DHD_ERROR(("%s: net device is null for ifindex %d.\n",
+			__FUNCTION__, flow_info->ifindex));
+		return;
+	}
+
+	info.oif = dev->ifindex;
+	info.lmac_id = DHD_IF_ROLE_GENERIC_STA(dhdp, flow_info->ifindex) ? 0 : 1;
+	if (DHD_IF_ROLE_GENERIC_STA(dhdp, flow_info->ifindex)) {
+		/* Station mode */
+		memcpy(info.addr, flow_info->da, ETHER_ADDR_LEN);
+	} else {
+		/* AP mode */
+		if (flow_info->da[0] == 0x33 && flow_info->da[1] == 0x33) {
+			/*
+			 * Replace the fixed prefix for IPv6 multicast MAC address with the
+			 * device's real MAC address for use as the DA.
+			 */
+			memcpy(info.addr, flow_info->sa, ETHER_ADDR_LEN);
+		} else {
+			memcpy(info.addr, flow_info->da, ETHER_ADDR_LEN);
+		}
+	}
+
+	DHD_INFO(("%s(): if_role: %u, active: %u, ifid: %u, oif: %u, "
+		"da: %02X:%02X:%02X:%02X:%02X:%02X, "
+		"flow_info.da: %02X:%02X:%02X:%02X:%02X:%02X, "
+		"flow_info.sa: %02X:%02X:%02X:%02X:%02X:%02X\n",
+		__FUNCTION__,
+		DHD_IF_ROLE(dhdp, flow_info->ifindex), active, flow_info->ifindex,
+		info.oif, info.addr[0], info.addr[1], info.addr[2], info.addr[3],
+		info.addr[4], info.addr[5], flow_info->da[0], flow_info->da[1],
+		flow_info->da[2], flow_info->da[3], flow_info->da[4], flow_info->da[5],
+		flow_info->sa[0], flow_info->sa[1], flow_info->sa[2], flow_info->sa[3],
+		flow_info->sa[4], flow_info->sa[5]));
+
+	platform_bus_sta_active(dhdp, &info, active);
+}
+#endif /* GOOGLE_DAL_CORE */
 
 int
 BCMFASTPATH(dhd_flow_queue_overflow)(flow_queue_t *queue, void *pkt)
@@ -432,6 +496,7 @@ dhd_flow_rings_init(dhd_pub_t *dhdp, uint32 num_h2d_rings)
 		flow_ring_table[idx].status = FLOW_RING_STATUS_CLOSED;
 		flow_ring_table[idx].flowid = (uint16)idx;
 		flow_ring_table[idx].lock = osl_spin_lock_init(dhdp->osh);
+		OSL_LOCK_CLASS_SET(flow_ring_table[idx].lock);
 #ifdef IDLE_TX_FLOW_MGMT
 		flow_ring_table[idx].last_active_ts = OSL_SYSUPTIME();
 #endif /* IDLE_TX_FLOW_MGMT */
@@ -466,12 +531,16 @@ dhd_flow_rings_init(dhd_pub_t *dhdp, uint32 num_h2d_rings)
 	}
 
 	lock = osl_spin_lock_init(dhdp->osh);
-	if (lock == NULL)
+	if (lock == NULL) {
 		goto fail;
+	}
+	OSL_LOCK_CLASS_SET(lock);
 
 	list_lock = osl_spin_lock_init(dhdp->osh);
-	if (list_lock == NULL)
+	if (list_lock == NULL) {
 		goto lock_fail;
+	}
+	OSL_LOCK_CLASS_SET(list_lock);
 
 	dhdp->flow_prio_map_type = DHD_FLOW_PRIO_AC_MAP;
 	bcopy(prio2ac, dhdp->flow_prio_map, sizeof(uint8) * NUMPRIO);
@@ -811,7 +880,22 @@ dhd_flowid_alloc(dhd_pub_t *dhdp, uint8 ifindex, uint8 prio, char *sa, char *da)
 			}
 		} else
 #endif /* WLTDLS */
+		{
 			if_flow_lkup[ifindex].fl_hash[prio] = fl_hash_node;
+#ifdef GOOGLE_DAL_CORE
+			struct flow_id_entry_update entry;
+
+			entry.flowid = fl_hash_node->flowid;
+			entry.prio = prio;
+			memcpy(entry.da, da, ETHER_ADDR_LEN);
+			entry.ifindex = ifindex;
+			entry.oif = dhd_idx2net(dhdp, ifindex)->ifindex;
+			entry.role = if_flow_lkup[ifindex].role;
+			entry.is_add = true;
+
+			platform_bus_update_flowid_lkup_entry(&entry);
+#endif /* GOOGLE_DAL_CORE */
+		}
 	} else {
 
 		/* For bcast/mcast assign first slot in in interface */
@@ -827,6 +911,22 @@ dhd_flowid_alloc(dhd_pub_t *dhdp, uint8 ifindex, uint8 prio, char *sa, char *da)
 			cur->next = fl_hash_node;
 		} else
 			if_flow_lkup[ifindex].fl_hash[hash] = fl_hash_node;
+#ifdef GOOGLE_DAL_CORE
+		/* NOA will not offload BMC packets' flow id */
+		if (!ETHER_ISMULTI(da)) {
+			struct flow_id_entry_update entry;
+
+			entry.flowid = fl_hash_node->flowid;
+			entry.prio = prio;
+			memcpy(entry.da, da, ETHER_ADDR_LEN);
+			entry.ifindex = ifindex;
+			entry.oif = dhd_idx2net(dhdp, ifindex)->ifindex;
+			entry.role = if_flow_lkup[ifindex].role;
+			entry.is_add = true;
+
+			platform_bus_update_flowid_lkup_entry(&entry);
+		}
+#endif /* GOOGLE_DAL_CORE */
 	}
 	DHD_FLOWID_UNLOCK(dhdp->flowid_lock, flags);
 
@@ -965,6 +1065,10 @@ dhd_flowid_lookup(dhd_pub_t *dhdp, uint8 ifindex,
 			DHD_ERROR(("%s: create error %d\n", __FUNCTION__, id));
 			return BCME_ERROR;
 		}
+
+#ifdef GOOGLE_DAL_CORE
+		dhd_update_sta_info(dhdp, flow_ring_node, true);
+#endif /* GOOGLE_DAL_CORE */
 
 		*flowid = id;
 		return BCME_OK;
@@ -1260,6 +1364,15 @@ dhd_flowid_free(dhd_pub_t *dhdp, uint8 ifindex, uint16 flowid)
 				dhd_del_flowid(dhdp, ifindex, flowid);
 
 				dhd_flowid_map_free(dhdp, ifindex, flowid);
+#ifdef GOOGLE_DAL_CORE
+				struct flow_id_entry_update entry;
+
+				entry.flowid = flowid;
+				entry.ifindex = ifindex;
+				entry.is_add = false;
+
+				platform_bus_update_flowid_lkup_entry(&entry);
+#endif /* GOOGLE_DAL_CORE */
 				MFREE(dhdp->osh, cur, sizeof(flow_hash_info_t));
 				DHD_FLOWID_UNLOCK(dhdp->flowid_lock, flags);
 
@@ -1299,6 +1412,9 @@ dhd_flow_rings_delete(dhd_pub_t *dhdp, uint8 ifindex)
 			(flow_ring_table[id].status == FLOW_RING_STATUS_OPEN)) {
 			dhd_bus_flow_ring_delete_request(dhdp->bus,
 				(void *)&flow_ring_table[id]);
+#ifdef GOOGLE_DAL_CORE
+			dhd_update_sta_info(dhdp, &flow_ring_table[id], false);
+#endif /* GOOGLE_DAL_CORE */
 		}
 	}
 }
@@ -1410,8 +1526,61 @@ dhd_flow_rings_delete_for_peer(dhd_pub_t *dhdp, uint8 ifindex, char *addr)
 				__FUNCTION__, flow_ring_table[id].flowid));
 			dhd_bus_flow_ring_delete_request(dhdp->bus,
 				(void *) &flow_ring_table[id]);
+#ifdef GOOGLE_DAL_CORE
+			dhd_update_sta_info(dhdp, &flow_ring_table[id], false);
+#endif /* GOOGLE_DAL_CORE */
 		}
 	}
+}
+
+/* This function is called when NAN interface_create iovar is returns back from the dongle.
+* It will try to change the NAN interface's flowring role to WLC_E_IF_ROLE_NAN. If interface
+* creation is underway the it marks flow's op_flags with WLC_IF_FLAGS2_NAN_USE with is later
+* used by dhd_update_interface_flow_info() after the interface is completely created.
+*/
+void
+dhd_flowring_update_nan_iface_role(dhd_pub_t *dhd, uint8 ifidx, uint8 role)
+{
+	if_flow_lkup_t *if_flow_lkup = NULL;
+	unsigned long flags = 0;
+	uint8 flow_role;
+	uint8 flow_flags;
+
+	if (ifidx >= DHD_MAX_IFS) {
+		return;
+	}
+
+	DHD_FLOWID_LOCK(dhd->flowid_lock, flags);
+	if_flow_lkup = (if_flow_lkup_t *) (dhd->if_flow_lkup);
+	flow_role = if_flow_lkup[ifidx].role;
+	flow_flags = if_flow_lkup[ifidx].flags;
+	DHD_FLOWID_UNLOCK(dhd->flowid_lock, flags);
+
+	if (flow_role == WLC_E_IF_ROLE_IBSS) {
+		dhd_update_interface_flow_info(dhd, ifidx,
+			WLC_E_IF_CHANGE, role, flow_flags);
+	} else {
+		/* Dongle FW specified ifidx is not yet completely up as
+		* WLC_E_IF event is under process.
+		*/
+		if_flow_lkup[ifidx].op_flags = WLC_IF_FLAGS2_NAN_USE;
+	}
+}
+
+/* reset the transient if_flow->op_flags which are used by NAN interfaces */
+void dhd_flow_reset_op_flags(dhd_pub_t *dhdp, uint8 ifidx)
+{
+	if_flow_lkup_t *if_flow_lkup = NULL;
+	unsigned long flags;
+	if (ifidx >= DHD_MAX_IFS) {
+		return;
+	}
+	DHD_FLOWID_LOCK(dhdp->flowid_lock, flags);
+	if_flow_lkup = (if_flow_lkup_t *) (dhdp->if_flow_lkup);
+	if (if_flow_lkup) {
+		if_flow_lkup[ifidx].op_flags = 0;
+	}
+	DHD_FLOWID_UNLOCK(dhdp->flowid_lock, flags);
 }
 
 /* Handles interface ADD, CHANGE, DEL indications from the dongle.
@@ -1468,11 +1637,26 @@ dhd_update_interface_flow_info(dhd_pub_t *dhdp, uint8 ifindex,
 			DHD_INFO(("%s: Mcast Flow ring for ifindex %d role is %d \n",
 				__FUNCTION__, ifindex, role));
 		}
+
+		/* Special handling for NAN interfaces which comes up as WLC_E_IF_ROLE_IBSS at first
+		 * and later updates to WLC_E_IF_ROLE_NAN
+		*/
+		if ((role == WLC_E_IF_ROLE_IBSS) &&
+			(if_flow_lkup[ifindex].op_flags & WLC_IF_FLAGS2_NAN_USE)) {
+			DHD_ERROR(("%s: Special handling for NAN :"
+				" ifindex:%d previous role:%d new role:%d if_flags:%x\n",
+				__FUNCTION__, ifindex, if_flow_lkup[ifindex].role,
+				WLC_E_IF_ROLE_NAN, if_flags));
+			if_flow_lkup[ifindex].role = WLC_E_IF_ROLE_NAN;
+		}
+
 	} else	if ((op == WLC_E_IF_DEL) && (role == WLC_E_IF_ROLE_WDS)) {
 		if_flow_lkup[ifindex].status = FALSE;
 		DHD_INFO(("%s: cleanup all Flow rings for ifindex %d role is %d \n",
 			__FUNCTION__, ifindex, role));
 	}
+
+	if_flow_lkup[ifindex].op_flags = 0;
 	DHD_FLOWID_UNLOCK(dhdp->flowid_lock, flags);
 }
 
@@ -1535,6 +1719,11 @@ int dhd_update_flow_prio_map(dhd_pub_t *dhdp, uint8 map)
 		bcopy(prio2ac, dhdp->flow_prio_map, sizeof(uint8) * NUMPRIO);
 
 	dhdp->max_multi_client_flow_rings = dhd_get_max_multi_client_flow_rings(dhdp);
+
+#ifdef GOOGLE_DAL_CORE
+	DHD_INFO(("%s: update flow prio map type: %d", __FUNCTION__, dhdp->flow_prio_map_type));
+	platform_bus_update_up2flow(dhdp->flow_prio_map_type, dhdp->flow_prio_map);
+#endif /* GOOGLE_DAL_CORE */
 
 	return BCME_OK;
 }
@@ -1617,6 +1806,12 @@ int dhd_flow_prio_map_init(dhd_pub_t *dhd)
 					sizeof(uint8) * NUMPRIO);
 			}
 			dhd->max_multi_client_flow_rings = dhd_get_max_multi_client_flow_rings(dhd);
+
+#ifdef GOOGLE_DAL_CORE
+			DHD_INFO(("%s: update flow prio map type = %d", __FUNCTION__,
+				dhd->flow_prio_map_type));
+			platform_bus_update_up2flow(dhd->flow_prio_map_type, dhd->flow_prio_map);
+#endif /* GOOGLE_DAL_CORE */
 		}
 	}
 
@@ -1867,3 +2062,53 @@ dhd_tx_flowring_indices_trace_dump(dhd_pub_t *dhdp)
 	VMFREE(dhdp->osh, tracebuf, tracebuf_size);
 }
 #endif /* TX_FLOW_RING_INDICES_TRACE */
+
+#ifdef GOOGLE_DAL_NOA_MODE
+int
+dhd_flow_rings_sync(dhd_pub_t *dhdp)
+{
+	uint32 id;
+	uint8 role;
+	flow_ring_table_t *flow_ring_table;
+
+	if (!dhdp->flow_ring_table)
+		return -EINVAL;
+
+	flow_ring_table = (flow_ring_table_t *)dhdp->flow_ring_table;
+	for (id = 0; id < dhdp->num_h2d_rings; id++) {
+		/*
+		 * Send flowring delete request even if flowring status is
+		 * FLOW_RING_STATUS_CREATE_PENDING, to handle cases where DISASSOC_IND
+		 * event comes ahead of flowring create response.
+		 * Otherwise the flowring will not be deleted later as there will not be any
+		 * DISASSOC_IND event. With this change, when create response event comes to DHD,
+		 * it will change the status to FLOW_RING_STATUS_OPEN and soon delete response
+		 * event will come, upon which DHD will delete the flowring.
+		 */
+		if (flow_ring_table[id].active) {
+			role = dhd_flow_rings_ifindex2role(dhdp,
+				flow_ring_table[id].flow_info.ifindex);
+			dhd_update_sta_info(dhdp, &flow_ring_table[id], true);
+#ifdef WLTDLS
+			if (role == WLC_E_IF_ROLE_STA &&
+				is_tdls_destination(dhdp, flow_ring_table[id].flow_info.da)) {
+				continue;
+			}
+#endif /* WLTDLS */
+			struct flow_id_entry_update entry;
+
+			entry.flowid = flow_ring_table[id].flowid;
+			entry.prio = flow_ring_table[id].flow_info.tid;
+			memcpy(entry.da, flow_ring_table[id].flow_info.da, ETHER_ADDR_LEN);
+			entry.ifindex = flow_ring_table[id].flow_info.ifindex;
+			entry.oif = dhd_idx2net(dhdp,
+					flow_ring_table[id].flow_info.ifindex)->ifindex;
+			entry.role = role;
+			entry.is_add = true;
+
+			platform_bus_update_flowid_lkup_entry(&entry);
+		}
+	}
+	return 0;
+}
+#endif /* GOOGLE_DAL_NOA_MODE */

@@ -33,6 +33,9 @@
 
 #include "dw-mipi-cdphy-g301.h"
 
+/* Cached MIPI calibration value from MIPI PHY 0 */
+static u32 shared_cb_ctrl_val;
+
 struct debugfs_entries {
 	const char		*name;
 	struct regmap_field	*reg;
@@ -244,6 +247,7 @@ static const struct dw_mipi_phy_g301_variant dw_mipi_phy_g301_lca01_variant = {
 	.cfg_ppi_rw_pll_startup_cfg_1_pll_gear_shift_time =
 		REG_FIELD(PPI_RW_PLL_STARTUP_CFG_1, 0, 9),
 	.cfg_ppi_rw_pll_startup_cfg_2_pll_lock_det_time = REG_FIELD(PPI_RW_PLL_STARTUP_CFG_2, 0, 9),
+	.cfg_ppi_rw_pll_startup_cfg_4_ssc_reset_n = REG_FIELD(PPI_RW_PLL_STARTUP_CFG_4, 2, 2),
 	.cfg_ppi_rw_tx_hibernate_cfg_0_hibernate_exit = REG_FIELD(PPI_RW_TX_HIBERNATE_CFG_0, 0, 0),
 	.cfg_core_dig_ioctrl_rw_afe_lane0_ctrl_2_2_oa_lane0_sel_lane_cfg =
 		REG_FIELD(CORE_DIG_IOCTRL_RW_AFE_LANE0_CTRL_2_2, 0, 0),
@@ -411,6 +415,14 @@ static const struct dw_mipi_phy_g301_variant dw_mipi_phy_g301_lca01_variant = {
 		REG_FIELD(CORE_DIG_IOCTRL_RW_AFE_CB_CTRL_2_7, 9, 9),
 	.cfg_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_cb_hstxlb_dco_tune_clkdig_en_ovr_val =
 		REG_FIELD(CORE_DIG_IOCTRL_RW_AFE_CB_CTRL_2_7, 10, 10),
+	.cfg_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setr_ovr_en =
+		REG_FIELD(CORE_DIG_IOCTRL_RW_AFE_CB_CTRL_2_7, 11, 11),
+	.cfg_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setr_calib_ovr_en =
+		REG_FIELD(CORE_DIG_IOCTRL_RW_AFE_CB_CTRL_2_7, 12, 12),
+	.cfg_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setra_ovr_en =
+		REG_FIELD(CORE_DIG_IOCTRL_RW_AFE_CB_CTRL_2_7, 13, 13),
+	.cfg_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setrb_ovr_en =
+		REG_FIELD(CORE_DIG_IOCTRL_RW_AFE_CB_CTRL_2_7, 14, 14),
 	.cfg_core_dig_anactrl_rw_common_anactrl_0_cb_lp_dco_en_dly =
 		REG_FIELD(CORE_DIG_ANACTRL_RW_COMMON_ANACTRL_0, 2, 7),
 	.cfg_core_dig_anactrl_rw_common_anactrl_2_global_ulps_ovr_en =
@@ -450,6 +462,8 @@ static const struct dw_mipi_phy_g301_variant dw_mipi_phy_g301_lca01_variant = {
 		REG_FIELD(CORE_DIG_DLANE_0_RW_HS_TX_10, 0, 15),
 	.cfg_core_dig_dlane_0_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg =
 		REG_FIELD(CORE_DIG_DLANE_0_RW_HS_TX_12, 0, 15),
+	.cfg_core_dig_dlane_0_rw_hs_tx_sh_11_sh_sel_reg =
+		REG_FIELD(CORE_DIG_DLANE_0_RW_HS_TX_SHADOW_11, 0, 0),
 	.cfg_core_dig_dlane_1_rw_lp_0_lp_0_ttago_reg = REG_FIELD(CORE_DIG_DLANE_1_RW_LP_0, 8, 11),
 	.cfg_core_dig_dlane_1_rw_lp_0_lp_0_itminrx_reg =
 		REG_FIELD(CORE_DIG_DLANE_1_RW_LP_0, 12, 15),
@@ -473,6 +487,8 @@ static const struct dw_mipi_phy_g301_variant dw_mipi_phy_g301_lca01_variant = {
 		REG_FIELD(CORE_DIG_DLANE_1_RW_HS_TX_10, 0, 15),
 	.cfg_core_dig_dlane_1_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg =
 		REG_FIELD(CORE_DIG_DLANE_1_RW_HS_TX_12, 0, 15),
+	.cfg_core_dig_dlane_1_rw_hs_tx_sh_11_sh_sel_reg =
+		REG_FIELD(CORE_DIG_DLANE_1_RW_HS_TX_SHADOW_11, 0, 0),
 	.cfg_core_dig_dlane_2_rw_lp_0_lp_0_ttago_reg = REG_FIELD(CORE_DIG_DLANE_2_RW_LP_0, 8, 11),
 	.cfg_core_dig_dlane_2_rw_lp_0_lp_0_itminrx_reg =
 		REG_FIELD(CORE_DIG_DLANE_2_RW_LP_0, 12, 15),
@@ -496,6 +512,8 @@ static const struct dw_mipi_phy_g301_variant dw_mipi_phy_g301_lca01_variant = {
 		REG_FIELD(CORE_DIG_DLANE_2_RW_HS_TX_10, 0, 15),
 	.cfg_core_dig_dlane_2_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg =
 		REG_FIELD(CORE_DIG_DLANE_2_RW_HS_TX_12, 0, 15),
+	.cfg_core_dig_dlane_2_rw_hs_tx_sh_11_sh_sel_reg =
+		REG_FIELD(CORE_DIG_DLANE_2_RW_HS_TX_SHADOW_11, 0, 0),
 	.cfg_core_dig_dlane_3_rw_lp_0_lp_0_ttago_reg = REG_FIELD(CORE_DIG_DLANE_3_RW_LP_0, 8, 11),
 	.cfg_core_dig_dlane_3_rw_lp_0_lp_0_itminrx_reg =
 		REG_FIELD(CORE_DIG_DLANE_3_RW_LP_0, 12, 15),
@@ -519,6 +537,8 @@ static const struct dw_mipi_phy_g301_variant dw_mipi_phy_g301_lca01_variant = {
 		REG_FIELD(CORE_DIG_DLANE_3_RW_HS_TX_10, 0, 15),
 	.cfg_core_dig_dlane_3_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg =
 		REG_FIELD(CORE_DIG_DLANE_3_RW_HS_TX_12, 0, 15),
+	.cfg_core_dig_dlane_3_rw_hs_tx_sh_11_sh_sel_reg =
+		REG_FIELD(CORE_DIG_DLANE_3_RW_HS_TX_SHADOW_11, 0, 0),
 	.cfg_core_dig_dlane_clk_rw_hs_tx_0_hs_tx_0_thstrail_reg =
 		REG_FIELD(CORE_DIG_DLANE_CLK_RW_HS_TX_0, 0, 15),
 	.cfg_core_dig_dlane_clk_rw_hs_tx_1_hs_tx_1_thszero_reg =
@@ -541,6 +561,8 @@ static const struct dw_mipi_phy_g301_variant dw_mipi_phy_g301_lca01_variant = {
 		REG_FIELD(CORE_DIG_DLANE_CLK_RW_HS_TX_10, 0, 15),
 	.cfg_core_dig_dlane_clk_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg =
 		REG_FIELD(CORE_DIG_DLANE_CLK_RW_HS_TX_12, 0, 15),
+	.cfg_core_dig_dlane_clk_rw_hs_tx_sh_11_sh_sel_reg =
+		REG_FIELD(CORE_DIG_DLANE_CLK_RW_HS_TX_SHADOW_11, 0, 0),
 	.cfg_core_dig_clane_0_rw_lp_0_lp_0_ttago_reg = REG_FIELD(CORE_DIG_CLANE_0_RW_LP_0, 8, 11),
 	.cfg_core_dig_clane_0_rw_lp_0_lp_0_itminrx_reg =
 		REG_FIELD(CORE_DIG_CLANE_0_RW_LP_0, 12, 15),
@@ -822,7 +844,7 @@ static const struct dw_mipi_phy_g301_variant dw_mipi_phy_g301_lca01_variant = {
 	.cfg_phy_extended_ctr1_rw_cont_en = REG_FIELD(PHY_EXTENDED_CTRL1, 28, 28),
 	.cfg_phy_extended_ctr1_rw_cont_en_ov_en = REG_FIELD(PHY_EXTENDED_CTRL1, 31, 31),
 
-	.cfg_phy_common9_reg = REG_FIELD(CORE_DIG_RW_COMMON_9, 0, 31),
+	.cfg_phy_common9_reg_lp_dco_clk_dyn_gating = REG_FIELD(CORE_DIG_RW_COMMON_9, 8, 8),
 	.cfg_phy_startup_cfg3_reg = REG_FIELD(PPI_RW_PLL_STARTUP_CFG_3, 0, 31),
 };
 
@@ -857,6 +879,7 @@ static int dw_cdphy_regmap_fields_init(struct dw_mipi_cdphy_g301 *cdphy_g301)
 	INIT_FIELD(ppi_rw_pll_startup_cfg_0_pll_rst_time, base_regs);
 	INIT_FIELD(ppi_rw_pll_startup_cfg_1_pll_gear_shift_time, base_regs);
 	INIT_FIELD(ppi_rw_pll_startup_cfg_2_pll_lock_det_time, base_regs);
+	INIT_FIELD(ppi_rw_pll_startup_cfg_4_ssc_reset_n, base_regs);
 	INIT_FIELD(ppi_rw_tx_hibernate_cfg_0_hibernate_exit, base_regs);
 	INIT_FIELD(core_dig_ioctrl_rw_afe_lane0_ctrl_2_2_oa_lane0_sel_lane_cfg, base_regs);
 	INIT_FIELD(core_dig_ioctrl_rw_afe_lane0_ctrl_2_3_oa_lane0_hstx_sel_phase0, base_regs);
@@ -941,6 +964,10 @@ static int dw_cdphy_regmap_fields_init(struct dw_mipi_cdphy_g301 *cdphy_g301)
 	INIT_FIELD(core_dig_ioctrl_rw_afe_cb_ctrl_2_6_oa_cb_hstxlb_dco_tune_clkdig_en_ovr_en, base_regs);
 	INIT_FIELD(core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_cb_hstxlb_dco_en_ovr_val, base_regs);
 	INIT_FIELD(core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_cb_hstxlb_dco_tune_clkdig_en_ovr_val, base_regs);
+	INIT_FIELD(core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setr_ovr_en, base_regs);
+	INIT_FIELD(core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setr_calib_ovr_en, base_regs);
+	INIT_FIELD(core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setra_ovr_en, base_regs);
+	INIT_FIELD(core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setrb_ovr_en, base_regs);
 	INIT_FIELD(core_dig_anactrl_rw_common_anactrl_0_cb_lp_dco_en_dly, base_regs);
 	INIT_FIELD(core_dig_anactrl_rw_common_anactrl_2_global_ulps_ovr_en, base_regs);
 	INIT_FIELD(core_dig_anactrl_rw_common_anactrl_2_global_ulps_ovr_val, base_regs);
@@ -961,6 +988,7 @@ static int dw_cdphy_regmap_fields_init(struct dw_mipi_cdphy_g301 *cdphy_g301)
 	INIT_FIELD(core_dig_dlane_0_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_0_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_0_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg, base_regs);
+	INIT_FIELD(core_dig_dlane_0_rw_hs_tx_sh_11_sh_sel_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_1_rw_lp_0_lp_0_ttago_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_1_rw_lp_0_lp_0_itminrx_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_1_rw_lp_2_lp_2_filter_input_sampling_reg, base_regs);
@@ -973,6 +1001,7 @@ static int dw_cdphy_regmap_fields_init(struct dw_mipi_cdphy_g301 *cdphy_g301)
 	INIT_FIELD(core_dig_dlane_1_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_1_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_1_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg, base_regs);
+	INIT_FIELD(core_dig_dlane_1_rw_hs_tx_sh_11_sh_sel_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_2_rw_lp_0_lp_0_ttago_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_2_rw_lp_0_lp_0_itminrx_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_2_rw_lp_2_lp_2_filter_input_sampling_reg, base_regs);
@@ -985,6 +1014,7 @@ static int dw_cdphy_regmap_fields_init(struct dw_mipi_cdphy_g301 *cdphy_g301)
 	INIT_FIELD(core_dig_dlane_2_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_2_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_2_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg, base_regs);
+	INIT_FIELD(core_dig_dlane_2_rw_hs_tx_sh_11_sh_sel_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_3_rw_lp_0_lp_0_ttago_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_3_rw_lp_0_lp_0_itminrx_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_3_rw_lp_2_lp_2_filter_input_sampling_reg, base_regs);
@@ -997,6 +1027,7 @@ static int dw_cdphy_regmap_fields_init(struct dw_mipi_cdphy_g301 *cdphy_g301)
 	INIT_FIELD(core_dig_dlane_3_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_3_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_3_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg, base_regs);
+	INIT_FIELD(core_dig_dlane_3_rw_hs_tx_sh_11_sh_sel_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_clk_rw_hs_tx_0_hs_tx_0_thstrail_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_clk_rw_hs_tx_1_hs_tx_1_thszero_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_clk_rw_hs_tx_2_hs_tx_2_tclkpre_reg, base_regs);
@@ -1008,6 +1039,7 @@ static int dw_cdphy_regmap_fields_init(struct dw_mipi_cdphy_g301 *cdphy_g301)
 	INIT_FIELD(core_dig_dlane_clk_rw_hs_tx_9_hs_tx_9_thsprpr_dco_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_clk_rw_hs_tx_10_hs_tx_10_tlp11init_dco_reg, base_regs);
 	INIT_FIELD(core_dig_dlane_clk_rw_hs_tx_12_hs_tx_12_thsexit_dco_reg, base_regs);
+	INIT_FIELD(core_dig_dlane_clk_rw_hs_tx_sh_11_sh_sel_reg, base_regs);
 	INIT_FIELD(core_dig_clane_0_rw_lp_0_lp_0_ttago_reg, base_regs);
 	INIT_FIELD(core_dig_clane_0_rw_lp_0_lp_0_itminrx_reg, base_regs);
 	INIT_FIELD(core_dig_clane_0_rw_hs_tx_0_hs_tx_0_thsexit_dco_reg, base_regs);
@@ -1191,7 +1223,7 @@ static int dw_cdphy_regmap_fields_init(struct dw_mipi_cdphy_g301 *cdphy_g301)
 	INIT_FIELD(phy_extended_ctr1_rw_cont_en, u0_apb_regbank_regs);
 	INIT_FIELD(phy_extended_ctr1_rw_cont_en_ov_en, u0_apb_regbank_regs);
 
-	INIT_FIELD(phy_common9_reg, base_regs);
+	INIT_FIELD(phy_common9_reg_lp_dco_clk_dyn_gating, base_regs);
 	INIT_FIELD(phy_startup_cfg3_reg, base_regs);
 
 	return 0;
@@ -2095,6 +2127,66 @@ static void dw_cdphy_pll_config(struct dw_mipi_cdphy_g301 *cdphy_g301)
 	dw_cdphy_write_field(cdphy_g301->field_pll_cfg5_rw_pll_stepsize, val);
 }
 
+static int dw_cdphy_frequency_hopping_exit_ulps(struct phy *phy)
+{
+	struct dw_mipi_cdphy *cdphy = phy_get_drvdata(phy);
+	struct dw_mipi_cdphy_g301 *cdphy_g301 = cdphy->cdphy_priv_data;
+	bool ssc = cdphy->pll_ssc;
+	struct pll_config pll_config;
+	int ret;
+	u32 val;
+
+	DPU_ATRACE_BEGIN("%s, %d", __func__, cdphy->datarate);
+	dev_dbg(&cdphy->phy->dev, "%s: datarate = %d\n", __func__, cdphy->datarate);
+	/* 7 - Set register */
+	if (ssc)
+		dw_cdphy_write_field(cdphy_g301->field_ppi_rw_pll_startup_cfg_4_ssc_reset_n, 1);
+
+	/* 9 - Update PLL static inputs according to the frequency hopping */
+	if (cdphy->driver_data && cdphy->driver_data->pll_calc_old)
+		ret = pll_calc(cdphy->datarate, cdphy->pll_ref_clk_khz,
+					cdphy->pll_ssc, &pll_config);
+	else
+		ret = pll_calc_v2(cdphy->datarate, cdphy->pll_ref_clk_khz,
+					cdphy->pll_ssc, &pll_config);
+
+	if (ret == 0) {
+		val = pll_config.pll_ssc_peak;
+		dw_cdphy_write_field(cdphy_g301->field_pll_cfg6_rw_pll_ssc_peak, val);
+		val = pll_config.pll_ssc_stepsize;
+		dw_cdphy_write_field(cdphy_g301->field_pll_cfg5_rw_pll_stepsize, val);
+		val = pll_config.pll_mint;
+		dw_cdphy_write_field(cdphy_g301->field_pll_cfg3_rw_pll_mint, val);
+		val = pll_config.pll_frac_quote;
+		dw_cdphy_write_field(cdphy_g301->field_pll_cfg7_rw_pll_frac_quot, val);
+		cdphy_g301->hs_config.datarate = cdphy->datarate;
+		memcpy(&cdphy_g301->hs_config.pll_config, &pll_config, sizeof(pll_config));
+	}
+
+	/* 10 - Set register */
+	/* TODO: add shadow control logic for C-PHY */
+	if (!cdphy->is_cphy) {
+		/* DPHY Specific */
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_0_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_1_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_2_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_3_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_clk_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+	}
+
+	/* 11 */
+	if (ssc)
+		dw_cdphy_write_field(cdphy_g301->field_ppi_rw_pll_startup_cfg_4_ssc_reset_n, 1);
+
+	DPU_ATRACE_END("%s, %d", __func__, cdphy->datarate);
+	return ret;
+}
+
 static int dw_dphy_power_on_g301(struct phy *phy)
 {
 	struct dw_mipi_cdphy *cdphy = phy_get_drvdata(phy);
@@ -2116,6 +2208,18 @@ static int dw_dphy_power_on_g301(struct phy *phy)
 		/* Step 11.c */
 		dw_cdphy_write_field(cdphy_g301->field_phy_extended_ctr1_rw_forcetxstopmode_dck,
 				     0x0);
+	}
+
+	if (!shared_cb_ctrl_val) {
+		u32 val = 0;
+
+		val = dw_cdphy_read_reg(cdphy_g301->base_regs, CORE_DIG_IOCTRL_R_AFE_CB_CTRL_2_15);
+		if (val != 0) {
+			cdphy_g301->is_primary = true;
+			shared_cb_ctrl_val = val;
+			dev_dbg(&cdphy->phy->dev,
+				"Primary PHY detected, cached calibration = 0x%x\n", val);
+		}
 	}
 
 	/* PHY exit LP00 state */
@@ -2171,6 +2275,7 @@ static int dw_cdphy_set_ulps(struct phy *phy, int enable)
 			return -EPERM;
 		}
 		cdphy->phy_in_ulps = true;
+		dw_cdphy_write_field(cdphy_g301->field_pll_cfg3_rw_pll_fracn_cfg_update_en, 0);
 	}
 	DPU_ATRACE_END("%s, %d", __func__, enable);
 	return 0;
@@ -2198,6 +2303,12 @@ static int dw_cdphy_set_pll(struct phy *phy, int enable)
 			DPU_ATRACE_END("%s, %d", __func__, enable);
 			return -EPERM;
 		}
+
+		dw_cdphy_write_field(cdphy_g301->field_pll_cfg3_rw_pll_fracn_cfg_update_en, 1);
+
+		if (cdphy->datarate != cdphy_g301->hs_config.datarate)
+			dw_cdphy_frequency_hopping_exit_ulps(phy);
+
 		dw_cdphy_write_field(cdphy_g301->field_ppi_rw_tx_hibernate_cfg_0_hibernate_exit,
 				     0x1);
 		dw_cdphy_write_field(cdphy_g301->field_ppi_rw_tx_hibernate_cfg_0_hibernate_exit,
@@ -2221,6 +2332,147 @@ static int dw_cdphy_set_pll(struct phy *phy, int enable)
 	DPU_ATRACE_END("%s, %d", __func__, enable);
 
 	return ret;
+}
+
+static int dw_cdphy_frequency_hopping(struct phy *phy)
+{
+	struct dw_mipi_cdphy *cdphy = phy_get_drvdata(phy);
+	struct dw_mipi_cdphy_g301 *cdphy_g301 = cdphy->cdphy_priv_data;
+	bool ssc = cdphy->pll_ssc;
+	bool pll_calc_old = false;
+	struct pll_config pll_config;
+	int ret;
+	u32 val;
+
+	if (cdphy->driver_data && cdphy->driver_data->pll_calc_old)
+		pll_calc_old = true;
+
+	/* Check PLL reference clock */
+	cdphy->pll_ref_clk_khz = clk_get_rate(cdphy->pllref_clk) / 1000;
+	if (!cdphy->pll_ref_clk_khz) {
+		dev_warn(&cdphy->phy->dev, "%s: invalid pll reference clock rate %u Khz\n",
+			__func__, cdphy->pll_ref_clk_khz);
+		return -EINVAL;
+	}
+
+
+	DPU_ATRACE_BEGIN("%s, %d", __func__, cdphy->datarate);
+	/* 1 - Boot TX PHY and wait until phy_ready (CPHY or DPHY) */
+	ret = readl_poll_timeout(cdphy_g301->u0_apb_regbank + PHY_STS, val, val & PHY_READY, 50,
+				 PHY_STATUS_TIMEOUT_US);
+	if (ret) {
+		dev_err(&cdphy->phy->dev, "%s Failed to wait PHY_READY\n", __func__);
+		DPU_ATRACE_END("%s, %d", __func__, cdphy->datarate);
+		return ret;
+	}
+
+	/* 2 - Set pll_fracn_cfg_update_en to 1'b0 (Disable PLL and ssc_gen configuration update) */
+	dw_cdphy_write_field(cdphy_g301->field_pll_cfg3_rw_pll_fracn_cfg_update_en, 0);
+	/* 3 - Set register */
+	/* TODO: add shadow control logic for C-PHY */
+	if (!cdphy->is_cphy) {
+		/* DPHY Specific */
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_0_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_1_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_2_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_3_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_clk_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+	}
+	/* 4. While PHY is in transmission state,
+	 * update PLL ssc static configuration inputs
+	 * and the following list of HS-TX related register according to the frequency hopping
+	 */
+
+	/* 5 - Command all lanes (including clock lane) or trios to enter ULP
+	 * (wait until ulpsactivenot_* = 1'b0)
+	 */
+	ret = readl_poll_timeout(cdphy_g301->base + CORE_DIG_IOCTRL_R_DPHY_PPI_LANE0_OVR_0_14, val,
+				 val & BIT(1), 50, PHY_STATUS_TIMEOUT_US);
+	if (ret)
+		dev_err(&cdphy->phy->dev, "%s Failed to wait STOP_STATE\n", __func__);
+
+
+	/* 6 - TX PHY should enter hibernate automatically and disable both PLL and LP-DCO */
+	dw_cdphy_write_field(cdphy_g301->field_pll_cfg0_rw_pll_clksel, 0);
+	dw_cdphy_write_field(cdphy_g301->field_phy_common9_reg_lp_dco_clk_dyn_gating, 0x0);
+	dw_cdphy_write_field(cdphy_g301->field_phy_startup_cfg3_reg, 0x0);
+	dw_cdphy_write_field(cdphy_g301->field_phy_startup_cfg3_reg, 0x2);
+
+	/* 7 - Set register */
+	if (ssc)
+		dw_cdphy_write_field(cdphy_g301->field_ppi_rw_pll_startup_cfg_4_ssc_reset_n, 1);
+
+	/* 8 - Set pll_fracn_cfg_update_en to 1'b1 (Enable PLL and ssc_gen configuration update */
+	dw_cdphy_write_field(cdphy_g301->field_pll_cfg3_rw_pll_fracn_cfg_update_en, 1);
+
+	/* 9 - Update PLL static inputs according to the frequency hopping */
+	if (pll_calc_old)
+		ret = pll_calc(cdphy->datarate, cdphy->pll_ref_clk_khz,
+					cdphy->pll_ssc, &pll_config);
+	else
+		ret = pll_calc_v2(cdphy->datarate, cdphy->pll_ref_clk_khz,
+					cdphy->pll_ssc, &pll_config);
+
+	if (ret == 0) {
+		val = pll_config.pll_ssc_peak;
+		dw_cdphy_write_field(cdphy_g301->field_pll_cfg6_rw_pll_ssc_peak, val);
+		val = pll_config.pll_ssc_stepsize;
+		dw_cdphy_write_field(cdphy_g301->field_pll_cfg5_rw_pll_stepsize, val);
+		val = pll_config.pll_mint;
+		dw_cdphy_write_field(cdphy_g301->field_pll_cfg3_rw_pll_mint, val);
+		val = pll_config.pll_frac_quote;
+		dw_cdphy_write_field(cdphy_g301->field_pll_cfg7_rw_pll_frac_quot, val);
+		cdphy_g301->hs_config.datarate = cdphy->datarate;
+		memcpy(&cdphy_g301->hs_config.pll_config, &pll_config, sizeof(pll_config));
+	}
+
+	/* 10 - Set register */
+	/* TODO: add shadow control logic for C-PHY */
+	if (!cdphy->is_cphy) {
+		/* DPHY Specific */
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_0_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_1_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_2_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_3_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+		dw_cdphy_write_field(cdphy_g301->field_core_dig_dlane_clk_rw_hs_tx_sh_11_sh_sel_reg,
+				     0);
+	}
+
+	/* 11 */
+	if (ssc)
+		dw_cdphy_write_field(cdphy_g301->field_ppi_rw_pll_startup_cfg_4_ssc_reset_n, 1);
+
+	/* 12 */
+	dw_cdphy_write_field(cdphy_g301->field_phy_common9_reg_lp_dco_clk_dyn_gating, 0x1);
+	dw_cdphy_write_field(cdphy_g301->field_phy_startup_cfg3_reg, 0x0);
+	dw_cdphy_write_field(cdphy_g301->field_pll_cfg0_rw_pll_clksel, 0);
+
+	/* 14 - wait for the pll_lock to lock */
+	ret = readl_poll_timeout(cdphy_g301->u0_apb_regbank + PHY_STS, val, val & PLL_LOCK, 1000,
+				 PHY_STATUS_TIMEOUT_US);
+	if (ret) {
+		/* TODO: dump corresponding CSR */
+		dev_err(&cdphy->phy->dev, "%s: Failed to wait PHY Lock\n", __func__);
+		DPU_ATRACE_INSTANT("fail to wait PHY Lock");
+		DPU_ATRACE_END("%s, %d", __func__, cdphy->datarate);
+		return ret;
+	}
+	dw_cdphy_write_field(cdphy_g301->field_pll_cfg0_rw_pll_clksel, 1);
+	/* 15 - Command all lanes (including clock lane) or trios to exit ULP
+	 * (wait until ulpsactivenot_* = 1'b1 and stopstate_* = 1'b1)
+	 */
+
+	DPU_ATRACE_END("%s, %d", __func__, cdphy->datarate);
+	return 0;
 }
 
 static void dw_cdphy_fixup_b269704700(struct dw_mipi_cdphy *cdphy)
@@ -2250,6 +2502,7 @@ static int dw_dphy_configure_g301(struct phy *phy, union phy_configure_opts *opt
 {
 	struct dw_mipi_cdphy *cdphy = phy_get_drvdata(phy);
 	struct dw_mipi_cdphy_g301 *cdphy_g301 = cdphy->cdphy_priv_data;
+	struct dw_cdphy_hs_configuration *hs_config = &cdphy_g301->hs_config;
 	struct phy_configure_opts_mipi_dphy *cdphy_opts = &opts->mipi_dphy;
 	u32 val = 0 ;
 	u32 ovr_en = cdphy->lane_ovr_en;
@@ -2258,10 +2511,11 @@ static int dw_dphy_configure_g301(struct phy *phy, union phy_configure_opts *opt
 	dev_info(&cdphy->phy->dev, "Configuring CD-PHY G301\n");
 	pr_info("datarate = %d\n", cdphy->datarate);
 
-	if (cdphy->datarate != cdphy_g301->hs_config.datarate) {
-		struct pll_config pll_config;
-		struct dphy_hs_regs dphy_regs;
-		struct cphy_hs_regs cphy_regs;
+	if (cdphy->datarate != 0) {
+		bool pll_calc_old = false;
+
+		if (cdphy->driver_data && cdphy->driver_data->pll_calc_old)
+			pll_calc_old = true;
 
 		cdphy->pll_ref_clk_khz = clk_get_rate(cdphy->pllref_clk) / 1000;
 		if (!cdphy->pll_ref_clk_khz) {
@@ -2273,32 +2527,30 @@ static int dw_dphy_configure_g301(struct phy *phy, union phy_configure_opts *opt
 		dev_dbg(&cdphy->phy->dev, "%s: pll_ref_clk_khz %u Khz\n", __func__,
 			cdphy->pll_ref_clk_khz);
 
-		ret = pll_calc(cdphy->datarate, cdphy->pll_ref_clk_khz, cdphy->pll_ssc,
-			       &pll_config);
+		if (pll_calc_old)
+			ret = pll_calc(cdphy->datarate, cdphy->pll_ref_clk_khz,
+						cdphy->pll_ssc, &hs_config->pll_config);
+		else
+			ret = pll_calc_v2(cdphy->datarate, cdphy->pll_ref_clk_khz,
+						cdphy->pll_ssc, &hs_config->pll_config);
+
 		if (ret == 0) {
 			if (cdphy->is_cphy)
-				ret = cphy_regs_calc(cdphy->datarate, &cphy_regs);
+				ret = cphy_regs_calc(cdphy->datarate, &hs_config->cphy_regs);
 			else
-				ret = dphy_regs_calc(cdphy->datarate, &dphy_regs);
+				ret = dphy_regs_calc(cdphy->datarate, &hs_config->dphy_regs);
 		}
 
 		if (ret != 0) {
 			dev_warn(&cdphy->phy->dev, "%s: failed to apply datarate %d Mbps\n",
 				 __func__, cdphy->datarate);
-			if (cdphy_g301->hs_config.datarate != 0)
+			if (hs_config->datarate != 0)
 				dev_warn(&cdphy->phy->dev, "%s:  use %d Mbps\n", __func__,
-					 cdphy_g301->hs_config.datarate);
+					 hs_config->datarate);
 			else
 				return ret;
 		} else {
-			cdphy_g301->hs_config.datarate = cdphy->datarate;
-			memcpy(&cdphy_g301->hs_config.pll_config, &pll_config, sizeof(pll_config));
-			if (cdphy->is_cphy)
-				memcpy(&cdphy_g301->hs_config.cphy_regs, &cphy_regs,
-					sizeof(cphy_regs));
-			else
-				memcpy(&cdphy_g301->hs_config.dphy_regs, &dphy_regs,
-					sizeof(dphy_regs));
+			hs_config->datarate = cdphy->datarate;
 		}
 	}
 
@@ -2336,6 +2588,10 @@ static int dw_dphy_configure_g301(struct phy *phy, union phy_configure_opts *opt
 	if (!cdphy->is_cphy && cdphy_opts->lanes > 3)
 		dw_cdphy_write_field(cdphy_g301->field_phy_extended_ctr1_rw_forcetxstopmode_3, 1);
 
+	/* 5.12 Limitation of panel width */
+	if (cdphy->non24x_fix)
+		dw_cdphy_write_field(cdphy_g301->field_phy_extended_ctr1_rw_cont_en, 1);
+
 	/* Step 7.c */
 	if (!cdphy->is_cphy)
 		dw_cdphy_write_field(cdphy_g301->field_phy_extended_ctr1_rw_forcetxstopmode_dck, 1);
@@ -2368,6 +2624,25 @@ static int dw_dphy_configure_g301(struct phy *phy, union phy_configure_opts *opt
 		dw_cdphy_write_field(cdphy_g301->field_phy_extended_ctr1_rw_txdatawidthhs_2, 1);
 	if (cdphy_opts->lanes > 3)
 		dw_cdphy_write_field(cdphy_g301->field_phy_extended_ctr1_rw_txdatawidthhs_3, 1);
+
+	/* Pass value from primary PHY to secondary PHY if applicable */
+	if (!cdphy_g301->is_primary && (shared_cb_ctrl_val != 0)) {
+		dev_dbg(&cdphy->phy->dev,
+			"Applying cached value (0x%x) to CORE_DIG_IOCTRL_RW_AFE_CB_CTRL_2_8\n",
+			shared_cb_ctrl_val);
+		dw_cdphy_write_reg(cdphy_g301->base_regs, CORE_DIG_IOCTRL_RW_AFE_CB_CTRL_2_8,
+			shared_cb_ctrl_val);
+		dw_cdphy_write_field(
+			cdphy_g301->field_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setr_ovr_en, 1);
+		dw_cdphy_write_field(
+			cdphy_g301->field_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setr_calib_ovr_en,
+			1);
+		dw_cdphy_write_field(
+			cdphy_g301->field_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setra_ovr_en, 1);
+		dw_cdphy_write_field(
+			cdphy_g301->field_core_dig_ioctrl_rw_afe_cb_ctrl_2_7_oa_setrb_ovr_en, 1);
+	}
+
 	/* Step 9.a */
 #if IS_ENABLED(CONFIG_DEBUG_FS)
 	dw_cdphy_preset_config_load(cdphy_g301, DPHY_PRESET_APPLY_BEFORE_RST);
@@ -2485,6 +2760,9 @@ static int dw_dphy_set_mode_g301(struct phy *phy, enum phy_mode mode, int submod
 		break;
 	case DW_MIPI_CDPHY_OP_OVR_ULPS_ENTER:
 		ret = dw_cdphy_set_ulps(phy, 1);
+		break;
+	case DW_MIPI_CDPHY_OP_FREQUENCY_HOPPING:
+		ret = dw_cdphy_frequency_hopping(phy);
 		break;
 	case DW_MIPI_CDPHY_OP_OVR_LANE_LP00:
 		dev_info(&cdphy->phy->dev, "CD-PHY G301 OVR LP00, LP1 Contention is expected\n");

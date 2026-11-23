@@ -6,6 +6,7 @@
 #define __GOOGLE_POWERDASHBOARD_HELPER_H__
 
 #include "google_powerdashboard_iface.h"
+#include <linux/platform_device.h>
 
 #define SYSFS_PWRBLK_NODE(_id, name, _psm_num)                             \
 	static ssize_t pwrblk_##name##_show(struct device *dev,                \
@@ -46,6 +47,19 @@
 		return google_power_state_blockers_show(pd, buf, state);        \
 	}
 
+#define POWER_STATE_SIMPLIFIED_BLOCKERS_NODE(name, _state)                             \
+	static ssize_t simplified_blockers_##name##_show(struct device *dev,               \
+					      struct device_attribute *devattr, \
+					      char *buf)                        \
+	{                                                                       \
+		struct platform_device *pdev = to_platform_device(dev);         \
+		struct google_powerdashboard *pd = platform_get_drvdata(pdev);  \
+		typeof(_state)(state) = (_state);                               \
+		if (google_read_section(pd, PD_POWER_STATE_BLOCKERS))           \
+			return -EBUSY;                                              \
+		return google_power_state_simplified_blockers_show(pd, buf, state);        \
+	}
+
 #define FABRIC_ACG_APG_RES_NODE(name)						\
 static ssize_t csr_##name##_show(struct device *dev,			\
 				struct device_attribute *devattr, char *buf)	\
@@ -54,8 +68,11 @@ static ssize_t csr_##name##_show(struct device *dev,			\
 	struct google_powerdashboard *pd = platform_get_drvdata(pdev);		\
 	if (google_read_section(pd, PD_ACG_APG_CSR_RES))	\
 		return -EBUSY;			\
-	return sysfs_emit(buf, "%u\n", powerdashboard_iface.sections		\
-			.acg_apg_csr_res_section->fabric_acg_apg_res->name);	\
+	struct pd_acg_apg_csr_res_section *acg_apg_csr_res_section =	\
+		(struct pd_acg_apg_csr_res_section *)	\
+		powerdashboard_iface.sections.acg_apg_csr_res_section;	\
+	return sysfs_emit(buf, "%u\n",	\
+				acg_apg_csr_res_section->fabric_acg_apg_res->name);	\
 }
 
 #define GMC_ACG_APG_RES_NODE(name)						\
@@ -66,8 +83,11 @@ static ssize_t csr_##name##_show(struct device *dev,			\
 	struct google_powerdashboard *pd = platform_get_drvdata(pdev);		\
 	if (google_read_section(pd, PD_ACG_APG_CSR_RES))	\
 		return -EBUSY;							\
-	return sysfs_emit(buf, "%u\n", powerdashboard_iface.sections		\
-			.acg_apg_csr_res_section->gmc_acg_apg_res->name);	\
+	struct pd_acg_apg_csr_res_section *acg_apg_csr_res_section =	\
+		(struct pd_acg_apg_csr_res_section *)	\
+		powerdashboard_iface.sections.acg_apg_csr_res_section;	\
+	return sysfs_emit(buf, "%u\n",	\
+				acg_apg_csr_res_section->gmc_acg_apg_res->name);	\
 }
 
 uint64_t get_ms_from_ticks(uint64_t ticks);
@@ -80,5 +100,10 @@ ssize_t google_pwrblk_show(char *buf, struct google_powerdashboard *pd,
 
 ssize_t google_lpcm_show(struct google_powerdashboard *pd, char *buf,
 			int id, int lpcm_num);
+
+bool plat_dvfs_helper_ready(void);
+
+ssize_t google_power_state_blockers_show(struct google_powerdashboard *pd, char *buf,
+			unsigned int state);
 
 #endif /* __GOOGLE_POWERDASHBOARD_HELPER_H__ */

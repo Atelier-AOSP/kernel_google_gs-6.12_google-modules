@@ -31,18 +31,6 @@
 #include <linux/sched/clock.h>
 #endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0) */
 
-#ifdef CONFIG_DEBUG_LOCK_ALLOC
-#include <linux/lockdep.h>
-
-#define OSL_LOCK_CLASS_SET(lock) \
-	do {                     \
-		static struct lock_class_key __key; \
-		lockdep_set_class(((spinlock_t *)lock), (struct lock_class_key *)&__key); \
-	} while (0)
-#else
-#define OSL_LOCK_CLASS_SET(lock) do { } while (0)
-#endif
-
 #define DECLSPEC_ALIGN(x)	__attribute__ ((aligned(x)))
 
 /* Linux Kernel: File Operations: start */
@@ -1088,7 +1076,25 @@ typedef atomic_t osl_atomic_t;
 #endif
 #endif /* BCMDRIVER */
 
-extern void *osl_spin_lock_init(osl_t *osh);
+/*
+ * spin_lock_init() instantiates one lock class key every time this macro is
+ * expanded. Define osl_spin_lock_init() as a macro instead of a function such
+ * that each spinlock instance has its own identity. If all spinlocks would have
+ * the same identity, lockdep would report "WARNING: possible recursive locking
+ * detected" if nested locking occurs.
+ */
+#define osl_spin_lock_init(osh)							\
+	({									\
+		/* Adding 4 bytes since the sizeof(spinlock_t) could be 0 */	\
+		/* if CONFIG_SMP and CONFIG_DEBUG_SPINLOCK are not defined */	\
+		/* and this results in kernel asserts in internal builds. */	\
+		spinlock_t *slock = MALLOC((osh), sizeof(spinlock_t) + 4);	\
+										\
+		if (slock)							\
+			spin_lock_init(slock);					\
+		(void *)slock;							\
+	})
+
 extern void osl_spin_lock_deinit(osl_t *osh, void *lock);
 extern unsigned long osl_spin_lock(void *lock);
 extern void osl_spin_unlock(void *lock, unsigned long flags);

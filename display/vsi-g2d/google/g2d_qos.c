@@ -12,6 +12,9 @@
 #include <linux/pm_qos.h>
 #include <linux/units.h>
 #include <perf/core/google_pm_qos.h>
+#if IS_ENABLED(CONFIG_GS_PERF_DOMAIN)
+#include <perf/core/perf_domain.h>
+#endif
 
 #include "g2d_crtc.h"
 #include "g2d_drv.h"
@@ -22,10 +25,23 @@
 
 void g2d_qos_init(struct device *dev, struct g2d_device *g2d_device)
 {
+#if !IS_ENABLED(CONFIG_GS_PERF_DOMAIN)
 	struct device_link *link = NULL;
+#else
+	int ret;
+#endif
 
 	mutex_init(&g2d_device->g2d_qos_lock);
 
+#if IS_ENABLED(CONFIG_GS_PERF_DOMAIN)
+	g2d_device->core_devfreq = gs_perf_domain_find_devfreq("g2d", GS_RECOMMENDED_DEVFREQ);
+	if (IS_ERR(g2d_device->core_devfreq)) {
+		ret = PTR_ERR(g2d_device->core_devfreq);
+		if (ret == -ENODEV)
+			dev_err(dev, "Failed to get core_devfreq source, ret=%d\n", ret);
+		g2d_device->core_devfreq = NULL;
+	}
+#else /* CONFIG_GS_PERF_DOMAIN */
 	if (of_property_present(dev->of_node, "devfreq")) {
 		g2d_device->core_devfreq = devfreq_get_devfreq_by_phandle(dev, "devfreq", 0);
 		if (IS_ERR(g2d_device->core_devfreq)) {
@@ -45,6 +61,7 @@ void g2d_qos_init(struct device *dev, struct g2d_device *g2d_device)
 		dev_err(dev, "core_devfreq not presented in dts");
 		g2d_device->core_devfreq = NULL;
 	}
+#endif /* CONFIG_GS_PERF_DOMAIN */
 
 	g2d_device->icc_path = google_devm_of_icc_get(dev, "sswrp-g2d");
 	if (IS_ERR_OR_NULL(g2d_device->icc_path)) {

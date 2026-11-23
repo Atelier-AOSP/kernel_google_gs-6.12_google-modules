@@ -1306,9 +1306,6 @@ dhd_bus_dump(dhd_pub_t *dhdp, struct bcmstrbuf *strbuf)
 		dhdp->bus->d2h_intr_method ? "PCIE_MSI" : "PCIE_INTX",
 		dhdp->bus->d2h_intr_control ? "HOST_IRQ" : "D2H_INTMASK");
 
-	/* PCIe l1 entry time */
-	bcm_bprintf(strbuf, "pcie_l1_entry : 0x%x\n", dhdpcie_get_l1_entry_time(dhdp->bus));
-
 	bcm_bprintf(strbuf, "\n\nDB7 stats - db7_send_cnt: %d, db7_trap_cnt: %d, "
 		"max duration: %lld (%lld - %lld), db7_timing_error_cnt: %d\n",
 		dhdp->db7_trap.debug_db7_send_cnt,

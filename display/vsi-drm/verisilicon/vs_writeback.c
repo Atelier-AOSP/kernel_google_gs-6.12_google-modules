@@ -3,13 +3,17 @@
  * Copyright (C) 2020 VeriSilicon Holdings Co., Ltd.
  */
 
+
+#include <linux/debugfs.h>
 #include <linux/media-bus-format.h>
+#include <linux/seq_file.h>
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_framebuffer.h>
+#include <drm/drm_managed.h>
 #include <drm/drm_print.h>
 
 #include <drm/drm_gem_framebuffer_helper.h>
@@ -18,6 +22,7 @@
 
 #include <drm/vs_drm.h>
 
+#include "vs_crtc.h"
 #include "vs_gem.h"
 #include "vs_crtc.h"
 #include "vs_dc_info.h"
@@ -174,23 +179,14 @@ static void wb_connector_atomic_destroy_state(struct drm_connector *connector,
 	kfree(vs_wb_state);
 }
 
-static void wb_connector_destroy(struct drm_connector *connector)
-{
-	struct drm_writeback_connector *drm_wb = drm_connector_to_writeback(connector);
-	struct vs_writeback_connector *vs_wb = to_vs_writeback_connector(drm_wb);
-
-	/* cleanup connector variables */
-	drm_connector_cleanup(connector);
-
-	kfree(vs_wb);
-}
-
 static void wb_connector_reset(struct drm_connector *connector)
 {
 	struct vs_writeback_connector_state *state;
 	struct drm_writeback_connector *drm_wb = drm_connector_to_writeback(connector);
 	struct vs_writeback_connector *vs_wb = to_vs_writeback_connector(drm_wb);
+	struct drm_mode_object *vs_wb_objs = &vs_wb->base.base.base;
 	u32 i;
+	u64 wb_point = VS_WB_DISP_OUT;
 
 	if (connector->state) {
 		connector->funcs->atomic_destroy_state(connector, connector->state);
@@ -204,9 +200,14 @@ static void wb_connector_reset(struct drm_connector *connector)
 	/* reset standard properties */
 	__drm_atomic_helper_connector_reset(connector, &state->base);
 
-	/* reset custom properties */
-	if (vs_wb->point_prop)
-		state->wb_point = VS_WB_DISP_OUT;
+	/* Get the writeback point property initialization value */
+	if (vs_wb->point_prop) {
+		for (i = 0; i < vs_wb_objs->properties->count; i++) {
+			if (vs_wb_objs->properties->properties[i] == vs_wb->point_prop)
+				wb_point = vs_wb_objs->properties->values[i];
+		}
+		state->wb_point = (u32)wb_point;
+	}
 
 	for (i = 0; i < vs_wb->properties.num; i++) {
 		state->drm_states[i].proto = vs_wb->properties.items[i].proto;
@@ -239,6 +240,10 @@ wb_connector_atomic_duplicate_state(struct drm_connector *connector)
 
 	if (vs_wb->point_prop)
 		state->wb_point = ori_state->wb_point;
+
+#ifdef CONFIG_DEBUG_FS
+	state->qos = ori_state->qos;
+#endif
 
 	/* dc properties */
 	vs_dc_duplicate_drm_properties(state->drm_states, ori_state->drm_states,
@@ -304,10 +309,70 @@ static void wb_connector_atomic_print_state(struct drm_printer *p,
 	vs_dc_print_drm_properties(vs_wb_state->drm_states, &vs_writeback->properties, p);
 }
 
+#ifdef CONFIG_DEBUG_FS
+static int vs_wb_qos_show(struct seq_file *s, void *data)
+{
+	struct drm_connector *connector = s->private;
+	struct drm_writeback_connector *drm_wb_connector = drm_connector_to_writeback(connector);
+	struct vs_writeback_connector *vs_wb_connector =
+		to_vs_writeback_connector(drm_wb_connector);
+
+	if (vs_wb_connector->funcs->show_qos)
+		return vs_wb_connector->funcs->show_qos(s);
+
+	return 0;
+}
+
+static int wb_connector_debugfs_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, vs_wb_qos_show, inode->i_private);
+}
+
+static ssize_t wb_connector_debugfs_write(struct file *file, const char __user *ubuf, size_t len,
+					  loff_t *offp)
+{
+	struct seq_file *s = file->private_data;
+	struct drm_connector *connector = s->private;
+	struct drm_writeback_connector *drm_wb_connector = drm_connector_to_writeback(connector);
+	struct vs_writeback_connector *vs_wb_connector =
+		to_vs_writeback_connector(drm_wb_connector);
+
+	if (vs_wb_connector->funcs->set_qos)
+		vs_wb_connector->funcs->set_qos(vs_wb_connector->dev, vs_wb_connector, ubuf, len);
+
+	return len;
+}
+
+static const struct file_operations wb_connector_debugfs_fops = {
+	.open = wb_connector_debugfs_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+	.write = wb_connector_debugfs_write,
+};
+
+static int wb_connector_debugfs_init(struct drm_connector *connector)
+{
+	debugfs_create_file("QOS", 0644, connector->debugfs_entry, connector,
+			    &wb_connector_debugfs_fops);
+
+	return 0;
+}
+#else
+static int wb_connector_debugfs_init(struct drm_connector *connector)
+{
+	return 0;
+}
+#endif
+static int wb_connector_late_register(struct drm_connector *connector)
+{
+	return wb_connector_debugfs_init(connector);
+}
+
 static const struct drm_connector_funcs wb_connector_funcs = {
 	.fill_modes = drm_helper_probe_single_connector_modes,
+	.late_register = wb_connector_late_register,
 	.detect = wb_connector_detect,
-	.destroy = wb_connector_destroy,
 	.reset = wb_connector_reset,
 	.atomic_duplicate_state = wb_connector_atomic_duplicate_state,
 	.atomic_destroy_state = wb_connector_atomic_destroy_state,
@@ -338,8 +403,8 @@ static int wb_encoder_atomic_check(struct drm_encoder *encoder, struct drm_crtc_
 		vs_crtc_state->output_mode = VS_OUTPUT_MODE_CMD | VS_OUTPUT_MODE_CMD_DE_SYNC;
 	}
 
-	conn_state->self_refresh_aware = true;
-
+	/* writeback connector default output bus format set as MEDIA_BUS_FMT_RGB888_1X24 */
+	vs_crtc_state->output_fmt = MEDIA_BUS_FMT_RGB888_1X24;
 	vs_crtc_state->wb_connectors_updated = true;
 
 	vs_wb_connector = to_vs_writeback_connector(conn_state->writeback_job->connector);
@@ -423,23 +488,29 @@ struct vs_writeback_connector *vs_writeback_create(const struct dc_hw_wb *hw_wb,
 						   unsigned int possible_crtcs)
 {
 	struct vs_writeback_connector *vs_writeback;
+	struct drm_encoder *encoder;
 	int ret;
 
 	if (!info)
 		return ERR_PTR(-EINVAL);
 
-	vs_writeback = kzalloc(sizeof(struct vs_writeback_connector), GFP_KERNEL);
+	vs_writeback = drmm_kzalloc(drm_dev, sizeof(struct vs_writeback_connector), GFP_KERNEL);
 	if (!vs_writeback)
 		return ERR_PTR(-ENOMEM);
 
-	ret = drm_writeback_connector_init(drm_dev, &vs_writeback->base, &wb_connector_funcs,
-					   &wb_encoder_helper_funcs, info->formats,
-					   info->num_formats, possible_crtcs);
+	encoder = &vs_writeback->base.encoder;
 
-	if (ret) {
-		kfree(vs_writeback);
+	drm_encoder_helper_add(encoder, &wb_encoder_helper_funcs);
+	encoder->possible_crtcs = possible_crtcs;
+
+	ret = drmm_encoder_init(drm_dev, encoder, NULL, DRM_MODE_ENCODER_VIRTUAL, NULL);
+	if (ret)
 		return ERR_PTR(ret);
-	}
+
+	ret = drmm_writeback_connector_init(drm_dev, &vs_writeback->base, &wb_connector_funcs,
+					    encoder, info->formats, info->num_formats);
+	if (ret)
+		return ERR_PTR(ret);
 
 	drm_connector_helper_add(&vs_writeback->base.base, &wb_connector_helper_funcs);
 
@@ -449,23 +520,17 @@ struct vs_writeback_connector *vs_writeback_create(const struct dc_hw_wb *hw_wb,
 			drm_dev, DRM_MODE_PROP_ATOMIC, "WB_POINT", vs_wb_point_enum_list,
 			ARRAY_SIZE(vs_wb_point_enum_list));
 		if (!vs_writeback->point_prop)
-			goto err_free_wb_connector;
+			return NULL;
 
 		drm_object_attach_property(&vs_writeback->base.base.base, vs_writeback->point_prop,
-					   VS_WB_DISP_OUT);
+					info->init_wb_point ? info->init_wb_point : VS_WB_DISP_OUT);
 	}
 
 	if (hw_wb && vs_dc_create_drm_properties(drm_dev, &vs_writeback->base.base.base,
 						 &hw_wb->states, &vs_writeback->properties))
-		goto error_cleanup_wb_connector;
+		return NULL;
 
 	return vs_writeback;
-
-error_cleanup_wb_connector:
-	drm_connector_cleanup(&vs_writeback->base.base);
-err_free_wb_connector:
-	kfree(vs_writeback);
-	return NULL;
 }
 
 struct drm_writeback_connector *find_wb_connector(struct drm_crtc *crtc)

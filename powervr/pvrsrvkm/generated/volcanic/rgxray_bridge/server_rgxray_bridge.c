@@ -152,8 +152,8 @@ PVRSRVBridgeRGXCreateRayContext(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXCreateRayContextIN->ui32RayContextDataSize * sizeof(IMG_BYTE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui8RayContextDataInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui8RayContextDataInt,
 		     (const void __user *)psRGXCreateRayContextIN->pui8RayContextData,
 		     psRGXCreateRayContextIN->ui32RayContextDataSize * sizeof(IMG_BYTE)) !=
 		    PVRSRV_OK)
@@ -402,8 +402,8 @@ PVRSRVBridgeRGXKickRDM(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickRDMIN->ui32ClientUpdateCount * sizeof(IMG_HANDLE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, hClientUpdateUFOSyncPrimBlockInt2,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, hClientUpdateUFOSyncPrimBlockInt2,
 		     (const void __user *)psRGXKickRDMIN->phClientUpdateUFOSyncPrimBlock,
 		     psRGXKickRDMIN->ui32ClientUpdateCount * sizeof(IMG_HANDLE)) != PVRSRV_OK)
 		{
@@ -422,8 +422,8 @@ PVRSRVBridgeRGXKickRDM(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickRDMIN->ui32ClientUpdateCount * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32ClientUpdateOffsetInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32ClientUpdateOffsetInt,
 		     (const void __user *)psRGXKickRDMIN->pui32ClientUpdateOffset,
 		     psRGXKickRDMIN->ui32ClientUpdateCount * sizeof(IMG_UINT32)) != PVRSRV_OK)
 		{
@@ -442,8 +442,8 @@ PVRSRVBridgeRGXKickRDM(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickRDMIN->ui32ClientUpdateCount * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32ClientUpdateValueInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32ClientUpdateValueInt,
 		     (const void __user *)psRGXKickRDMIN->pui32ClientUpdateValue,
 		     psRGXKickRDMIN->ui32ClientUpdateCount * sizeof(IMG_UINT32)) != PVRSRV_OK)
 		{
@@ -462,8 +462,8 @@ PVRSRVBridgeRGXKickRDM(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (PVRSRV_SYNC_NAME_LENGTH * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiUpdateFenceNameInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiUpdateFenceNameInt,
 		     (const void __user *)psRGXKickRDMIN->puiUpdateFenceName,
 		     PVRSRV_SYNC_NAME_LENGTH * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
@@ -483,8 +483,9 @@ PVRSRVBridgeRGXKickRDM(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXKickRDMIN->ui32CmdSize * sizeof(IMG_BYTE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui8DMCmdInt, (const void __user *)psRGXKickRDMIN->pui8DMCmd,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui8DMCmdInt,
+		     (const void __user *)psRGXKickRDMIN->pui8DMCmd,
 		     psRGXKickRDMIN->ui32CmdSize * sizeof(IMG_BYTE)) != PVRSRV_OK)
 		{
 			psRGXKickRDMOUT->eError = PVRSRV_ERROR_INVALID_PARAMS;

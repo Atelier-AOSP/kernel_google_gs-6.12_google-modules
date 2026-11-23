@@ -12,6 +12,7 @@
 #include "soc/google/google_timestamp_sync.h"
 #include "thermal_tracepoints.h"
 #include "perf_tracepoints.h"
+#include "power_tracepoints.h"
 
 static DEFINE_MUTEX(client_list_mutex);
 bool clients_initialized;
@@ -22,14 +23,23 @@ static int cpm_tracepoint_string_table_offset;
 static cpm_tracepoint_decoder_enable_cb_t cpm_tracepoint_decoder_enable_cb;
 static void *cpm_tracepoint_decoder_enable_cb_ctx;
 
-#define MAX_CLIENTS 25
+#define GET_POWER_TRACEPOINT_POINTER(name, ...) \
+	(&(name)),
+
+#define MAX_CLIENTS 100
 struct client_tracepoint *all_clients[] = {
 	&thermal_tj_pid_curr_state,
+#if IS_ENABLED(CONFIG_SOC_LGA)
 	&domain_freq_tp,
+#endif
 	&thermal_tj_sensors,
 	&freq_agg_update_tp,
+	&dvfsmon_tp,
+	POWER_TRACEPOINTS_LIST(GET_POWER_TRACEPOINT_POINTER)
 };
 static_assert(ARRAY_SIZE(all_clients) <= MAX_CLIENTS);
+
+#undef GET_POWER_TRACEPOINT_POINTER
 
 /**
  * struct client_tracepoint_node - A node in the list of decodable tracepoints.
@@ -66,8 +76,9 @@ static LIST_HEAD(client_tracepoints);
  * such as CLIENT_TP_HANDLING_COMPLETE or CLIENT_TP_HANDLING_NOT_COMPLETE.
  */
 enum tracepoint_handle cpm_tracepoint_decode(u32 tp_id, u32 payload,
-					     u64 timestamp)
+					 u64 timestamp)
 {
+
 	struct client_tracepoint_node *node;
 	int ret = CLIENT_TP_HANDLING_NOT_COMPLETE;
 
@@ -101,7 +112,7 @@ enum tracepoint_handle cpm_tracepoint_decode(u32 tp_id, u32 payload,
  * strings that match the clients defined in the all_clients array. For each
  * match, it allocates a new client_tracepoint_node, populates it with the
  * calculated tracepoint ID (buffer position + base offset) and a pointer
- * to the client's static data, and adds it to the global client_tracepoints
+to the client's static data, and adds it to the global client_tracepoints
  * list.
  *
  * Note: This function must be called with client_list_mutex held.
@@ -269,7 +280,7 @@ void cpm_tracepoint_decoder_set_enable_cb(cpm_tracepoint_decoder_enable_cb_t
 	cpm_tracepoint_decoder_enable_cb_ctx = cb_ctx;
 }
 
-void add_cpm_param_trace(char *param_name, unsigned int value,
+void add_cpm_param_trace(const char *param_name, unsigned int value,
 			 unsigned long timestamp)
 {
 	trace_param_set_value_cpm(param_name, value, timestamp);
@@ -308,3 +319,5 @@ void param_set_value_cpm_disable(void)
 	/* Deinitialize tracepoint decoder clients. */
 	client_exit_callbacks();
 }
+MODULE_LICENSE("GPL");
+

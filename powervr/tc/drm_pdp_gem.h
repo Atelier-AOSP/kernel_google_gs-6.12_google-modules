@@ -60,8 +60,6 @@
 
 extern const struct vm_operations_struct pdp_gem_vm_ops;
 
-struct pdp_gem_private;
-
 struct pdp_gem_object {
 	struct drm_gem_object base;
 
@@ -90,14 +88,10 @@ struct pdp_gem_object {
 
 #define to_pdp_obj(obj) container_of(obj, struct pdp_gem_object, base)
 
-struct pdp_gem_private *pdp_gem_init(struct drm_device *dev,
-				     unsigned int instance);
-
-void pdp_gem_cleanup(struct pdp_gem_private *dev_priv);
+int pdp_gem_init_devres(struct drm_device *dev);
 
 /* ioctl functions */
-int pdp_gem_object_create_ioctl_priv(struct drm_device *dev,
-				     struct pdp_gem_private *gem_priv,
+int pdp_gem_object_create_ioctl(struct drm_device *dev,
 				     void *data,
 				     struct drm_file *file);
 int pdp_gem_object_mmap_ioctl(struct drm_device *dev, void *data,
@@ -109,12 +103,8 @@ int pdp_gem_object_cpu_fini_ioctl(struct drm_device *dev, void *data,
 
 /* drm driver functions */
 struct drm_gem_object *pdp_gem_object_create(struct drm_device *dev,
-					     struct pdp_gem_private *gem_priv,
 					     size_t size,
 					     u32 flags);
-
-void pdp_gem_object_free_priv(struct pdp_gem_private *gem_priv,
-			      struct drm_gem_object *obj);
 
 void pdp_gem_object_free(struct drm_gem_object *obj);
 
@@ -133,13 +123,9 @@ pdp_gem_prime_import_sg_table(struct drm_device *dev,
 			      struct dma_buf_attachment *attach,
 			      struct sg_table *sgt);
 
-int pdp_gem_dumb_create_priv(struct drm_file *file,
+int pdp_gem_dumb_create(struct drm_file *file,
 			     struct drm_device *dev,
-			     struct pdp_gem_private *gem_priv,
 			     struct drm_mode_create_dumb *args);
-
-int pdp_gem_dumb_map_offset(struct drm_file *file, struct drm_device *dev,
-			    uint32_t handle, uint64_t *offset);
 
 /* vm operation functions */
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 17, 0))
@@ -150,8 +136,5 @@ vm_fault_t pdp_gem_object_vm_fault(struct vm_fault *vmf);
 /* internal interfaces */
 struct dma_resv *pdp_gem_get_resv(struct drm_gem_object *obj);
 u64 pdp_gem_get_dev_addr(struct drm_gem_object *obj);
-
-/* functions provided by clients of PDP GEM */
-struct pdp_gem_private *pdp_gem_get_private(struct drm_device *dev);
 
 #endif /* !defined(__DRM_PDP_GEM_H__) */

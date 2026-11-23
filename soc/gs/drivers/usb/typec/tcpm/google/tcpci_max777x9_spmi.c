@@ -4,13 +4,16 @@
  *
  * MAX777x9 SPMI bus driver
  */
-#include <linux/gpio/consumer.h>
+#include <linux/device.h>
+#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
+#include <linux/of.h>
 #include <linux/of_irq.h>
+#include <linux/pm_wakeup.h>
 #include <linux/regmap.h>
 #include <linux/spmi.h>
 #include <linux/usb/pd.h>
 #include <linux/usb/tcpm.h>
-#include <linux/pm_wakeup.h>
 
 #include "tcpci_max77759.h"
 #include "tcpci_max77779_vendor_reg.h"
@@ -22,7 +25,8 @@
 #define TX_BUF_REG_COUNT_SIZE                   1U
 #define MAX_PD_MSG_SIZE_PER_WRITE               (SPMI_MAX_EXT_RD_WR_SIZE - TX_BUF_REG_COUNT_SIZE)
 
-#define MAX777x9_BUCK_BOOST_SPMI_SID 0x3
+#define MAX777x9_BUCK_BOOST_I2C_SID		0x3
+#define MAX77779_PMIC_SID			0xF
 
 /* To protect against direct access to spmi driver and access via regmap */
 struct mutex g_spmi_regmap_lock;
@@ -51,7 +55,7 @@ static const struct regmap_range max77779_tcpci_read_range[] = {
 	regmap_reg_range(TCPC_VBUS_VOLTAGE     /* 0x70 */,
 			 TCPC_VBUS_VOLTAGE_ALARM_LO_CFG_H /* 0x79 */),
 	regmap_reg_range(TCPC_VENDOR_ALERT     /* 0x80 */,
-			 TCPC_VENDOR_SBU_CTRL2 /* 0x97 */),
+			 MAX77779_MAX_ADDR     /* 0x97 */),
 };
 
 const struct regmap_access_table max77779_tcpci_read_table = {
@@ -79,7 +83,7 @@ static const struct regmap_range max77779_tcpci_write_range[] = {
 	regmap_reg_range(TCPC_VENDOR_ALERT       /* 0x80 */,
 			 TCPC_VENDOR_ALERT_MASK2 /* 0x83 */),
 	regmap_reg_range(VENDOR_WDG_CTRL         /* 0x8a */,
-			 TCPC_VENDOR_SBU_CTRL2   /* 0x97 */),
+			 MAX77779_MAX_ADDR       /* 0x97 */),
 };
 
 const struct regmap_access_table max77779_tcpci_write_table = {
@@ -90,35 +94,92 @@ const struct regmap_access_table max77779_tcpci_write_table = {
 static const struct regmap_config max77779_regmap_config = {
 	.reg_bits = 16,
 	.val_bits = 8,
-	.max_register = TCPC_VENDOR_SBU_CTRL2,
+	.max_register = MAX77779_MAX_ADDR,
 	.rd_table = &max77779_tcpci_read_table,
 	.wr_table = &max77779_tcpci_write_table,
 	.lock = spmi_access_lock,
 	.unlock = spmi_access_unlock,
 };
 
-static int max777x9_spmi_direct_otg_en(struct max77759_plat *chip, bool en)
+/*
+ * spmi_rmw8: SPMI Read Modify Write for 8 bit data
+ *
+ * @sdev: Handle to SPMI device
+ * @addr: Register address of the SPMI device
+ * @mask: Mask for value to be written
+ * @val: Value to be written into register "addr"
+ *
+ * Returns 0 on success else return error value
+ */
+static int spmi_ext_register_rmw8(struct spmi_device *sdev, u8 addr, u8 mask, u8 val)
 {
-	struct spmi_device *sdev = chip->client;
-	u8 reg, buffer, cached_usid = sdev->usid;
 	int ret;
+	u8 buf;
 
-	reg = CHG_CNFG_00;
-	buffer = en ? MODE_BOOST_ON : MODE_OFF;
+	ret = spmi_ext_register_read(sdev, addr, &buf, 1);
+	if (ret)
+		return ret;
+
+	if ((mask & buf) == (mask & val))
+		return 0;
+
+	buf = (buf & ~mask) | (mask & val);
+	return spmi_ext_register_write(sdev, addr, &buf, 1);
+}
+
+static int spmi_device_rmw(struct spmi_device *sdev, u8 sid, u8 addr, u8 mask, u8 val)
+{
+	int ret;
+	u8 cached_usid = sdev->usid;
 
 	mutex_lock(&g_spmi_regmap_lock);
-	sdev->usid = MAX777x9_BUCK_BOOST_SPMI_SID;
-	ret = spmi_ext_register_write(sdev, reg, &buffer, 1);
+	sdev->usid = sid;
+	ret = spmi_ext_register_rmw8(sdev, addr, mask, val);
 	sdev->usid = cached_usid;
 	mutex_unlock(&g_spmi_regmap_lock);
-
 	return ret;
+}
+
+static int max777x9_spmi_direct_otg_en(struct max77759_plat *chip, bool en)
+{
+	struct gpio_desc *gpiod = NULL;
+
+	if (!chip->gpio.gpiodev) {
+		logbuffer_log(chip->log, "Unable to locate max77759_tcpc_gpio chip");
+		return -ENODEV;
+	}
+
+	gpiod = gpio_device_get_desc(chip->gpio.gpiodev, 0);
+	gpiod_set_value_cansleep(gpiod, en ? 1 : 0);
+	return 0;
+}
+
+static int configure_alert(struct max77759_plat *chip)
+{
+	struct spmi_device *sdev = chip->client;
+	struct device_node *dn;
+
+	dn = dev_of_node(chip->dev);
+	if (!dn)
+		return -EINVAL;
+
+	if (!of_property_read_bool(dn, "goog,pmic-agpio-alert-config"))
+		return 0;
+
+	return spmi_device_rmw(sdev, MAX77779_PMIC_SID, AGPIO_CNFG5,
+			       AGPIO_CNFG5_MODE_MASK, AGPIO_CNFG5_MODE_FN_PP);
 }
 
 static int max777x9_init_alert(struct max77759_plat *chip)
 {
 	struct gpio_desc *irq_gpio;
-	int irq;
+	int irq, ret;
+
+	ret = configure_alert(chip);
+	if (ret) {
+		dev_err(chip->dev, "Unable to configure AGPIO as alert, ret=%d", ret);
+		return ret;
+	}
 
 	irq_gpio = devm_gpiod_get_optional(chip->dev, "usbpd,usbpd_int", GPIOD_ASIS);
 	irq = gpiod_to_irq(irq_gpio);

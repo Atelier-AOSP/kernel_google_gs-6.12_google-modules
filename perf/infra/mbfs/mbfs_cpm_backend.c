@@ -4,7 +4,8 @@
  */
 
 #include <linux/device.h>
-#include <linux/of_device.h>
+#include <linux/mod_devicetable.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/types.h>
 #include <soc/google/goog_mba_cpm_iface.h>
@@ -26,16 +27,7 @@ struct comm_info {
 static struct comm_info comm;
 static bool initialized;
 
-static enum mbfs_error_code cpm_submit_request(const struct mbfs_request *request,
-					       struct mbfs_response *response);
-
-static struct mbfs_client_backend cpm_backend = {
-	.name = "cpm",
-	.submit_request = cpm_submit_request,
-};
-
-static enum mbfs_error_code cpm_submit_request(const struct mbfs_request *request,
-					       struct mbfs_response *response)
+static int cpm_submit_request(const struct mbfs_request *request, struct mbfs_response *response)
 {
 	struct cpm_iface_req cpm_req;
 	struct cpm_iface_payload qst = { 0 };
@@ -43,7 +35,7 @@ static enum mbfs_error_code cpm_submit_request(const struct mbfs_request *reques
 	int err = 0;
 	struct device *dev = comm.dev;
 
-	memcpy(qst.payload, request, sizeof(*request));
+	memcpy(qst.payload, request, sizeof(qst.payload));
 	cpm_req.msg_type = REQUEST_MSG;
 	cpm_req.req_msg = &qst;
 	cpm_req.resp_msg = &ans;
@@ -57,14 +49,19 @@ static enum mbfs_error_code cpm_submit_request(const struct mbfs_request *reques
 		DEV_ERR(dev, "mbfs cpm_send_message() failed, err = %d\n", err);
 		// notify the users of a potential issue and prompt them to investigate
 		BUG_ON(err == -ETIME);
-		return MBFS_COMMUNICATION_FAILURE;
+		return -ECOMM;
 	}
-	memcpy(response, ans.payload, sizeof(*response));
+	memcpy(response, ans.payload, sizeof(ans.payload));
 	DEV_DBG(dev, "mbfs CPM response: %x %x %x\n", ans.payload[0], ans.payload[1],
 		ans.payload[2]);
 
-	return response->error_code;
+	return 0;
 }
+
+static struct mbfs_client_backend cpm_backend = {
+	.name = "cpm",
+	.submit_request = cpm_submit_request,
+};
 
 static void *init_cpm_client(struct device *dev)
 {
@@ -124,7 +121,7 @@ static int mbfs_cpm_backend_device_probe(struct platform_device *pdev)
 }
 
 /* Platform driver remove function */
-static int mbfs_cpm_backend_device_remove(struct platform_device *pdev)
+static void mbfs_cpm_backend_device_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 
@@ -132,8 +129,6 @@ static int mbfs_cpm_backend_device_remove(struct platform_device *pdev)
 	unregister_mbfs_backend(&cpm_backend);
 	remove_cpm_client(comm.cpm_client);
 	initialized = false;
-
-	return 0;
 }
 
 static const struct of_device_id mbfs_cpm_backend_of_match[] = {

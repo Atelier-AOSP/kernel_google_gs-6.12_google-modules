@@ -45,6 +45,8 @@ enum cpm_common_mba_service_id {
 	CPM_COMMON_PWRBLK_SERVICE = 0xE,
 	// BCL based service
 	CPM_COMMON_BCL_SERVICE = 0x12,
+	// SSR Triggering service
+	CPM_COMMON_SSR_SERVICE = 0x18,
 	CPM_COMMON_SERVICE_LAST = 0x37,
 };
 

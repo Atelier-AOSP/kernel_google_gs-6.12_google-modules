@@ -13,6 +13,7 @@
 
 #include <drm/bridge/dw_mipi_dsi2h.h>
 #include <drm/sscd/gs_sscd_dpu.h>
+#include <trace/dpu_trace.h>
 
 #include "vs_dc.h"
 #include "vs_drv.h"
@@ -43,11 +44,15 @@ static void _prepare_subsystem_coredump_dpu(struct drm_device *drm_dev,
 	struct vs_drm_private *priv = drm_dev->dev_private;
 	struct device *dc_dev = priv->dc_dev;
 
+	DPU_ATRACE_BEGIN("sscd_prepare_dpu");
+
 	if (priv->dpu_reg_coredump_funcs.sscd_payload_prepare)
 		priv->dpu_reg_coredump_funcs.sscd_payload_prepare(dc_dev, dpu_reg);
 
 	if (priv->dpu_state_coredump_funcs.sscd_payload_prepare)
 		priv->dpu_state_coredump_funcs.sscd_payload_prepare(dc_dev, dpu_state);
+
+	DPU_ATRACE_END("sscd_prepare_dpu");
 }
 
 static int _prepare_subsystem_coredump_dsi(struct drm_device *drm_dev, struct device **dsi_devs,
@@ -79,9 +84,12 @@ static int _prepare_subsystem_coredump_dsi(struct drm_device *drm_dev, struct de
 				continue;
 
 			dsi_devs[dsi_count] = dsi_dev;
-			if (priv->dsi_coredump_funcs.sscd_payload_prepare)
+			if (priv->dsi_coredump_funcs.sscd_payload_prepare) {
+				DPU_ATRACE_BEGIN("sscd_prepare_dsi%d", dsi_count);
 				priv->dsi_coredump_funcs.sscd_payload_prepare(
 					dsi_dev, &dsi_payloads[dsi_count]);
+				DPU_ATRACE_END("sscd_prepare_dsi%d", dsi_count);
+			}
 			dsi_count++;
 		}
 	}
@@ -121,6 +129,8 @@ static void _cleanup_subsystem_coredump_dpu(struct drm_device *drm_dev,
 	struct vs_dc *dc = dev_get_drvdata(priv->dc_dev);
 	int i;
 
+	DPU_ATRACE_BEGIN("sscd_cleanup_dpu");
+
 	for (i = dpu_state->num_cfgs - 1; i >= 0; i--)
 		display_sscd_pop_section(dc->disp_sscd);
 
@@ -132,6 +142,8 @@ static void _cleanup_subsystem_coredump_dpu(struct drm_device *drm_dev,
 
 	if (priv->dpu_reg_coredump_funcs.sscd_payload_destroy)
 		priv->dpu_reg_coredump_funcs.sscd_payload_destroy(priv->dc_dev, dpu_reg);
+
+	DPU_ATRACE_END("sscd_cleanup_dpu");
 }
 
 static void _cleanup_subsystem_coredump_dsi(struct drm_device *drm_dev, struct device **dsi_devs,
@@ -145,9 +157,12 @@ static void _cleanup_subsystem_coredump_dsi(struct drm_device *drm_dev, struct d
 		for (i = dsi_payloads[d].num_cfgs - 1; i >= 0; i--)
 			display_sscd_pop_section(dc->disp_sscd);
 
-		if (priv->dsi_coredump_funcs.sscd_payload_destroy)
+		if (priv->dsi_coredump_funcs.sscd_payload_destroy) {
+			DPU_ATRACE_BEGIN("sscd_cleanup_dsi%d", d);
 			priv->dsi_coredump_funcs.sscd_payload_destroy(dsi_devs[d],
 								      &dsi_payloads[d]);
+			DPU_ATRACE_END("sscd_cleanup_dsi%d", d);
+		}
 	}
 }
 
@@ -187,12 +202,14 @@ int trigger_coredump(struct drm_device *drm_dev, struct device *calling_dev, con
 	_prepare_subsystem_coredump_dpu(drm_dev, &dpu_reg_payload, &dpu_state_payload);
 	dsi_count = _prepare_subsystem_coredump_dsi(drm_dev, dsi_devs, dsi_payloads, max_dsi_cnt);
 
+	DPU_ATRACE_BEGIN("sscd_report");
 	_report_subsystem_coredump_dpu(dc->disp_sscd, &dpu_reg_payload, &dpu_state_payload);
 	_report_subsystem_coredump_dsi(dc->disp_sscd, dsi_payloads, dsi_count);
 
 	ret = display_sscd_report(dc->disp_sscd, reason);
 	if (ret < 0)
 		dev_warn(dev, "subsystem coredump report failed: %d\n", ret);
+	DPU_ATRACE_END("sscd_report");
 
 	_cleanup_subsystem_coredump_dsi(drm_dev, dsi_devs, dsi_payloads, dsi_count);
 	_cleanup_subsystem_coredump_dpu(drm_dev, &dpu_reg_payload, &dpu_state_payload);

@@ -25,6 +25,7 @@
 #define _EVENT_LOG_H_
 
 #include <typedefs.h>
+#include <bcmutils.h>
 #include <event_log_set.h>
 #include <event_log_tag.h>
 #include <event_log_payload.h>
@@ -590,9 +591,6 @@ extern bool prsv_periodic_enab;
 #define _EVENT_LOG_VA_NUM_ARGS(BASE, _FMT, _1, _2, _3, _4, _5, _6, _7, _8, _9, \
 			       _A, _B, _C, _D, _E, _F, N, ...) BASE ## N
 
-/* Take a variable number of args and replace with only the first */
-#define FIRST_ARG(a1, ...) a1
-
 /* base = _EVENT_LOG for no casting
  * base = _EVENT_LOG_CAST for casting of fmt arguments to uint32.
  *        Only first 4 arguments are cast to uint32. event_logn() is called
@@ -618,13 +616,16 @@ extern bool prsv_periodic_enab;
  * _EVENT_LOG0. As __VA_ARGS__ gets longer, then the item that gets mapped to "N" gets
  * pushed further and further up, so that by the time __VA_ARGS__ has 15 additional
  * arguments, then "F" maps to "N" in the _EVENT_LOG_VA_NUM_ARGS macro.
+ *
+ * (UNUSED arg in_EVENT_LOG_VA_NUM_ARGS ensures that there is at least one argument in '...', as
+ * required by (pre-C23) ISO C for variadic macros).
  */
 #define _EVENT_LOG(base, tag, ...)					\
 	static char logstr[] __attribute__ ((section(".logstrs"))) = FIRST_ARG(__VA_ARGS__); \
 	static uint32 fmtnum __attribute__ ((section(".lognums"))) = (uint32) &logstr; \
 	_EVENT_LOG_VA_NUM_ARGS(base, __VA_ARGS__,			\
 			       F, E, D, C, B, A, 9, 8,			\
-			       7, 6, 5, 4, 3, 2, 1, 0)			\
+			       7, 6, 5, 4, 3, 2, 1, 0, UNUSED)		\
 	(tag, (int) &fmtnum, __VA_ARGS__)
 
 #define EVENT_LOG_FAST(tag, ...)					\

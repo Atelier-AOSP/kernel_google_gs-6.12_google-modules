@@ -15,25 +15,17 @@
 #include <linux/kernel.h>
 #include <linux/mmzone.h>
 #include <linux/sizes.h>
-#include <linux/version.h>
 
-#include <arm-smmu-v3/arm-smmu-v3-regs.h>
+#include <kvm/power_domain.h>
+
+struct arm_smmu_device;
+
+#include <arm-smmu-v3/arm-smmu-v3-common.h>
 #include <arm-smmu-v3/io-pgtable.h>
-
-/* commit 5e0a760b4441 ("mm, treewide: rename MAX_ORDER to MAX_PAGE_ORDER")
- * renamed MAX_ORDER to MAX_PAGE_ORDER. To facilitate easier backporting of
- * post Linux 6.6 arm-smmu-v3 changes to 6.6, let's define an alias here.
- */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 8, 0)
-#define MAX_PAGE_ORDER			MAX_ORDER
-#endif
-
 #include "arm-smmu-v3-common-telemetry.h"
 
 #define Q_IDX(llq, p)			((p) & ((1 << (llq)->max_n_shift) - 1))
 #define Q_WRP(llq, p)			((p) & (1 << (llq)->max_n_shift))
-#define Q_OVERFLOW_FLAG			(1U << 31)
-#define Q_OVF(p)			((p) & Q_OVERFLOW_FLAG)
 #define Q_ENT(q, p)			((q)->base +			\
 					 Q_IDX(&((q)->llq), p) *	\
 					 (q)->ent_dwords)
@@ -45,28 +37,7 @@
 #define Q_MAX_SZ_SHIFT			(PAGE_SHIFT + MAX_PAGE_ORDER)
 #endif
 
-struct arm_smmu_ste {
-	__le64 data[STRTAB_STE_DWORDS];
-};
-
-struct arm_smmu_cd {
-	__le64 data[CTXDESC_CD_DWORDS];
-};
-
 #define CMDQ_PROD_OWNED_FLAG		Q_OVERFLOW_FLAG
-
-/*
- * This is used to size the command queue and therefore must be at least
- * BITS_PER_LONG so that the valid_map works correctly (it relies on the
- * total number of queue entries being a multiple of BITS_PER_LONG).
- */
-#define CMDQ_BATCH_ENTRIES		BITS_PER_LONG
-
-/*
- * When the SMMU only supports linear context descriptor tables, pick a
- * reasonable size limit (64kB).
- */
-#define CTXDESC_LINEAR_CDMAX		ilog2(SZ_64K / (CTXDESC_CD_DWORDS << 3))
 
 /* High-level queue structures */
 #define ARM_SMMU_POLL_TIMEOUT_US	1000000 /* 1s! */
@@ -119,12 +90,14 @@ struct arm_smmu_cmdq {
 	atomic_long_t			*valid_map;
 	atomic_t			owner_prod;
 	atomic_t			lock;
+	bool				(*supports_cmd)(struct arm_smmu_cmdq_ent *ent);
 };
 
-struct arm_smmu_cmdq_batch {
-	u64				cmds[CMDQ_BATCH_ENTRIES * CMDQ_ENT_DWORDS];
-	int				num;
-};
+static inline bool arm_smmu_cmdq_supports_cmd(struct arm_smmu_cmdq *cmdq,
+					      struct arm_smmu_cmdq_ent *ent)
+{
+	return cmdq->supports_cmd ? cmdq->supports_cmd(ent) : true;
+}
 
 struct arm_smmu_evtq {
 	struct arm_smmu_queue		q;
@@ -137,30 +110,35 @@ struct arm_smmu_priq {
 };
 
 /* High-level stream table and context descriptor structures */
-struct arm_smmu_strtab_l1_desc {
-	struct arm_smmu_ste		*l2ptr;
-};
-
 struct arm_smmu_ctx_desc {
 	u16				asid;
 };
 
-struct arm_smmu_l1_ctx_desc {
-	struct arm_smmu_cd		*l2ptr;
-	dma_addr_t			l2ptr_dma;
-};
-
 struct arm_smmu_ctx_desc_cfg {
-	__le64				*cdtab;
+	union {
+		struct {
+			struct arm_smmu_cd *table;
+			unsigned int num_ents;
+		} linear;
+		struct {
+			struct arm_smmu_cdtab_l1 *l1tab;
+			struct arm_smmu_cdtab_l2 **l2ptrs;
+			unsigned int num_l1_ents;
+		} l2;
+	};
 	dma_addr_t			cdtab_dma;
-	struct arm_smmu_l1_ctx_desc	*l1_desc;
-	unsigned int			num_l1_ents;
 	unsigned int			used_ssids;
 	u8				in_ste;
 	u8				s1fmt;
 	/* log2 of the maximum number of CDs supported by this table */
 	u8				s1cdmax;
 };
+
+static inline bool
+arm_smmu_cdtab_allocated(struct arm_smmu_ctx_desc_cfg *cfg)
+{
+	return cfg->linear.table || cfg->l2.l1tab;
+}
 
 /* True if the cd table has SSIDS > 0 in use. */
 static inline bool arm_smmu_ssids_in_use(struct arm_smmu_ctx_desc_cfg *cd_table)
@@ -172,23 +150,25 @@ struct arm_smmu_s2_cfg {
 	u16				vmid;
 };
 
-struct arm_smmu_strtab_cfg {
-	__le64				*strtab;
-	dma_addr_t			strtab_dma;
-	struct arm_smmu_strtab_l1_desc	*l1_desc;
-	unsigned int			num_l1_ents;
-
-	u64				strtab_base;
-	u32				strtab_base_cfg;
-	u8				split;
+struct arm_smmu_impl_ops {
+	int (*device_reset)(struct arm_smmu_device *smmu);
+	void (*device_remove)(struct arm_smmu_device *smmu);
+	int (*init_structures)(struct arm_smmu_device *smmu);
+	struct arm_smmu_cmdq *(*get_secondary_cmdq)(
+		struct arm_smmu_device *smmu, struct arm_smmu_cmdq_ent *ent);
 };
 
 /* An SMMUv3 instance */
 struct arm_smmu_device {
 	struct device			*dev;
+	struct device			*impl_dev;
+	struct device			non_coherent_dev;
+	const struct arm_smmu_impl_ops	*impl_ops;
+
 	void __iomem			*base;
 	void __iomem			*page1;
 
+	/* See arm-smmu-v3-common.h*/
 	u32				features;
 
 	u32				options;
@@ -230,12 +210,22 @@ struct arm_smmu_stream {
 };
 
 struct arm_smmu_event {
-	u8				ssv : 1,
-					read : 1;
+	u8				stall : 1,
+					ssv : 1,
+					privileged : 1,
+					instruction : 1,
+					s2 : 1,
+					read : 1,
+					ttrnw : 1,
+					class_tt : 1;
 	u8				id;
+	u8				class;
+	u16				stag;
 	u32				sid;
 	u32				ssid;
 	u64				iova;
+	u64				ipa;
+	u64				fetch_addr;
 	struct device			*dev;
 };
 
@@ -302,12 +292,17 @@ struct kvm_arm_smmu_master {
 	bool				idmapped; /* Stage-2 is transparently identity mapped*/
 	bool				force_cacheable;
 	bool				single_page_size;
+	bool				nested_translations;
+	bool				non_coherent_ttw;
+	struct arm_smmu_ctx_desc_cfg	cd_table;
 };
 
 struct kvm_arm_smmu_stream {
 	u32				id;
 	struct kvm_arm_smmu_master	*master;
 	struct rb_node			node;
+	bool				tcu_prefetch_forward;
+	bool				tcu_prefetch_backward;
 };
 
 struct kvm_arm_smmu_domain {
@@ -315,11 +310,11 @@ struct kvm_arm_smmu_domain {
 	struct arm_smmu_device			*smmu;
 	struct mutex				init_mutex;
 	pkvm_handle_t				id;
-	unsigned long				type;
 	struct arm_smmu_domain_telemetry_common *telemetry;
 	struct kvm_arm_smmu_master		*masters[MAX_MASTER_DEVICES_PER_DOMAIN];
 	ioasid_t				pasid[MAX_MASTER_DEVICES_PER_DOMAIN];
 	spinlock_t				masters_lock; /* To sync. access to masters array */
+	struct io_pgtable_ops			*pgtbl_ops;
 };
 
 #define to_kvm_smmu_domain(_domain) \
@@ -329,9 +324,7 @@ struct host_arm_smmu_device {
 	struct arm_smmu_device		smmu;
 	pkvm_handle_t			id;
 	u32				boot_gbpa;
-	bool				hvc_pd;
-	struct io_pgtable_cfg		cfg_s1;
-	struct io_pgtable_cfg		cfg_s2;
+	struct kvm_power_domain		power_domain;
 	struct arm_smmu_device_telemetry_common *telemetry;
 };
 
@@ -385,45 +378,12 @@ static inline struct arm_smmu_domain *to_smmu_domain(struct iommu_domain *dom)
 extern struct xarray arm_smmu_asid_xa;
 extern struct mutex arm_smmu_asid_lock;
 
-int arm_smmu_write_reg_sync(struct arm_smmu_device *smmu, u32 val,
-			    unsigned int reg_off, unsigned int ack_off);
-struct arm_smmu_master *arm_smmu_find_master(struct arm_smmu_device *smmu, u32 sid);
 struct device *arm_smmu_pci_get_host_bridge_device(struct pci_dev *dev);
 void arm_smmu_pci_put_host_bridge_device(struct device *dev);
-void arm_smmu_print_evt_info(struct arm_smmu_device *smmu, u64 *evt, const char *master_name);
-void arm_smmu_print_mmu700_status(struct arm_smmu_device *smmu);
-int arm_smmu_update_gbpa(struct arm_smmu_device *smmu, u32 set, u32 clr);
-int arm_smmu_device_disable(struct arm_smmu_device *smmu);
-bool arm_smmu_capable(struct device *dev, enum iommu_cap cap);
-struct iommu_group *arm_smmu_device_group(struct device *dev);
-int arm_smmu_of_xlate(struct device *dev, struct of_phandle_args *args);
-void arm_smmu_get_resv_regions(struct device *dev, struct list_head *head);
-
-struct platform_device;
-int arm_smmu_fw_probe(struct platform_device *pdev,
-		      struct arm_smmu_device *smmu);
-int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu);
-int arm_smmu_init_one_queue(struct arm_smmu_device *smmu,
-			    struct arm_smmu_queue *q,
-			    void __iomem *page,
-			    unsigned long prod_off,
-			    unsigned long cons_off,
-			    size_t dwords, const char *name);
-int arm_smmu_init_strtab(struct arm_smmu_device *smmu);
-void arm_smmu_write_strtab_l1_desc(struct arm_smmu_device *smmu, __le64 *dst,
-				   dma_addr_t l2ptr_dma);
-
-void arm_smmu_probe_irq(struct platform_device *pdev,
-			struct arm_smmu_device *smmu);
-void arm_smmu_setup_unique_irqs(struct arm_smmu_device *smmu,
-				irqreturn_t evtqirq(int irq, void *dev),
-				irqreturn_t gerrorirq(int irq, void *dev),
-				irqreturn_t priirq(int irq, void *dev));
-
-int arm_smmu_register_iommu(struct arm_smmu_device *smmu,
-			    struct iommu_ops *ops, phys_addr_t ioaddr);
-void arm_smmu_unregister_iommu(struct arm_smmu_device *smmu);
 struct arm_smmu_domain *arm_smmu_domain_alloc(void);
+void arm_smmu_dump_event(struct arm_smmu_device *smmu, u64 *raw,
+			 struct arm_smmu_event *evt,
+			 struct ratelimit_state *rs);
 
 void arm_smmu_clear_cd(struct arm_smmu_master *master, ioasid_t ssid);
 struct arm_smmu_cd *arm_smmu_get_cd_ptr(struct arm_smmu_master *master,
@@ -439,12 +399,64 @@ int arm_smmu_set_pasid(struct arm_smmu_master *master,
 		       struct arm_smmu_domain *smmu_domain, ioasid_t pasid,
 		       struct arm_smmu_cd *cd);
 
+int arm_smmu_write_reg_sync(struct arm_smmu_device *smmu, u32 val,
+			    unsigned int reg_off, unsigned int ack_off);
+int arm_smmu_update_gbpa(struct arm_smmu_device *smmu, u32 set, u32 clr);
+int arm_smmu_device_disable(struct arm_smmu_device *smmu);
+struct iommu_group *arm_smmu_device_group(struct device *dev);
+int arm_smmu_of_xlate(struct device *dev, const struct of_phandle_args *args);
+void arm_smmu_make_s1_cd_common(struct arm_smmu_cd *target, const struct io_pgtable_cfg *pgtbl_cfg,
+				bool stall_enabled, u16 asid);
+void arm_smmu_make_cdtable_ste_common(struct arm_smmu_ste *target, struct arm_smmu_device *smmu,
+				      struct arm_smmu_ctx_desc_cfg *cd_table, bool stall_enabled,
+				      bool ats_enabled, unsigned int s1dss);
+void arm_smmu_get_resv_regions(struct device *dev,
+			       struct list_head *head);
+
+struct platform_device;
+int arm_smmu_device_ioremap(struct platform_device *pdev,
+			    struct arm_smmu_device *smmu,
+			    phys_addr_t *ioaddr, size_t *iosize);
+int arm_smmu_fw_probe(struct platform_device *pdev,
+		      struct arm_smmu_device *smmu);
+int arm_smmu_device_hw_probe(struct arm_smmu_device *smmu);
+int arm_smmu_init_one_queue(struct arm_smmu_device *smmu,
+			    struct arm_smmu_queue *q,
+			    void __iomem *page,
+			    unsigned long prod_off,
+			    unsigned long cons_off,
+			    size_t dwords, const char *name);
+int arm_smmu_init_strtab(struct arm_smmu_device *smmu);
+void arm_smmu_write_strtab_l1_desc(struct arm_smmu_strtab_l1 *dst,
+				   dma_addr_t l2ptr_dma);
+void arm_smmu_write_strtab(struct arm_smmu_device *smmu);
+
+void arm_smmu_probe_irq(struct platform_device *pdev,
+			struct arm_smmu_device *smmu);
+void arm_smmu_setup_unique_irqs(struct arm_smmu_device *smmu,
+				irqreturn_t evtqirq(int irq, void *dev),
+				irqreturn_t gerrorirq(int irq, void *dev),
+				irqreturn_t priirq(int irq, void *dev));
+
+int arm_smmu_register_iommu(struct arm_smmu_device *smmu,
+			    struct iommu_ops *ops, phys_addr_t ioaddr);
+void arm_smmu_unregister_iommu(struct arm_smmu_device *smmu);
+
 void arm_smmu_tlb_inv_asid(struct arm_smmu_device *smmu, u16 asid);
 void arm_smmu_tlb_inv_range_asid(unsigned long iova, size_t size, int asid,
 				 size_t granule, bool leaf,
 				 struct arm_smmu_domain *smmu_domain);
 int arm_smmu_atc_inv_domain(struct arm_smmu_domain *smmu_domain,
 			    unsigned long iova, size_t size);
+
+void __arm_smmu_cmdq_skip_err(struct arm_smmu_device *smmu,
+			      struct arm_smmu_cmdq *cmdq);
+int arm_smmu_init_one_queue(struct arm_smmu_device *smmu,
+			    struct arm_smmu_queue *q, void __iomem *page,
+			    unsigned long prod_off, unsigned long cons_off,
+			    size_t dwords, const char *name);
+int arm_smmu_cmdq_init(struct arm_smmu_device *smmu,
+		       struct arm_smmu_cmdq *cmdq);
 
 #ifdef CONFIG_ARM_SMMU_V3_SVA_PIXEL
 bool arm_smmu_sva_supported(struct arm_smmu_device *smmu);
@@ -489,17 +501,19 @@ static inline bool arm_smmu_master_iopf_supported(struct arm_smmu_master *master
 
 static inline void arm_smmu_sva_notifier_synchronize(void) {}
 
-static inline struct iommu_domain *arm_smmu_sva_domain_alloc(void)
-{
-	return NULL;
-}
+#define arm_smmu_sva_domain_alloc NULL
 
-static inline void arm_smmu_sva_remove_dev_pasid(struct iommu_domain *domain,
-						 struct device *dev,
-						 ioasid_t id)
-{
-}
 #endif /* CONFIG_ARM_SMMU_V3_SVA_PIXEL */
+
+#ifdef CONFIG_TEGRA241_CMDQV
+struct arm_smmu_device *tegra241_cmdqv_probe(struct arm_smmu_device *smmu);
+#else /* CONFIG_TEGRA241_CMDQV */
+static inline struct arm_smmu_device *
+tegra241_cmdqv_probe(struct arm_smmu_device *smmu)
+{
+	return ERR_PTR(-ENODEV);
+}
+#endif /* CONFIG_TEGRA241_CMDQV */
 
 /* Queue functions shared with common and kernel drivers */
 static bool __maybe_unused queue_has_space(struct arm_smmu_ll_queue *q, u32 n)
@@ -547,22 +561,23 @@ static void __maybe_unused queue_sync_cons_out(struct arm_smmu_queue *q)
 	writel_relaxed(q->llq.cons, q->cons_reg);
 }
 
-static void __maybe_unused queue_sync_cons_ovf(struct arm_smmu_queue *q)
-{
-       struct arm_smmu_ll_queue *llq = &q->llq;
-
-       if (likely(Q_OVF(llq->prod) == Q_OVF(llq->cons)))
-               return;
-
-       llq->cons = Q_OVF(llq->prod) | Q_WRP(llq, llq->cons) |
-                     Q_IDX(llq, llq->cons);
-       queue_sync_cons_out(q);
-}
-
 static void __maybe_unused queue_inc_cons(struct arm_smmu_ll_queue *q)
 {
 	u32 cons = (Q_WRP(q, q->cons) | Q_IDX(q, q->cons)) + 1;
+
 	q->cons = Q_OVF(q->cons) | Q_WRP(q, cons) | Q_IDX(q, cons);
+}
+
+static void __maybe_unused queue_sync_cons_ovf(struct arm_smmu_queue *q)
+{
+	struct arm_smmu_ll_queue *llq = &q->llq;
+
+	if (likely(Q_OVF(llq->prod) == Q_OVF(llq->cons)))
+		return;
+
+	llq->cons = Q_OVF(llq->prod) | Q_WRP(llq, llq->cons) |
+		    Q_IDX(llq, llq->cons);
+	queue_sync_cons_out(q);
 }
 
 static int __maybe_unused queue_sync_prod_in(struct arm_smmu_queue *q)
@@ -587,6 +602,7 @@ static int __maybe_unused queue_sync_prod_in(struct arm_smmu_queue *q)
 static u32 __maybe_unused queue_inc_prod_n(struct arm_smmu_ll_queue *q, int n)
 {
 	u32 prod = (Q_WRP(q, q->prod) | Q_IDX(q, q->prod)) + n;
+
 	return Q_OVF(q->prod) | Q_WRP(q, prod) | Q_IDX(q, prod);
 }
 

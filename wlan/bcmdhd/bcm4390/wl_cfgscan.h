@@ -111,7 +111,6 @@ extern s32 wl_cfgscan_pfn_handler(struct bcm_cfg80211 *cfg,
 extern s32 wl_cfgscan_notify_pfn_complete(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
 	const wl_event_msg_t *e, void *data);
 #endif /* GSCAN_SUPPORT || WL_SCHED_SCAN */
-#ifdef WES_SUPPORT
 #ifdef CUSTOMER_SCAN_TIMEOUT_SETTING
 #define CUSTOMER_WL_SCAN_TIMER_INTERVAL_MS	25000 /* Scan timeout */
 enum wl_custom_scan_time_type {
@@ -124,7 +123,6 @@ enum wl_custom_scan_time_type {
 extern s32 wl_cfg80211_custom_scan_time(struct net_device *dev,
 		enum wl_custom_scan_time_type type, int time);
 #endif /* CUSTOMER_SCAN_TIMEOUT_SETTING */
-#endif /* WES_SUPPORT */
 
 #if defined(SUPPORT_RANDOM_MAC_SCAN)
 int wl_cfg80211_set_random_mac(struct net_device *dev, bool enable);

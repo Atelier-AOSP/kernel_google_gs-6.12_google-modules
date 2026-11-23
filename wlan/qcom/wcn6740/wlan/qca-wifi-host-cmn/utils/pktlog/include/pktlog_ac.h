@@ -126,6 +126,8 @@ struct ath_pktlog_info_lnx {
 	struct ctl_table sysctls[PKTLOG_SYSCTL_SIZE];
 	struct proc_dir_entry *proc_entry;
 	struct ctl_table_header *sysctl_header;
+	int size;
+	int enable;
 };
 
 #define PL_INFO_LNX(_pl_info)   ((struct ath_pktlog_info_lnx *)(_pl_info))

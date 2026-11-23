@@ -172,8 +172,8 @@ PVRSRVBridgeRGXTDMCreateTransferContext(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXTDMCreateTransferContextIN->ui32FrameworkCmdSize * sizeof(IMG_BYTE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui8FrameworkCmdInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui8FrameworkCmdInt,
 		     (const void __user *)psRGXTDMCreateTransferContextIN->pui8FrameworkCmd,
 		     psRGXTDMCreateTransferContextIN->ui32FrameworkCmdSize * sizeof(IMG_BYTE)) !=
 		    PVRSRV_OK)
@@ -630,8 +630,8 @@ PVRSRVBridgeRGXTDMSubmitTransfer2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXTDMSubmitTransfer2IN->ui32ClientUpdateCount * sizeof(IMG_HANDLE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, hUpdateUFOSyncPrimBlockInt2,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, hUpdateUFOSyncPrimBlockInt2,
 		     (const void __user *)psRGXTDMSubmitTransfer2IN->phUpdateUFOSyncPrimBlock,
 		     psRGXTDMSubmitTransfer2IN->ui32ClientUpdateCount * sizeof(IMG_HANDLE)) !=
 		    PVRSRV_OK)
@@ -652,8 +652,8 @@ PVRSRVBridgeRGXTDMSubmitTransfer2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXTDMSubmitTransfer2IN->ui32ClientUpdateCount * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32UpdateSyncOffsetInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32UpdateSyncOffsetInt,
 		     (const void __user *)psRGXTDMSubmitTransfer2IN->pui32UpdateSyncOffset,
 		     psRGXTDMSubmitTransfer2IN->ui32ClientUpdateCount * sizeof(IMG_UINT32)) !=
 		    PVRSRV_OK)
@@ -674,8 +674,8 @@ PVRSRVBridgeRGXTDMSubmitTransfer2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXTDMSubmitTransfer2IN->ui32ClientUpdateCount * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32UpdateValueInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32UpdateValueInt,
 		     (const void __user *)psRGXTDMSubmitTransfer2IN->pui32UpdateValue,
 		     psRGXTDMSubmitTransfer2IN->ui32ClientUpdateCount * sizeof(IMG_UINT32)) !=
 		    PVRSRV_OK)
@@ -695,8 +695,8 @@ PVRSRVBridgeRGXTDMSubmitTransfer2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (PVRSRV_SYNC_NAME_LENGTH * sizeof(IMG_CHAR) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, uiUpdateFenceNameInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, uiUpdateFenceNameInt,
 		     (const void __user *)psRGXTDMSubmitTransfer2IN->puiUpdateFenceName,
 		     PVRSRV_SYNC_NAME_LENGTH * sizeof(IMG_CHAR)) != PVRSRV_OK)
 		{
@@ -716,8 +716,8 @@ PVRSRVBridgeRGXTDMSubmitTransfer2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXTDMSubmitTransfer2IN->ui32CommandSize * sizeof(IMG_UINT8) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui8FWCommandInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui8FWCommandInt,
 		     (const void __user *)psRGXTDMSubmitTransfer2IN->pui8FWCommand,
 		     psRGXTDMSubmitTransfer2IN->ui32CommandSize * sizeof(IMG_UINT8)) != PVRSRV_OK)
 		{
@@ -736,8 +736,8 @@ PVRSRVBridgeRGXTDMSubmitTransfer2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXTDMSubmitTransfer2IN->ui32SyncPMRCount * sizeof(IMG_UINT32) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, ui32SyncPMRFlagsInt,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, ui32SyncPMRFlagsInt,
 		     (const void __user *)psRGXTDMSubmitTransfer2IN->pui32SyncPMRFlags,
 		     psRGXTDMSubmitTransfer2IN->ui32SyncPMRCount * sizeof(IMG_UINT32)) != PVRSRV_OK)
 		{
@@ -757,8 +757,8 @@ PVRSRVBridgeRGXTDMSubmitTransfer2(IMG_UINT32 ui32DispatchTableEntry,
 	/* Copy the data over */
 	if (psRGXTDMSubmitTransfer2IN->ui32SyncPMRCount * sizeof(IMG_HANDLE) > 0)
 	{
-		if (OSCopyFromUser
-		    (NULL, hSyncPMRsInt2,
+		if (CopyFromUserWrapper
+		    (NULL, ui32DispatchTableEntry, hSyncPMRsInt2,
 		     (const void __user *)psRGXTDMSubmitTransfer2IN->phSyncPMRs,
 		     psRGXTDMSubmitTransfer2IN->ui32SyncPMRCount * sizeof(IMG_HANDLE)) != PVRSRV_OK)
 		{

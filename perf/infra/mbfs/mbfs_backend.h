@@ -7,14 +7,15 @@
 #define MBFS_BACKEND_H
 
 #include <perf/mbfs.h>
-#include <perf/mbfs_protocol.h>
 #include <linux/device.h>
+
+struct mbfs_request;
+struct mbfs_response;
 
 struct mbfs_client_backend {
 	// Static information
 	const char *name;
-	enum mbfs_error_code (*submit_request)(const struct mbfs_request *req,
-					       struct mbfs_response *res);
+	int (*submit_request)(const struct mbfs_request *req, struct mbfs_response *res);
 	// Fields updated at runtime
 	uint8_t initialized;
 	uint8_t bits_file_index;

@@ -10,6 +10,7 @@
 #include "linux/kstrtox.h"
 #include "linux/list.h"
 #include "linux/sysfs.h"
+#include "soc/google/google-cdd.h"
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -328,48 +329,44 @@ static int get_timestamp_buffer(struct device *dev,
 }
 
 static int validate_timestamps(struct device *dev,
-
 			     struct cpu_lpm_stats_elem *data, u64 now,
 			     struct timestamps_buffer *ts_buff,
 			     struct timestamps_buffer *fw_ts_buff,
 			     struct timestamps_buffer *tf_a_ts_buff,
-			     int read_firmware)
+			     int read_firmware, int read_tf_a)
 {
-	u64 last_entry_sched_ts = fw_ts_buff->last_entry_sched_ts;
 	u64 last_entry_start_ts = ts_buff->last_entry_start_ts;
 	u64 last_entry_end_ts = ts_buff->last_entry_end_ts;
-	u64 last_exit_sched_ts = fw_ts_buff->last_exit_sched_ts;
 	u64 last_exit_start_ts = ts_buff->last_exit_start_ts;
 	u64 last_exit_end_ts = ts_buff->last_exit_end_ts;
 
 	if (data->last_entry_ts == 0)
 		return -EINVAL;
 
+	data->last_exit_ts = now;
 	if (now < data->last_entry_ts)
 		return -EINVAL;
 
-	data->last_exit_ts = now;
-	if (!(data->last_entry_ts < tf_a_ts_buff->last_entry_start_ts &&
-		  tf_a_ts_buff->last_entry_start_ts < tf_a_ts_buff->last_entry_end_ts))
+	if (last_entry_end_ts < last_entry_start_ts ||
+	    last_entry_end_ts < data->last_entry_ts)
 		return -EINVAL;
 
-	if (!(tf_a_ts_buff->last_entry_end_ts < tf_a_ts_buff->last_exit_start_ts &&
-		  tf_a_ts_buff->last_exit_start_ts < tf_a_ts_buff->last_exit_end_ts &&
-		  tf_a_ts_buff->last_exit_end_ts < data->last_exit_ts))
+	if (!read_firmware &&
+	    (fw_ts_buff->last_entry_sched_ts > last_exit_start_ts ||
+	     fw_ts_buff->last_entry_sched_ts > fw_ts_buff->last_entry_end_ts))
 		return -EINVAL;
 
-	if (read_firmware)
-		return 0;
-
-	if (!(tf_a_ts_buff->last_entry_end_ts < last_entry_sched_ts &&
-		  last_entry_sched_ts < last_entry_start_ts &&
-		  last_entry_start_ts < last_entry_end_ts))
+	if (!read_tf_a && (data->last_entry_ts > tf_a_ts_buff->last_entry_end_ts ||
+			tf_a_ts_buff->last_entry_end_ts <
+			tf_a_ts_buff->last_entry_start_ts ||
+			tf_a_ts_buff->last_exit_end_ts <
+			tf_a_ts_buff->last_exit_start_ts ||
+			tf_a_ts_buff->last_exit_start_ts <
+			tf_a_ts_buff->last_entry_end_ts
+		))
 		return -EINVAL;
 
-	if (!(last_entry_end_ts < last_exit_sched_ts &&
-		  last_exit_sched_ts < last_exit_start_ts &&
-		  last_exit_start_ts < last_exit_end_ts &&
-		  last_exit_end_ts < tf_a_ts_buff->last_exit_start_ts))
+	if (last_exit_end_ts < last_exit_start_ts)
 		return -EINVAL;
 
 	return 0;
@@ -429,27 +426,37 @@ static void update_firmware_latency_stats(
 	u64 last_entry_start_ts = ts_buff->last_entry_start_ts;
 	u64 last_exit_end_ts = ts_buff->last_exit_end_ts;
 
-	u64 fw_sched_entry =
-		last_entry_start_ts - fw_ts_buff->last_entry_sched_ts;
-	u64 fw_entry_transition = fw_ts_buff->last_entry_end_ts - last_entry_start_ts;
-	u64 fw_entry = fw_ts_buff->last_entry_end_ts - fw_ts_buff->last_entry_sched_ts;
+	u64 fw_entry, fw_exit, fw_sched_exit, fw_exit_transition, fw_sched_entry,
+		fw_entry_transition;
 
-	process_latency_stats(&latency_data->fw_sched_entry, fw_sched_entry,
-				data->count);
-	process_latency_stats(&latency_data->fw_entry_transition,
+	if (fw_ts_buff->last_entry_sched_ts > 0) {
+		fw_sched_entry =
+			last_entry_start_ts - fw_ts_buff->last_entry_sched_ts;
+		fw_entry_transition = fw_ts_buff->last_entry_end_ts - last_entry_start_ts;
+		fw_entry = fw_ts_buff->last_entry_end_ts - fw_ts_buff->last_entry_sched_ts;
+		process_latency_stats(&latency_data->fw_sched_entry, fw_sched_entry,
+				    data->count);
+		process_latency_stats(&latency_data->fw_entry_transition,
 				    fw_entry_transition, data->count);
+	} else {
+		fw_entry = fw_ts_buff->last_entry_end_ts - last_entry_start_ts;
+	}
 	process_latency_stats(&latency_data->fw_entry, fw_entry, data->count);
 
-	u64 fw_sched_exit =
-		fw_ts_buff->last_exit_start_ts - fw_ts_buff->last_exit_sched_ts;
-	u64 fw_exit_transition =
-		last_exit_end_ts - fw_ts_buff->last_exit_start_ts;
-	u64 fw_exit = last_exit_end_ts - fw_ts_buff->last_exit_sched_ts;
-
-	process_latency_stats(&latency_data->fw_sched_exit, fw_sched_exit,
-				data->count);
-	process_latency_stats(&latency_data->fw_exit_transition,
-				fw_exit_transition, data->count);
+	if (fw_ts_buff->last_exit_sched_ts > 0) {
+		fw_sched_exit =
+			fw_ts_buff->last_exit_start_ts - fw_ts_buff->last_exit_sched_ts;
+		fw_exit_transition =
+			last_exit_end_ts - fw_ts_buff->last_exit_start_ts;
+		fw_exit = last_exit_end_ts - fw_ts_buff->last_exit_sched_ts;
+		process_latency_stats(&latency_data->fw_sched_exit, fw_sched_exit,
+				    data->count);
+		process_latency_stats(&latency_data->fw_exit_transition,
+				    fw_exit_transition, data->count);
+		process_latency_stats(&latency_data->fw_exit, fw_exit, data->count);
+	} else {
+		fw_exit = last_exit_end_ts - fw_ts_buff->last_exit_start_ts;
+	}
 	process_latency_stats(&latency_data->fw_exit, fw_exit, data->count);
 }
 
@@ -486,40 +493,40 @@ static void update_stats(struct device *dev,
 			struct cpu_latency_stats_elem *latency_data,
 			u64 now)
 {
-	int read_firmware;
+	int read_tf_a, read_firmware;
 	struct timestamps_buffer ts_buff;
 	struct timestamps_buffer fw_ts_buff;
 	struct timestamps_buffer tf_a_ts_buff;
-	struct cpu_lpm_data *exiting_cpu_lpm_data = get_exiting_cpu_pd_lpm_data();
 
+	struct cpu_lpm_data *exiting_cpu_lpm_data = get_exiting_cpu_pd_lpm_data();
 	if (!exiting_cpu_lpm_data)
 		return;
 
 	int state_idx = get_state_idx(dev, lat);
-
 	if (state_idx < 0)
 		return;
 
 	int exiting_cpu_state_idx = get_state_idx(dev, exiting_cpu_lpm_data);
-
 	if (exiting_cpu_state_idx < 0)
-		return;
-
-	if (read_cpu_pd_latency_stats(
-			exiting_cpu_lpm_data->power_state[exiting_cpu_state_idx], &tf_a_ts_buff,
-			TYPE_TFA_CPU_POWER_STATS))
 		return;
 
 	read_firmware =
 		read_cpu_pd_latency_stats(lat->power_state[state_idx],
 			&fw_ts_buff, TYPE_CAP_CPU_POWER_STATS);
+	read_tf_a =
+		read_cpu_pd_latency_stats(
+			exiting_cpu_lpm_data->power_state[exiting_cpu_state_idx], &tf_a_ts_buff,
+			TYPE_TFA_CPU_POWER_STATS);
+
+	if (read_firmware && read_tf_a)
+		return;
 
 	if (get_timestamp_buffer(dev, lat, exiting_cpu_lpm_data, &ts_buff,
 		&fw_ts_buff, &tf_a_ts_buff, read_firmware))
 		return;
 
 	if (validate_timestamps(dev, data, now, &ts_buff, &fw_ts_buff,
-							&tf_a_ts_buff, read_firmware))
+							&tf_a_ts_buff, read_firmware, read_tf_a))
 		return;
 
 	update_residency_stats(data, now);
@@ -539,8 +546,9 @@ static void update_stats(struct device *dev,
 	/*
 	 * Handle TF-A latencies
 	 */
-	update_tfa_latency_stats(latency_data, data, &ts_buff, &tf_a_ts_buff,
-		read_firmware);
+	if (!read_tf_a)
+		update_tfa_latency_stats(latency_data, data, &ts_buff, &tf_a_ts_buff,
+			read_firmware);
 }
 
 static int sswrp_cluster_pd_notifier(struct notifier_block *nb,
@@ -548,6 +556,20 @@ static int sswrp_cluster_pd_notifier(struct notifier_block *nb,
 {
 	u64 now = goog_gtc_get_counter();
 	struct cpu_lpm_data *lat = container_of(nb, struct cpu_lpm_data, nb);
+	int cpu_id;
+	struct generic_pm_domain *genpd_pm =
+		pd_to_genpd(lat->genpd_dev->pm_domain);
+
+	/* report cpu status to the CDD CPU Idle module */
+	for_each_cpu(cpu_id, genpd_pm->cpus) {
+		if (action == GENPD_NOTIFY_OFF)
+			google_cdd_cpuidle_mod_by_id(cpu_id, (char *)lat->name,
+						     0, 0, CDD_FLAG_IN);
+		else if (action == GENPD_NOTIFY_ON)
+			google_cdd_cpuidle_mod_by_id(cpu_id, (char *)lat->name,
+						     0, 0, CDD_FLAG_OUT);
+
+	}
 
 	spin_lock(&lat->lock);
 	if (!lat->collect_data) {
@@ -869,7 +891,7 @@ static int cpu_lpm_stats_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int google_cpu_lpm_stats_remove(struct platform_device *pdev)
+static void google_cpu_lpm_stats_remove(struct platform_device *pdev)
 {
 	struct cpu_lpm_data *lat, *tmp;
 
@@ -884,16 +906,11 @@ static int google_cpu_lpm_stats_remove(struct platform_device *pdev)
 		kobject_put(&lat->pd_fw_sched_exit_stats);
 		kobject_put(&lat->pd_fw_entry_transition_stats);
 		kobject_put(&lat->pd_fw_exit_transition_stats);
-		kobject_put(&lat->pd_tf_a_entry_stats);
-		kobject_put(&lat->pd_tf_a_exit_stats);
-		kobject_put(&lat->pd_tf_a_boot_stats);
 		kobject_put(&lat->pd_e2e_entry_stats);
 		kobject_put(&lat->pd_e2e_exit_stats);
 		list_del(&lat->list);
 		kfree(lat);
 	}
-
-	return 0;
 }
 
 static const struct of_device_id cpu_lpm_stats_match_table[] = {

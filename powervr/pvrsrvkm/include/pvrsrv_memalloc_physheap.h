@@ -179,7 +179,20 @@ typedef struct PHYS_HEAP_MEM_STATS_TAG
 	IMG_UINT64 ui64DevicesInSPAS; /*!< A bitmap of devices that are linked to the heap via a SPAS.
 	                                   Where a device is encoded as a bit using the following:
 	                                   (1 << psDevNode->sDevId.ui32InternalID) */
+	IMG_UINT64 ui64ProcessAllocatedBytes; /*!< The number of bytes allocated by the
+	                                          current process in the heap. */
 } PHYS_HEAP_MEM_STATS, *PHYS_HEAP_MEM_STATS_PTR;
+
+typedef struct PHYS_HEAP_MEM_STATS_OLD_TAG
+{
+	IMG_UINT64 ui64TotalSize;     /*!< Total number of bytes in the heap. */
+	IMG_UINT64 ui64FreeSize;      /*!< Remaining number of bytes free for allocation. */
+	IMG_UINT32 ui32PhysHeapFlags; /*!< Flags associated within the heap. */
+	PHYS_HEAP_TYPE ePhysHeapType; /*!< The type of physheap. */
+	IMG_UINT64 ui64DevicesInSPAS; /*!< A bitmap of devices that are linked to the heap via a SPAS.
+	                                   Where a device is encoded as a bit using the following:
+	                                   (1 << psDevNode->sDevId.ui32InternalID) */
+} PHYS_HEAP_MEM_STATS_OLD;
 
 /*************************************************************************/ /*!
 @Function       PVRSRVGetPhysHeapName

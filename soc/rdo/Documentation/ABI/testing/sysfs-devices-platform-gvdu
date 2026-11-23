@@ -23,33 +23,6 @@ Description:
 		(RO) Returns the nonce that needs to be provided to the
 		signing service. The nonce is a 32-char hex string (16 bytes).
 
-What:		/sys/devices/platform/gvdu/interface/grant
-Date:		October 2024
-Contact:	Kanstantsin Yarmash <kyarmash@google.com>
-Description:
-		(WO) Writing this file with the base64 encoded grant string
-		returned by the VDU server will store it as part of a directive
-		that will be used in the authentication process.
-
-What:		/sys/devices/platform/gvdu/interface/delegate
-Date:		October 2024
-Contact:	Kanstantsin Yarmash <kyarmash@google.com>
-Description:
-		(WO) Writing this file with the base64 encoded delegate string
-		returned by the VDU server will store it as part of a directive
-		that will be used in the authentication process.
-
-What:		/sys/devices/platform/gvdu/interface/auth
-Date:		October 2024
-Contact:	Kanstantsin Yarmash <kyarmash@google.com>
-Description:
-		(WO) Writing this file with arbitrary content will trigger VDU HW
-		authentication and will complete the session setup. The previously
-		saved combination of grant and delegate will be used as the auth
-		token required for this process. If the signature is inconsistent
-		with the auth token this operation will return an error indicating
-		that the VDU session setup failed.
-
 What:		/sys/devices/platform/gvdu/status/consent
 Date:		October 2024
 Contact:	Kanstantsin Yarmash <kyarmash@google.com>

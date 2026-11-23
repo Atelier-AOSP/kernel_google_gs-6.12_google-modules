@@ -1,5 +1,10 @@
 load("@kleaf//build/kernel/kleaf:kernel.bzl", "ddk_headers", "ddk_module")
 
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
+
 filegroup(
     name = "edgetpu.kconfig",
     srcs = [
@@ -34,6 +39,7 @@ ddk_module(
             "edgetpu-debug.c",
             "edgetpu-devfreq.c",
             "edgetpu-device-group.c",
+            "edgetpu-dt-mailbox-adapter.c",
             "edgetpu-external.c",
             "edgetpu-firmware.c",
             "edgetpu-fs.c",
@@ -53,14 +59,12 @@ ddk_module(
         "include/**/*.h",
     ]),
     includes = [
-        "gcip-kernel-driver/drivers/gcip/iif/include",
         "gcip-kernel-driver/include",
         "include",
     ],
     kernel_build = "//private/devices/google/common:kernel",
     local_defines = [
         "CONFIG_RIO",
-        "CONFIG_EDGETPU_TELEMETRY_TRACE",
         "CONFIG_GOOGLE_BCL",
     ],
     textual_hdrs = [
@@ -68,6 +72,7 @@ ddk_module(
         "edgetpu-debug.c",
         "edgetpu-devfreq.c",
         "edgetpu-device-group.c",
+        "edgetpu-dt-mailbox-adapter.c",
         "edgetpu-external.c",
         "edgetpu-firmware.c",
         "edgetpu-fs.c",
@@ -80,17 +85,17 @@ ddk_module(
         "edgetpu-vii-packet.c",
         "mobile-soc-gsx01.c",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
-        "//private/google-modules/gxp:__subpackages__",
-        "//private/google-modules/soc/gs:__pkg__",
-    ],
     deps = [
         "//common:all_headers_aarch64",
+        "//private/google-modules/iif",
+        "//private/google-modules/iif:iif_headers",
         "//private/google-modules/power/mitigation:google_bcl",
         "//private/google-modules/power/mitigation:headers",
-        "//private/google-modules/soc/gs:gs_soc_module",
         "//private/google-modules/soc/gs:headers",
+        "//private/google-modules/soc/gs/drivers/bts",
+        "//private/google-modules/soc/gs/drivers/soc/google:exynos_pm_qos",
+        "//private/google-modules/soc/gs/drivers/soc/google/cal-if:cmupmucal",
         "//private/google-modules/soc/gs/drivers/soc/google/gsa:gsa_ko",
+        "//private/google-modules/soc/gs/drivers/thermal/samsung:gs_thermal",
     ],
 )

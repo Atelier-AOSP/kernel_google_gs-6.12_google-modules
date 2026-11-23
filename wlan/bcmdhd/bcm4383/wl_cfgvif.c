@@ -142,6 +142,74 @@ module_param(disable_ap_macrand, uint, 0660);
 #define VNDR_OUI_STR_LEN	10u
 #define DOT11_DISCONNECT_RC     2u
 
+#ifdef WL_PMSR
+
+#define WL_PMSR_TYPE_FTM 1u
+#define MIN_ALLOWED_RANGING_INTRVL_MS 512u
+#define WL_PMSR_COMPLETE_TIMEOUT_MS 1000u
+#define WL_RSTA_AW_WINDOW_MS 255u
+#define WL_RSTA_NOMINAL_TIME 1000u
+#define WL_ISTA_NOMINAL_TIME 500u
+#define WL_STA_MAX_DELTA 255u
+#define WL_STA_AW_WINDOW_MS 120u
+#define WL_STA_MIN_DELTA 400u
+/* MIN_THRSHOLD_PER_BURST is in 100TU */
+#define MIN_THRSHOLD_PER_BURST 100u
+#define WL_RSTA_NUM_MEAS 1u
+static const struct cfg80211_pmsr_capabilities my_pmsr_capa = {
+	.max_peers = 1,
+	.report_ap_tsf = 0,
+	.randomize_mac_addr = 1,
+	.ftm = {
+		.preambles = BIT(NL80211_PREAMBLE_HE),
+		.bandwidths = BIT(NL80211_CHAN_WIDTH_20) |
+		BIT(NL80211_CHAN_WIDTH_40) |
+		BIT(NL80211_CHAN_WIDTH_80) |
+		BIT(NL80211_CHAN_WIDTH_160),
+		.max_bursts_exponent = -1,
+		.max_ftms_per_burst = 10,
+		.supported = 1,
+		.asap = 0,
+		.non_asap = 1,
+		.request_lci = 1,
+		.request_civicloc = 1,
+		.trigger_based = 0,
+		.non_trigger_based = 1,
+		.support_6ghz = 1,
+		.max_tx_ltf_rep = 2,
+		.max_rx_ltf_rep = 2,
+		.max_tx_sts = 2,
+		.max_rx_sts = 2,
+		.ista = {
+				.support_ntb = 1,
+				.support_tb = 0,
+				.support_edca = 0,
+				.max_peers = 1
+		},
+		.rsta = {
+				.support_ntb = 1,
+				.support_tb = 0,
+				.support_edca = 0,
+				.max_peers = 1
+		},
+		.max_no_of_tx_antennas = 2,
+		.max_no_of_rx_antennas = 2,
+		.min_allowed_ranging_interval_ntb = MIN_ALLOWED_RANGING_INTRVL_MS,
+		.type = {
+				.infra_support = 1,
+				.pd_support = 1
+		},
+		.concurrent_ista_rsta_support = 0,
+		.support_rsta = 1,
+		.pd_preambles = BIT(NL80211_PREAMBLE_HE),
+		.pd_bandwidths = BIT(NL80211_CHAN_WIDTH_20) |
+		BIT(NL80211_CHAN_WIDTH_40) |
+		BIT(NL80211_CHAN_WIDTH_80) |
+		BIT(NL80211_CHAN_WIDTH_160),
+		},
+};
+#endif /* WL_PMSR */
+
 s32 wl_cfg80211_set_scb_timings(struct bcm_cfg80211 *cfg, struct net_device *dev);
 
 #if defined(WL_FW_OCE_AP_SELECT)
@@ -250,6 +318,7 @@ wl_cfgvif_del_if(struct bcm_cfg80211 *cfg, struct net_device *primary_ndev,
 	int ret = BCME_OK;
 	struct net_info *iter, *next;
 	bool active_iface = FALSE;
+	dhd_pub_t *dhdp = (dhd_pub_t *)(cfg->pub);
 
 	mutex_lock(&cfg->if_sync);
 	ret = _wl_cfg80211_del_if(cfg, primary_ndev, wdev, ifname);
@@ -282,8 +351,13 @@ wl_cfgvif_del_if(struct bcm_cfg80211 *cfg, struct net_device *primary_ndev,
 		}
 
 		if (active_iface == FALSE) {
-			WL_INFORM(("Calling dhd_stop as all interfaces are down\n"));
-			dhd_stop(primary_ndev);
+			if (!dhdp || !dhdp->info || !dhdp->up || dhd_query_bus_erros(dhdp)) {
+				WL_INFORM(("skip dhd_stop due to dhd context/bus"
+						" down during iface teardown\n"));
+			} else {
+				WL_INFORM(("Calling dhd_stop as all interfaces are down\n"));
+				dhd_stop(primary_ndev);
+			}
 		}
 	}
 
@@ -1168,6 +1242,20 @@ wl_cfg80211_add_virtual_iface(struct wiphy *wiphy,
 	if (cfg80211_to_wl_iftype(type, &wl_iftype, &wl_mode) < 0) {
 		return ERR_PTR(-EINVAL);
 	}
+#ifdef WL_PMSR
+	if (wl_iftype == WL_IF_TYPE_PD) {
+		if (params) {
+			WL_INFORM_MEM(("add_virtual_iface for PD request macaddr:" MACDBG "\n",
+			MAC2STRDBG(params->macaddr)));
+			wdev = wl_cfg80211_add_if(cfg, primary_ndev,
+				wl_iftype, name, params->macaddr);
+			if (unlikely(!wdev)) {
+				return ERR_PTR(-ENODEV);
+			}
+			return wdev_to_cfgdev(wdev);
+		}
+	}
+#endif /* WL_PMSR */
 
 	wdev = wl_cfg80211_add_if(cfg, primary_ndev, wl_iftype, name, NULL);
 	if (unlikely(!wdev)) {
@@ -2148,10 +2236,12 @@ wl_cfg80211_set_channel(struct wiphy *wiphy, struct net_device *dev,
 	}
 #endif /* WL_DUAL_STA */
 
+	{
 		if (IS_P2P_GO(dev->ieee80211_ptr) && (CHSPEC_IS6G(chspec))) {
 			WL_ERR(("P2P GO not allowed on 6G\n"));
 			return -ENOTSUPP;
 		}
+	}
 
 #ifndef WL_SOFTAP_6G
 	if (IS_AP_IFACE(dev->ieee80211_ptr) && (CHSPEC_IS6G(chspec))) {
@@ -2161,12 +2251,23 @@ wl_cfg80211_set_channel(struct wiphy *wiphy, struct net_device *dev,
 #endif /* WL_SOFTAP_6G */
 
 	if (CHSPEC_IS5G(chspec)) {
-		if ((wl_cfgscan_get_dynamic_chan_info(cfg, &chan_info,
-			chspec, WL_CHAN_INDOOR_ONLY | WL_CHAN_RADAR) == BCME_OK) &&
-				(chan_info & WL_CHAN_P2P_PROHIBITED)) {
-			WL_ERR(("AP not allowed on peer to peer restricted chanspec 0x%x\n",
-				chspec));
-			return -ENOTSUPP;
+		if (IS_AP_IFACE(dev->ieee80211_ptr)) {
+			if (wl_cfgscan_get_chan_info(cfg, &chan_info, chspec) == BCME_OK) {
+				if (chan_info & (WL_CHAN_INDOOR_ONLY |	WL_CHAN_RADAR |
+					WL_CHAN_PASSIVE| WL_CHAN_P2P_PROHIBITED)) {
+				WL_ERR(("AP not allowed on chanspec 0x%x due to 0x%x\n",
+					chspec, chan_info));
+				return -ENOTSUPP;
+				}
+			}
+		} else {
+			if ((wl_cfgscan_get_dynamic_chan_info(cfg, &chan_info,
+				chspec, WL_CHAN_INDOOR_ONLY | WL_CHAN_RADAR) == BCME_OK) &&
+					(chan_info & WL_CHAN_P2P_PROHIBITED)) {
+				WL_ERR(("AP not allowed on peer to peer restricted chanspec 0x%x\n",
+					chspec));
+				return -ENOTSUPP;
+			}
 		}
 	}
 
@@ -2756,7 +2857,8 @@ wl_validate_wpa2ie(struct net_device *dev, const bcm_tlv_t *wpa2ie, s32 bssidx)
 				wpa_auth |= WPA3_AUTH_DPP_AKM;
 				break;
 			default:
-				WL_ERR(("No Key Mgmt Info in WFA_OUI\n"));
+				WL_ERR(("No Key Mgmt Info in WFA_OUI, type %d\n",
+					mgmt->list[cnt].type));
 			}
 		} else {
 			switch (mgmt->list[cnt].type) {
@@ -2793,7 +2895,7 @@ wl_validate_wpa2ie(struct net_device *dev, const bcm_tlv_t *wpa2ie, s32 bssidx)
 				wpa_auth |= WPA3_AUTH_OWE;
 				break;
 			default:
-				WL_ERR(("No Key Mgmt Info\n"));
+				WL_ERR(("No Key Mgmt Info , type %d\n", mgmt->list[cnt].type));
 			}
 		}
 	}
@@ -3499,16 +3601,15 @@ wl_cfg80211_bcn_validate_sec(
 				bss->security_mode = false;
 				return BCME_ERROR;
 			}
-		}
-		else {
+		} else
 #endif /* SUPPORT_SOFTAP_WPAWPA2_MIXED */
-		if ((ies->wpa2_ie || ies->wpa_ie) &&
-			((wl_validate_wpa2ie(dev, ies->wpa2_ie, bssidx)  < 0 ||
-			wl_validate_wpaie(dev, ies->wpa_ie, bssidx) < 0))) {
-			bss->security_mode = false;
-			return BCME_ERROR;
-		}
-
+		{
+			if ((ies->wpa2_ie || ies->wpa_ie) &&
+				((wl_validate_wpa2ie(dev, ies->wpa2_ie, bssidx)  < 0 ||
+				wl_validate_wpaie(dev, ies->wpa_ie, bssidx) < 0))) {
+				bss->security_mode = false;
+				return BCME_ERROR;
+			}
 		}
 
 		if (ies->fils_ind_ie &&
@@ -3689,17 +3790,19 @@ static s32 wl_cfg80211_bcn_set_params(
 	if ((info->ssid) && (info->ssid_len > 0) &&
 		(info->ssid_len <= DOT11_MAX_SSID_LEN)) {
 		WL_DBG(("SSID (%s) len:%zd \n", info->ssid, info->ssid_len));
-		if (dev_role == NL80211_IFTYPE_AP) {
-			/* Store the hostapd SSID */
-			bzero(cfg->hostapd_ssid.SSID, DOT11_MAX_SSID_LEN);
-			memcpy(cfg->hostapd_ssid.SSID, info->ssid, info->ssid_len);
-			cfg->hostapd_ssid.SSID_len = (uint32)info->ssid_len;
-		} else {
-				/* P2P GO */
+		if (dev_role == NL80211_IFTYPE_P2P_GO) {
 			bzero(cfg->p2p->ssid.SSID, DOT11_MAX_SSID_LEN);
 			memcpy(cfg->p2p->ssid.SSID, info->ssid, info->ssid_len);
 			cfg->p2p->ssid.SSID_len = (uint32)info->ssid_len;
 		}
+		/* Store the hostapd SSID */
+		bzero(cfg->hostapd_ssid.SSID, DOT11_MAX_SSID_LEN);
+		err = memcpy_s(cfg->hostapd_ssid.SSID, DOT11_MAX_SSID_LEN, info->ssid,
+			info->ssid_len);
+		if (err != BCME_OK) {
+			return err;
+		}
+		cfg->hostapd_ssid.SSID_len = (uint32)info->ssid_len;
 	}
 
 	return err;
@@ -5944,6 +6047,10 @@ wl_cfgvif_notify_owe_event(struct bcm_cfg80211 *cfg, struct net_device *ndev,
 	u32 len = ntoh32(e->datalen);
 	struct cfg80211_update_owe_info owe_info = {0};
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 3, 0)) || \
+	defined(WL_AP_OWE_BKPORT)
+	owe_info.assoc_link_id = -1;
+#endif /* LINUX_VERSION_CODE >= (6, 3, 0) || WL_AP_OWE_BKPORT */
 	if (event == WLC_E_OWE_INFO) {
 		if (!data) {
 			WL_ERR(("No DH-IEs present in ASSOC/REASSOC_IND"));
@@ -9642,6 +9749,13 @@ wl_cfgvif_update_assoc_fail_status(struct bcm_cfg80211 *cfg, struct net_device *
 				assoc_status = e->auth_type;
 			}
 			break;
+		case WLC_E_SET_SSID:
+			if (status == WLC_E_STATUS_NO_NETWORKS) {
+				/* Propagate FW no-networks status (3) to cfg80211 connect_done. */
+				assoc_status = -1;
+				timeout_reason = NL80211_TIMEOUT_SCAN;
+			}
+			break;
 		default:
 			break;
 	}
@@ -9689,7 +9803,6 @@ wl_cfgvif_to_fw_iftype(wl_iftype_t iftype)
 			ret = WL_INTERFACE_TYPE_ART;
 			break;
 #endif /* DHD_ART */
-
 		default:
 			WL_ERR(("Unsupported type:%d \n", iftype));
 			ret = -EINVAL;
@@ -10011,4 +10124,947 @@ exit:
 	return err;
 }
 #endif /* WL_SUPPORT_ACS */
+
+#ifdef WL_PMSR
+
+static enum nl80211_peer_measurement_status
+ftm_reason_to_nl_status(pmsr_ftm_reason_t r)
+{
+	switch (r) {
+	case PMSR_STATUS_SUCCESS:
+		return NL80211_PMSR_STATUS_SUCCESS;
+	case PMSR_STATUS_TIMEOUT:
+		return NL80211_PMSR_STATUS_TIMEOUT;
+	case PMSR_STATUS_REFUSED:
+		return NL80211_PMSR_STATUS_REFUSED;
+	case PMSR_STATUS_FAILURE:
+		return NL80211_PMSR_STATUS_FAILURE;
+	default:
+		return NL80211_PMSR_STATUS_FAILURE;
+	}
+}
+
+static pmsr_ftm_reason_t
+pmsr_ftm_get_statusmap_info(wl_proxd_status_t id, const pmsr_ftm_status_map_host_entry_t *p_table,
+	uint32 num_entries)
+{
+	int i;
+	const pmsr_ftm_status_map_host_entry_t *p_entry;
+	/* scan thru the table till end */
+	p_entry = p_table;
+	for (i = 0; i < (int) num_entries; i++) {
+		if (p_entry->proxd_status == id) {
+			return p_entry->rtt_reason;
+		}
+		p_entry++;		/* next entry */
+	}
+	return PMSR_STATUS_FAILURE; /* not found */
+}
+
+struct wireless_dev *
+wl_cfgvif_pd_if_add(struct bcm_cfg80211 *cfg, u8 *mac_addr)
+{
+	struct wireless_dev *wdev = NULL;
+	struct net_device *primary_ndev = NULL;
+
+	primary_ndev = bcmcfg_to_prmry_ndev(cfg);
+	if (!cfg || !mac_addr) {
+		return NULL;
+	}
+
+	if (cfg->pd_wdev) {
+		WL_INFORM(("PD Device interface already exists\n"));
+		return NULL;
+	}
+
+	if (memcmp(mac_addr, primary_ndev->dev_addr, ETHER_ADDR_LEN) == 0) {
+		WL_ERR(("PD interface MAC address cannot be same as primary interface\n"));
+		return NULL;
+	}
+
+	wdev = (struct wireless_dev *)MALLOCZ(cfg->osh, sizeof(*wdev));
+	if (unlikely(!wdev)) {
+		WL_ERR(("Could not allocate wireless device\n"));
+		return ERR_PTR(-ENOMEM);
+	}
+
+	wdev->wiphy = cfg->wdev->wiphy;
+	wdev->iftype = NL80211_IFTYPE_PD;
+	eacopy(mac_addr, wdev->address);
+
+	/* store pd wdev ptr for further reference
+	 * for now assigning state to PD_IDLE
+	 */
+	cfg->pd_wdev = wdev;
+	cfg->pd_state = PD_IDLE;
+	WL_INFORM(("PD interface registered with addr " MACDBG "\n", MAC2STRDBG(mac_addr)));
+	return wdev;
+
+}
+
+void
+wl_cfgvif_advertise_pmsr_cap(struct wiphy *wiphy)
+{
+	wiphy->pmsr_capa = &my_pmsr_capa;
+	WL_DBG_MEM(("pmsr cap advertised\n"));
+}
+
+static
+wl_ftm_ranging_format_bw_t convert_nl80211_to_ftm_width(enum nl80211_chan_width w)
+{
+	switch (w) {
+	case NL80211_CHAN_WIDTH_20_NOHT:
+	case NL80211_CHAN_WIDTH_20:
+		return WL_FTM_FMT_BW_HE_20;
+	case NL80211_CHAN_WIDTH_40:
+		return WL_FTM_FMT_BW_HE_40;
+	case NL80211_CHAN_WIDTH_80:
+		return WL_FTM_FMT_BW_HE_80;
+	case NL80211_CHAN_WIDTH_80P80:
+		return WL_FTM_FMT_BW_HE_80_80;
+	case NL80211_CHAN_WIDTH_160:
+		return WL_FTM_FMT_BW_HE_1RF_160;
+	default:
+		return WIFI_CHAN_WIDTH_INVALID;
+	}
+}
+
+static
+enum nl80211_chan_width convert_ftm_to_nl80211_width(wl_ftm_ranging_format_bw_t w)
+{
+	switch (w) {
+	case WL_FTM_FMT_BW_HE_20:
+		return NL80211_CHAN_WIDTH_20;
+	case WL_FTM_FMT_BW_HE_40:
+		return NL80211_CHAN_WIDTH_40;
+	case WL_FTM_FMT_BW_HE_80:
+		return NL80211_CHAN_WIDTH_80;
+	case WL_FTM_FMT_BW_HE_80_80:
+		return NL80211_CHAN_WIDTH_80P80;
+	case WL_FTM_FMT_BW_HE_1RF_160:
+		return NL80211_CHAN_WIDTH_160;
+	default:
+		return WIFI_CHAN_WIDTH_INVALID;
+	}
+}
+
+static
+enum nl80211_preamble convert_ftm_preamble_to_nl80211(pmsr_ftm_preamble_t p)
+{
+	switch (p) {
+	case PMSR_PREAMBLE_LEGACY:
+		return NL80211_PREAMBLE_LEGACY;
+	case PMSR_PREAMBLE_HT:
+		return NL80211_PREAMBLE_HT;
+	case PMSR_PREAMBLE_VHT:
+		return NL80211_PREAMBLE_VHT;
+	case PMSR_PREAMBLE_HE:
+		return NL80211_PREAMBLE_HE;
+	default:
+		return NL80211_PREAMBLE_LEGACY;
+	}
+}
+
+static
+wifi_channel_width_t convert_nl80211_to_wifi_width(enum nl80211_chan_width w)
+{
+	switch (w) {
+	case NL80211_CHAN_WIDTH_20_NOHT:
+	case NL80211_CHAN_WIDTH_20:
+		return WIFI_CHAN_WIDTH_20;
+	case NL80211_CHAN_WIDTH_40:
+		return WIFI_CHAN_WIDTH_40;
+	case NL80211_CHAN_WIDTH_80:
+		return WIFI_CHAN_WIDTH_80;
+	case NL80211_CHAN_WIDTH_80P80:
+		return WIFI_CHAN_WIDTH_160;
+	case NL80211_CHAN_WIDTH_160:
+		return WIFI_CHAN_WIDTH_160;
+	default:
+		return WIFI_CHAN_WIDTH_INVALID;
+	}
+}
+
+#ifdef NOT_YET
+static bool
+is_peer_bw_supported(u32 chspec_band, wl_ftm_ranging_format_bw_t bw)
+{
+	if ((chspec_band == WL_CHANSPEC_BAND_5G) || (chspec_band == WL_CHANSPEC_BAND_6G)) {
+		return (bw >= WL_FTM_FMT_BW_HE_80);
+	}
+	return false;
+}
+#endif /* NOT_YET */
+
+static
+wl_ftm_ranging_format_bw_t wl_get_max_bw_for_pmsr(u32 chspec_band)
+{
+	u32 bw;
+
+	if (chspec_band == WL_CHANSPEC_BAND_6G) {
+		bw = WL_FTM_FMT_BW_HE_1RF_160;
+	} else if (chspec_band == WL_CHANSPEC_BAND_5G) {
+		bw = WL_FTM_FMT_BW_HE_80;
+	} else if (chspec_band == WL_CHANSPEC_BAND_2G) {
+		bw = WL_FTM_FMT_BW_HE_20;
+	} else {
+		bw = WIFI_CHAN_WIDTH_INVALID;
+	}
+
+	return bw;
+}
+
+chanspec_t
+wl_chandef_to_chanspec(struct cfg80211_chan_def chandef)
+{
+	wifi_channel_info channel;
+	chanspec_t chanspec = 0;
+
+	WL_DBG(("Enter"));
+	if (!chandef.chan) {
+		WL_ERR(("Invalid chandef"));
+		return 0;
+	}
+
+	channel.center_freq = chandef.chan->center_freq;
+	channel.width = convert_nl80211_to_wifi_width(chandef.width);
+	channel.center_freq0 = chandef.center_freq1;
+	channel.center_freq1 = chandef.center_freq2;
+
+	chanspec =  dhd_rtt_convert_to_chspec(channel);
+	return chanspec;
+}
+
+int
+wl_cfgvif_start_pmsr(struct wiphy *wiphy, struct wireless_dev *wdev,
+	struct cfg80211_pmsr_request *request)
+{
+	wl_ftm_pmsr_req_v1_t *pmsr_ftm_req = NULL;
+	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
+	struct cfg80211_pmsr_ftm_request_peer *ftm;
+	struct cfg80211_pmsr_request_peer *peer;
+	wl_proxd_iov_t *p_proxd_iov = NULL;
+	uint16 proxd_iovsize;
+	uint16	buf_space_left, bufsize;
+	uint16 all_tlvsize;
+	int err = BCME_OK;
+	ftm_subcmd_info_t subcmd_info;
+	dhd_pub_t *dhd = NULL;
+	uint8 *buf = NULL;
+	uint16 ftm_pmsr_req_len = 0;
+	uint16 sid = 0;
+	wl_ftm_pmsr_peer_req_v1_t *peer_req = NULL;
+	uint8 *resp_buf = NULL;
+	uint32 timeout_ms;
+	rtt_status_info_t *rtt_status = NULL;
+	s32 sec_iface = wl_cfg80211_get_sec_iface(cfg);
+
+	if (sec_iface != WL_IFACE_NOT_PRESENT) {
+		WL_ERR(("PMSR request is rejected because  secondary role %d"
+			" is operational\n", sec_iface));
+		return -EBUSY;
+	}
+
+	dhd = (dhd_pub_t *)(cfg->pub);
+	rtt_status = GET_RTTSTATE(dhd);
+	if (rtt_status && rtt_status->status == RTT_ENABLED) {
+		WL_ERR(("AP-STA ranging is in progress,Aborting the AP-STA ranging"));
+		mutex_lock(&rtt_status->rtt_mutex);
+		dhd_rtt_abort_legacy_ranging(dhd);
+		mutex_unlock(&rtt_status->rtt_mutex);
+	}
+
+	timeout_ms = request->timeout ? request->timeout*1000 : 0;
+
+	if (cfg->pmsr_info.pmsr_req != NULL) {
+		WL_ERR(("PMSR request in progress\n"));
+		return -EINVAL;
+	}
+
+	dhd_cancel_delayed_work_sync(&cfg->pmsr_info.pmsr_timeout_work);
+
+	if (request->n_peers > 1) {
+		WL_ERR(("Invalid Request Max peers supported is %d\n", MAX_NUM_PEERS));
+		return BCME_ERROR;
+	}
+
+	resp_buf = MALLOC(cfg->osh, WLC_IOCTL_MEDLEN);
+	if (!resp_buf) {
+		WL_ERR(("alloc failed for resp_buf\n"));
+		return -ENOMEM;
+	}
+
+	subcmd_info.name = "start-pmsr-ranging";
+	subcmd_info.cmdid = WL_FTM_CMD_START_PMSR_RANGING;
+	subcmd_info.handler = NULL;
+	mutex_lock(&cfg->pmsr_sync);
+	ftm_pmsr_req_len = (sizeof(wl_ftm_pmsr_req_v1_t) +
+			request->n_peers * (sizeof(wl_ftm_pmsr_peer_req_v1_t)));
+	pmsr_ftm_req = (wl_ftm_pmsr_req_v1_t *)MALLOCZ(cfg->osh, ftm_pmsr_req_len);
+	if (pmsr_ftm_req == NULL) {
+		WL_ERR(("Alloc failed for pmsr_ftm_req\n"));
+		err = BCME_NOMEM;
+		goto exit;
+	}
+	pmsr_ftm_req->source_addr = *(struct ether_addr *)request->mac_addr;
+	pmsr_ftm_req->n_peers = request->n_peers;
+	pmsr_ftm_req->timeout_ms = timeout_ms;
+	for (int i = 0; i < request->n_peers; i++) {
+		peer = &request->peers[i];
+		ftm = &peer->ftm;
+		peer_req = &pmsr_ftm_req->pmsr_peer_reqs[i];
+		peer_req->chanspec = wl_chandef_to_chanspec(peer->chandef);
+
+		/* Setting max bw on responder to advertise max capability */
+		if (ftm->rsta) {
+			peer_req->format_bw =
+				wl_get_max_bw_for_pmsr(CHSPEC_BAND(peer_req->chanspec));
+		} else {
+			peer_req->format_bw = convert_nl80211_to_ftm_width(peer->chandef.width);
+#ifdef NOT_YET
+			if (!is_peer_bw_supported(CHSPEC_BAND(peer_req->chanspec),
+					peer_req->format_bw)) {
+			/* Supplicant bug results in force_pr_freq to use 20Mhz by default
+			 * Also, 6GHz channel support is not enabled for PR.
+			 * Force sanity check for BW only after supplicant bug is fixed
+			 */
+				WL_ERR(("BW %u not supported for chanspec 0x%x\n",
+					peer_req->format_bw,
+					peer_req->chanspec));
+				err = -EINVAL;
+				goto exit;
+			}
+#endif /* NOT_YET */
+		}
+		/* meas_per_aw and min_time_bw_meas in units of 100us */
+		if (((ftm->ftms_per_burst > 1u) &&
+			((ftm->availability_window * 10u) < ((ftm->ftms_per_burst + 1) *
+			(ftm->min_time_between_measurements + MIN_THRSHOLD_PER_BURST)))) ||
+			(ftm->availability_window > ftm->nominal_time)) {
+				/* Instead of rejecting the request we are
+				 * filling with default values
+				*/
+				WL_INFORM(("aw:%dms meas_per_aw:%d min_time_bw_meas:%d is invalid,"
+					"reset to default meas_per_aw:%d aw_dur:%d "
+					"min_time_bw_meas:%d nominal_time:%d\n",
+					ftm->availability_window, (ftm->ftms_per_burst),
+					(ftm->min_time_between_measurements), WL_RSTA_NUM_MEAS,
+					WL_STA_AW_WINDOW_MS, WL_STA_MIN_DELTA,
+					WL_ISTA_NOMINAL_TIME));
+				ftm->availability_window = WL_STA_AW_WINDOW_MS;
+				ftm->min_time_between_measurements = WL_STA_MIN_DELTA;
+				ftm->ftms_per_burst = WL_RSTA_NUM_MEAS;
+				ftm->nominal_time = WL_ISTA_NOMINAL_TIME;
+#ifdef NOT_YET
+			err = BCME_ERROR;
+			WL_ERR(("Invalid request aw:%dms meas_per_aw:%dms min_time_bw_meas:%dms\n",
+				ftm->availability_window, (ftm->ftms_per_burst),
+				(ftm->min_time_between_measurements)));
+			goto exit;
+#endif /* NOT_YET */
+		}
+		peer_req->ingress_dist_mm = ftm->ingress_distance;
+		peer_req->egress_dist_mm = ftm->egress_distance;
+		peer_req->min_delta_in_100us = ftm->min_time_between_measurements ?
+			ftm->min_time_between_measurements : WL_STA_MIN_DELTA;
+		peer_req->max_delta_in_10ms = ftm->max_time_between_measurements ?
+			ftm->max_time_between_measurements : WL_STA_MAX_DELTA;
+		peer_req->nominal_time_ms = ftm->nominal_time ?
+			ftm->nominal_time : WL_RSTA_NOMINAL_TIME;
+
+		if (peer_req->nominal_time_ms < MIN_ALLOWED_RANGING_INTRVL_MS) {
+			err = BCME_ERROR;
+			WL_ERR(("Invalid request nominal_time should be greater than 512 ms"));
+			goto exit;
+		}
+
+		peer_req->preamble = ftm->preamble;
+		peer_req->sid = ++sid;
+		cfg->pmsr_info.session_id[i] = peer_req->sid;
+		eacopy(&peer->addr, &peer_req->peer_addr);
+		peer_req->flags =
+				(ftm->requested ? WL_PMSR_FTM_REQ : 0)
+			   | (ftm->asap ? WL_PMSR_ASAP : 0)
+			   | (ftm->request_lci ? WL_PMSR_REQ_LCI : 0)
+			   | (ftm->request_civicloc ? WL_PMSR_REQ_CIVICLOC : 0)
+			   | (ftm->trigger_based ? WL_PMSR_TRIGGER_BASED : 0)
+			   | (ftm->non_trigger_based ? WL_PMSR_NON_TRIGGER_BASED : 0)
+			   | (ftm->lmr_feedback ? WL_PMSR_LMR_FEEDBACK : 0)
+			   | (ftm->rsta ? WL_PMSR_RSTA : 0);
+		peer_req->num_bursts_exp = ftm->num_bursts_exp;
+		peer_req->burst_dur_ms = ftm->burst_duration;
+		peer_req->ftms_per_burst = ftm->ftms_per_burst;
+		peer_req->ftmr_retries = ftm->ftmr_retries;
+		peer_req->bss_color = ftm->bss_color;
+		peer_req->aw_dur_ms = ftm->availability_window ?
+			ftm->availability_window : WL_RSTA_AW_WINDOW_MS;
+		peer_req->num_meas = ftm->ftms_per_burst ?
+			ftm->ftms_per_burst : WL_RSTA_NUM_MEAS;
+		WL_INFORM_MEM(("%s:peer_mac:"MACDBG" aw_dur:%d chansepc:%0x channel:%d bw:%d"
+			" num_meas:%d flags:0x%x sid:%d preamble:%d\n",
+			(ftm->rsta?"RSTA":"ISTA"), MAC2STRDBG(peer->addr), peer_req->aw_dur_ms,
+			peer_req->chanspec, CHSPEC_CHANNEL(peer_req->chanspec),
+			peer_req->format_bw, peer_req->num_meas,
+			peer_req->flags, peer_req->sid, peer_req->preamble));
+	}
+
+	p_proxd_iov = rtt_alloc_getset_buf(dhd, WL_PROXD_METHOD_FTM, 0, subcmd_info.cmdid,
+			FTM_IOC_BUFSZ, &proxd_iovsize, WL_FTM_TYPE_NTB);
+	if (p_proxd_iov == NULL) {
+		err = BCME_NOMEM;
+		goto exit;
+	}
+	bufsize = proxd_iovsize - WL_PROXD_IOV_HDR_SIZE;
+	buf = (uint8 *)&p_proxd_iov->tlvs[0];
+	buf_space_left = proxd_iovsize - WL_PROXD_IOV_HDR_SIZE;
+
+	err = bcm_pack_xtlv_entry(&buf, &buf_space_left,
+		WL_FTM_TLV_ID_PMSR_REQ_V1, ftm_pmsr_req_len,
+		(uint8 *)pmsr_ftm_req, BCM_XTLV_OPTION_ALIGN32);
+	if (err != BCME_OK) {
+		WL_DBG(("failed to pack pmsr request in xtlv, err=%d\n", err));
+		goto exit;
+	}
+
+	all_tlvsize = (uint16)(bufsize - buf_space_left);
+	p_proxd_iov->len = htol16((uint16)(all_tlvsize + WL_PROXD_IOV_HDR_SIZE));
+	err = wldev_iovar_setbuf(bcmcfg_to_prmry_ndev(cfg), "proxd",
+			p_proxd_iov, p_proxd_iov->len,
+			resp_buf, WLC_IOCTL_MEDLEN, NULL);
+	if (err != BCME_OK) {
+		WL_ERR(("proxd_iovar failed err:%d\n", err));
+		goto exit;
+	} else {
+		cfg->pmsr_info.pmsr_complete = false;
+		cfg->pmsr_info.pmsr_req = request;
+		if (timeout_ms) {
+			WL_INFORM_MEM(("PMSR timeout set to %d ms\n", timeout_ms));
+			schedule_delayed_work(&cfg->pmsr_info.pmsr_timeout_work,
+			msecs_to_jiffies(timeout_ms));
+		}
+	}
+exit:
+	if (resp_buf) {
+		MFREE(cfg->osh, resp_buf, WLC_IOCTL_MEDLEN);
+	}
+	mutex_unlock(&cfg->pmsr_sync);
+
+	return err;
+}
+
+int
+wl_cfgvif_start_pd(struct wiphy *wiphy, struct wireless_dev *wdev)
+{
+	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
+	dhd_pub_t *dhd = NULL;
+	rtt_status_info_t *rtt_status = NULL;
+	int err = BCME_OK;
+
+	WL_INFORM_MEM(("Start PD"));
+	if (unlikely(!cfg || !cfg->pub)) {
+		WL_ERR(("invalid cfg handle\n"));
+		return -EINVAL;
+	}
+
+	dhd = (dhd_pub_t *)(cfg->pub);
+	rtt_status = GET_RTTSTATE(dhd);
+	if (rtt_status && rtt_status->status == RTT_ENABLED) {
+		WL_ERR(("AP-STA ranging is in progress,Aborting the AP-STA ranging"));
+		mutex_lock(&rtt_status->rtt_mutex);
+		dhd_rtt_abort_legacy_ranging(dhd);
+		mutex_unlock(&rtt_status->rtt_mutex);
+	}
+
+	err = dhd_rtt_ftm_enable(dhd, TRUE);
+	if (err) {
+		WL_ERR(("failed to enable FTM for PD start (%d)\n", err));
+	} else {
+		WL_INFORM(("FTM enabled\n"));
+	}
+
+	return err;
+}
+
+int
+wl_cfgvif_get_ftm_responder_stats(struct wiphy *wiphy,
+	struct net_device *dev,
+	struct cfg80211_ftm_responder_stats *ftm_stats)
+{
+	WL_INFORM_MEM(("FTM RESPONDER STATS"));
+	return -1;
+}
+
+static bool pmsr_completion_condition(struct bcm_cfg80211 *cfg, struct net_device *ndev)
+{
+	return cfg->pmsr_info.pmsr_complete;
+}
+
+
+int
+__wl_cfgvif_abort_pmsr(struct bcm_cfg80211 *cfg,
+	struct cfg80211_pmsr_request *request)
+{
+	wl_ftm_pmsr_req_v1_t *pmsr_ftm_req = NULL;
+	struct cfg80211_pmsr_request_peer *peer;
+	wl_proxd_iov_t *p_proxd_iov = NULL;
+	uint16 proxd_iovsize;
+	uint16	buf_space_left, bufsize;
+	uint16 all_tlvsize;
+	int err = BCME_OK;
+	ftm_subcmd_info_t subcmd_info;
+	dhd_pub_t *dhd = NULL;
+	uint8 *buf = NULL;
+	uint16 ftm_pmsr_req_len = 0;
+	wl_ftm_pmsr_peer_req_v1_t *peer_req = NULL;
+	uint8 *resp_buf = MALLOC(cfg->osh, WLC_IOCTL_MEDLEN);
+
+	WL_INFORM_MEM(("abort pmsr cookie:0x%llx\n", request->cookie));
+
+	if (!resp_buf) {
+		WL_ERR(("alloc failed for resp_buf\n"));
+		return FALSE;
+	}
+
+	dhd = (dhd_pub_t *)(cfg->pub);
+	subcmd_info.name = "stop-pmsr-ranging";
+	subcmd_info.cmdid = WL_FTM_CMD_STOP_PMSR_RANGING;
+	subcmd_info.handler = NULL;
+
+	if (cfg->pmsr_info.pmsr_req != request) {
+		WL_DBG(("Skipping PMSR abort for inactive request\n"));
+		goto exit;
+	}
+
+	ftm_pmsr_req_len = (sizeof(wl_ftm_pmsr_req_v1_t) +
+			request->n_peers*(sizeof(wl_ftm_pmsr_peer_req_v1_t)));
+	pmsr_ftm_req = (wl_ftm_pmsr_req_v1_t *)MALLOCZ(cfg->osh, ftm_pmsr_req_len);
+	if (pmsr_ftm_req == NULL) {
+		WL_ERR(("Alloc failed for pmsr_ftm_req\n"));
+		goto exit;
+	}
+
+	pmsr_ftm_req->n_peers = request->n_peers;
+
+	for (int i = 0; i < request->n_peers; i++) {
+		peer = &request->peers[i];
+		peer_req = &pmsr_ftm_req->pmsr_peer_reqs[i];
+		peer_req->sid = cfg->pmsr_info.session_id[i];
+		WL_DBG(("Aborting for sid:%d", peer_req->sid));
+		eacopy(&peer->addr, &peer_req->peer_addr);
+	}
+
+	p_proxd_iov = rtt_alloc_getset_buf(dhd, WL_PROXD_METHOD_FTM, 0, subcmd_info.cmdid,
+			FTM_IOC_BUFSZ, &proxd_iovsize, WL_FTM_TYPE_NTB);
+	if (p_proxd_iov == NULL) {
+		err = BCME_NOMEM;
+		goto exit;
+	}
+	bufsize = proxd_iovsize - WL_PROXD_IOV_HDR_SIZE;
+	buf = (uint8 *)&p_proxd_iov->tlvs[0];
+	buf_space_left = proxd_iovsize - WL_PROXD_IOV_HDR_SIZE;
+
+	err = bcm_pack_xtlv_entry(&buf, &buf_space_left,
+		WL_FTM_TLV_ID_PMSR_REQ_V1, ftm_pmsr_req_len,
+		(uint8 *)pmsr_ftm_req, BCM_XTLV_OPTION_ALIGN32);
+	if (err != BCME_OK) {
+		WL_DBG(("failed to pack pmsr request in xtlv, err=%d\n", err));
+		goto exit;
+	}
+
+	all_tlvsize = (uint16)(bufsize - buf_space_left);
+	p_proxd_iov->len = htol16((uint16)(all_tlvsize + WL_PROXD_IOV_HDR_SIZE));
+	err = wldev_iovar_setbuf(bcmcfg_to_prmry_ndev(cfg), "proxd",
+			p_proxd_iov, p_proxd_iov->len,
+			resp_buf, WLC_IOCTL_MEDLEN, NULL);
+	if (err != BCME_OK) {
+		WL_ERR(("proxd_iovar failed err:%d\n", err));
+		goto exit;
+	} else {
+		WL_INFORM(("PMSR abort successful\n"));
+	}
+exit:
+	if (resp_buf) {
+		MFREE(cfg->osh, resp_buf, WLC_IOCTL_MEDLEN);
+	}
+
+	return err;
+
+}
+
+void
+wl_cfgvif_abort_pmsr(struct wiphy *wiphy, struct wireless_dev *wdev,
+	struct cfg80211_pmsr_request *request)
+{
+	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
+	s32 abort_pmsr_timeout = 0;
+	int ret = 0;
+
+	dhd_cancel_delayed_work_sync(&cfg->pmsr_info.pmsr_timeout_work);
+
+	if (!cfg || !request) {
+		WL_ERR(("Invalid arguments for aborting PMSR request\n"));
+		return;
+	}
+
+	mutex_lock(&cfg->pmsr_sync);
+	ret = __wl_cfgvif_abort_pmsr(cfg, request);
+	mutex_unlock(&cfg->pmsr_sync);
+
+	if (ret < 0) {
+		WL_ERR(("Failed to abort PMSR request \n"));
+	} else {
+		abort_pmsr_timeout = wl_cfg80211_wait_interruptible(cfg,
+			bcmcfg_to_prmry_ndev(cfg), pmsr_completion_condition,
+			WL_PMSR_COMPLETE_TIMEOUT_MS);
+		if (abort_pmsr_timeout == 0) {
+			WL_INFORM_MEM(("PMSR abort timed out, ret:%d\n", abort_pmsr_timeout));
+		} else if (abort_pmsr_timeout < 0) {
+			WL_INFORM_MEM(("PMSR abort wait interrupted,"
+				"ret:%d\n", abort_pmsr_timeout));
+		} else {
+			WL_INFORM_MEM(("PMSR abort completed successfully (condition met)\n"));
+		}
+	}
+
+	return;
+}
+
+void
+wl_cfgvif_pmsr_timeout_work(struct work_struct *work)
+{
+	struct delayed_work *pmsr_timeout_work = to_delayed_work(work);
+	struct bcm_cfg80211 *cfg = container_of(pmsr_timeout_work,
+		struct bcm_cfg80211, pmsr_info.pmsr_timeout_work);
+	struct cfg80211_pmsr_request *request;
+	int ret = 0;
+	s32 abort_pmsr_timeout = 0;
+
+	mutex_lock(&cfg->pmsr_sync);
+	request = cfg->pmsr_info.pmsr_req;
+
+	if (!request) {
+		WL_DBG(("No active PMSR request to abort on timeout\n"));
+		mutex_unlock(&cfg->pmsr_sync);
+		return;
+	}
+
+	WL_ERR(("PMSR request timed out after %u ms, aborting\n",
+		request->timeout ? request->timeout*1000 : 0));
+
+	ret = __wl_cfgvif_abort_pmsr(cfg, request);
+	mutex_unlock(&cfg->pmsr_sync);
+
+	if (ret < 0) {
+		WL_ERR(("Failed to abort PMSR request on timeout\n"));
+	} else {
+		WL_INFORM(("PMSR request aborting on timeout\n"));
+		abort_pmsr_timeout = wl_cfg80211_wait_interruptible(cfg,
+			bcmcfg_to_prmry_ndev(cfg), pmsr_completion_condition,
+			WL_PMSR_COMPLETE_TIMEOUT_MS);
+		if (abort_pmsr_timeout == 0) {
+			WL_INFORM(("PMSR abort timed out, ret:%d\n", abort_pmsr_timeout));
+		} else if (abort_pmsr_timeout < 0) {
+			WL_INFORM(("PMSR abort wait interrupted, ret:%d\n", abort_pmsr_timeout));
+		} else {
+			WL_INFORM(("PMSR abort completed successfully (condition met)\n"));
+		}
+	}
+
+}
+
+void
+wl_cfgvif_stop_pd(struct wiphy *wiphy, struct wireless_dev *wdev)
+{
+	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
+	dhd_pub_t *dhd = NULL;
+	int ret = BCME_OK;
+
+	WL_INFORM_MEM(("Stop PD"));
+
+	if (unlikely(!cfg || !cfg->pub)) {
+		WL_ERR(("invalid cfg handle\n"));
+		return;
+	}
+
+	dhd = (dhd_pub_t *)(cfg->pub);
+	ret = dhd_rtt_ftm_enable(dhd, FALSE);
+	if (ret != BCME_OK) {
+		WL_ERR(("ftm disable failed err:%d", ret));
+	} else {
+		WL_INFORM_MEM(("FTM disabled\n"));
+	}
+
+	return;
+}
+
+/* PD interface delete - clean up lightweight virtual interface */
+s32
+wl_cfgvif_pd_if_del(struct wiphy *wiphy, struct wireless_dev *wdev)
+{
+	struct bcm_cfg80211 *cfg = wiphy_priv(wiphy);
+	s32 ret = BCME_OK;
+
+	if (!cfg || !wdev) {
+		WL_ERR(("Invalid arguments for PD interface delete\n"));
+		return -EINVAL;
+	}
+
+	cfg80211_unregister_wdev(wdev);
+
+	MFREE(cfg->osh, wdev, sizeof(*wdev));
+
+	cfg->pd_wdev = NULL;
+
+	if (cfg->vif_count) {
+		cfg->vif_count--;
+	}
+
+	WL_INFORM(("PD interface deleted successfully\n"));
+	return ret;
+}
+
+s32
+wl_cfgvif_pmsr_event_handler(struct bcm_cfg80211 *cfg, bcm_struct_cfgdev *cfgdev,
+		const wl_event_msg_t *event, void *event_data)
+{
+	int ret = BCME_OK;
+	static u32 pending_meas;
+	int tlvs_len = 0;
+	uint16 version;
+	wl_ftm_event_t *ftm_event;
+	wl_ftm_event_type_t ftm_event_type;
+	const ftm_strmap_entry_t *ftm_loginfo;
+	rtt_event_data_info_t rtt_event_data_info;
+	wl_ftm_pmsr_result_v1_t *pmsr_result = NULL;
+	struct cfg80211_pmsr_result cfg_pmsr_result;
+	bool match_peer = FALSE;
+	struct wireless_dev *wdev;
+	struct cfg80211_pmsr_request *request = NULL;
+	int peer_idx;
+	static int zero_meas;
+	bzero(&cfg_pmsr_result, sizeof(struct cfg80211_pmsr_result));
+	bzero(&rtt_event_data_info, sizeof(struct rtt_event_data_info));
+
+	mutex_lock(&cfg->pmsr_sync);
+	if (cfg->pd_wdev) {
+		/* PMSR events come on primary I/F. Map it to PMSR PD I/F for host reporting */
+		wdev = cfg->pd_wdev;
+	} else {
+		WL_ERR(("PD wdev is NULL\n"));
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	if (cfg->pmsr_info.pmsr_req == NULL) {
+		WL_DBG(("Invalid PMSR Request\n"));
+		ret = BCME_ERROR;
+		goto exit;
+	}
+	request = cfg->pmsr_info.pmsr_req;
+
+	if (ntoh32_ua((void *)&event->datalen) < OFFSETOF(wl_proxd_event_t, tlvs)) {
+		WL_ERR(("%s: wrong datalen:%d\n", __FUNCTION__,
+				ntoh32_ua((void *)&event->datalen)));
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	if (!event_data) {
+		WL_ERR(("%s: event_data:NULL\n", __FUNCTION__));
+		ret = -EINVAL;
+		goto exit;
+	}
+
+	ftm_event = (wl_ftm_event_t *) event_data;
+	version = ltoh16(ftm_event->version);
+	if (version < WL_PROXD_API_VERSION_3) {
+		WL_ERR(("ignore non-ftm event version = 0x%0x < WL_PROXD_API_VERSION (0x%x)\n",
+			version, WL_PROXD_API_VERSION_3));
+		goto exit;
+	}
+
+	ftm_event_type = (wl_ftm_event_type_t) ltoh16(ftm_event->type);
+
+	ftm_loginfo = ftm_get_event_type_loginfo(ftm_event_type);
+	if (ftm_loginfo == NULL) {
+		WL_ERR(("receive an invalid FTM event %d\n", ftm_event_type));
+		ret = -EINVAL;
+		goto exit;	/* ignore this event */
+	}
+	/* get TLVs len, skip over event header */
+	if (ltoh16(ftm_event->len) < OFFSETOF(wl_ftm_event_t, tlvs)) {
+		WL_ERR(("invalid FTM event length:%d\n", ltoh16(ftm_event->len)));
+		ret = -EINVAL;
+		goto exit;
+	}
+	tlvs_len = ltoh16(ftm_event->len) - OFFSETOF(wl_ftm_event_t, tlvs);
+	WL_INFORM_MEM(("receive '%s' event: version=0x%x len=%d method=%d sid=%d tlvs_len=%d\n",
+		ftm_loginfo->text, version, ltoh16(ftm_event->len), ltoh16(ftm_event->method),
+		ltoh16(ftm_event->sid), tlvs_len));
+
+	if (ftm_event_type == WL_FTM_EVENT_PMSR_RESULT) {
+		WL_DBG(("WL_FTM_EVENT_PMSR_RESULT \n"));
+		if (tlvs_len > 0) {
+			rtt_event_data_info.tlv = (void *)MALLOCZ(cfg->osh, tlvs_len);
+			if (!(rtt_event_data_info.tlv)) {
+				ret = -ENOMEM;
+				goto exit;
+			}
+			rtt_event_data_info.tlv->len = tlvs_len - BCM_XTLV_HDR_SIZE;
+			/* unpack TLVs and invokes the cbfn to print the event content TLVs */
+			ret = bcm_unpack_xtlv_buf(&rtt_event_data_info,
+				(uint8 *)&ftm_event->tlvs[0], tlvs_len,
+				BCM_XTLV_OPTION_NONE, rtt_unpack_xtlv_cbfn);
+			if (ret != BCME_OK) {
+				WL_ERR(("%s : Failed to unpack xtlv for event %d\n",
+					__FUNCTION__, ftm_event_type));
+				goto exit;
+			}
+
+			pmsr_result = rtt_event_data_info.pmsr_result;
+			for (int i = 0; i < MAX_NUM_PEERS; i++) {
+				if (pmsr_result->sid == cfg->pmsr_info.session_id[i]) {
+					match_peer = true;
+					peer_idx = pmsr_result->sid - 1;
+				}
+			}
+			if (!match_peer) {
+				WL_ERR(("Peer Request expired\n"));
+				goto exit;
+			} else {
+				if (request->peers[peer_idx].ftm.num_measurements) {
+					pending_meas++;
+					WL_DBG(("num_measurements decremented for sid %d,"
+						" remaining num_measurements:%d\n",
+						pmsr_result->sid,
+						request->peers[peer_idx].ftm.num_measurements
+							- pending_meas));
+					if (request->peers[peer_idx].ftm.num_measurements ==
+							pending_meas) {
+						WL_DBG(("PMSR num_meas reached pending meas,"
+							" aborting request\n"));
+						ret = __wl_cfgvif_abort_pmsr(cfg, request);
+						if (ret < 0) {
+							WL_ERR(("Failed to abort PMSR request"
+							" on num_measurements zero, ret:%d\n",
+							ret));
+						} else {
+							WL_INFORM(("PMSR request aborting"
+								" on num_measurements zero\n"));
+						}
+					}
+				}
+			}
+			cfg_pmsr_result.type = WL_PMSR_TYPE_FTM;
+			cfg_pmsr_result.status = ftm_reason_to_nl_status(
+				pmsr_ftm_get_statusmap_info(pmsr_result->status,
+				&pmsr_ftm_status_map_info[0], ARRAYSIZE(pmsr_ftm_status_map_info)));
+			eacopy(&request->peers[0].addr, &cfg_pmsr_result.addr);
+			cfg_pmsr_result.ftm.ftms_per_burst = pmsr_result->num_meas;
+			cfg_pmsr_result.ftm.rtt_avg_valid =	(pmsr_result->rtt_avg_ps >= 0);
+			cfg_pmsr_result.ftm.dist_avg_valid = (pmsr_result->dist_avg_mm > 0);
+			cfg_pmsr_result.ftm.rssi_avg_valid = (pmsr_result->rssi_avg != 0);
+			cfg_pmsr_result.ftm.availability_window_valid =
+				(pmsr_result->aw_dur_ms >= 0);
+			cfg_pmsr_result.ftm.availability_window = pmsr_result->aw_dur_ms;
+			cfg_pmsr_result.ftm.rssi_avg = pmsr_result->rssi_avg;
+			cfg_pmsr_result.ftm.chan_width =
+				convert_ftm_to_nl80211_width(pmsr_result->format_bw);
+			cfg_pmsr_result.ftm.preamble =
+				convert_ftm_preamble_to_nl80211(pmsr_result->preamble);
+			cfg_pmsr_result.ftm.chan_width_valid =
+				(cfg_pmsr_result.ftm.chan_width >= 0);
+			cfg_pmsr_result.ftm.preamble_valid = (cfg_pmsr_result.ftm.preamble >= 0);
+			cfg_pmsr_result.ftm.rtt_variance_valid = (pmsr_result->rtt_sd_ps >= 0);
+			cfg_pmsr_result.ftm.dist_variance_valid = (pmsr_result->dist_sd_mm >= 0);
+			cfg_pmsr_result.ftm.dist_variance = (pmsr_result->dist_sd_mm)*
+				(pmsr_result->dist_sd_mm);
+			cfg_pmsr_result.ftm.max_time_between_measurements_valid =
+				(pmsr_result->max_delta_in_10ms >= 0);
+			cfg_pmsr_result.ftm.min_time_between_measurements_valid =
+				(pmsr_result->min_delta_in_100us >= 0);
+			cfg_pmsr_result.ftm.nominal_time_valid =
+				(pmsr_result->nominal_time_ms >= 0);
+			cfg_pmsr_result.ftm.tx_ltf_repetition_count_valid =
+				(pmsr_result->tx_ltf_rep_cnt >= 0);
+			cfg_pmsr_result.ftm.rx_ltf_repetition_count_valid =
+				(pmsr_result->rx_ltf_rep_cnt >= 0);
+			cfg_pmsr_result.ftm.num_tx_spatial_streams_valid =
+				(pmsr_result->num_tx_ss >= 0);
+			cfg_pmsr_result.ftm.num_rx_spatial_streams_valid =
+			(pmsr_result->num_rx_ss >= 0);
+			cfg_pmsr_result.ftm.num_ftmr_attempts_valid =
+				(pmsr_result->num_ftmr_attempts >= 0);
+			cfg_pmsr_result.ftm.num_tx_spatial_streams = pmsr_result->num_tx_ss;
+			cfg_pmsr_result.ftm.num_rx_spatial_streams = pmsr_result->num_rx_ss;
+			cfg_pmsr_result.ftm.tx_ltf_repetition_count = pmsr_result->tx_ltf_rep_cnt;
+			cfg_pmsr_result.ftm.rx_ltf_repetition_count = pmsr_result->rx_ltf_rep_cnt;
+			cfg_pmsr_result.ftm.max_time_between_measurements =
+				pmsr_result->max_delta_in_10ms;
+			cfg_pmsr_result.ftm.min_time_between_measurements =
+				pmsr_result->min_delta_in_100us;
+			cfg_pmsr_result.ftm.rtt_avg = pmsr_result->rtt_avg_ps;
+			cfg_pmsr_result.ftm.dist_avg = pmsr_result->dist_avg_mm;
+			cfg_pmsr_result.ftm.num_ftmr_attempts = pmsr_result->num_ftmr_attempts;
+			cfg_pmsr_result.ftm.rtt_variance = (pmsr_result->rtt_sd_ps)*
+				(pmsr_result->rtt_sd_ps);
+			cfg_pmsr_result.ftm.nominal_time = pmsr_result->nominal_time_ms;
+			zero_meas = (!cfg_pmsr_result.ftm.dist_avg_valid) ?
+				(zero_meas + 1) : 0;
+			WL_INFORM_MEM(("PMSR RESULT Status:%d FW_status:%d Peer Address:" MACDBG " "
+				"ftms_per_burst:%d dist_avg:%llu chan_width:%d preamble:%d "
+				"rtt_avg:%lld rssi_avg:%d nominal_time:%d tx_ltf_rep_count:%d "
+				"rx_ltf_rep_count:%d tx_ss:%d rx_ss:%d dist_var:%llu "
+				"rtt_variance:%lld aw_dur_ms:%d num_ftmr_attempts:%d \n",
+				cfg_pmsr_result.status, pmsr_result->status,
+				MAC2STRDBG(&cfg_pmsr_result.addr),
+				cfg_pmsr_result.ftm.ftms_per_burst, cfg_pmsr_result.ftm.dist_avg,
+				cfg_pmsr_result.ftm.chan_width,	cfg_pmsr_result.ftm.preamble,
+				cfg_pmsr_result.ftm.rtt_avg, cfg_pmsr_result.ftm.rssi_avg,
+				cfg_pmsr_result.ftm.nominal_time,
+				cfg_pmsr_result.ftm.tx_ltf_repetition_count,
+				cfg_pmsr_result.ftm.rx_ltf_repetition_count,
+				cfg_pmsr_result.ftm.num_tx_spatial_streams,
+				cfg_pmsr_result.ftm.num_rx_spatial_streams,
+				cfg_pmsr_result.ftm.dist_variance,
+				cfg_pmsr_result.ftm.rtt_variance,
+				cfg_pmsr_result.ftm.availability_window,
+				cfg_pmsr_result.ftm.num_ftmr_attempts));
+			if (pmsr_result->flags & WL_FTM_AZ_RTT_RESULT_FLAG_PMSR_COMPLETE) {
+				cfg_pmsr_result.final = true;
+				cfg->pmsr_info.pmsr_complete = true;
+			}
+
+			if (request->peers[peer_idx].ftm.pd_suppress_range_results ||
+				(request->peers[peer_idx].ftm.num_measurements &&
+				(request->peers[peer_idx].ftm.num_measurements == pending_meas))) {
+				WL_DBG(("PMSR result event is suppressed for PD\n"));
+			} else {
+				cfg80211_pmsr_report(wdev, request, &cfg_pmsr_result, 0);
+			}
+			if (cfg->pmsr_info.pmsr_complete) {
+				if (request->timeout) {
+					dhd_cancel_delayed_work(&cfg->pmsr_info.pmsr_timeout_work);
+				}
+				cfg80211_pmsr_complete(wdev, request, 0);
+				pending_meas = 0;
+				WL_INFORM_MEM(("PMSR Complete reported "
+					" num_zero_meas:%d\n", zero_meas));
+				OSL_SMP_WMB();
+				wake_up_interruptible(&cfg->netif_change_event);
+				cfg->pmsr_info.pmsr_req = NULL;
+
+			}
+		}
+	}
+exit:
+	if (rtt_event_data_info.tlv) {
+		MFREE(cfg->osh, rtt_event_data_info.tlv, tlvs_len);
+	}
+
+	mutex_unlock(&cfg->pmsr_sync);
+
+	return ret;
+}
+#endif /* WL_PMSR */
 

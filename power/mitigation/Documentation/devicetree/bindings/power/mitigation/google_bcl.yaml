@@ -62,6 +62,14 @@ properties:
     description: BATOILO2 threshold during normal usage
     $ref: /schemas/types.yaml#/definitions/int32
 
+  batoilo_otg_trig_lvl:
+    description: BATOILO threshold when OTG enabled
+    $ref: /schemas/types.yaml#/definitions/int32
+
+  batoilo2_otg_trig_lvl:
+    description: BATOILO2 threshold when OTG enabled
+    $ref: /schemas/types.yaml#/definitions/int32
+
   batoilo_usb_trig_lvl:
     description: BATOILO threshold when plugged in
     $ref: /schemas/types.yaml#/definitions/int32
@@ -174,6 +182,34 @@ properties:
     description: vimon sample num to start power loop
     $ref: /schemas/types.yaml#/definitions/uint32
 
+  min_v_thrs:
+    description: minimum voltage threshold for failed zero pct convergence
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  min_v_thrs_cnt_max:
+    description: minimum voltage threshold registration count max
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  min_v_shdn_en:
+    description: minimum voltage shutdown enable
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  min_i_clr_thrs:
+    description: minimum current threshold for clearing zero pct convergence
+    $ref: /schemas/types.yaml#/definitions/int32
+
+  vimon_trig:
+    description: vimon trigger method for client
+    $ref: /schemas/types.yaml#/definitions/int32
+
+  cme_con_heavy:
+      description: CME heavy divider ratio setting
+      $ref: /schemas/types.yaml#/definitions/uint32
+
+  dsu_con_heavy:
+      description: DSU heavy divider ratio setting
+      $ref: /schemas/types.yaml#/definitions/uint32
+
   aur_con_heavy:
     description: AUR heavy divider ratio setting
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -200,6 +236,14 @@ properties:
 
   cpu2_con_heavy:
     description: CPU2 heavy divider ratio setting
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  cme_con_light:
+    description: CME light divider ratio setting
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  dsu_con_light:
+    description: DSU light divider ratio setting
     $ref: /schemas/types.yaml#/definitions/uint32
 
   aur_con_light:
@@ -230,6 +274,14 @@ properties:
     description: CPU2 light divider ratio setting
     $ref: /schemas/types.yaml#/definitions/uint32
 
+  cme_mitigation_res_en:
+    description: CME mitigation response setting
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  dsu_mitigation_res_en:
+    description: DSU mitigation response setting
+    $ref: /schemas/types.yaml#/definitions/uint32
+
   aur_mitigation_res_en:
     description: AUR mitigation response setting
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -256,6 +308,14 @@ properties:
 
   cpu2_mitigation_res_en:
     description: CPU2 mitigation response setting
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  cme_mitigation_type:
+    description: CME mitigation type setting
+    $ref: /schemas/types.yaml#/definitions/uint32
+
+  dsu_mitigation_type:
+    description: DSU mitigation type setting
     $ref: /schemas/types.yaml#/definitions/uint32
 
   aur_mitigation_type:
@@ -306,6 +366,10 @@ properties:
   sub_mitigation:
     description: Module mitigation stats prior to brownout for sub pmic
 
+  ifpmic_irq_drv_en:
+    description: Enable external driver battery mitigation IRQ trigger
+    $ref: boolean
+
   module_id:
     description: ID of module that will report stats prior to brownout
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -334,3 +398,38 @@ properties:
     description: PRE_UVLO debounce setting
     $ref: /schemas/types.yaml#/definitions/uint8
 
+  cpu2_dyn_clk_div_en:
+    description: cpu2 dynamic clock division enable
+    $ref: /schemas/types.yaml#/definitions/flag
+
+  cpu1a_dyn_clk_div_en:
+    description: cpu1a dynamic clock division enable
+    $ref: /schemas/types.yaml#/definitions/flag
+
+  cpu1b_dyn_clk_div_en:
+    description: cpu1b dynamic clock division enable
+    $ref: /schemas/types.yaml#/definitions/flag
+
+  cpu2_dyn_clk_div_ratio:
+    description: cpu2 div ratio for every oplvl tier; high, mid-high, mid-low, low
+    $ref: /schemas/types.yaml#/definitions/uint8-array
+
+  cpu1a_dyn_clk_div_ratio:
+    description: cpu1a div ratio for every oplvl tier; high, mid-high, mid-low, low
+    $ref: /schemas/types.yaml#/definitions/uint8-array
+
+  cpu1b_dyn_clk_div_ratio:
+    description: cpu1b div ratio for every oplvl tier; high, mid-high, mid-low, low
+    $ref: /schemas/types.yaml#/definitions/uint8-array
+
+  cpu2_dyn_clk_oplv_thresh:
+    description: cpu2 oplvl tier threshold; high, mid-high, mid-low, low
+    $ref: /schemas/types.yaml#/definitions/uint16-array
+
+  cpu1a_dyn_clk_oplv_thresh:
+    description: cpu1a oplvl tier threshold; high, mid-high, mid-low, low
+    $ref: /schemas/types.yaml#/definitions/uint16-array
+
+  cpu1b_dyn_clk_oplv_thresh:
+    description: cpu1b oplvl tier threshold; high, mid-high, mid-low, low
+    $ref: /schemas/types.yaml#/definitions/uint16-array

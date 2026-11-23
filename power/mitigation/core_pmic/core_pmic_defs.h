@@ -22,15 +22,16 @@ void pwrwarn_update_end_time(struct bcl_device *bcl_dev, int id,
 				struct irq_duration_stats *bins,
 				enum CONCURRENT_PWRWARN_IRQ bin_ind);
 
-u8 core_pmic_get_scratch_pad(struct bcl_device *bcl_dev);
+int core_pmic_get_scratch_pad(struct bcl_device *bcl_dev, u8 *value);
 void core_pmic_set_scratch_pad(struct bcl_device *bcl_dev, u8 value);
-int core_pmic_main_write_register(struct bcl_device *bcl_dev, u16 reg, u8 value, bool is_meter);
-int core_pmic_main_read_register(struct bcl_device *bcl_dev, u16 reg, u8 *value, bool is_meter);
-int core_pmic_sub_read_register(struct bcl_device *bcl_dev, u16 reg, u8 *value, bool is_meter);
-int core_pmic_sub_write_register(struct bcl_device *bcl_dev, u16 reg, u8 value, bool is_meter);
-int core_pmic_main_get_ocp_lvl(struct bcl_device *bcl_dev, u64 *val, u8 addr, u16 limit, u16 step);
-int core_pmic_main_set_ocp_lvl(struct bcl_device *bcl_dev, u64 val, u8 addr,
-			       u16 llimit, u16 ulimit, u16 step, u8 id);
+int get_scratch_value(struct bcl_device *bcl_dev, bool is_usb_plugged, u8 *value);
+
+int core_pmic_main_get_ocp_lvl(struct bcl_device *bcl_dev, u64 *val, u8 id, u16 limit, u16 step);
+int core_pmic_main_set_ocp_lvl(struct bcl_device *bcl_dev, u64 val, u8 id,
+			       u16 llimit, u16 ulimit, u16 step);
+int core_pmic_sub_get_ocp_lvl(struct bcl_device *bcl_dev, u64 *val, u8 id, u16 limit, u16 step);
+int core_pmic_sub_set_ocp_lvl(struct bcl_device *bcl_dev, u64 val, u8 id,
+			       u16 llimit, u16 ulimit, u16 step);
 int core_pmic_main_read_uvlo(struct bcl_device *bcl_dev, unsigned int *smpl_warn_lvl);
 u16 core_pmic_main_store_uvlo(struct bcl_device *bcl_dev, unsigned int val, size_t size);
 void core_pmic_parse_dtree(struct bcl_device *bcl_dev);

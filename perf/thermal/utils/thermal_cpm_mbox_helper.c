@@ -9,6 +9,7 @@
 #include <linux/module.h>
 #include <linux/of.h>
 
+#include "thermal_cpm_mbox_helper.h"
 #include "thermal_cpm_mbox_mock.h"
 
 int thermal_cpm_mbox_probe_helper(struct thermal_cpm_mbox_driver_data *drv_data)

@@ -892,7 +892,6 @@ void gxp_vd_release(struct gxp_virtual_device *vd)
 	}
 	up_write(&vd->mappings_semaphore);
 
-	kfree(vd->mailbox_resp_queues);
 	if (vd->slice_index >= 0)
 		ida_free(&vd->gxp->shared_slice_idp, vd->slice_index);
 #ifndef GXP_USE_DEFAULT_DOMAIN
@@ -1608,8 +1607,10 @@ void gxp_vd_put(struct gxp_virtual_device *vd)
 {
 	if (!vd)
 		return;
-	if (refcount_dec_and_test(&vd->refcount))
+	if (refcount_dec_and_test(&vd->refcount)) {
+		kfree(vd->mailbox_resp_queues);
 		kfree(vd);
+	}
 }
 
 static void gxp_vd_invalidate_locked(struct gxp_dev *gxp, struct gxp_virtual_device *vd, u32 reason)
@@ -1639,7 +1640,7 @@ void gxp_vd_invalidate(struct gxp_dev *gxp, struct gxp_virtual_device *vd, u32 r
 static int gxp_vd_start_debug_dump(struct gxp_dev *gxp, struct gxp_virtual_device *vd,
 				   uint *core_list)
 {
-	if (!gxp_debug_dump_is_enabled() || !core_list)
+	if (!gxp_debug_dump_is_enabled(gxp) || !core_list)
 		return -EINVAL;
 
 	lockdep_assert_held(&vd->debug_dump_lock);
@@ -1650,7 +1651,7 @@ static int gxp_vd_start_debug_dump(struct gxp_dev *gxp, struct gxp_virtual_devic
 
 int gxp_vd_conclude_debug_dump(struct gxp_dev *gxp, uint *core_list)
 {
-	if (!gxp_debug_dump_is_enabled() || !core_list)
+	if (!gxp_debug_dump_is_enabled(gxp) || !core_list)
 		return -EINVAL;
 
 	gxp_debug_dump_process_dump_mcu_mode(gxp, core_list);
@@ -1661,7 +1662,7 @@ void gxp_vd_generate_debug_dump(struct gxp_dev *gxp, struct gxp_virtual_device *
 {
 	int ret;
 
-	if (!gxp_debug_dump_is_enabled() || !core_list)
+	if (!gxp_debug_dump_is_enabled(gxp) || !core_list)
 		return;
 
 	lockdep_assert_held_write(&gxp->vd_semaphore);

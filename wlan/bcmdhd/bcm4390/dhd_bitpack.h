@@ -23,7 +23,7 @@
 
 #ifndef __BITPACK_H_
 #define __BITPACK_H_
-
+#include <typedefs.h>
 #define BYTE_SIZE(a) ((a + 7)/8)
 
 extern int32 dhd_bit_pack(char *buf, int32 buf_len, int bit_offset, uint32 data, int32 bit_length);

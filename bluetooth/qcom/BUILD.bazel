@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: GPL-2.0
 
-load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module", "kernel_module_group")
+load("@kleaf//build/kernel/kleaf:kernel.bzl", "checkpatch", "ddk_headers", "ddk_module")
+
+package(default_visibility = [
+    "//private/devices/google:__subpackages__",
+    "//private/google-modules:__subpackages__",
+])
 
 checkpatch(
     name = "checkpatch",
@@ -31,19 +36,28 @@ ddk_module(
     deps = [
         ":headers",
         "//common:all_headers_aarch64",
-        "//private/google-modules/bms/misc:bms-misc",
-        "//private/google-modules/bms/misc:headers",
-        "//private/google-modules/soc/gs:gs_soc_module",
+        "//private/google-modules/bms/misc:logbuffer",
         "//private/google-modules/soc/gs:headers",
+        "//private/google-modules/soc/gs/drivers/soc/google:exynos-cpupm",
     ],
 )
 
-kernel_module_group(
-    name = "bluetooth.qcom",
+ddk_module(
+    name = "wcn7760_btpower",
     srcs = [
-        ":btpower",
+        "wcn7760/wcn7760_btpower.c",
     ],
-    visibility = [
-        "//private/devices/google:__subpackages__",
+    out = "wcn7760_btpower.ko",
+    copts = [
+        "-Wall",
+        "-Werror",
+    ],
+    kernel_build = "//private/devices/google/common:kernel",
+    deps = [
+        ":headers",
+        "//common:all_headers_aarch64",
+        "//private/google-modules/bms/misc:logbuffer",
+        "//private/google-modules/soc/gs:headers",
+        "//private/google-modules/wcnpwrctl:wcn_pwrctl",
     ],
 )

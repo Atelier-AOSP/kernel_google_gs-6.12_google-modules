@@ -63,7 +63,6 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "devicemem_history_server.h"
 #include "debug_common.h"
 #include "info_page.h"
-#include "osfunc.h"
 #if defined(SUPPORT_SOC_TIMER)
 #include "rgxtimecorr.h"
 #endif
@@ -1375,7 +1374,7 @@ static void _PrintDevicememHistoryQueryResult(DUMPDEBUG_PRINTF_FUNC *pfnDumpDebu
 						ui32Index,
 						psResult->szString,
 						psResult->sBaseDevVAddr.uiAddr,
-						psResult->uiSize,
+						psResult->sMapEndAddr.uiAddr - psResult->sMapStartAddr.uiAddr + 1,
 						psResult->bMap ? "Map": "Unmap",
 						OSDivide64By32(psResult->ui64Age, 1000),
 						ui64Seconds,
@@ -1393,7 +1392,7 @@ static void _PrintDevicememHistoryQueryResult(DUMPDEBUG_PRINTF_FUNC *pfnDumpDebu
 						ui32Index,
 						psResult->szString,
 						psResult->sBaseDevVAddr.uiAddr,
-						psResult->uiSize,
+						psResult->sMapEndAddr.uiAddr - psResult->sMapStartAddr.uiAddr + 1,
 						psResult->bMap ? "Map": "Unmap",
 						OSDivide64By32(psResult->ui64Age, 1000),
 						ui64Seconds,

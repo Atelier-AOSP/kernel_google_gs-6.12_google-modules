@@ -85,7 +85,7 @@ int logdump_rtt_enable = FALSE;
 
 int logdump_prsrv_tailsize = DHD_LOG_DUMP_MAX_TAIL_FLUSH_SIZE;
 
-#ifdef DHD_DEBUGABILITY_DEBUG_DUMP
+#ifdef DHD_DMPD
 static dhd_debug_dump_ring_entry_t dhd_debug_dump_ring_map[] = {
 	{LOG_DUMP_SECTION_TIMESTAMP, DEBUG_DUMP_RING1_ID},
 	{LOG_DUMP_SECTION_ECNTRS, DEBUG_DUMP_RING2_ID},
@@ -99,7 +99,7 @@ static dhd_debug_dump_ring_entry_t dhd_debug_dump_ring_map[] = {
 	{LOG_DUMP_SECTION_COOKIE, DEBUG_DUMP_RING1_ID},
 	{LOG_DUMP_SECTION_RING, DEBUG_DUMP_RING1_ID},
 };
-#endif /* DHD_DEBUGABILITY_DEBUG_DUMP */
+#endif /* DHD_DMPD */
 
 #ifdef CUSTOMER_HW4_DEBUG
 static void
@@ -800,8 +800,6 @@ dhd_get_flowring_len(void *ndev, dhd_pub_t *dhdp)
 	log_dump_section_hdr_t sec_hdr;
 	dhd_info_t *dhd_info;
 	uint16 max_tx_flowrings;
-	uint16 flowid;
-	flow_ring_node_t *flow_ring_node;
 
 	if (ndev) {
 		dhd_info = *(dhd_info_t **)netdev_priv((struct net_device *)ndev);
@@ -844,23 +842,17 @@ dhd_get_flowring_len(void *ndev, dhd_pub_t *dhdp)
 				+ (sizeof(uint16) * 2));
 #endif /* EWP_EDL */
 
-	for (flowid = BCMPCIE_H2D_COMMON_MSGRINGS;
-		flowid < max_tx_flowrings + BCMPCIE_H2D_COMMON_MSGRINGS; flowid++) {
-		flow_ring_node = DHD_FLOW_RING(dhdp, flowid);
-		if (!flow_ring_node || !flow_ring_node->active) {
-			/* Stub: only 2 x uint16 (max_items=0 + item_len=0) */
-			length += (sizeof(uint16) * 2);
-			continue;
-		}
-		if (DHD_IS_FLOWID_HTPUT(dhdp, flowid)) {
-			length += dhd_prot_get_h2d_txpost_size(dhdp) *
-				h2d_htput_max_txpost;
-		} else {
-			length += dhd_prot_get_h2d_txpost_size(dhdp) *
-				h2d_max_txpost;
-		}
-		length += (sizeof(uint16) * 2);
+	if (dhdp->htput_support) {
+		/* flowring lengths are different for HTPUT rings, handle accordingly */
+		length += ((dhd_prot_get_h2d_txpost_size(dhdp) * h2d_htput_max_txpost *
+			dhdp->htput_total_flowrings) +
+			(dhd_prot_get_h2d_txpost_size(dhdp) * h2d_max_txpost *
+			(max_tx_flowrings - dhdp->htput_total_flowrings)));
+	} else {
+		length += (dhd_prot_get_h2d_txpost_size(dhdp) * h2d_max_txpost *
+			max_tx_flowrings);
 	}
+	length += max_tx_flowrings * (sizeof(uint16) * 2);
 
 	return length;
 }
@@ -2335,7 +2327,7 @@ exit:
 	return;
 }
 
-#ifdef DHD_DEBUGABILITY_DEBUG_DUMP
+#ifdef DHD_DMPD
 int dhd_debug_dump_get_ring_num(int sec_type)
 {
 	int idx = 0;
@@ -2347,7 +2339,7 @@ int dhd_debug_dump_get_ring_num(int sec_type)
 	}
 	return idx;
 }
-#endif /* DHD_DEBUGABILITY_DEBUG_DUMP */
+#endif /* DHD_DMPD */
 
 int
 dhd_dump_debug_ring(dhd_pub_t *dhdp, void *ring_ptr, const void *user_buf,
@@ -2360,9 +2352,9 @@ dhd_dump_debug_ring(dhd_pub_t *dhdp, void *ring_ptr, const void *user_buf,
 	unsigned long flags = 0;
 	int ret = 0;
 	dhd_dbg_ring_t *ring = (dhd_dbg_ring_t *)ring_ptr;
-#ifndef DHD_DEBUGABILITY_DEBUG_DUMP
+#ifndef DHD_DMPD
 	int pos = 0;
-#endif /* !DHD_DEBUGABILITY_DEBUG_DUMP */
+#endif /* !DHD_DMPD */
 	int fpos_sechdr = 0;
 	int tot_len = 0;
 	char *tmp_buf = NULL;
@@ -2376,7 +2368,7 @@ dhd_dump_debug_ring(dhd_pub_t *dhdp, void *ring_ptr, const void *user_buf,
 	BCM_REFERENCE(tmp_buf);
 	BCM_REFERENCE(ring_num);
 
-#ifdef DHD_DEBUGABILITY_DEBUG_DUMP
+#ifdef DHD_DMPD
 	if (!dhdp || !ring || !sec_hdr || !text_hdr) {
 		return BCME_BADARG;
 	}
@@ -2391,7 +2383,7 @@ dhd_dump_debug_ring(dhd_pub_t *dhdp, void *ring_ptr, const void *user_buf,
 	if (!dhdp || !ring || !user_buf || !sec_hdr || !text_hdr) {
 		return BCME_BADARG;
 	}
-#endif /* DHD_DEBUGABILITY_DEBUG_DUMP */
+#endif /* DHD_DMPD */
 	/* do not allow further writes to the ring
 	 * till we flush it
 	 */
@@ -2399,7 +2391,7 @@ dhd_dump_debug_ring(dhd_pub_t *dhdp, void *ring_ptr, const void *user_buf,
 	ring->state = RING_SUSPEND;
 	DHD_DBG_RING_UNLOCK(ring->lock, flags);
 
-#ifdef DHD_DEBUGABILITY_DEBUG_DUMP
+#ifdef DHD_DMPD
 	ring_num = dhd_debug_dump_get_ring_num(sec_type);
 	dhd_export_debug_data(text_hdr, NULL, NULL, strlen(text_hdr), &ring_num);
 
@@ -2454,7 +2446,7 @@ dhd_dump_debug_ring(dhd_pub_t *dhdp, void *ring_ptr, const void *user_buf,
 	} else {
 		DHD_ERROR(("%s: No concise buffer available !\n", __FUNCTION__));
 	}
-#endif /* DHD_DEBUGABILITY_DEBUG_DUMP */
+#endif /* DHD_DMPD */
 
 	DHD_DBG_RING_LOCK(ring->lock, flags);
 	ring->state = RING_ACTIVE;
@@ -2797,11 +2789,11 @@ dhd_log_dump_cookie_to_file(dhd_pub_t *dhdp, void *fp, const void *user_buf, uns
 	int ret = BCME_ERROR;
 	uint32 buf_size = MAX_LOGUDMP_COOKIE_CNT * LOGDUMP_COOKIE_STR_LEN;
 
-#ifdef DHD_DEBUGABILITY_DEBUG_DUMP
+#ifdef DHD_DMPD
 	if (!dhdp || !dhdp->logdump_cookie) {
 #else
 	if (!dhdp || !dhdp->logdump_cookie || (!fp && !user_buf) || !f_pos) {
-#endif /* DHD_DEBUGABILITY_DEBUG_DUMP */
+#endif /* DHD_DMPD */
 		DHD_ERROR(("%s At least one ptr is NULL "
 			"dhdp = %p cookie %p fp = %p f_pos = %p\n",
 			__FUNCTION__, dhdp, dhdp?dhdp->logdump_cookie:NULL, fp, f_pos));
